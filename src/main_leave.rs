@@ -8378,6 +8378,9 @@ fn compare_seats<
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
                 let mut stats = GamePairStats::new();
                 let mut first_game_moves: Vec<movegen::Play> = Vec::new();
+                // the board before the last move, for a sim to infer from
+                // (hasty seats alone read neither it nor the move)
+                let mut last_board = vec![0u8; game_state.board_tiles.len()];
 
                 loop {
                     let pair_idx = claimed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -8401,6 +8404,7 @@ fn compare_seats<
                         }
                         let seat_swapped = game_in_pair != 0;
                         let mut num_turns = 0u32;
+                        let mut last_play: Option<movegen::Play> = None;
                         if !seat_swapped {
                             first_game_moves.clear();
                         }
@@ -8451,15 +8455,23 @@ fn compare_seats<
                                     move_generator.gen_moves_unfiltered(&gen_params);
                                 }
                             } else {
-                                driver.pick_a_move(
+                                driver.pick_a_move_after(
                                     &mut filtered_movegen,
                                     &mut move_generator,
                                     &board_snapshot,
                                     &game_state,
                                     &game_state.current_player().rack,
+                                    last_play.as_ref().map(|play| move_picker::LastMove {
+                                        board_before: &last_board,
+                                        play,
+                                    }),
                                 )?;
                             }
                             let play = &move_generator.plays[0].play;
+                            if !HASTY_ONLY {
+                                last_board.copy_from_slice(&game_state.board_tiles);
+                                last_play = Some(play.clone());
+                            }
                             if seat_swapped {
                                 if !pair_diverged
                                     && (num_turns as usize >= first_game_moves.len()

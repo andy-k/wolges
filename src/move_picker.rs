@@ -1,8 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{
-    anagrams, equity, error, fash, game_config, game_state, glance, klv, kwg, matrix, move_filter,
-    movegen, simmer, stats, win_pct,
+    anagrams, equity, error, fash, game_config, game_state, glance, infer, klv, kwg, matrix,
+    move_filter, movegen, simmer, stats, win_pct,
 };
 use rand::SeedableRng;
 use std::io::Write;
@@ -311,6 +311,15 @@ pub struct Simmer<
     quiet: bool,
     decision_t0: Option<std::time::Instant>, // set only when not quiet
     ticked: u64,
+    infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
+}
+
+// the opponent's last move and the board before it, from which a sim infers
+// what they kept
+#[derive(Clone, Copy)]
+pub struct LastMove<'a> {
+    pub board_before: &'a [u8],
+    pub play: &'a movegen::Play,
 }
 
 // a block of iterations, those after lo up to hi, rolled out for the plays
@@ -405,6 +414,7 @@ impl<
             quiet: params.quiet,
             decision_t0: None,
             ticked: 0,
+            infer: None,
         }
     }
 
@@ -1787,6 +1797,39 @@ impl<
         Ok(())
     }
 
+    // the leaves the opponent's last move says they kept, each with its weight,
+    // as the shell infers them, for a sim to draw their rack from: the watcher
+    // is the side to move, holding this rack
+    #[inline]
+    pub fn kept_leaves(
+        &mut self,
+        watcher_rack: &[u8],
+        last: LastMove<'_>,
+    ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+        let (tables, infer_generator) = match &mut self.infer {
+            Some(infer) => infer,
+            infer @ None => infer.insert((
+                infer::InferTables::new(self.game_config, self.klv)?,
+                movegen::KurniaMoveGenerator::new(self.game_config),
+            )),
+        };
+        infer::kept_leaves(
+            tables,
+            infer_generator,
+            &movegen::BoardSnapshot {
+                board_tiles: last.board_before,
+                game_config: self.game_config,
+                kwg: self.kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: self.klv,
+            },
+            watcher_rack,
+            last.play,
+            infer::FUZZ,
+        )
+    }
+
     #[inline]
     pub fn begin_decision(
         &mut self,
@@ -1839,6 +1882,33 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
         N: Sync,
         L: Sync,
     {
+        self.pick_a_move_after(
+            filtered_movegen,
+            move_generator,
+            board_snapshot,
+            game_state,
+            rack,
+            None,
+        )
+    }
+
+    // as pick_a_move, given the opponent's last move: a sim then draws their
+    // rack from what that move says they kept, as the shell's sims do (with two
+    // players; the other pickers do not read it)
+    #[inline(always)]
+    pub fn pick_a_move_after(
+        &mut self,
+        filtered_movegen: &mut move_filter::GenMoves<'_>,
+        move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        game_state: &game_state::GameState,
+        rack: &[u8],
+        last: Option<LastMove<'_>>,
+    ) -> error::Returns<()>
+    where
+        N: Sync,
+        L: Sync,
+    {
         match self {
             MovePicker::Hasty => {
                 filtered_movegen.gen_moves(
@@ -1873,8 +1943,14 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     &mut scratch,
                 );
                 simmer.candidate_scratch = scratch;
+                let leaves = match last {
+                    Some(last) if game_state.players.len() == 2 => {
+                        simmer.kept_leaves(rack, last)?
+                    }
+                    _ => Vec::new(),
+                };
                 let budget = simmer.num_sim_iters;
-                simmer.begin_decision(move_generator, game_state, budget, &[])?;
+                simmer.begin_decision(move_generator, game_state, budget, &leaves)?;
                 if let Some(t0) = t0 {
                     const Z: f64 = 1.96; // 95% confidence interval
                     let top = simmer
@@ -2531,6 +2607,124 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(lanes, [8, 7, 7, 10, 12, 12]);
         (board_tiles, plays)
+    }
+
+    #[test]
+    #[inline]
+    fn a_sim_given_the_last_move_draws_from_what_the_shell_infers() {
+        // the opponent opened AT across the center; the side to move, holding
+        // what it was dealt, picks with that move given
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_lexicon()).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 20, 5, 5, 0, 1, 20]);
+        let board_before = game_state.board_tiles.to_vec();
+        let opening = movegen::Play::Place {
+            down: false,
+            lane: 7,
+            idx: 7,
+            word: [1, 20][..].into(),
+            score: 4,
+        };
+        game_state
+            .play(&game_config, &mut deal_rng, &opening)
+            .unwrap();
+        game_state.next_turn();
+        let last = LastMove {
+            board_before: &board_before,
+            play: &opening,
+        };
+        let rack = game_state.current_player().rack.clone();
+        let params = || SimmerParams {
+            num_sim_iters: 16,
+            num_sim_plies: 2,
+            sim_threads: 1,
+            win_pct_table: None,
+            quiet: true,
+        };
+
+        // the leaves are the inference's own, as the shell asks for them
+        let mut simmer =
+            Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params()).unwrap();
+        let leaves = simmer.kept_leaves(&rack, last).unwrap();
+        assert!(!leaves.is_empty());
+        let shell_leaves = infer::kept_leaves(
+            &mut infer::InferTables::new(&game_config, &klv).unwrap(),
+            &mut movegen::KurniaMoveGenerator::new(&game_config),
+            &movegen::BoardSnapshot {
+                board_tiles: &board_before,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            },
+            &rack,
+            &opening,
+            infer::FUZZ,
+        )
+        .unwrap();
+        assert_eq!(leaves, shell_leaves);
+
+        // and the move picked with the last move given is the one a decision
+        // handed those leaves picks
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let mut by_hand =
+            Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params()).unwrap();
+        by_hand.reseed(3);
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        gen_simmer_candidates(
+            &mut move_filter::GenMoves::Unfiltered,
+            &mut move_generator,
+            &board_snapshot,
+            &rack,
+            0,
+            SIMMER_FIELD,
+            &mut Vec::new(),
+        );
+        by_hand
+            .begin_decision(&move_generator, &game_state, 16, &shell_leaves)
+            .unwrap();
+        let want = move_generator.plays[top_candidate_play_index_by_mean(&by_hand.candidates)]
+            .play
+            .clone();
+        simmer.reseed(3);
+        let mut picker = MovePicker::Simmer(Box::new(simmer));
+        let mut picked = movegen::KurniaMoveGenerator::new(&game_config);
+        picker
+            .pick_a_move_after(
+                &mut move_filter::GenMoves::Unfiltered,
+                &mut picked,
+                &board_snapshot,
+                &game_state,
+                &rack,
+                Some(last),
+            )
+            .unwrap();
+        assert!(picked.plays[0].play == want);
+        // its sim drew the opponent's racks as that decision did, so every
+        // candidate's mean is the same to the bit
+        let MovePicker::Simmer(picked_simmer) = &picker else {
+            unreachable!()
+        };
+        let means = |candidates: &[Candidate]| {
+            candidates
+                .iter()
+                .map(|candidate| candidate.stats.mean())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(means(&picked_simmer.candidates), means(&by_hand.candidates));
     }
 
     #[test]
