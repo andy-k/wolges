@@ -2,6 +2,7 @@
 
 use wolges::{error, text};
 mod endgame_watch;
+mod game_args;
 mod rlhelper;
 mod shell_session;
 
@@ -24,12 +25,17 @@ struct Cli {
                 endgame's table grows only while it fits"
     )]
     max_memory: f64,
+    #[command(flatten)]
+    game: game_args::GameArgs,
 }
 
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
-    let mut session =
-        shell_session::Session::new(cli.quiet, endgame_watch::memory_limit(cli.max_memory)?)?;
+    let mut session = shell_session::Session::new(
+        cli.quiet,
+        endgame_watch::memory_limit(cli.max_memory)?,
+        Box::leak(Box::new(cli.game.make_game_config()?)),
+    )?;
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {

@@ -272,6 +272,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "use the leave values in FILE (a klv2), or none for -",
     ),
     (
+        "rules NAME|FILE",
+        "play by a bundled preset's rules or a preset file's (tiles, board, rack size, ...), ending the game",
+    ),
+    (
         "new [SEED]",
         "start a new game, its bag shuffled from SEED (a random one if not given)",
     ),
@@ -415,8 +419,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
 ];
 
 impl Session {
-    pub fn new(quiet: bool, memory: Option<endgame::MemoryLimit>) -> error::Returns<Self> {
-        let game_config: &'static _ = Box::leak(Box::new(game_config::make_english_game_config()));
+    pub fn new(
+        quiet: bool,
+        memory: Option<endgame::MemoryLimit>,
+        game_config: &'static game_config::GameConfig,
+    ) -> error::Returns<Self> {
         Ok(Self {
             game_config,
             kwg: None,
@@ -550,6 +557,27 @@ impl Session {
                     self.klv = klv;
                     self.infer_tables = None;
                 }
+                line.to_string()
+            }
+            "rules" => {
+                let [name] = args else {
+                    return Err("rules NAME|FILE".into());
+                };
+                let game_config = game_config::Options {
+                    preset: name,
+                    tiles: None,
+                    board: None,
+                    rack_size: None,
+                    jumbled: false,
+                    players: None,
+                    bingo_bonus: None,
+                    zeros_to_end: None,
+                    passes_to_end: None,
+                    exchange_limit: None,
+                    exchanges: None,
+                }
+                .make_game_config(&|path| Ok(std::fs::read_to_string(path)?))?;
+                self.use_rules(Box::leak(Box::new(game_config)))?;
                 line.to_string()
             }
             "new" => {
@@ -1316,6 +1344,37 @@ impl Session {
         self.kwg = Some((path.to_string(), kwg));
         self.move_generator.reset_for_another_kwg();
         self.infer_generator.reset_for_another_kwg();
+    }
+
+    // play by these rules from here on: the game ends (its tiles were the old
+    // rules'), the tables built for the old rules go (the lexicon stays, read
+    // again by the next lexicon command if it is another alphabet's), and leave
+    // values that the new rules cannot hold go too
+    fn use_rules(&mut self, game_config: &'static game_config::GameConfig) -> error::Returns<()> {
+        self.game_config = game_config;
+        self.change(|game| {
+            *game = None;
+            Ok(())
+        })?;
+        self.state = game_state::GameState::new(game_config);
+        self.move_generator = movegen::KurniaMoveGenerator::new(game_config);
+        self.infer_generator = movegen::KurniaMoveGenerator::new(game_config);
+        self.arm_tables_built.clear();
+        self.infer_tables = None;
+        self.board_before_last = None;
+        self.final_scores = None;
+        self.loser = None;
+        self.racks_given = [false; 2];
+        if game_config.check_leaves(self.klv.leave_range()).is_err() {
+            self.klv = Box::leak(Box::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                klv::EMPTY_KLV_BYTES,
+            )?));
+            writeln!(
+                std::io::stdout(),
+                "the leave values do not fit these rules: none now (leaves FILE for others)"
+            )?;
+        }
+        Ok(())
     }
 
     // the word graph, or an error saying to read one
@@ -2746,7 +2805,7 @@ impl Session {
             .write(true)
             .create_new(true)
             .open(out)?;
-        let mut session = Session::new(true, self.memory)?;
+        let mut session = Session::new(true, self.memory, self.game_config)?;
         if let Some((path, kwg)) = &self.kwg {
             session.use_kwg(path, kwg);
         }
@@ -3443,7 +3502,12 @@ mod tests {
     }
 
     fn session() -> Session {
-        let mut session = Session::new(true, None).unwrap();
+        let mut session = Session::new(
+            true,
+            None,
+            Box::leak(Box::new(game_config::make_english_game_config())),
+        )
+        .unwrap();
         session.use_kwg("tiny", Box::leak(Box::new(tiny_lexicon())));
         session
     }
@@ -3945,6 +4009,40 @@ mod tests {
         run(&mut session, "sim stop").unwrap();
         assert!(run(&mut session, &format!("sim add {first}")).is_err());
         assert!(session.sim.is_none());
+    }
+
+    #[test]
+    #[inline]
+    fn rules_change_the_tiles_and_end_the_game() {
+        // a preset by name: the game ends (its tiles were the old rules'), the
+        // next game deals the new alphabet's tiles, and the log replays the
+        // change; a preset that is not: nothing changes
+        let mut first = session();
+        for line in &GAME[..3] {
+            run(&mut first, line).unwrap();
+        }
+        let english = first.game_config.alphabet().len();
+        run(&mut first, "rules polish").unwrap();
+        assert!(first.game.is_none());
+        assert!(run(&mut first, "play 8G AT").is_err());
+        let polish = first.game_config.alphabet().len();
+        assert_ne!(polish, english);
+        run(&mut first, "new 7").unwrap();
+        let rack = &first.state.players[0].rack;
+        assert_eq!(rack.len(), 7);
+        assert!(rack.iter().all(|&t| t < polish));
+        assert!(run(&mut first, "rules klingon").is_err());
+        assert!(first.game.is_some());
+        assert_eq!(first.log.last().unwrap(), "new 7");
+        assert!(first.log.contains(&"rules polish".to_string()));
+        let mut second = session();
+        for line in &first.log {
+            run(&mut second, line).unwrap();
+        }
+        assert_eq!(snapshot(&second), snapshot(&first));
+        run(&mut first, "rules english").unwrap();
+        assert_eq!(first.game_config.alphabet().len(), english);
+        assert!(first.game.is_none());
     }
 
     #[test]
@@ -4832,7 +4930,12 @@ mod tests {
         let error = run(&mut session, "withdraw").unwrap_err().to_string();
         assert_eq!(error, "only a move that placed tiles is taken back");
         // the log replays to the same game, and so does its GCG
-        let mut second = Session::new(true, None).unwrap();
+        let mut second = Session::new(
+            true,
+            None,
+            Box::leak(Box::new(game_config::make_english_game_config())),
+        )
+        .unwrap();
         second.use_kwg("tiny", session.kwg().unwrap());
         for line in session.log.clone() {
             replay(&mut second, &line).unwrap();
@@ -4842,7 +4945,12 @@ mod tests {
         assert!(text.contains(">p2: EEE H8 .EEE +"), "{text}");
         assert!(text.contains(">p2: EEE -- -"), "{text}");
         assert!(text.contains(" (challenge) +5 "), "{text}");
-        let mut third = Session::new(true, None).unwrap();
+        let mut third = Session::new(
+            true,
+            None,
+            Box::leak(Box::new(game_config::make_english_game_config())),
+        )
+        .unwrap();
         third.use_kwg("tiny", session.kwg().unwrap());
         third.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert_eq!(snapshot(&third), snapshot(&session));
