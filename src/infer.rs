@@ -480,7 +480,9 @@ fn best_keep(lat: &census::MultisetLattice, leave: &[i32], rack: &[u8], keep: us
 // rack the watcher still holds. A rack keeps the tiles it did not place: all of
 // them for a pass, and for an exchange (whose size alone is seen) the leave of
 // that size the table values most. Empty when there is nothing to weigh: the
-// bag is empty, or no rack from the pool could have made the move.
+// bag is empty before the move, or its own draw empties it (the mover then
+// holds every unseen tile, whatever they kept), or no rack from the pool could
+// have made the move.
 #[inline]
 pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     tables: &mut InferTables,
@@ -506,6 +508,11 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     let (exchanged, move_value) = move_tiles_and_value(board_snapshot, play, &mut placed);
     if placed.iter().zip(&pool).any(|(&p, &u)| p > u) {
         return_error!("the move places tiles the watcher holds or the board has".into());
+    }
+    // a move placing as many tiles as the bag holds draws it empty (an exchange
+    // leaves the bag as it was)
+    if exchanged.is_none() && placed.iter().map(|&c| c as usize).sum::<usize>() >= bag {
+        return Ok(Vec::new());
     }
     let can_exchange = bag >= game_config.exchange_tile_limit() as usize;
     if exchanged.is_some() && !can_exchange {
@@ -612,22 +619,23 @@ mod tests {
     }
 
     // the leaves a move keeps, seen either on an empty board by a player
-    // holding an E, or on a board holding every tile but the last 21 in
-    // alphabet order (3 S, then T to Z) by the player holding the Z, so that
-    // only 20 are unseen and the inference is quick
+    // holding an E, or on a board holding the first tiles in alphabet order,
+    // this many, by the player holding the Z: with 79 on it, every tile but the
+    // last 21 (3 S, then T to Z), so that only 20 are unseen and the inference
+    // is quick
     #[inline]
-    fn leaves_after(crowded: bool, play: &movegen::Play, fuzz: f64) -> Vec<(Vec<u8>, f64)> {
+    fn leaves_after(on_board: usize, play: &movegen::Play, fuzz: f64) -> Vec<(Vec<u8>, f64)> {
         let game_config = game_config::make_english_game_config();
         let alphabet = game_config.alphabet();
         let kwg = tiny_kwg();
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut board_tiles = vec![0u8; 15 * 15];
         let mut watcher_rack = vec![5];
-        if crowded {
+        if on_board > 0 {
             let mut square = 0;
             for tile in 0..alphabet.len() {
                 for _ in 0..alphabet.freq(tile) {
-                    if square < 79 {
+                    if square < on_board {
                         board_tiles[square] = if tile == 0 { 0x81 } else { tile };
                         square += 1;
                     }
@@ -669,7 +677,7 @@ mod tests {
             word: [1, 20][..].into(),
             score: 0,
         };
-        let leaves = leaves_after(false, &play, 0.0);
+        let leaves = leaves_after(0, &play, 0.0);
         assert!(!leaves.is_empty());
         for (leave, weight) in &leaves {
             assert_eq!(leave.len(), 5);
@@ -680,7 +688,7 @@ mod tests {
             );
         }
         // above fuzz 0 those weigh something too
-        let leaves = leaves_after(false, &play, 3.0);
+        let leaves = leaves_after(0, &play, 3.0);
         assert!(leaves.iter().any(|(leave, _)| leave.contains(&5)));
     }
 
@@ -690,7 +698,7 @@ mod tests {
         let exchange = movegen::Play::Exchange {
             tiles: [0u8; 3][..].into(),
         };
-        let leaves = leaves_after(true, &exchange, 3.0);
+        let leaves = leaves_after(79, &exchange, 3.0);
         assert!(!leaves.is_empty());
         for (leave, _) in leaves {
             assert_eq!(leave.len(), 4);
@@ -698,10 +706,31 @@ mod tests {
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
-        let leaves = leaves_after(true, &pass, 3.0);
+        let leaves = leaves_after(79, &pass, 3.0);
         assert!(!leaves.is_empty());
         for (leave, _) in leaves {
             assert_eq!(leave.len(), 7);
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_move_that_draws_the_bag_empty_leaves_nothing_to_weigh() {
+        // with 91 on the board and the Z watching, 8 are unseen (U, two V, two
+        // W, X, two Y), so the bag holds one: a move placing a Y draws it, and
+        // the mover then holds every unseen tile, whatever they kept
+        let y = movegen::Play::Place {
+            down: false,
+            lane: 7,
+            idx: 7,
+            word: [25][..].into(),
+            score: 0,
+        };
+        assert!(leaves_after(91, &y, 3.0).is_empty());
+        // a pass leaves the bag as it was, so its leaves are weighed
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        assert!(!leaves_after(91, &pass, 3.0).is_empty());
     }
 }
