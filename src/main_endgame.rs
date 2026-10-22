@@ -326,12 +326,14 @@ impl Question {
     }
 }
 
-// how each solve runs: on which arm, within which limits, and whether it prints
-// its progress
+// how each solve runs: on which arm, within which limits, whether it prints its
+// progress, and after which scoreless turns (the passes and the zeros, as the
+// game counts them)
 struct Solving {
     lean: bool,
     limits: endgame::Limits,
     quiet: bool,
+    scoreless: [u16; 2],
 }
 
 #[inline(always)]
@@ -380,6 +382,16 @@ fn run_batch<N: kwg::Node>(
                 "line {line_index}: bad player {player_str:?}: the player to move is 0 or 1"
             ));
         }
+        // the scoreless turns before the position: the line's own, else the
+        // run's
+        let mut scoreless = solving.scoreless;
+        for (count, what) in scoreless.iter_mut().zip(["passes", "zeros"]) {
+            if let Some(field) = fields.next() {
+                *count = field.parse::<u16>().map_err(|e| {
+                    error::new(format!("line {line_index}: bad {what} {field:?}: {e}"))
+                })?;
+            }
+        }
         let mut off_board = game_config.tiles_off_board(&board_tiles)?;
         for rack in [&rack0, &rack1] {
             game_config
@@ -412,7 +424,7 @@ fn run_batch<N: kwg::Node>(
             &smaller_kwg,
             &arm_tables,
         )?;
-        egs.init(&board_tiles, [&rack0, &rack1]);
+        egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
         // the progress goes to stderr, so stdout keeps one line a position
         if !solving.quiet {
             egs.report_progress(endgame_watch::ticking(move |progress, elapsed| {
@@ -459,7 +471,8 @@ struct Cli {
         value_name = "FILE",
         requires = "kwg_file",
         conflicts_with_all = ["fen", "rack"],
-        help = "solve each line of FILE (board fen, both racks, player to move, tab-separated) \
+        help = "solve each line of FILE (board fen, both racks, player to move, tab-separated, \
+                then the passes and the scoreless turns before it if not --passes and --zeros) \
                 and print its index, its value, the time it took, and the depth it reached when \
                 a limit cut it short; the progress goes to stderr"
     )]
@@ -488,6 +501,22 @@ struct Cli {
     max_memory: f64,
     #[arg(long, help = "print no progress")]
     quiet: bool,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        help = "passes in a row before the position, as the game counts them (a phony taken back \
+                is one); a line of --batch may give its own as a fifth field"
+    )]
+    passes: u16,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        help = "scoreless turns in a row before the position, the passes among them; a line of \
+                --batch may give its own as a sixth field"
+    )]
+    zeros: u16,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -525,6 +554,7 @@ fn main() -> error::Returns<()> {
             memory: endgame_watch::memory_limit(cli.max_memory)?,
         },
         quiet: cli.quiet,
+        scoreless: [cli.passes, cli.zeros],
     };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
         (Some(batch_path), Some(kwg_path), None, None) => {
@@ -1525,6 +1555,7 @@ fn solve_position<N: kwg::Node>(
     }
     if oppo_rack.len() == rack_size + 1 {
         let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
+        egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
         let result = egs.solve_peg_one_in_bag(
             0,
             &board_tiles,
@@ -1627,7 +1658,12 @@ fn solve_position<N: kwg::Node>(
             )?;
         }
     } else {
-        egs.init(&board_tiles, [&question.rack, &oppo_rack]);
+        egs.init_after_scoreless_turns(
+            &board_tiles,
+            [&question.rack, &oppo_rack],
+            solving.scoreless[0],
+            solving.scoreless[1],
+        );
         let solved = egs.evaluate(0, &solving.limits)?;
         let future_margin = solved.value;
         let total_margin =
