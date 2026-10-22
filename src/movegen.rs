@@ -6578,6 +6578,33 @@ mod tests {
         assert_eq!(plays.len(), 50);
     }
 
+    #[test]
+    #[inline]
+    fn a_generation_fits_a_small_stack() {
+        // a generation recurses a frame a tile along a lane, never deeper than
+        // the board is wide, so it runs on a thread with far less stack than a
+        // main thread has
+        let want = placements(
+            "15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15",
+            "AEST??T",
+        );
+        assert!(want.len() > 2);
+        let got = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 << 10)
+                .spawn_scoped(s, || {
+                    placements(
+                        "15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15",
+                        "AEST??T",
+                    )
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(got, want);
+    }
+
     #[inline]
     #[test]
     fn movegen_hooks_onto_a_word_on_the_board() {

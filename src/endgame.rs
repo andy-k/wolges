@@ -2618,6 +2618,52 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_solve_fits_a_small_stack() {
+        // a solve recurses a frame a ply, never a frame a move, so it runs on a
+        // thread with far less stack than a main thread has (a test's own
+        // thread has more, so this one asks for a small one)
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let positions = all_positions();
+        let solved = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 << 10)
+                .spawn_scoped(s, || {
+                    let mut egs =
+                        EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    let mut solved = 0usize;
+                    for (_, pos) in &positions {
+                        egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                        egs.solve(0).unwrap();
+                        solved += 1;
+                    }
+                    // and a deep one: full racks, as many plies as they hold
+                    let mut board = empty_board();
+                    put_word(&mut board, 7, 6, &[1, 20]);
+                    egs.init(&board, [&[1, 1, 2, 8, 20, 20, 1], &[1, 2, 1, 20, 8, 1, 20]]);
+                    egs.solve_within(
+                        0,
+                        &super::Limits {
+                            time: Some(std::time::Duration::from_secs(2)),
+                            states: None,
+                            memory: None,
+                        },
+                    )
+                    .unwrap();
+                    solved + 1
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(solved, positions.len() + 1);
+    }
+
+    #[test]
+    #[inline]
     fn a_key_made_move_by_move_is_the_key_made_afresh() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
