@@ -15,7 +15,6 @@ struct Tile {
     alias_blank_labels: Vec<bites_str::BitesStr>,
 }
 
-#[derive(Default)]
 pub struct StaticAlphabet {
     tiles: Vec<Tile>,
     widest_label_len: usize, // in codepoints for now (graphemes is too complex)

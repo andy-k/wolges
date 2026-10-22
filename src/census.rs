@@ -684,7 +684,6 @@ fn scatter_words(
     }
 }
 
-#[derive(Clone)]
 pub struct ApportionBoard<'a> {
     pub sheet: &'a [i32],
     pub leave: &'a [i32],
@@ -696,7 +695,6 @@ pub struct ApportionOut<'a> {
     pub den: &'a mut [f64],
 }
 
-#[derive(Clone)]
 pub struct ApportionMode {
     pub zeta: bool,
     pub null_leave: bool,

@@ -17,7 +17,7 @@ pub fn mixed(v: u128) -> u64 {
 
 const MAX_LAYOUT_TILES: usize = 64;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct KeyLayout {
     shift: Box<[u8]>,
     max_count: Box<[u8]>,
@@ -154,7 +154,7 @@ impl KeyLayout {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd)]
+#[derive(Clone, Copy)]
 pub struct Fitted(pub u128);
 
 impl Fitted {}
@@ -162,7 +162,6 @@ impl Fitted {}
 // no tile is this, so it ends a group of words
 pub const END: u8 = 0xff;
 
-#[derive(Clone, PartialEq)]
 pub struct WordsAt {
     pub at: u32,
     pub len: u8,

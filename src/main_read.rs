@@ -676,7 +676,6 @@ fn do_wg_check<R: CheckedWg>(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
 enum AnagramMode {
     Sub,
     Exact,

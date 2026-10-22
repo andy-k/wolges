@@ -85,7 +85,6 @@ pub fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
 
 pub struct Kwg<N: Node>(pub Box<[N]>);
 
-#[derive(Clone)]
 pub struct LetterBits {
     pub letter_bits: Box<[u64]>,
     pub accepting_bits: Box<[u64]>,

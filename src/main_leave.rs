@@ -2559,7 +2559,6 @@ fn parse_rack(
     alphabet_reader.set_word(s, v)
 }
 
-#[derive(Clone)]
 struct Cumulate {
     equity: f64,
     count: u64,
