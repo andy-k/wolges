@@ -293,6 +293,8 @@ fn do_it<N: kwg::Node + Sync>(
         final_scores.iter_mut().for_each(|s| *s = 0);
 
         timers.reset_to(15 * 1000);
+        // the last move and the board before it, for a sim to infer from
+        let mut last: Option<(Vec<u8>, movegen::Play)> = None;
 
         loop {
             timers.set_turn(game_state.turn as i8);
@@ -540,17 +542,20 @@ fn do_it<N: kwg::Node + Sync>(
             if false {
                 move_generator.reset_for_another_kwg();
             }
-            move_picker.pick_a_move(
+            move_picker.pick_a_move_after(
                 filtered_movegen,
                 &mut move_generator,
                 board_snapshot,
                 &game_state,
                 &game_state.current_player().rack,
+                last.as_ref()
+                    .map(|(board_before, play)| move_picker::LastMove { board_before, play }),
             )?;
             let plays = &mut move_generator.plays;
             let play = &plays[0].play; // assume at least there's always Pass
             writeln!(std::io::stdout(), "Playing: {}", play.fmt(board_snapshot))?;
 
+            last = Some((game_state.board_tiles.to_vec(), play.clone()));
             game_state.play(game_config, &mut rng, play)?;
 
             match game_state.check_game_ended(game_config, &mut final_scores)? {

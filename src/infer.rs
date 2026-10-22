@@ -7,6 +7,10 @@
 
 use super::{census, equity, error, fash, game_config, klv, kwg, movegen, play_scorer};
 
+// how far, in points of equity, a sim takes the opponent's last move to fall
+// short of their best when it weighs the racks that could have made it
+pub const FUZZ: f64 = 3.105;
+
 #[inline]
 pub fn bag_size(board_tiles: &[u8], game_config: &game_config::GameConfig) -> i64 {
     let on_board = board_tiles.iter().filter(|&&t| t != 0).count() as i64;

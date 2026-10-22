@@ -14,10 +14,6 @@ use wolges::{
 
 type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
 
-// how far, in points of equity, a sim takes the opponent's last move to fall
-// short of their best when it weighs the racks that could have made it
-const INFER_FUZZ: f64 = 3.105;
-
 // how many iterations sim runs when given no count
 const DEFAULT_SIM_ITERATIONS: u64 = 1000;
 
@@ -1998,7 +1994,7 @@ impl Session {
             },
             &self.state.current_player().rack,
             last,
-            INFER_FUZZ,
+            infer::FUZZ,
         )
     }
 
