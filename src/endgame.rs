@@ -2681,6 +2681,86 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_rack_of_seven_of_one_tile_or_six_and_a_blank_is_keyed_like_any_other() {
+        // a rack's key is made of a key for each count of each tile it holds,
+        // so a rack holding every copy it can of one tile is keyed as any other
+        // is: made move by move it is the key made afresh, and racks that
+        // differ in one tile key apart
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut afresh =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let seven_e = vec![5u8; 7];
+        let six_e_blank = vec![0u8, 5, 5, 5, 5, 5, 5];
+        let six_e = vec![5u8; 6];
+        let other = vec![1u8, 20];
+        let mut keys = Vec::new();
+        let mut moves = 0usize;
+        for racks in [
+            [seven_e.clone(), other.clone()],
+            [six_e_blank.clone(), other.clone()],
+            [six_e.clone(), other.clone()],
+            [other.clone(), seven_e.clone()],
+            [other.clone(), six_e_blank.clone()],
+        ] {
+            egs.init(&board, [&racks[0][..], &racks[1][..]]);
+            egs.reset_position();
+            keys.push(egs.work_buffer.key);
+            for mover in 0..2u8 {
+                egs.init(&board, [&racks[0][..], &racks[1][..]]);
+                egs.reset_position();
+                let before = egs.work_buffer.key;
+                egs.generate(0, mover, super::NO_PLAY);
+                let list = std::mem::take(&mut egs.work_buffer.lists[0]);
+                for candidate in &list {
+                    let movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        ..
+                    } = &candidate.play
+                    else {
+                        unreachable!("a candidate places tiles");
+                    };
+                    egs.place(mover, &candidate.play);
+                    let mut board_after = board.clone();
+                    let mut racks_after = racks.clone();
+                    apply_place(
+                        &gc,
+                        &mut board_after,
+                        &mut racks_after[mover as usize],
+                        *down,
+                        *lane,
+                        *idx,
+                        word,
+                    );
+                    afresh.init(&board_after, [&racks_after[0][..], &racks_after[1][..]]);
+                    afresh.reset_position();
+                    assert_eq!(egs.work_buffer.key, afresh.work_buffer.key);
+                    assert_eq!(egs.work_buffer.racks, afresh.work_buffer.racks);
+                    egs.unplace(mover, &candidate.play);
+                    assert_eq!(egs.work_buffer.key, before);
+                    moves += 1;
+                }
+            }
+        }
+        assert!(moves > 0, "no move was made");
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b, "two positions share a key");
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
     fn the_table_keeps_what_it_is_given_and_the_deeper_of_two() {
         let entry = |value: f32, depth: i8, bound: super::Bound| super::Entry {
             value,
