@@ -2054,6 +2054,7 @@ impl Session {
             &self.state.current_player().rack,
             last,
             infer::FUZZ,
+            parallelism::available(),
         )
     }
 

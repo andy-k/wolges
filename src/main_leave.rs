@@ -1078,7 +1078,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Infer(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
-            infer_one_move(game_config, kwg, klv, &a)
+            infer_one_move(game_config, kwg, klv, &a, threads)
         }
         Task::InferFit(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -6241,13 +6241,14 @@ fn parse_infer_play<N: kwg::Node, L: kwg::Node>(
 
 // what one move says of the rack that made it: every rack the pool could have
 // dealt the mover, weighed by its chance to be dealt and by how far the move
-// falls short of the rack's best (exp(-gap / fuzz))
+// falls short of the rack's best (exp(-gap / fuzz)), on this many threads
 #[inline]
 fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
     params: &Infer,
+    threads: usize,
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
@@ -6342,6 +6343,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         &pool,
         tiles,
         move_value,
+        threads,
         &mut |rank, ln_prior, gap, _| racks.push((rank, ln_prior, gap)),
     );
     if racks.is_empty() {
@@ -6709,6 +6711,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     None => MoveTiles::Placed(&placed),
                                 },
                                 move_value,
+                                1,
                                 &mut |rank, ln_prior, gap, _| {
                                     let prior = ln_prior.exp();
                                     if rank == true_rank {
@@ -8817,6 +8820,7 @@ mod tests {
             &[2, 1, 1],
             tiles,
             move_value,
+            1,
             &mut |rank, ln_prior, gap, _| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
         );
         got.sort_by(|a, b| a.0.cmp(&b.0));
