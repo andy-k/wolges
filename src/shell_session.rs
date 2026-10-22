@@ -67,7 +67,8 @@ enum ChallengeRule {
 }
 
 impl Turn {
-    // what the turn did to the game: a phony taken back is a pass
+    // what the turn left on the board, as a play: a phony taken back left
+    // nothing, like a pass
     fn played(&self) -> std::borrow::Cow<'_, movegen::Play> {
         if self.withdrawn() {
             std::borrow::Cow::Owned(movegen::Play::Exchange {
@@ -3285,8 +3286,8 @@ struct Replay {
 }
 
 impl Replay {
-    // play a turn's move (a pass, if it was taken back), then give its bonus
-    // and its misscore to its mover
+    // play a turn's move, or count it as challenged off if it was taken back;
+    // then give its bonus and its misscore to its mover
     fn play_turn(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -3294,7 +3295,11 @@ impl Replay {
         turn: &Turn,
     ) -> error::Returns<()> {
         let state = &mut self.state;
-        state.play(game_config, rng, &turn.played())?;
+        if turn.withdrawn() {
+            state.challenged_off(game_config);
+        } else {
+            state.play(game_config, rng, &turn.play)?;
+        }
         let mover = state.turn as usize;
         // a misscore goes with the move, and is taken back with it
         let adjust = if turn.withdrawn() { 0 } else { turn.adjust() };
@@ -4231,6 +4236,48 @@ mod tests {
         second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert_eq!(second.final_scores, first.final_scores);
         assert_eq!(snapshot(&second), snapshot(&first));
+    }
+
+    // a session under rules that end the game on four passes and never on
+    // scoreless turns, a move challenged off being a pass or not as given
+    fn session_ending_on_passes(challenges_are_passes: bool) -> Session {
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let rules = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            num_passes_to_end: 4,
+            challenges_are_passes,
+            num_zeros_to_end: 0,
+            ..english
+        });
+        let mut session = Session::new(true, None, Box::leak(Box::new(rules))).unwrap();
+        session.use_kwg("tiny", Box::leak(Box::new(tiny_lexicon())));
+        session
+    }
+
+    #[test]
+    #[inline]
+    fn a_phony_taken_back_is_a_pass_only_where_the_rules_say_so() {
+        // two passes, a phony taken back, then passes until the game ends on
+        // four: the phony is the third where a challenge is a pass, and else it
+        // ends the run, which starts again after it
+        for (challenges_are_passes, passes_after) in [(true, 1), (false, 4)] {
+            let mut session = session_ending_on_passes(challenges_are_passes);
+            for line in [
+                "new 7",
+                "play pass",
+                "play pass",
+                "rack AETAETE",
+                "play 8G AT",
+                "withdraw",
+            ] {
+                run(&mut session, line).unwrap();
+            }
+            for _ in 1..passes_after {
+                run(&mut session, "play pass").unwrap();
+                assert!(session.final_scores.is_none(), "{challenges_are_passes}");
+            }
+            run(&mut session, "play pass").unwrap();
+            assert!(session.final_scores.is_some(), "{challenges_are_passes}");
+        }
     }
 
     #[test]
