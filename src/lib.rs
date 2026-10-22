@@ -35,6 +35,7 @@ pub mod play_scorer;
 pub mod prob;
 pub mod simmer;
 pub mod stats;
+pub mod text;
 pub mod win_pct;
 
 // the commit this was built from and the target, as build.rs stamps them

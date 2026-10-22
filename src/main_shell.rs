@@ -1,11 +1,10 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::error;
+use wolges::{error, text};
 mod endgame_watch;
 mod rlhelper;
 mod shell_session;
 
-use std::io::BufRead;
 use std::io::Write;
 
 // --help says what the shell takes, --version which commit it was built from
@@ -64,14 +63,10 @@ fn main() -> error::Returns<()> {
                                 if strings.len() > 1 {
                                     if let Err(err) = (|| -> error::Returns<()> {
                                         let v = cmd_stack.len();
-                                        for (line_num, line) in std::io::BufReader::new(
-                                            std::fs::File::open(&strings[1])?,
-                                        )
-                                        .lines()
-                                        .enumerate()
-                                        {
+                                        let file = std::fs::read_to_string(&strings[1])?;
+                                        for (line_num, line) in text::lines(&file).enumerate() {
                                             cmd_stack.push((
-                                                line?.to_string(),
+                                                line.to_string(),
                                                 Some((strings[1].clone(), line_num + 1)),
                                             ));
                                         }

@@ -14,7 +14,7 @@ use wolges::simmer::CopyState;
 use wolges::{
     alphabet, anagrams, bites, board_layout, build, census, display, equity, error, fash,
     game_config, game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats,
-    win_pct,
+    text, win_pct,
 };
 
 mod game_args;
@@ -6958,7 +6958,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
 // lone "\r", and an empty one holds none
 #[inline]
 fn board_lines(text: &str) -> impl Iterator<Item = &str> {
-    text.split(['\n', '\r']).filter(|line| !line.is_empty())
+    text::lines(text).filter(|line| !line.is_empty())
 }
 
 #[inline]

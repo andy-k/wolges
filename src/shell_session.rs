@@ -9,7 +9,7 @@ use rand::{Rng, SeedableRng};
 use std::io::Write;
 use wolges::{
     alphabet, anagrams, display, endgame, equity, error, game_config, game_state, infer, klv, kwg,
-    move_filter, move_picker, movegen, notation, parallelism, play_scorer,
+    move_filter, move_picker, movegen, notation, parallelism, play_scorer, text,
 };
 
 type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
@@ -2929,7 +2929,7 @@ struct GcgMove {
 fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
     let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     let latin1 = bytes.iter().map(|&b| char::from(b)).collect::<String>();
-    let declared = latin1.lines().find_map(|line| {
+    let declared = text::lines(&latin1).find_map(|line| {
         let mut words = line.split_whitespace();
         (words.next() == Some("#character-encoding"))
             .then(|| words.next().unwrap_or("").to_ascii_uppercase())
@@ -2954,7 +2954,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut players = Vec::<String>::new();
     let mut nicknames = [None, None];
     let mut note_open = false;
-    for (line_number, line) in (1..).zip(text.lines()) {
+    for (line_number, line) in (1..).zip(text::lines(text)) {
         let fail = |what: &str| format!("line {line_number}: {what}: {line:?}");
         if line.starts_with('#') {
             note_open = false;
@@ -4313,6 +4313,28 @@ mod tests {
         let last = moves.last().unwrap();
         assert!(matches!(last.kind, GcgKind::Rack));
         assert_eq!(last.seat, 1);
+    }
+
+    #[test]
+    #[inline]
+    fn a_gcg_reads_the_same_whatever_its_line_endings() {
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        run(&mut first, "note the first move's note").unwrap();
+        let text = first.gcg_text().unwrap();
+        for ending in ["\r\n", "\r"] {
+            let mut second = session();
+            second
+                .load_moves(&gcg_moves(&text.replace('\n', ending)).unwrap())
+                .unwrap();
+            assert_eq!(second.gcg_text().unwrap(), text, "{ending:?}");
+            assert_eq!(snapshot(&second), snapshot(&first), "{ending:?}");
+        }
+        // the encoding declared on a line so ended counts too
+        let bytes = text.replace('\n', "\r").into_bytes();
+        assert_eq!(gcg_decode(&bytes).unwrap(), text.replace('\n', "\r"));
     }
 
     #[test]
