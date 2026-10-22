@@ -230,20 +230,21 @@ pub struct InferSheet<'a> {
 
 // every full rack the pool can deal that could have made the move, to f(rank of
 // the rack, ln of its chance to be dealt, the equity it gives up by making the
-// move). The gap is the rack's best equity on the board minus the move's: the
-// move's value plus what it keeps, for a placed move; the best that exchanging
-// so many tiles keeps, for an exchange. The best is over the moves that are not
-// a pass, and the move itself: a hasty mover never passes while it can move, a
+// move, rank of the leave it keeps). The gap is the rack's best equity on the
+// board minus the move's: the move's value plus what it keeps, for a placed
+// move; the best that exchanging so many tiles keeps, for an exchange (the
+// first such leave in the lattice's order on a tie; nothing, for an exchange of
+// more tiles than a rack holds). The best is over the moves that are not a
+// pass, and the move itself: a hasty mover never passes while it can move, a
 // simmer may, so a pass gives up the rack's best move over keeping it all, and
-// nothing when the rack had no move. xsheet is scratch the size of the lattice.
+// nothing when the rack had no move.
 #[inline]
 pub fn weigh_racks(
     is: &InferSheet<'_>,
     pool: &[u8],
     tiles: MoveTiles<'_>,
     move_value: i32,
-    xsheet: &mut Vec<i32>,
-    f: &mut impl FnMut(u32, f64, i32),
+    f: &mut impl FnMut(u32, f64, i32, u32),
 ) {
     let lat = is.lat;
     let num_letters = lat.num_letters();
@@ -264,16 +265,7 @@ pub fn weigh_racks(
                 rack_size - placed.iter().map(|&c| c as usize).sum::<usize>(),
             )
         }
-        MoveTiles::Exchanged(n) => {
-            // exchanging n tiles scores 0 and keeps the rest: a sheet that is 0
-            // for every n tiles and unplayable for any other count
-            xsheet.clear();
-            xsheet.resize(lat.len(), census::UNPLAYABLE);
-            xsheet[lat.size_start(n)..lat.size_start(n + 1)]
-                .iter_mut()
-                .for_each(|v| *v = 0);
-            (&none_placed[..], rack_size)
-        }
+        MoveTiles::Exchanged(_) => (&none_placed[..], rack_size),
     };
     let passed = matches!(tiles, MoveTiles::Placed(placed) if placed.iter().all(|&c| c == 0));
     let mut cap = vec![0usize; num_letters + 1];
@@ -289,9 +281,15 @@ pub fn weigh_racks(
         if passed {
             best = best.max(is.leave[rank as usize]);
         }
-        let value = match tiles {
-            MoveTiles::Placed(_) => move_value + is.leave[lat.rank(drawn) as usize],
-            MoveTiles::Exchanged(_) => census::best_equity_of(lat, xsheet, is.leave, &rack),
+        // exchanging n tiles scores 0 and keeps the best leave of the rest
+        let (value, kept) = match tiles {
+            MoveTiles::Placed(_) => {
+                let kept = lat.rank(drawn);
+                (move_value + is.leave[kept as usize], kept)
+            }
+            MoveTiles::Exchanged(n) => {
+                census::best_keep_of(lat, is.leave, &rack, rack_size.saturating_sub(n))
+            }
         };
         let ln_prior = rack
             .iter()
@@ -299,7 +297,7 @@ pub fn weigh_racks(
             .map(|(&r, &u)| is.ln_binom.ln_binom(u as usize, r as usize))
             .sum::<f64>()
             - ln_deals;
-        f(rank, ln_prior, best - value);
+        f(rank, ln_prior, best - value, kept);
     });
 }
 
@@ -432,7 +430,6 @@ pub struct InferTables {
     lat: census::MultisetLattice,
     leave: Vec<i32>,
     sheet: Vec<i32>,
-    xsheet: Vec<i32>,
     movegen_rack: Vec<u8>,
     blank_deltas: Vec<(u8, i32)>,
 }
@@ -452,30 +449,10 @@ impl InferTables {
             lat,
             leave,
             sheet: Vec::new(),
-            xsheet: Vec::new(),
             movegen_rack: Vec::new(),
             blank_deltas: Vec::new(),
         })
     }
-}
-
-// what an exchange keeps: of the multisets of keep tiles that rack (a tally)
-// holds, the one the leave table values most (the first found, on a tie)
-#[inline]
-fn best_keep(lat: &census::MultisetLattice, leave: &[i32], rack: &[u8], keep: usize) -> u32 {
-    let mut cap = vec![0usize; rack.len() + 1];
-    for t in (0..rack.len()).rev() {
-        cap[t] = cap[t + 1] + rack[t] as usize;
-    }
-    let mut cur = vec![0u8; rack.len()];
-    let mut best = (i32::MIN, !0u32);
-    each_tally_of_size(rack, &cap, 0, keep, &mut cur, &mut |kept| {
-        let rank = lat.rank(kept);
-        if leave[rank as usize] > best.0 {
-            best = (leave[rank as usize], rank);
-        }
-    });
-    best.1
 }
 
 // the leaves the mover could have kept, inferred from their move, each with its
@@ -542,6 +519,7 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
         None => MoveTiles::Placed(&placed),
     };
     let mut racks = Vec::new();
+    let mut kepts = Vec::new();
     weigh_racks(
         &InferSheet {
             lat: &tables.lat,
@@ -552,34 +530,25 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
         &pool,
         tiles,
         move_value,
-        &mut tables.xsheet,
-        &mut |rank, ln_prior, gap| racks.push((rank, ln_prior, gap)),
+        &mut |rank, ln_prior, gap, kept| {
+            racks.push((rank, ln_prior, gap));
+            kepts.push(kept);
+        },
     );
 
     // sum the weights by the leave each rack kept
     let mut by_leave = fash::MyHashMap::<u32, f64>::default();
-    let mut rack = vec![0u8; num_letters];
-    let mut kept = vec![0u8; num_letters];
-    for (weight, _, rank, _) in weigh_by_fuzz(&racks, fuzz) {
+    for ((weight, _, _, _), &leave_rank) in weigh_by_fuzz(&racks, fuzz).into_iter().zip(&kepts) {
         // at fuzz 0, every rack but the closest to its best weighs nothing
         if weight <= 0.0 {
             continue;
         }
-        tables.lat.unrank_into(rank as usize, &mut rack);
-        let leave_rank = match exchanged {
-            Some(n) => best_keep(&tables.lat, &tables.leave, &rack, rack_size - n),
-            None => {
-                for ((k, &r), &p) in kept.iter_mut().zip(&rack).zip(&placed) {
-                    *k = r - p;
-                }
-                tables.lat.rank(&kept)
-            }
-        };
         *by_leave.entry(leave_rank).or_insert(0.0) += weight;
     }
     // sorted into the lattice's order (the map has none)
     let mut ranked = by_leave.into_iter().collect::<Vec<_>>();
     ranked.sort_unstable_by_key(|&(rank, _)| rank);
+    let mut kept = vec![0u8; num_letters];
     Ok(ranked
         .into_iter()
         .map(|(rank, weight)| {

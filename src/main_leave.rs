@@ -6337,15 +6337,13 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         leave: &leave,
         ln_binom: &ln_binom,
     };
-    let mut xsheet = Vec::new();
     let mut racks = Vec::new();
     weigh_racks(
         &is,
         &pool,
         tiles,
         move_value,
-        &mut xsheet,
-        &mut |rank, ln_prior, gap| racks.push((rank, ln_prior, gap)),
+        &mut |rank, ln_prior, gap, _| racks.push((rank, ln_prior, gap)),
     );
     if racks.is_empty() {
         wolges::return_error!("no rack the pool can deal makes this move".to_string());
@@ -6594,7 +6592,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 );
                 let mut game_state = game_state::GameState::new(game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
-                let (mut sheet, mut xsheet) = (Vec::new(), Vec::new());
+                let mut sheet = Vec::new();
                 let (mut movegen_rack, mut blank_deltas) = (Vec::new(), Vec::new());
                 let mut placed = vec![0u8; num_letters];
                 let mut true_tally = vec![0u8; num_letters];
@@ -6712,8 +6710,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     None => MoveTiles::Placed(&placed),
                                 },
                                 move_value,
-                                &mut xsheet,
-                                &mut |rank, ln_prior, gap| {
+                                &mut |rank, ln_prior, gap, _| {
                                     let prior = ln_prior.exp();
                                     if rank == true_rank {
                                         seen = Some((prior, gap));
@@ -8821,8 +8818,7 @@ mod tests {
             &[2, 1, 1],
             tiles,
             move_value,
-            &mut Vec::new(),
-            &mut |rank, ln_prior, gap| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
+            &mut |rank, ln_prior, gap, _| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
         );
         got.sort_by(|a, b| a.0.cmp(&b.0));
         got
