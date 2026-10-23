@@ -1688,6 +1688,10 @@ impl<
         watcher_rack: &[u8],
         last: LastMove<'_>,
     ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+        #[cfg(not(target_family = "wasm"))]
+        let threads = self.sim_threads;
+        #[cfg(target_family = "wasm")]
+        let threads = 1;
         let (tables, infer_generator) = match &mut self.infer {
             Some(infer) => infer,
             infer @ None => infer.insert((
@@ -1709,6 +1713,7 @@ impl<
             watcher_rack,
             last.play,
             infer::FUZZ,
+            threads,
         )
     }
 
@@ -2548,6 +2553,7 @@ mod tests {
             &rack,
             &opening,
             infer::FUZZ,
+            1,
         )
         .unwrap();
         assert_eq!(leaves, shell_leaves);

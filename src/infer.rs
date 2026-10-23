@@ -228,6 +228,59 @@ pub struct InferSheet<'a> {
     pub ln_binom: &'a LnBinom,
 }
 
+// how many tallies of m tiles avail holds
+#[inline]
+pub fn count_tallies_of_size(avail: &[u8], m: usize) -> usize {
+    // ways[k] is the tallies of k tiles from the letters read so far; a letter
+    // adds its tallies with c of it, c from 1, to those without
+    let mut ways = vec![0usize; m + 1];
+    ways[0] = 1;
+    for &a in avail {
+        for k in (1..=m).rev() {
+            ways[k] += (1..=(a as usize).min(k))
+                .map(|c| ways[k - c])
+                .sum::<usize>();
+        }
+    }
+    ways[m]
+}
+
+// every tally of m tiles that avail holds, by the counts of its first k letters:
+// f(those counts, the tiles the letters after draw), each prefix once, in the
+// order each_tally_of_size reaches them; the tallies of a prefix are the ones
+// each_tally_of_size walks from letter k with cur holding the prefix
+#[inline]
+pub fn each_prefix_of_size(
+    avail: &[u8],
+    cap: &[usize],
+    t: usize,
+    k: usize,
+    left: usize,
+    cur: &mut [u8],
+    f: &mut impl FnMut(&[u8], usize),
+) {
+    if cap[t] < left {
+        return;
+    }
+    if t == k {
+        f(&cur[..k], left);
+        return;
+    }
+    for c in 0..=(avail[t] as usize).min(left) {
+        cur[t] = c as u8;
+        each_prefix_of_size(avail, cap, t + 1, k, left - c, cur, f);
+    }
+    cur[t] = 0;
+}
+
+// weigh_racks weighs the racks on the threads it is given once they number this
+// many; fewer are weighed before as many threads could start
+pub const WEIGH_ACROSS_THREADS_FROM: usize = 1024;
+
+// weigh_racks cuts the racks into at least this many chunks a thread, so that
+// the threads end close together though the chunks are uneven
+const CHUNKS_A_THREAD: usize = 8;
+
 // every full rack the pool can deal that could have made the move, to f(rank of
 // the rack, ln of its chance to be dealt, the equity it gives up by making the
 // move, rank of the leave it keeps). The gap is the rack's best equity on the
@@ -237,23 +290,29 @@ pub struct InferSheet<'a> {
 // more tiles than a rack holds). The best is over the moves that are not a
 // pass, and the move itself: a hasty mover never passes while it can move, a
 // simmer may, so a pass gives up the rack's best move over keeping it all, and
-// nothing when the rack had no move.
+// nothing when the rack had no move. Weighed on this many threads when they are
+// many, in chunks, and handed to f in the one thread's order either way.
 #[inline]
 pub fn weigh_racks(
     is: &InferSheet<'_>,
     pool: &[u8],
     tiles: MoveTiles<'_>,
     move_value: i32,
+    threads: usize,
     f: &mut impl FnMut(u32, f64, i32, u32),
 ) {
+    // a wasm build has no threads
+    let threads = if cfg!(target_family = "wasm") {
+        1
+    } else {
+        threads
+    };
     let lat = is.lat;
     let num_letters = lat.num_letters();
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let ln_deals = is.ln_binom.ln_binom(pool_size, rack_size);
     let mut avail = pool.to_vec();
-    let mut rack = vec![0u8; num_letters];
-    let mut cur = vec![0u8; num_letters];
     let none_placed = vec![0u8; num_letters];
     let (placed, left) = match tiles {
         MoveTiles::Placed(placed) => {
@@ -272,12 +331,13 @@ pub fn weigh_racks(
     for t in (0..num_letters).rev() {
         cap[t] = cap[t + 1] + avail[t] as usize;
     }
-    each_tally_of_size(&avail, &cap, 0, left, &mut cur, &mut |drawn| {
+    // one rack, from the tiles it drew (rack is its scratch), to what f takes
+    let weigh = |drawn: &[u8], rack: &mut [u8]| -> (u32, f64, i32, u32) {
         for (r, (&d, &p)) in rack.iter_mut().zip(drawn.iter().zip(placed)) {
             *r = d + p;
         }
-        let rank = lat.rank(&rack);
-        let mut best = census::best_equity_of(lat, is.sheet, is.leave, &rack);
+        let rank = lat.rank(rack);
+        let mut best = census::best_equity_of(lat, is.sheet, is.leave, rack);
         if passed {
             best = best.max(is.leave[rank as usize]);
         }
@@ -288,7 +348,7 @@ pub fn weigh_racks(
                 (move_value + is.leave[kept as usize], kept)
             }
             MoveTiles::Exchanged(n) => {
-                census::best_keep_of(lat, is.leave, &rack, rack_size.saturating_sub(n))
+                census::best_keep_of(lat, is.leave, rack, rack_size.saturating_sub(n))
             }
         };
         let ln_prior = rack
@@ -297,8 +357,67 @@ pub fn weigh_racks(
             .map(|(&r, &u)| is.ln_binom.ln_binom(u as usize, r as usize))
             .sum::<f64>()
             - ln_deals;
-        f(rank, ln_prior, best - value, kept);
+        (rank, ln_prior, best - value, kept)
+    };
+    if threads <= 1 || count_tallies_of_size(&avail, left) < WEIGH_ACROSS_THREADS_FROM {
+        let mut cur = vec![0u8; num_letters];
+        let mut rack = vec![0u8; num_letters];
+        each_tally_of_size(&avail, &cap, 0, left, &mut cur, &mut |drawn| {
+            let (rank, ln_prior, gap, kept) = weigh(drawn, &mut rack);
+            f(rank, ln_prior, gap, kept);
+        });
+        return;
+    }
+    // the racks in chunks by the counts of their first k letters, k the least
+    // that gives chunks enough (or every letter); each thread takes the next
+    // chunk and weighs its racks in order, and the chunks are handed on in
+    // theirs, which is the one thread's
+    let mut k = 1;
+    let mut prefixes: Vec<(Vec<u8>, usize)> = Vec::new();
+    loop {
+        prefixes.clear();
+        let mut cur = vec![0u8; num_letters];
+        each_prefix_of_size(&avail, &cap, 0, k, left, &mut cur, &mut |prefix, left| {
+            prefixes.push((prefix.to_vec(), left));
+        });
+        if prefixes.len() >= threads * CHUNKS_A_THREAD || k >= num_letters {
+            break;
+        }
+        k += 1;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut chunks = std::thread::scope(|s| {
+        let handles = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut cur = vec![0u8; num_letters];
+                    let mut rack = vec![0u8; num_letters];
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((prefix, left)) = prefixes.get(i) else {
+                            break;
+                        };
+                        cur[..k].copy_from_slice(prefix);
+                        let mut chunk = Vec::new();
+                        each_tally_of_size(&avail, &cap, k, *left, &mut cur, &mut |drawn| {
+                            chunk.push(weigh(drawn, &mut rack));
+                        });
+                        mine.push((i, chunk));
+                    }
+                    mine
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
     });
+    chunks.sort_unstable_by_key(|&(i, _)| i);
+    for (rank, ln_prior, gap, kept) in chunks.into_iter().flat_map(|(_, chunk)| chunk) {
+        f(rank, ln_prior, gap, kept);
+    }
 }
 
 // the census sheet for the pool on this board: every multiset of the pool, the
@@ -463,7 +582,7 @@ impl InferTables {
 // that size the table values most. Empty when there is nothing to weigh: the
 // bag is empty before the move, or its own draw empties it (the mover then
 // holds every unseen tile, whatever they kept), or no rack from the pool could
-// have made the move.
+// have made the move. The racks are weighed on this many threads.
 #[inline]
 pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     tables: &mut InferTables,
@@ -472,6 +591,7 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     watcher_rack: &[u8],
     play: &movegen::Play,
     fuzz: f64,
+    threads: usize,
 ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
     let game_config = board_snapshot.game_config;
     let board_tiles = board_snapshot.board_tiles;
@@ -530,6 +650,7 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
         &pool,
         tiles,
         move_value,
+        threads,
         &mut |rank, ln_prior, gap, kept| {
             racks.push((rank, ln_prior, gap));
             kepts.push(kept);
@@ -633,6 +754,7 @@ mod tests {
             &watcher_rack,
             play,
             fuzz,
+            2,
         )
         .unwrap()
     }
@@ -705,5 +827,107 @@ mod tests {
             tiles: [][..].into(),
         };
         assert!(!leaves_after(91, &pass, 3.0).is_empty());
+    }
+
+    #[test]
+    #[inline]
+    fn each_prefix_of_size_cuts_the_tallies_where_it_is_told() {
+        // the tallies of m tiles from a pool, walked prefix by prefix from any
+        // letter k, are each_tally_of_size's in its order; k 0 is one prefix
+        // (nothing yet, m to draw), k past the last letter is every tally with
+        // nothing left to draw; and count_tallies_of_size counts them
+        let avail = [3u8, 2, 2, 1];
+        let mut cap = vec![0usize; avail.len() + 1];
+        for t in (0..avail.len()).rev() {
+            cap[t] = cap[t + 1] + avail[t] as usize;
+        }
+        for m in 0..=8 {
+            let mut whole = Vec::new();
+            let mut cur = vec![0u8; avail.len()];
+            each_tally_of_size(&avail, &cap, 0, m, &mut cur, &mut |tally| {
+                whole.push(tally.to_vec());
+            });
+            assert_eq!(whole.len(), count_tallies_of_size(&avail, m), "{m}");
+            for k in 0..=avail.len() {
+                cur.iter_mut().for_each(|c| *c = 0);
+                let mut prefixes = Vec::new();
+                each_prefix_of_size(&avail, &cap, 0, k, m, &mut cur, &mut |prefix, left| {
+                    prefixes.push((prefix.to_vec(), left));
+                });
+                let mut by_prefix = Vec::new();
+                for (prefix, left) in &prefixes {
+                    cur[..k].copy_from_slice(prefix);
+                    each_tally_of_size(&avail, &cap, k, *left, &mut cur, &mut |tally| {
+                        by_prefix.push(tally.to_vec());
+                    });
+                }
+                assert_eq!(by_prefix, whole, "{m} tiles from letter {k}");
+                if k == 0 {
+                    assert_eq!(prefixes, vec![(Vec::new(), m)]);
+                } else if k == avail.len() {
+                    assert_eq!(prefixes.len(), whole.len());
+                    assert!(prefixes.iter().all(|(_, left)| *left == 0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn the_racks_weighed_on_threads_are_the_one_threads_in_its_order() {
+        // a pool dealing more racks than WEIGH_ACROSS_THREADS_FROM: on 1, 3,
+        // and 7 threads the same racks in the same order, bit for bit, for a
+        // placed move, a pass, and an exchange
+        let lat = census::MultisetLattice::new(9, 7).unwrap();
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for (idx, (s, l)) in sheet.iter_mut().zip(leave.iter_mut()).enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            *s = h.rem_euclid(30_000) - 10_000;
+            *l = h.wrapping_mul(2246822519u32 as i32).rem_euclid(8_000) - 4_000;
+        }
+        let pool = [9u8, 8, 8, 7, 7, 7, 6, 6, 5];
+        let ln_binom = LnBinom::new(pool.iter().map(|&c| c as usize).sum());
+        let is = InferSheet {
+            lat: &lat,
+            sheet: &sheet,
+            leave: &leave,
+            ln_binom: &ln_binom,
+        };
+        let placed = [0u8, 1, 0, 0, 0, 0, 1, 0, 0];
+        let none = [0u8; 9];
+        let tiles = |which: usize| match which {
+            0 => MoveTiles::Placed(&placed[..]),
+            1 => MoveTiles::Placed(&none[..]),
+            _ => MoveTiles::Exchanged(3),
+        };
+        for (which, value, left) in [(0, 1_234, 5), (1, 0, 7), (2, 0, 7)] {
+            let mut avail = pool;
+            if which == 0 {
+                for (a, &p) in avail.iter_mut().zip(&placed) {
+                    *a -= p;
+                }
+            }
+            let count = count_tallies_of_size(&avail, left);
+            assert!(count >= WEIGH_ACROSS_THREADS_FROM, "{which}: {count}");
+            let weighed_on = |threads: usize| {
+                let mut got = Vec::new();
+                weigh_racks(
+                    &is,
+                    &pool,
+                    tiles(which),
+                    value,
+                    threads,
+                    &mut |rank, ln_prior, gap, kept| {
+                        got.push((rank, ln_prior.to_bits(), gap, kept));
+                    },
+                );
+                got
+            };
+            let one = weighed_on(1);
+            assert_eq!(one.len(), count, "{which}");
+            assert_eq!(weighed_on(3), one, "{which} on 3 threads");
+            assert_eq!(weighed_on(7), one, "{which} on 7 threads");
+        }
     }
 }
