@@ -4751,6 +4751,23 @@ impl KurniaMoveGenerator {
         working_buffer.multi_leaves = multi_leaves;
     }
 
+    // as gen_moves_unfiltered, the place moves on the rows and columns in the
+    // masks only (bit i, row or column i), the exchanges and a forced pass as
+    // ever: the moves a change to the board can touch, when the rest are known
+    #[inline(always)]
+    pub fn gen_moves_unfiltered_lanes<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        rows: u128,
+        cols: u128,
+    ) {
+        self.working_buffer.lane_rows = rows;
+        self.working_buffer.lane_cols = cols;
+        self.gen_moves_unfiltered(params);
+        self.working_buffer.lane_rows = !0;
+        self.working_buffer.lane_cols = !0;
+    }
+
     #[inline(always)]
     pub fn gen_moves_unfiltered<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,

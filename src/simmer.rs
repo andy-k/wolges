@@ -1,6 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{anagrams, equity, error, game_config, game_state, klv, kwg, movegen, win_pct};
+use super::{
+    anagrams, equity, error, game_config, game_state, infer, klv, kwg, movegen, win_pct, zone,
+};
 use rand::prelude::*;
 
 // scores and leave values are millipoints; the sigmoid and its weightage are in
@@ -91,6 +93,11 @@ pub struct Simmer<R = DefaultRng> {
     kept_leaves: Vec<Vec<u8>>,
     kept_weight_sums: Vec<f64>, // cumulative, so a weighted draw is a binary search
 
+    lane_bests: Vec<(movegen::ValuedMove, bool, i8)>, // the opponent's replies on the start board, best first, each with its lane
+    lane_rows_taken: u128,                            // the lanes those replies lie on
+    lane_cols_taken: u128,
+    lanes_exhausted: bool, // whether the lanes left hold no play
+
     rng: R,
 }
 
@@ -124,6 +131,11 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
 
             kept_leaves: Vec::new(),
             kept_weight_sums: Vec::new(),
+
+            lane_bests: Vec::new(),
+            lane_rows_taken: 0,
+            lane_cols_taken: 0,
+            lanes_exhausted: false,
 
             rng,
         }
@@ -215,6 +227,11 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
 
     #[inline(always)]
     pub fn prepare_iteration(&mut self) {
+        // the opponent's rack is drawn anew, so its replies are found anew
+        self.lane_bests.clear();
+        self.lane_rows_taken = 0;
+        self.lane_cols_taken = 0;
+        self.lanes_exhausted = false;
         let initial_turn = self.initial_game_state.turn as usize;
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
@@ -285,8 +302,12 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         let mut ply = 0;
         while ply <= self.num_sim_plies || (self.game_state.bag.is_empty() && ply <= num_plies_cap)
         {
-            next_play.clone_from(if ply == 0 {
-                candidate_play
+            if ply == 0 {
+                next_play.clone_from(candidate_play);
+            } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
+                next_play = self
+                    .reply_at_ply_one(game_config, kwg, arm_tables, klv, candidate_play)
+                    .play;
             } else {
                 self.move_generator
                     .gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -307,8 +328,8 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
                     });
-                &self.move_generator.plays[0].play
-            });
+                next_play.clone_from(&self.move_generator.plays[0].play);
+            }
             set_rack_tally_from_leave(
                 &mut self.rack_tally,
                 &self.game_state.current_player().rack,
@@ -350,6 +371,103 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             }
         }
         Ok(false)
+    }
+
+    // the reply at ply 1, the opponent's move on the board after the candidate,
+    // while the bag holds tiles. The candidate changes only the lanes its zone
+    // touches: on every other lane the opponent's plays are those on the start
+    // board, found once an iteration lane by lane, best first, as far as a
+    // candidate needs them (exchanges apart, a forced pass ending them); the
+    // lanes the zone touches are generated on the board as it is, with the
+    // exchanges, and a forced pass when nothing else. The better of the two by
+    // equity, then by the play's own order, is what a whole generation keeps,
+    // since of equal equities it keeps the smaller play whichever it finds
+    // first; a forced pass yields to any play.
+    #[inline]
+    fn reply_at_ply_one<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        candidate_play: &movegen::Play,
+    ) -> movegen::ValuedMove {
+        let dim = game_config.board_layout().dim();
+        let (rows, cols) = zone::zone_lanes(
+            dim,
+            &zone::footprint(dim, &self.initial_game_state.board_tiles, candidate_play).zone,
+        );
+        let on = |down: bool, lane: i8| ((if down { cols } else { rows }) >> lane) & 1 != 0;
+        let mut off = self
+            .lane_bests
+            .iter()
+            .position(|&(_, down, lane)| !on(down, lane));
+        while off.is_none() && !self.lanes_exhausted {
+            self.move_generator.gen_moves_unfiltered_lanes(
+                &movegen::GenMovesParams {
+                    board_snapshot: &movegen::BoardSnapshot {
+                        board_tiles: &self.initial_game_state.board_tiles,
+                        game_config,
+                        kwg,
+                        anagrams: arm_tables.anagrams(),
+                        rack_lengths: arm_tables.rack_lengths(),
+                        klv,
+                    },
+                    rack: &self.game_state.players[self.game_state.turn as usize].rack,
+                    max_gen: 1,
+                    num_exchanges_by_this_player: i16::MAX,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                },
+                !self.lane_rows_taken,
+                !self.lane_cols_taken,
+            );
+            match self.move_generator.plays[0].play {
+                movegen::Play::Place { down, lane, .. } => {
+                    if down {
+                        self.lane_cols_taken |= 1 << lane;
+                    } else {
+                        self.lane_rows_taken |= 1 << lane;
+                    }
+                    self.lane_bests
+                        .push((self.move_generator.plays[0].clone(), down, lane));
+                    if !on(down, lane) {
+                        off = Some(self.lane_bests.len() - 1);
+                    }
+                }
+                movegen::Play::Exchange { .. } => self.lanes_exhausted = true,
+            }
+        }
+        self.move_generator.gen_moves_unfiltered_lanes(
+            &movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &self.game_state.board_tiles,
+                    game_config,
+                    kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv,
+                },
+                rack: &self.game_state.players[self.game_state.turn as usize].rack,
+                max_gen: 1,
+                num_exchanges_by_this_player: self.game_state.players
+                    [self.game_state.turn as usize]
+                    .num_exchanges,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            },
+            rows,
+            cols,
+        );
+        let masked = &self.move_generator.plays[0];
+        let forced_pass =
+            matches!(masked.play, movegen::Play::Exchange { ref tiles } if tiles.is_empty());
+        match off {
+            Some(i) if forced_pass || self.lane_bests[i].0 < *masked => {
+                self.lane_bests[i].0.clone()
+            }
+            _ => masked.clone(),
+        }
     }
 
     #[inline(always)]
@@ -820,6 +938,170 @@ mod tests {
         // a new prepare forgets them
         simmer.prepare(&game_config, &game_state, 4, false, &[]);
         assert!(simmer.kept_weight_sums.is_empty());
+    }
+
+    // every word of two or three tiles over the letters given
+    #[inline]
+    fn kwg_of(letters: &[u8]) -> kwg::Kwg<kwg::Node22> {
+        let mut words = Vec::new();
+        for &a in letters {
+            for &b in letters {
+                words.push([a, b][..].into());
+                for &c in letters {
+                    words.push([a, b, c][..].into());
+                }
+            }
+        }
+        words.sort_unstable();
+        let bytes = crate::build::build(
+            crate::build::BuildContent::Gaddawg,
+            crate::build::BuildLayout::Wolges,
+            crate::build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
+    }
+
+    // the move a whole generation keeps for the side to move
+    #[inline]
+    fn whole_reply(
+        generator: &mut movegen::KurniaMoveGenerator,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<kwg::Node22>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<kwg::Node22>,
+        game_state: &game_state::GameState,
+    ) -> movegen::ValuedMove {
+        generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config,
+                kwg,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
+                klv,
+            },
+            rack: &game_state.current_player().rack,
+            max_gen: 1,
+            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        generator.plays[0].clone()
+    }
+
+    #[test]
+    #[inline]
+    fn the_reply_at_ply_one_is_the_whole_generations() {
+        // on the board after each candidate of a wide field, the opponent's
+        // reply found lane by lane is the one a whole generation keeps: from
+        // the start of a game and from boards a few plies in, under racks with
+        // blanks, exchanges and a pass among the candidates
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let mut whole = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut field = movegen::KurniaMoveGenerator::new(&game_config);
+        let (mut checked, mut reused, mut from_lanes) = (0usize, 0usize, 0usize);
+        for seed in 0..16u64 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(seed);
+            game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+            for _ in 0..(seed % 6) {
+                let play = whole_reply(
+                    &mut whole,
+                    &game_config,
+                    &kwg,
+                    &arm_tables,
+                    &klv,
+                    &game_state,
+                );
+                game_state
+                    .play(&game_config, &mut deal_rng, &play.play)
+                    .unwrap();
+                game_state.next_turn();
+            }
+            let mut simmer = Simmer::new(&game_config).unwrap();
+            simmer.reseed(seed);
+            simmer.prepare(&game_config, &game_state, 2, false, &[]);
+            simmer.prepare_iteration();
+            let initial = simmer.initial_game_state.clone();
+            field.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &initial.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: &klv,
+                },
+                rack: &initial.current_player().rack,
+                max_gen: 100,
+                num_exchanges_by_this_player: initial.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            let candidates = field
+                .plays
+                .iter()
+                .map(|m| m.play.clone())
+                .collect::<Vec<_>>();
+            for candidate in &candidates {
+                simmer.game_state.clone_from(&initial);
+                let mut rng = simmer.rng.copy_state();
+                simmer
+                    .game_state
+                    .play(&game_config, &mut rng, candidate)
+                    .unwrap();
+                if !matches!(
+                    simmer
+                        .game_state
+                        .check_game_ended(&game_config, &mut simmer.final_scores)
+                        .unwrap(),
+                    game_state::CheckGameEnded::NotEnded
+                ) {
+                    continue;
+                }
+                simmer.game_state.next_turn();
+                if infer::bag_size(&simmer.game_state.board_tiles, &game_config) <= 0 {
+                    continue;
+                }
+                let reply =
+                    simmer.reply_at_ply_one(&game_config, &kwg, &arm_tables, &klv, candidate);
+                let want = whole_reply(
+                    &mut whole,
+                    &game_config,
+                    &kwg,
+                    &arm_tables,
+                    &klv,
+                    &simmer.game_state,
+                );
+                let snapshot = movegen::BoardSnapshot {
+                    board_tiles: &simmer.game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                assert!(
+                    reply == want,
+                    "seed {seed}: {} against {}",
+                    reply.play.fmt(&snapshot),
+                    want.play.fmt(&snapshot)
+                );
+                checked += 1;
+                if simmer.lane_bests.iter().any(|(m, _, _)| *m == reply) {
+                    reused += 1;
+                }
+            }
+            from_lanes += simmer.lane_bests.len();
+        }
+        assert!(checked > 500, "{checked} checked");
+        assert!(reused > 50, "{reused} replies came from the lanes");
+        assert!(from_lanes > 16, "{from_lanes} lane-bests found");
     }
 
     #[test]
