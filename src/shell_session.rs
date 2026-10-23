@@ -1724,12 +1724,13 @@ impl Session {
                 }
             }
             unseen.sort_unstable();
+            let (vowels, consonants, blanks) = vowels_consonants_blanks(alphabet, &unseen);
             writeln!(
                 out,
-                "unseen by player {}: {} {}",
+                "unseen by player {}: {} {} (vowels {vowels}, consonants {consonants}, blanks {blanks})",
                 turn + 1,
                 unseen.len(),
-                alphabet.fmt_rack(&unseen)
+                alphabet.fmt_rack(&unseen),
             )?;
         }
         // each move with the board before it, so that a tile played through
@@ -2909,6 +2910,17 @@ impl Session {
             }
         })
     }
+}
+
+// how many of the tiles are vowels, consonants, and blanks, by the alphabet's
+// marks (a blank is neither)
+fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usize, usize, usize) {
+    let blanks = tiles.iter().filter(|&&tile| tile == 0).count();
+    let vowels = tiles
+        .iter()
+        .filter(|&&tile| tile != 0 && alphabet.is_vowel(tile))
+        .count();
+    (vowels, tiles.len() - vowels - blanks, blanks)
 }
 
 // solve the side to move's endgame, once the bag is empty and both racks are
@@ -4882,6 +4894,19 @@ mod tests {
         // the solve reads no kept leaves, so none were inferred: the inference
         // tables are built at their first use
         assert!(session.infer_tables.is_none());
+    }
+
+    #[test]
+    #[inline]
+    fn the_unseen_tiles_are_counted_as_vowels_consonants_and_blanks() {
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        // a blank, A, B, E, Z, a blank
+        assert_eq!(
+            vowels_consonants_blanks(alphabet, &[0, 1, 2, 5, 26, 0]),
+            (2, 2, 2)
+        );
+        assert_eq!(vowels_consonants_blanks(alphabet, &[]), (0, 0, 0));
     }
 
     #[test]
