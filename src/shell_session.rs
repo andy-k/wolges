@@ -2929,9 +2929,11 @@ fn solve_endgame(
         return Err("the bag is not empty, and an endgame needs it to be".into());
     }
     let mut solver = endgame::EndgameSolver::new(game_config, kwg, arm_tables)?;
-    solver.init(
+    solver.init_after_scoreless_turns(
         &state.board_tiles,
         [&state.players[0].rack, &state.players[1].rack],
+        state.pass_turns,
+        state.zero_turns,
     );
     if !quiet {
         solver.report_progress(endgame_watch::ticking(|progress, elapsed| {
