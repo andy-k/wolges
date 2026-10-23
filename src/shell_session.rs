@@ -3949,6 +3949,36 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_sim_ends_with_a_new_game_a_gcg_load_a_lexicon_or_leaves() {
+        // a sim is analysis of the game as it is, in its lexicon with its
+        // leaves: a command that changes any of them ends it, as a move does
+        let mut session = session();
+        session
+            .kwgs_read
+            .insert("tiny".to_string(), session.kwg().unwrap());
+        for line in &GAME[..2] {
+            run(&mut session, line).unwrap();
+        }
+        let text = session.gcg_text().unwrap();
+        for line in ["new 7", "lexicon tiny", "leaves -"] {
+            run(&mut session, "rack AETAETE").unwrap();
+            run(&mut session, "sim 1").unwrap();
+            assert!(session.sim.is_some(), "{line}");
+            run(&mut session, line).unwrap();
+            assert!(session.sim.is_none(), "{line}");
+            assert!(run(&mut session, "sim show").is_err(), "{line}");
+        }
+        // gcg load begins with new
+        run(&mut session, "rack AETAETE").unwrap();
+        run(&mut session, "sim 1").unwrap();
+        assert!(session.sim.is_some());
+        session.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert!(session.sim.is_none());
+        assert!(run(&mut session, "sim show").is_err());
+    }
+
+    #[test]
+    #[inline]
     fn a_given_seats_racks_go_out_as_gcg_and_come_back() {
         let mut first = session();
         for line in [
