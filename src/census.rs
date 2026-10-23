@@ -320,6 +320,83 @@ fn best_split_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], nz: &[(usi
     best
 }
 
+// the best leave among the sub-multisets of keep tiles of the rack given as its
+// tally: its value and its rank, the smallest rank among equal values (the
+// first in the order each_tally_of_size walks them); the unplayable value and
+// no rank for a rack holding fewer than keep tiles, a tally the lattice does
+// not hold, or a leave table not the lattice's size
+#[inline]
+pub fn best_keep_of(lat: &MultisetLattice, leave: &[i32], tally: &[u8], keep: usize) -> (i32, u32) {
+    if leave.len() != lat.len()
+        || tally.len() != lat.num_letters()
+        || tally.iter().map(|&c| c as usize).sum::<usize>() > lat.rack_size()
+    {
+        return (UNPLAYABLE, !0);
+    }
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    // how many tiles the nonzero letters before each hold
+    let mut below = [0usize; MAX_LETTERS + 1];
+    let mut m = 0;
+    for (t, &c) in tally.iter().enumerate() {
+        if c > 0 {
+            nz[m] = (t, c);
+            below[m + 1] = below[m] + c as usize;
+            m += 1;
+        }
+    }
+    let mut best = (UNPLAYABLE, !0);
+    if keep <= below[m] {
+        KeepCtx {
+            nz: &nz[..m],
+            below: &below[..=m],
+            n: lat.num_letters(),
+            lat,
+            leave,
+            best: &mut best,
+        }
+        .rec(m, 0, 0, keep);
+    }
+    best
+}
+
+// as SplitCtx, with kept tiles only: the letters are added high-to-low, and of
+// each from the fewest kept that the letters below can still make up for to the
+// most it holds, so every walk ends with exactly the tiles asked for kept
+struct KeepCtx<'a> {
+    nz: &'a [(usize, u8)],
+    below: &'a [usize],
+    n: usize,
+    lat: &'a MultisetLattice,
+    leave: &'a [i32],
+    best: &'a mut (i32, u32),
+}
+
+impl KeepCtx<'_> {
+    fn rec(&mut self, i: usize, s_k: usize, within_k: u64, left: usize) {
+        if i == 0 {
+            let kr = (self.lat.size_offset[s_k] + within_k) as u32;
+            let v = self.leave[kr as usize];
+            if v > self.best.0 || (v == self.best.0 && kr < self.best.1) {
+                *self.best = (v, kr);
+            }
+            return;
+        }
+        let (t, cnt) = self.nz[i - 1];
+        let parts = self.n - 1 - t;
+        for ck in left.saturating_sub(self.below[i - 1])..=(cnt as usize).min(left) {
+            let mut dwk = 0u64;
+            if t + 1 < self.n {
+                let mut b = s_k + ck;
+                for _ in 0..ck {
+                    dwk += self.lat.c(b + parts - 1, parts - 1);
+                    b -= 1;
+                }
+            }
+            self.rec(i - 1, s_k + ck, within_k + dwk, left - ck);
+        }
+    }
+}
+
 #[inline]
 pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
@@ -1249,6 +1326,61 @@ mod tests {
         assert_eq!(
             best_equity_of(&lat, &sheet, &leave[1..], &[1, 1, 1, 1]),
             UNPLAYABLE
+        );
+    }
+
+    // every sub-multiset of left tiles of rack, in the order each_tally_of_size
+    // walks them: the first letter's count rising slowest
+    fn each_sub(rack: &[u8], t: usize, left: usize, cur: &mut [u8], f: &mut impl FnMut(&[u8])) {
+        if t == rack.len() {
+            if left == 0 {
+                f(cur);
+            }
+            return;
+        }
+        for c in 0..=(rack[t] as usize).min(left) {
+            cur[t] = c as u8;
+            each_sub(rack, t + 1, left - c, cur, f);
+        }
+        cur[t] = 0;
+    }
+
+    #[test]
+    #[inline]
+    fn best_keep_of_is_the_first_best_leave_in_tally_order() {
+        let lat = MultisetLattice::new(4, 4).unwrap();
+        let mut leave = vec![0i32; lat.len()];
+        for (idx, slot) in leave.iter_mut().enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            // few values, so that ties are common
+            *slot = h.rem_euclid(5) - 2;
+        }
+        let mut checked = 0;
+        for idx in 0..lat.len() {
+            let tally = lat.tally(idx);
+            let size = tally.iter().map(|&c| c as usize).sum::<usize>();
+            for keep in 0..=5 {
+                let mut want = (UNPLAYABLE, !0u32);
+                let mut cur = vec![0u8; 4];
+                each_sub(&tally, 0, keep, &mut cur, &mut |kept| {
+                    let kr = lat.rank(kept);
+                    if leave[kr as usize] > want.0 {
+                        want = (leave[kr as usize], kr);
+                    }
+                });
+                assert_eq!(
+                    best_keep_of(&lat, &leave, &tally, keep),
+                    want,
+                    "tally {tally:?} keep {keep}"
+                );
+                checked += (keep <= size) as usize;
+            }
+        }
+        assert!(checked > 0);
+        assert_eq!(best_keep_of(&lat, &leave, &[1, 1, 1], 1), (UNPLAYABLE, !0));
+        assert_eq!(
+            best_keep_of(&lat, &leave[1..], &[1, 1, 1, 1], 1),
+            (UNPLAYABLE, !0)
         );
     }
 
