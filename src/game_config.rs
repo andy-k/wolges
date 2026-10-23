@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout, equity, error};
+use super::{alphabet, board_layout, equity, error, text};
 use std::str::FromStr;
 
 pub enum GameRules {
@@ -923,7 +923,7 @@ impl GameConfig {
         read_file: &impl Fn(&str) -> error::Returns<String>,
     ) -> error::Returns<Self> {
         let mut values = std::collections::BTreeMap::new();
-        for line in s.lines() {
+        for line in text::lines(s) {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -1290,6 +1290,12 @@ mod tests {
         let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
         assert!(same_game_config(&read, &gc), "jumbled");
         assert!(!same_game_config(&read, &make_english_game_config()));
+        // with windows or classic mac line endings too
+        for ending in ["\r\n", "\r"] {
+            let read =
+                GameConfig::new_static_from_text(&text.replace('\n', ending), &no_files).unwrap();
+            assert!(same_game_config(&read, &gc), "{ending:?}");
+        }
     }
 
     #[test]

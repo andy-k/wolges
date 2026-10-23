@@ -1,7 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::kwg::Node;
-use wolges::{alphabet, bites, build, equity, error, fash, klv, kwg, lexport, prob};
+use wolges::{alphabet, bites, build, equity, error, fash, klv, kwg, lexport, prob, text};
 
 // the words of a word list, a line each: a line ends at "\n", "\r\n", or a lone
 // "\r", and a word at its first blank; an empty line is no word
@@ -12,7 +12,7 @@ fn parse_machine_words(
 ) -> error::Returns<Vec<bites::Bites>> {
     let mut machine_words = Vec::<bites::Bites>::new();
     let mut v = Vec::new();
-    for s in giant_string.split(['\n', '\r']) {
+    for s in text::lines(giant_string) {
         if s.is_empty() {
             continue;
         }
@@ -46,7 +46,7 @@ fn trim_words(
 ) -> error::Returns<String> {
     let mut kept = String::new();
     let mut v = Vec::new();
-    for s in giant_string.split(['\n', '\r']) {
+    for s in text::lines(giant_string) {
         if s.is_empty() {
             continue;
         }

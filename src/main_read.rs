@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats};
+use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats, text};
 
 use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
@@ -465,7 +465,7 @@ fn read_machine_words_sorted_by_length(
 ) -> error::Returns<Box<[bites::Bites]>> {
     let mut machine_words = Vec::<bites::Bites>::new();
     let mut v = Vec::new();
-    for s in giant_string.split(['\n', '\r']) {
+    for s in text::lines(giant_string) {
         if s.is_empty() {
             continue;
         }

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{error, matrix};
+use super::{error, matrix, text};
 use std::str::FromStr;
 
 #[derive(Clone)]
@@ -171,7 +171,7 @@ impl BoardLayout {
         let mut rows = 0usize;
         let mut cols = None;
         let mut star = None;
-        for line in s.lines() {
+        for line in text::lines(s) {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -1348,6 +1348,12 @@ mod tests {
         ] {
             let read = BoardLayout::new_static_from_text(&text_of(&board_layout)).unwrap();
             assert!(same_layout(&read, &board_layout));
+            // with windows or classic mac line endings too
+            for ending in ["\r\n", "\r"] {
+                let text = text_of(&board_layout).replace('\n', ending);
+                let read = BoardLayout::new_static_from_text(&text).unwrap();
+                assert!(same_layout(&read, &board_layout), "{ending:?}");
+            }
         }
     }
 

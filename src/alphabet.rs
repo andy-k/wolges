@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, bites_str, display, equity, error};
+use super::{bites, bites_str, display, equity, error, text};
 
 use std::str::FromStr;
 
@@ -83,7 +83,7 @@ impl Alphabet {
     #[inline(always)]
     pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
         let mut tiles = Vec::new();
-        for line_str in s.lines() {
+        for line_str in text::lines(s) {
             let mut tokens = line_str.split_whitespace();
             // there is minimal error handling...
             let label = tokens.next().ok_or("not enough tokens")?.into();
@@ -654,6 +654,30 @@ mod tests {
             text.push_str(&format!("T{i}\tt{i}\t1\t{score}\t0\t0\t0\n"));
         }
         text
+    }
+
+    #[test]
+    #[inline]
+    fn a_tile_file_reads_the_same_whatever_its_line_endings() {
+        let text = tiles_text(27, 1);
+        let tiles = |alphabet: &Alphabet| {
+            (0..alphabet.len())
+                .map(|t| {
+                    (
+                        alphabet.of_board(t).map(String::from),
+                        alphabet.of_rack(t).map(String::from),
+                        alphabet.freq(t),
+                        alphabet.score(t),
+                        alphabet.is_vowel(t),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let want = tiles(&Alphabet::new_static_from_text(&text).unwrap());
+        for ending in ["\r\n", "\r"] {
+            let read = Alphabet::new_static_from_text(&text.replace('\n', ending)).unwrap();
+            assert_eq!(tiles(&read), want, "{ending:?}");
+        }
     }
 
     #[test]

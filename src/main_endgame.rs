@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     alphabet, anagrams, bites, build, display, endgame, equity, error, fash, game_config,
-    game_state, klv, kwg, movegen, notation, play_scorer,
+    game_state, klv, kwg, movegen, notation, play_scorer, text,
 };
 
 mod endgame_watch;
@@ -93,7 +93,7 @@ impl Question {
         let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), _> {
             racks_alphabet_reader.set_word(rack, v)
         };
-        for (line_number, line) in (1usize..).zip(gcg.lines()) {
+        for (line_number, line) in (1usize..).zip(text::lines(gcg)) {
             if !line.starts_with('>') {
                 continue;
             }
@@ -350,7 +350,7 @@ fn run_batch<N: kwg::Node>(
     let mut rack0 = Vec::new();
     let mut rack1 = Vec::new();
     let file_contents = std::fs::read_to_string(path)?;
-    for (line_index, line) in file_contents.lines().enumerate() {
+    for (line_index, line) in text::lines(&file_contents).enumerate() {
         let t0 = std::time::Instant::now();
         let mut fields = line.split('\t');
         let fen_str = fields
@@ -1672,6 +1672,22 @@ mod tests {
                 .iter()
                 .all(|row| row.len() == dim.cols as usize && row.iter().all(|&t| t == 0))
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_gcg_reads_the_same_whatever_its_line_endings() {
+        let game_config = game_config::make_english_game_config();
+        let gcg = "#player1 ann Ann\n>ann: AETAETE 8G AT +4 4\n>bob: AETAETE 9H EA +5 5\n";
+        let want = Question::from_gcg(&game_config, "CSW24", gcg, "AB").unwrap();
+        assert_eq!(want.board_tiles[7][6..8], [1, 20]);
+        assert_eq!(want.board_tiles[8][7..9], [5, 1]);
+        for ending in ["\r\n", "\r"] {
+            let read = Question::from_gcg(&game_config, "CSW24", &gcg.replace('\n', ending), "AB")
+                .unwrap();
+            assert_eq!(read.board_tiles, want.board_tiles, "{ending:?}");
+            assert_eq!(read.rack, want.rack);
+        }
     }
 
     #[test]
