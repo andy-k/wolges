@@ -258,7 +258,8 @@ pub struct Session {
     racks_given: [bool; 2], // by seat, whether its current rack is given
     names: [Option<(String, String)>; 2], // a seat's nickname and full name
     challenge_rule: ChallengeRule,
-    printing: bool, // false while a file's game is read in
+    public_view: bool, // a sim's inference knows neither rack, as an annotator
+    printing: bool,    // false while a file's game is read in
     log: Vec<String>,
     quiet: bool, // no progress printed while a sim or a solve runs
     memory: Option<endgame::MemoryLimit>, // the memory an endgame solve stays within
@@ -304,6 +305,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "challenges RULE",
         "set the challenge rule: double (the challenger loses a turn), triple (whoever is wrong loses the game), bonus N [word | turn] (N points to the move's player per word or per challenge; the default is bonus 5 turn), or single (no cost, shown as +0)",
+    ),
+    (
+        "infer mover|public",
+        "what a sim's inference of the opponent's rack knows: the side to move's rack (mover, as at first), or neither rack, as an annotator",
     ),
     (
         "withdraw",
@@ -450,6 +455,7 @@ impl Session {
                 points: 5,
                 per_word: false,
             },
+            public_view: false,
             printing: true,
             log: Vec::new(),
             quiet,
@@ -1074,6 +1080,15 @@ impl Session {
                             _ => return Err(USAGE.into()),
                         },
                     },
+                    _ => return Err(USAGE.into()),
+                };
+                line.to_string()
+            }
+            "infer" => {
+                const USAGE: &str = "infer mover, or infer public";
+                self.public_view = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                    ["mover"] => false,
+                    ["public"] => true,
                     _ => return Err(USAGE.into()),
                 };
                 line.to_string()
@@ -2036,6 +2051,13 @@ impl Session {
         let Some((board_before, last)) = &self.board_before_last else {
             return Ok(Vec::new());
         };
+        // the watcher's rack is taken from what they cannot see: none for the
+        // public view
+        let watcher: &[u8] = if self.public_view {
+            &[]
+        } else {
+            &self.state.current_player().rack
+        };
         let kwg = self.kwg()?;
         let tables = match &mut self.infer_tables {
             Some(tables) => tables,
@@ -2052,7 +2074,7 @@ impl Session {
                 rack_lengths: None,
                 klv: self.klv,
             },
-            &self.state.current_player().rack,
+            watcher,
             last,
             infer::FUZZ,
             parallelism::available(),
@@ -4907,6 +4929,30 @@ mod tests {
             (2, 2, 2)
         );
         assert_eq!(vowels_consonants_blanks(alphabet, &[]), (0, 0, 0));
+    }
+
+    #[test]
+    #[inline]
+    fn a_public_inference_takes_the_movers_own_rack_as_unseen_too() {
+        // after the opening AT, the inference for player 2's sim takes their
+        // own rack out of the pool; the public view takes nothing out, so it
+        // weighs the racks that hold their tiles too, and the leaves differ
+        let mut session = session();
+        for line in ["new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut session, line).unwrap();
+        }
+        let mover = session.kept_leaves().unwrap();
+        assert!(!mover.is_empty());
+        run(&mut session, "infer public").unwrap();
+        assert!(session.public_view);
+        assert!(session.log.contains(&"infer public".to_string()));
+        let public = session.kept_leaves().unwrap();
+        assert!(public.len() >= mover.len());
+        assert_ne!(public, mover);
+        run(&mut session, "infer mover").unwrap();
+        assert!(!session.public_view);
+        assert_eq!(session.kept_leaves().unwrap(), mover);
+        assert!(run(&mut session, "infer both").is_err());
     }
 
     #[test]
