@@ -111,7 +111,32 @@ jobs:
         for b in buildlex read leave; do
           "$bin/$b$exe" --version | tr -d '\r' | grep -x -F "wolges ${stem#wolges-} ${{ matrix.target }}"
         done
-        { sha256sum words.kwg 2>/dev/null || shasum -a 256 words.kwg; } | cut -d ' ' -f 1 >"$out"
+        # a hundred thousand random words, the same list on every runner (an
+        # integer generator whose products fit awk's numbers exactly), as a
+        # gaddawg, a reordered one, and a dawg of alphagrams: four words cannot
+        # reach a tie in a sort, these can
+        awk 'BEGIN {
+          x = 2026
+          while (n < 100000) {
+            x = (x * 48271) % 2147483647
+            len = 2 + x % 11
+            w = ""
+            for (i = 0; i < len; i++) {
+              x = (x * 48271) % 2147483647
+              w = w substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", x % 26 + 1, 1)
+            }
+            if (!(w in seen)) { seen[w] = 1; n++ }
+          }
+          for (w in seen) print w
+        }' | LC_ALL=C sort >big.txt
+        [ "$(wc -l <big.txt | tr -d ' ')" = 100000 ]
+        "$bin/buildlex$exe" kwg big.txt big.kwg
+        "$bin/buildlex$exe" kwg big.txt big-reordered.kwg --reordered
+        "$bin/buildlex$exe" kwg big.txt big.kad --words alphagrams
+        "$bin/read$exe" kwg big.kwg big.out
+        tr -d '\r' <big.out | cmp big.txt -
+        graphs='words.kwg big.kwg big-reordered.kwg big.kad'
+        { sha256sum $graphs 2>/dev/null || shasum -a 256 $graphs; } | cut -d ' ' -f 1 >"$out"
         cat "$out"
     - uses: actions/upload-artifact@v7
       with:
@@ -149,11 +174,11 @@ jobs:
         path: smoke
         pattern: smoke-*
         merge-multiple: true
-    - name: Every build made the same word graph
+    - name: Every build made the same word graphs
       run: |
         head smoke/*
         [ "$(ls smoke | wc -l)" = "$(ls dist | wc -l)" ]
-        [ "$(sort -u smoke/* | wc -l)" = 1 ]
+        [ "$(sha256sum smoke/* | cut -d ' ' -f 1 | sort -u | wc -l)" = 1 ]
     - name: Make this build the latest release
       env:
         GH_TOKEN: "${{ github.token }}"
