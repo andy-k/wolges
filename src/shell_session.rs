@@ -492,7 +492,12 @@ impl Session {
             }
             let play = self.computer_move(sim_ms)?;
             let line = format!("play {}", self.play_text(&play)?);
-            writeln!(std::io::stdout(), "player {}: {line}", mover + 1)?;
+            writeln!(
+                std::io::stdout(),
+                "player {}: {}",
+                mover + 1,
+                self.computer_says(&play)?
+            )?;
             let words = line
                 .split_whitespace()
                 .map(String::from)
@@ -1759,12 +1764,8 @@ impl Session {
                 let board = &mut replay.state;
                 let mover = board.turn as usize;
                 let rack = self.rack_text(mover, &board.players[mover].rack);
-                let text = match &turn.play {
-                    // an exchange of tiles no one saw shows only how many
-                    movegen::Play::Exchange { tiles } if turn.hidden => {
-                        format!("Exch. {}", "_".repeat(tiles.len()))
-                    }
-                    play => play
+                let text = self.exchange_shown(mover, turn).unwrap_or_else(|| {
+                    turn.play
                         .fmt(&movegen::BoardSnapshot {
                             board_tiles: &board.board_tiles,
                             game_config: self.game_config,
@@ -1773,8 +1774,8 @@ impl Session {
                             rack_lengths: None,
                             klv: self.klv,
                         })
-                        .to_string(),
-                } + if turn.withdrawn() { ", taken back" } else { "" };
+                        .to_string()
+                }) + if turn.withdrawn() { ", taken back" } else { "" };
                 let text = match turn.bonus() {
                     Some(bonus) => format!("{text}, {bonus:+} after a challenge"),
                     None => text,
@@ -1836,13 +1837,45 @@ impl Session {
         Ok(())
     }
 
+    // whether a seat's tiles are hidden from the person at the keyboard: the
+    // computer's are, its rack and the tiles it exchanges alike
+    fn tiles_hidden(&self, seat: usize) -> bool {
+        matches!(self.seats[seat], Seat::Bot(_))
+    }
+
     // a seat's rack as show prints it: a person's as its tiles (? for a blank),
     // the computer's as an _ for each tile
     fn rack_text(&self, seat: usize, rack: &[u8]) -> String {
-        match self.seats[seat] {
-            Seat::Bot(_) => "_".repeat(rack.len()),
-            _ => self.game_config.alphabet().fmt_rack(rack).to_string(),
+        if self.tiles_hidden(seat) {
+            "_".repeat(rack.len())
+        } else {
+            self.game_config.alphabet().fmt_rack(rack).to_string()
         }
+    }
+
+    // how a turn's exchange is listed when its tiles are not to be shown: by
+    // their count, for the computer's seat or for tiles no one saw; a pass, or
+    // a person's exchange, is listed as the play prints it
+    fn exchange_shown(&self, seat: usize, turn: &Turn) -> Option<String> {
+        match &turn.play {
+            movegen::Play::Exchange { tiles }
+                if !tiles.is_empty() && (turn.hidden || self.tiles_hidden(seat)) =>
+            {
+                Some(format!("Exch. {}", "_".repeat(tiles.len())))
+            }
+            _ => None,
+        }
+    }
+
+    // what the computer's move is announced as: an exchange by its count, its
+    // tiles as hidden as its rack; any other move as it would be typed
+    fn computer_says(&self, play: &movegen::Play) -> error::Returns<String> {
+        Ok(match play {
+            movegen::Play::Exchange { tiles } if !tiles.is_empty() => {
+                format!("play exch {}", "_".repeat(tiles.len()))
+            }
+            play => format!("play {}", self.play_text(play)?),
+        })
     }
 
     fn best_moves(&mut self, n: usize) -> error::Returns<()> {
@@ -3594,6 +3627,38 @@ mod tests {
         // its rack shows as an _ for each tile
         assert_eq!(first.rack_text(1, &[1, 2, 0]), "___");
         assert_eq!(first.rack_text(0, &[1, 2, 0]), "AB?");
+    }
+
+    #[test]
+    #[inline]
+    fn a_computers_exchange_shows_only_how_many_tiles_like_its_rack() {
+        let mut first = session();
+        for line in ["player 2 bot", "new 7"] {
+            run(&mut first, line).unwrap();
+        }
+        let exchange = movegen::Play::Exchange {
+            tiles: [1, 2][..].into(),
+        };
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        // announced by its count; a pass as a pass
+        assert_eq!(first.computer_says(&exchange).unwrap(), "play exch __");
+        assert_eq!(first.computer_says(&pass).unwrap(), "play pass");
+        // listed by its count for the computer's seat, or for tiles no one saw;
+        // a person's exchange and a pass list as the play prints
+        let turn = |play: &movegen::Play, hidden| Turn {
+            rack: None,
+            given: false,
+            play: play.clone(),
+            hidden,
+            after: Vec::new(),
+        };
+        let count = Some("Exch. __".to_string());
+        assert_eq!(first.exchange_shown(1, &turn(&exchange, false)), count);
+        assert_eq!(first.exchange_shown(0, &turn(&exchange, false)), None);
+        assert_eq!(first.exchange_shown(0, &turn(&exchange, true)), count);
+        assert_eq!(first.exchange_shown(1, &turn(&pass, false)), None);
     }
 
     #[test]
