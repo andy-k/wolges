@@ -1384,6 +1384,47 @@ mod tests {
 
     #[test]
     #[inline]
+    fn the_walks_fit_a_small_stack() {
+        // the walks recurse a frame a letter, over an alphabet the size of
+        // English's, so they run on a thread with far less stack than a main
+        // thread has
+        let lat = MultisetLattice::new(27, 3).unwrap();
+        let mut unseen = vec![0u8; 27];
+        for (t, slot) in unseen.iter_mut().enumerate() {
+            *slot = (t % 4) as u8;
+        }
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            sheet[idx] = h.rem_euclid(20_000);
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let (full, value) = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 << 10)
+                .spawn_scoped(s, || {
+                    let mut best = vec![UNPLAYABLE; lat.len()];
+                    best_equity_table(&lat, &sheet, &leave, &mut best);
+                    let mut num = vec![0f64; lat.len()];
+                    let mut den = vec![0f64; lat.len()];
+                    apportion_table(&lat, &best, &unseen, &mut num, &mut den);
+                    let tally = vec![0u8; 27];
+                    let value = leave_value_by_draw(&lat, &best, &unseen, &tally);
+                    let mut placed = vec![(1u8, 5i32), (2, 7), (3, 9)];
+                    record_blank_variants(&lat, &mut sheet, 40_000, &mut placed, &unseen, 1);
+                    (best[lat.full_rack_start()], value)
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_ne!(full, UNPLAYABLE);
+        assert_ne!(value, UNPLAYABLE);
+    }
+
+    #[test]
+    #[inline]
     fn a_leave_is_worth_the_average_of_the_racks_it_draws_into() {
         let lat = MultisetLattice::new(2, 2).unwrap();
         let unseen = [1u8, 1u8];
