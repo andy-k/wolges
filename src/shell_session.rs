@@ -4347,6 +4347,32 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_move_for_no_score_is_no_scoreless_turn() {
+        // five passes, then two blanks played for nothing: the count starts
+        // again at the move, and six passes after it end the game
+        let mut session = session();
+        for line in [
+            "new 7",
+            "play pass",
+            "play pass",
+            "play pass",
+            "play pass",
+            "play pass",
+            "rack ??AETAE",
+            "play 8G at",
+        ] {
+            run(&mut session, line).unwrap();
+        }
+        for _ in 1..6 {
+            run(&mut session, "play pass").unwrap();
+            assert!(session.final_scores.is_none());
+        }
+        run(&mut session, "play pass").unwrap();
+        assert!(session.final_scores.is_some());
+    }
+
+    #[test]
+    #[inline]
     fn a_rack_shown_at_a_scoreless_end_goes_out_as_gcg_and_comes_back() {
         let mut first = session();
         for line in ["player 2 given", "new 7", "rack AETAETE", "play 8G AT"] {
