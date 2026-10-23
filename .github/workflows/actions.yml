@@ -35,3 +35,21 @@ jobs:
       run: cargo test --all-features --verbose
     - name: Run tests as shipped
       run: cargo test --release --all-features --verbose
+    - name: Non-ASCII tiles through the shell's pipe
+      shell: bash
+      run: |
+        # a session under the Polish tiles piped through the shell (a real
+        # console cannot be tested here): the words built into a graph, read
+        # back the same, and played; the lines the shell prints hold the tiles
+        exe=
+        if [ "$RUNNER_OS" = Windows ]; then exe=.exe; fi
+        cargo build --release --features shell --verbose --bin shell --bin buildlex --bin read
+        mkdir nonascii
+        printf 'PŁÓD\nŻÓŁW\n' >nonascii/polish.txt
+        "target/release/buildlex$exe" --tiles polish kwg nonascii/polish.txt nonascii/polish.kwg
+        "target/release/read$exe" --tiles polish kwg nonascii/polish.kwg nonascii/polish.out
+        tr -d '\r' <nonascii/polish.out | cmp nonascii/polish.txt -
+        printf 'rules polish\nlexicon nonascii/polish.kwg\nleaves -\nnew 7\ngen 3\nplay 8F PŁÓD\nexit\n' | "target/release/shell$exe" --quiet | tr -d '\r' >nonascii/shell.out
+        cat nonascii/shell.out
+        grep -x -F -e '  1.   24.000 8F PŁÓD 24' nonascii/shell.out
+        grep -F -e 'P Ł Ó D' nonascii/shell.out
