@@ -102,9 +102,15 @@ fn main() -> error::Returns<()> {
             }
         } else {
             match rl.readline(">> ") {
-                Ok(line) => {
-                    rl.add_history_entry(line.as_str())?;
-                    cmd_stack.push((line, None));
+                Ok(text) => {
+                    // a paste of several lines comes back as one: each line is
+                    // a command of its own, run in the order pasted
+                    let v = cmd_stack.len();
+                    for line in text::lines(&text) {
+                        rl.add_history_entry(line)?;
+                        cmd_stack.push((line.to_string(), None));
+                    }
+                    cmd_stack[v..].reverse();
                 }
                 Err(rustyline::error::ReadlineError::Interrupted) => {
                     writeln!(std::io::stdout(), "CTRL-C")?;
