@@ -34,7 +34,6 @@ const DEFT_ONE_WINDOW: i32 = 3 * equity::SCALE;
 const OUT_IN_TWO_OPENERS: usize = 16;
 const OUT_IN_TWO_CHECKED: usize = 3;
 
-#[derive(Clone)]
 pub struct FieldShape {
     pub max_gen: usize,
     pub nonplacing_quota: usize,
@@ -819,7 +818,6 @@ impl Squares {
 // zone, the squares whose filling would change it (those it fills, and the
 // first empty square past each end of its main word and of each word it makes
 // across); and the lane its main word lies on
-#[derive(Clone, Copy)]
 struct Footprint {
     fills: Squares,
     zone: Squares,

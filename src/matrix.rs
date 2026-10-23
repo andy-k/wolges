@@ -34,7 +34,7 @@ impl Strider {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Dim {
     pub rows: i8,
     pub cols: i8,

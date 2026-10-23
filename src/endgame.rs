@@ -1763,7 +1763,7 @@ pub struct PegResult {
     pub exact: bool, // false when a limit cut an endgame inside it short
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum PegUnsupported {
     ExchangeWithoutForcedEnd,
 }

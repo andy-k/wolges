@@ -1629,7 +1629,6 @@ fn gen_place_placements_impl<
         }
     }
 
-    #[derive(Clone, Copy)]
     struct ShadowRightWalk {
         idx: i8,
         is_unique: bool,
@@ -2632,7 +2631,7 @@ struct SpanMemo {
     visits: Vec<(u32, u32)>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SpanMemoSlot {
     key: u128,
     turn: u32,
@@ -3012,7 +3011,6 @@ fn gen_classic_place_moves<
         }
     }
 
-    #[derive(Clone, Copy)]
     struct Extent {
         playthrough_key: u128,
         base_main: i32,
