@@ -245,6 +245,19 @@ impl GameState {
         Ok(())
     }
 
+    // count a move challenged off the board: a scoreless turn, and a pass as
+    // well where the config says challenges are passes, else a turn that was
+    // not a pass, which ends a run of them
+    #[inline(always)]
+    pub fn challenged_off(&mut self, game_config: &game_config::GameConfig) {
+        if game_config.challenges_are_passes() {
+            self.pass_turns += 1;
+        } else {
+            self.pass_turns = 0;
+        }
+        self.zero_turns += 1;
+    }
+
     #[inline(always)]
     pub fn next_turn(&mut self) {
         let num_players = self.players.len() as u8;
