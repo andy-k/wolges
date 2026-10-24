@@ -802,6 +802,69 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
     }
 
+    // the ceiling on what player_idx's last tile adds after their move from
+    // this ply (its zone set there): the larger of the both-pass value and that
+    // tile's highest single placement with the opponent's rack counted double.
+    // Placements on lanes the move left alone are read from this ply's list,
+    // made before the move; zone lanes are generated only when the best found
+    // so far, the both-pass value included, is at or under need
+    #[inline(always)]
+    fn one_tile_bound(&mut self, ply: usize, player_idx: u8, need: f32) -> f32 {
+        let (rows, cols) = self.work_buffer.zones[ply];
+        let work_buffer = &mut self.work_buffer;
+        let left = work_buffer.racks[player_idx as usize][0];
+        let out_bonus = 2 * work_buffer.rack_scores[player_idx as usize ^ 1];
+        let mut best = work_buffer.rack_scores[player_idx as usize ^ 1]
+            - work_buffer.rack_scores[player_idx as usize];
+        for candidate in &work_buffer.lists[ply] {
+            if let movegen::Play::Place {
+                down,
+                lane,
+                word,
+                score,
+                ..
+            } = &candidate.play
+                && (if *down { cols } else { rows }) >> lane & 1 == 0
+            {
+                let mut placed = word.iter().filter(|&&t| t != 0);
+                if let (Some(&tile), None) = (placed.next(), placed.next())
+                    && held_tile(tile) == left
+                {
+                    best = best.max(score + out_bonus);
+                }
+            }
+        }
+        if best as f32 > need {
+            return best as f32;
+        }
+        // timed only while something listens
+        let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
+        work_buffer.movegen.gen_moves_raw_lanes_unsorted(
+            &movegen::BoardSnapshot {
+                board_tiles: &work_buffer.board_tiles,
+                game_config: self.game_config,
+                kwg: self.kwg,
+                anagrams: self.arm_tables.anagrams(),
+                rack_lengths: self.arm_tables.rack_lengths(),
+                klv: &self.klv,
+            },
+            &work_buffer.racks[player_idx as usize],
+            0,
+            movegen::PassPolicy::AsACandidate,
+            rows,
+            cols,
+        );
+        if let Some(t1) = t1 {
+            work_buffer.dur_movegen += t1.elapsed();
+        }
+        for valued in work_buffer.movegen.plays.iter() {
+            if let movegen::Play::Place { score, .. } = &valued.play {
+                best = best.max(score + out_bonus);
+            }
+        }
+        best as f32
+    }
+
     // the rows and columns whose moves a move can change, on the position
     // searched before it is made
     #[inline(always)]
@@ -1196,21 +1259,39 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     }
                 }
                 self.place(player_idx, &play);
-                let child = self.negamax_eval(
-                    ply + 1,
-                    player_idx ^ 1,
-                    depth - 1,
-                    score - beta,
-                    score - alpha,
-                    Scoreless::Counted {
-                        passes: 0,
-                        zeros: 0,
-                    },
-                );
-                self.unplace(player_idx, &play);
-                let child = child?;
-                best.complete &= child.complete;
-                score - child.value
+                // for a move that brings its player to a last tile, its score
+                // plus one_tile_bound caps its value; a cap no higher than
+                // alpha is used as the value in place of the reply's search (an
+                // upper bound, as a fail low gives). Below the root only, where
+                // depth is at least 2
+                let bound = if ply > 0
+                    && depth >= 2
+                    && self.work_buffer.racks[player_idx as usize].len() == 1
+                {
+                    score + self.one_tile_bound(ply, player_idx, alpha - score)
+                } else {
+                    f32::INFINITY
+                };
+                if bound <= alpha {
+                    self.unplace(player_idx, &play);
+                    bound
+                } else {
+                    let child = self.negamax_eval(
+                        ply + 1,
+                        player_idx ^ 1,
+                        depth - 1,
+                        score - beta,
+                        score - alpha,
+                        Scoreless::Counted {
+                            passes: 0,
+                            zeros: 0,
+                        },
+                    );
+                    self.unplace(player_idx, &play);
+                    let child = child?;
+                    best.complete &= child.complete;
+                    score - child.value
+                }
             };
             if value > best.value {
                 best.value = value;
@@ -3162,6 +3243,132 @@ mod tests {
         }
         println!("along random lines: {checked} reused lists, {chained} reused from a reused one");
         assert!(checked > 0 && chained > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn one_tile_bound_equals_a_full_generation() {
+        // after each move that brings its player to a last tile, one_tile_bound
+        // is the better of both passing and a full generation's best play out,
+        // on both arms; for some the best is on the zone's lanes
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let mut checked = 0usize;
+        let mut zoned = 0usize;
+        for (lean, arm_tables) in &both_arms(&kwg, &gc) {
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
+            let mut afresh =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
+            for (name, pos) in all_positions() {
+                for mover in 0..2u8 {
+                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    egs.reset_position();
+                    egs.generate(0, mover, false);
+                    let rack_len = egs.work_buffer.racks[mover as usize].len();
+                    for i in 0..egs.work_buffer.lists[0].len() {
+                        let play = egs.work_buffer.lists[0][i].play.clone();
+                        let movegen::Play::Place { word, .. } = &play else {
+                            continue;
+                        };
+                        if word.iter().filter(|&&t| t != 0).count() + 1 != rack_len {
+                            continue;
+                        }
+                        egs.work_buffer.zones[0] = egs.zone_lanes(&play);
+                        egs.place(mover, &play);
+                        let bound = egs.one_tile_bound(0, mover, f32::INFINITY);
+                        afresh.init(
+                            &egs.work_buffer.board_tiles,
+                            [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
+                        );
+                        afresh.reset_position();
+                        afresh.generate(0, mover, false);
+                        let mut whole = afresh.both_pass_value(mover);
+                        for candidate in &afresh.work_buffer.lists[0] {
+                            assert!(candidate.plays_out, "[{name}] a single plays out");
+                            whole = whole.max(candidate.valuation);
+                        }
+                        assert_eq!(
+                            bound, whole,
+                            "[{name}] lean={lean} the bound after move {i}"
+                        );
+                        let unreached = egs.one_tile_bound(0, mover, f32::NEG_INFINITY);
+                        zoned += (unreached < whole) as usize;
+                        checked += 1;
+                        egs.unplace(mover, &play);
+                    }
+                }
+            }
+        }
+        println!("one tile left: {checked} bounds, {zoned} with the best on the zone's lanes");
+        assert!(checked > 0 && zoned > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_windowed_search_bounds_the_exact_value() {
+        // in any window, the exact value inside it; failing low, a value from
+        // the exact one up to alpha; failing high, from beta up to the exact
+        // one. On both arms, at the root and below it (where moves may be
+        // skipped), each search on a fresh solver so no table answers for it
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let point = equity::SCALE as f32;
+        let mut searched = 0usize;
+        // searched at ply 0 (the root) or ply 1 (a fresh solver has nothing
+        // above it)
+        let search = |arm_tables: &anagrams::ArmTables,
+                      pos: &Position,
+                      ply: usize,
+                      mover: u8,
+                      alpha: f32,
+                      beta: f32| {
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.reset_position();
+            let scoreless = egs.entering();
+            // deeper than any line of these racks
+            egs.negamax_eval(ply, mover, 20, alpha, beta, scoreless)
+                .unwrap()
+        };
+        for (lean, arm_tables) in &both_arms(&kwg, &gc) {
+            for (name, pos) in all_positions() {
+                for mover in 0..2u8 {
+                    let full = search(arm_tables, &pos, 0, mover, f32::NEG_INFINITY, f32::INFINITY);
+                    assert!(full.complete, "[{name}] lean={lean} a line was cut short");
+                    let v = full.value;
+                    for ply in [0, 1] {
+                        for d in [1.0, 2.0, 5.0, 10.0, 30.0] {
+                            let low = (v + d * point, v + d * point + 1.0);
+                            let r = search(arm_tables, &pos, ply, mover, low.0, low.1).value;
+                            assert!(
+                                v <= r && r <= low.0,
+                                "[{name}] lean={lean} ply {ply} failing low at {d}: {r} against {v}"
+                            );
+                            let high = (v - d * point - 1.0, v - d * point);
+                            let r = search(arm_tables, &pos, ply, mover, high.0, high.1).value;
+                            assert!(
+                                high.1 <= r && r <= v,
+                                "[{name}] lean={lean} ply {ply} failing high at {d}: {r} against {v}"
+                            );
+                            let r =
+                                search(arm_tables, &pos, ply, mover, v - d * point, v + d * point)
+                                    .value;
+                            assert_eq!(
+                                r, v,
+                                "[{name}] lean={lean} ply {ply} inside a window of {d}"
+                            );
+                            searched += 3;
+                        }
+                    }
+                }
+            }
+        }
+        println!("windows: {searched} searches");
+        assert!(searched > 0);
     }
 
     #[test]
