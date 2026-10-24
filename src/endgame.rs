@@ -397,7 +397,7 @@ fn order_first(list: &mut [Candidate], ordered: &mut [u128]) {
 // WorkBuffer contains reusable allocations.
 // WorkBuffer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
-// This is not enforced.
+// The EndgameSolver holding it enforces this.
 struct WorkBuffer {
     t0: std::time::Instant,           // the solve's start, for its time limit
     dur_movegen: std::time::Duration, // for progress, timed only while something listens
@@ -613,7 +613,8 @@ type ProgressFn = Box<dyn FnMut(&Progress) -> error::Returns<()>>;
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
-// This is not enforced.
+// Its fields are private and never replaced, and its table moves only through
+// swap_tables, which refuses a solver of another game or lexicon.
 pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
@@ -1509,6 +1510,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         Ok(solved.value.raw() as f32)
     }
 
+    // swap tables with sub, to lend or take back; the values are for one
+    // game_config, kwg, and arm_tables, so any other solver is an error
+    #[inline(always)]
+    fn swap_tables(&mut self, sub: &mut Self) -> error::Returns<()> {
+        if !(std::ptr::eq(self.game_config, sub.game_config)
+            && std::ptr::eq(self.kwg, sub.kwg)
+            && std::ptr::eq(self.arm_tables, sub.arm_tables))
+        {
+            return Err("tables swap only between solvers of one game and lexicon".into());
+        }
+        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        Ok(())
+    }
+
     // the one-in-bag value within the limits; an endgame inside it that a limit
     // cut short clears exact
     fn one_in_bag(
@@ -1533,7 +1548,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
-        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        self.swap_tables(&mut sub)?;
         let mut search = OneInBag {
             gc,
             kwg,
@@ -1568,7 +1583,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             )
         };
         *exact &= search.exact;
-        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        self.swap_tables(&mut sub)?;
         Ok(to_equity(value?))
     }
 
@@ -1897,7 +1912,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut sub = EndgameSolver::<N, L>::new(self.game_config, self.kwg, self.arm_tables)?;
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
-        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        self.swap_tables(&mut sub)?;
         let result = Self::peg_committed_by(
             &mut sub,
             &PegPosition {
@@ -1910,7 +1925,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             score_diff,
             limits,
         );
-        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        self.swap_tables(&mut sub)?;
         result
     }
 
@@ -3785,6 +3800,60 @@ mod tests {
                 "the second search took {second_nodes} nodes, the first {first_nodes}"
             );
         }
+    }
+
+    #[test]
+    #[inline]
+    fn swap_tables_refuses_a_solver_of_another_game() {
+        // swap_tables lends the table to a solver of the same game_config, kwg,
+        // and arm_tables and takes it back; any other is refused, and nothing
+        // moves
+        let gc = game_config::make_english_game_config();
+        let other_gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let other_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let other_arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        egs.init(&board, [&[1, 2], &[8, 20]]); // A B, H T
+        egs.solve(0).unwrap();
+        let held = egs.work_buffer.table.held;
+        assert!(held > 0, "the solve left nothing in the table");
+        for (name, mut other) in [
+            (
+                "another game_config",
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&other_gc, &kwg, &arm_tables)
+                    .unwrap(),
+            ),
+            (
+                "another kwg",
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &other_kwg, &arm_tables)
+                    .unwrap(),
+            ),
+            (
+                "other arm_tables",
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &other_arm_tables)
+                    .unwrap(),
+            ),
+        ] {
+            assert!(
+                egs.swap_tables(&mut other).is_err(),
+                "{name} was lent the table"
+            );
+            assert_eq!(egs.work_buffer.table.held, held, "{name}: the table moved");
+            assert_eq!(other.work_buffer.table.held, 0, "{name}: the table moved");
+        }
+        let mut same =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        egs.swap_tables(&mut same).unwrap();
+        assert_eq!(same.work_buffer.table.held, held);
+        assert_eq!(egs.work_buffer.table.held, 0);
+        egs.swap_tables(&mut same).unwrap();
+        assert_eq!(egs.work_buffer.table.held, held);
     }
 
     #[test]
