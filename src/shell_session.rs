@@ -1923,7 +1923,7 @@ impl Session {
     // the move the computer would make for the side to move: the generator's
     // best, or given a time, the sim's best after that many milliseconds
     // (drawing the opponent's rack from what their last move says they kept),
-    // or once the bag is empty, the solved endgame's
+    // or once the bag is empty, the solved endgame's, a winning move first
     fn computer_move(&mut self, sim_ms: Option<f64>) -> error::Returns<movegen::Play> {
         if self.game.is_none() {
             return Err("no game: new first".into());
@@ -1939,21 +1939,26 @@ impl Session {
         if let Some(ms) = sim_ms {
             let endgame_state = self.endgame_state();
             if endgame_state.bag.is_empty() {
-                let (mut solver, _) = solve_endgame(
+                let mover = endgame_state.turn as usize;
+                let lead =
+                    endgame_state.players[mover].score - endgame_state.players[mover ^ 1].score;
+                let mut solver = endgame_solver(
                     self.game_config,
                     kwg,
                     arm_tables,
                     &endgame_state,
+                    self.quiet,
+                )?;
+                let play = solver.best_move_to_win(
+                    endgame_state.turn,
+                    equity::Equity::new(lead),
                     &endgame::Limits {
                         time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
                         states: None,
                         memory: self.memory,
                     },
-                    self.quiet,
                 )?;
-                let mut line = Vec::new();
-                solver.collect_pv(endgame_state.turn, &mut line);
-                return Ok(line.first().ok_or("the solve found no move")?.1.clone());
+                return Ok(play.ok_or("the solve found no move")?);
             }
         }
         let leaves = match sim_ms {
@@ -2985,20 +2990,15 @@ fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usi
     (vowels, tiles.len() - vowels - blanks, blanks)
 }
 
-// solve the side to move's endgame, once the bag is empty and both racks are
-// known, within the limits, printing its progress unless quiet: returns the
-// solver, whose best line can be read, and what it found
-fn solve_endgame(
+// a solver of the side to move's endgame, once the bag is empty and both racks
+// are known, printing its progress unless quiet
+fn endgame_solver(
     game_config: &'static game_config::GameConfig,
     kwg: &'static kwg::Kwg<kwg::Node22>,
     arm_tables: &'static anagrams::ArmTables,
     state: &game_state::GameState,
-    limits: &endgame::Limits,
     quiet: bool,
-) -> error::Returns<(
-    endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
-    endgame::Solved,
-)> {
+) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>> {
     if !state.bag.is_empty() {
         return Err("the bag is not empty, and an endgame needs it to be".into());
     }
@@ -3015,6 +3015,23 @@ fn solve_endgame(
             Ok(())
         }));
     }
+    Ok(solver)
+}
+
+// solve the side to move's endgame, as endgame_solver makes it, within the
+// limits: returns the solver, whose best line can be read, and what it found
+fn solve_endgame(
+    game_config: &'static game_config::GameConfig,
+    kwg: &'static kwg::Kwg<kwg::Node22>,
+    arm_tables: &'static anagrams::ArmTables,
+    state: &game_state::GameState,
+    limits: &endgame::Limits,
+    quiet: bool,
+) -> error::Returns<(
+    endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
+    endgame::Solved,
+)> {
+    let mut solver = endgame_solver(game_config, kwg, arm_tables, state, quiet)?;
     let solved = solver.solve_within(state.turn, limits)?;
     Ok((solver, solved))
 }
