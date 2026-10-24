@@ -1004,11 +1004,22 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         work_buffer.searched = 0;
         work_buffer.finished = 0;
         work_buffer.table.generation += 1;
-        for max_depth in 1..=longest as i8 {
+        // under a time or state limit, every depth is searched, so a stopped
+        // solve answers from the latest. A memory limit rarely stops a solve
+        // (the table reuses its room), so without the other two, each pass
+        // after the second goes two plies deeper, up to the longest line
+        let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
+        let every_depth = limits.time.is_some() || limits.states.is_some();
+        let mut max_depth = 0i8;
+        while (max_depth as usize) < longest {
+            max_depth = if every_depth || max_depth < 2 {
+                max_depth + 1
+            } else {
+                (max_depth + 2).min(longest as i8)
+            };
             self.work_buffer.max_depth = max_depth;
             // the first pass always finishes, so a solve cut short still has a value
-            self.work_buffer.check_limits = max_depth > 1
-                && (limits.time.is_some() || limits.states.is_some() || limits.memory.is_some());
+            self.work_buffer.check_limits = max_depth > 1 && limited;
             self.work_buffer.nodes = 0;
             self.work_buffer.cut_short = false;
             let searched = if max_depth == 1 {
@@ -1018,10 +1029,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             };
             let searched = match searched {
                 Ok(searched) => searched,
+                // the deepest finished pass, which need not be the pass just
+                // before when depths go up by two
                 Err(_) if self.work_buffer.cut_short => {
                     return Ok(Solved {
                         value: to_equity(last_valuation),
-                        depth: max_depth - 1,
+                        depth: self.work_buffer.finished,
                         exact: false,
                     });
                 }
@@ -3443,8 +3456,15 @@ mod tests {
         let mut cut = 0usize;
         let mut crowded = 0usize;
         for (name, pos) in all_positions() {
-            // every depth an unlimited solve finishes: its value and the
-            // positions its table holds
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let full = egs.solve_within(0, &super::Limits::NONE).unwrap();
+            assert!(full.exact, "[{name}] an unlimited solve is exact");
+
+            // each depth a solve finishes under a limit never reached (an
+            // unlimited one skips some), with its value and table size; its
+            // answer is the unlimited one's, at most a depth sooner
             let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let mut egs =
                 EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -3456,12 +3476,22 @@ mod tests {
                 }
                 Ok(())
             });
-            let full = egs.solve_within(0, &super::Limits::NONE).unwrap();
+            let never = super::Limits {
+                time: None,
+                states: Some(usize::MAX),
+                memory: None,
+            };
+            let every = egs.solve_within(0, &never).unwrap();
             let finished = finished.borrow();
-            assert!(full.exact, "[{name}] an unlimited solve is exact");
+            assert!(
+                every.exact
+                    && every.value == full.value
+                    && (full.depth - 1..=full.depth).contains(&every.depth),
+                "[{name}] a limit never reached answers the unlimited value, a depth sooner at most"
+            );
             assert_eq!(
                 finished.last().map(|&(d, v, _)| (d, v)),
-                Some((full.depth, full.value)),
+                Some((every.depth, every.value)),
                 "[{name}] the last finished depth is the answer"
             );
             if finished.len() < 2 {
@@ -3526,7 +3556,7 @@ mod tests {
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
                 solved.exact && (solved.depth, solved.value) == (full.depth, full.value),
-                "[{name}] a memory limit never reached answers as an unlimited solve"
+                "[{name}] a memory limit never reached answers as no limit"
             );
 
             // with nothing held and one byte allowed, the table cannot grow
@@ -3575,8 +3605,8 @@ mod tests {
             } else {
                 assert_eq!(
                     (solved.depth, solved.value),
-                    (full.depth, full.value),
-                    "[{name}] a solve the state limit never stopped is the unlimited one"
+                    (every.depth, every.value),
+                    "[{name}] a state limit never reached answers as no limit"
                 );
             }
         }
@@ -4572,6 +4602,173 @@ mod tests {
         fresh.work_buffer.finished = 2;
         fresh.collect_pv(0, &mut line);
         assert_eq!(line.len(), 3, "the line: a B, the pass, the other B");
+    }
+
+    #[test]
+    #[inline]
+    fn an_unlimited_solve_deepens_by_two() {
+        // a solve with no limit, or a memory limit alone, finishes depth 1,
+        // depth 2, and then every second depth (perhaps an odd one last); a
+        // time or state limit makes it finish each depth; the two agree on the
+        // value
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        // limits never reached: memory alone, states, and time
+        let memory = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: usize::MAX,
+                held: || 0,
+            }),
+        };
+        let states = super::Limits {
+            time: None,
+            states: Some(usize::MAX),
+            memory: None,
+        };
+        let time = super::Limits {
+            time: Some(std::time::Duration::from_secs(3600)),
+            states: None,
+            memory: None,
+        };
+        let mut skipped = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                let mut depths = Vec::new();
+                let mut values = Vec::new();
+                for limits in [&super::Limits::NONE, &memory, &states, &time] {
+                    let mut egs =
+                        EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    let finished = heard.clone();
+                    egs.report_progress(move |p: &super::Progress| {
+                        if p.value.is_some() {
+                            finished.borrow_mut().push(p.depth);
+                        }
+                        Ok(())
+                    });
+                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    values.push(egs.solve_within(mover, limits).unwrap().value);
+                    depths.push(heard.borrow().clone());
+                }
+                assert!(
+                    values.iter().all(|&v| v == values[0]),
+                    "[{name}] the values differ: {values:?}"
+                );
+                let free = &depths[0];
+                assert_eq!(&depths[1], free, "[{name}] a memory limit alone as none");
+                for every in &depths[2..] {
+                    assert!(
+                        every.iter().enumerate().all(|(i, &d)| d as usize == i + 1),
+                        "[{name}] with a time or state limit, every depth: {every:?}"
+                    );
+                }
+                for (i, pair) in free.windows(2).enumerate() {
+                    let step = pair[1] - pair[0];
+                    assert!(
+                        if i == 0 {
+                            pair == [1, 2]
+                        } else {
+                            step == 2 || (step == 1 && i + 2 == free.len())
+                        },
+                        "[{name}] with no limit: {free:?}"
+                    );
+                }
+                skipped += (free.len() < depths[2].len()) as usize;
+            }
+        }
+        assert!(skipped > 0, "no solve went deep enough to skip a depth");
+    }
+
+    #[test]
+    #[inline]
+    fn a_memory_stop_answers_from_a_finished_depth() {
+        // a memory limit alone skips the odd depths past the second, so a solve
+        // it stops must answer from the deepest finished depth, not the one
+        // before the stopped one. Here the memory reads past the limit from a
+        // chosen look on: at a table growth, within a pass, or after one
+        static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        use std::sync::atomic::Ordering::Relaxed;
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let limits = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: usize::MAX / 2,
+                held: || {
+                    if LOOKS.fetch_add(1, Relaxed) >= FROM.load(Relaxed) {
+                        usize::MAX
+                    } else {
+                        0
+                    }
+                },
+            }),
+        };
+        // five-tile racks of a few letters (A B H S T), so passes last long
+        // enough to be stopped within
+        let mut positions = Vec::new();
+        for (word, col0, racks) in [
+            (
+                &[1u8, 20][..],
+                6,
+                [vec![1u8, 1, 2, 8, 20], vec![1u8, 2, 8, 19, 20]],
+            ),
+            (
+                &[2, 1, 20][..],
+                6,
+                [vec![1, 1, 8, 19, 20], vec![1, 2, 2, 8, 20]],
+            ),
+            (
+                &[20, 8, 1, 20][..],
+                5,
+                [vec![1, 1, 1, 2, 8], vec![1, 8, 19, 20, 20]],
+            ),
+        ] {
+            let mut board = empty_board();
+            put_word(&mut board, 7, col0, word);
+            positions.push((board, racks));
+        }
+        let mut stopped_late = 0usize;
+        for (board, racks) in &positions {
+            for from in [1usize, 4, 16, 64, 256, 1024, 4096] {
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+                let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let finished = heard.clone();
+                egs.report_progress(move |p: &super::Progress| {
+                    if let Some(value) = p.value {
+                        finished.borrow_mut().push((p.depth, value));
+                    }
+                    Ok(())
+                });
+                egs.init(board, [&racks[0][..], &racks[1][..]]);
+                LOOKS.store(0, Relaxed);
+                FROM.store(from, Relaxed);
+                let solved = egs.solve_within(0, &limits).unwrap();
+                if solved.exact {
+                    continue;
+                }
+                let heard = heard.borrow();
+                assert_eq!(
+                    heard.last().copied(),
+                    Some((solved.depth, solved.value)),
+                    "from look {from}: the answer is the deepest depth that finished: {heard:?}"
+                );
+                stopped_late += (solved.depth >= 2) as usize;
+            }
+        }
+        assert!(
+            stopped_late > 0,
+            "no solve was stopped after its second depth"
+        );
     }
 
     #[test]
