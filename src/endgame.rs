@@ -990,24 +990,25 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    #[inline]
-    fn run_id_loop(
-        &mut self,
-        player_idx: u8,
-        verbose: bool,
-        limits: &Limits,
-    ) -> error::Returns<Solved> {
-        let mut last_valuation = f32::NAN;
-        // the longest line: a move that does not end it places tiles and leaves
-        // the mover some, or passes; a pass answering a pass ends it, as does a
-        // pass bringing the scoreless turns to the config's count, and a play
-        // out. A mover holding one tile can pass before and after every tile the
-        // other places, so its line can run a ply longer than any a mover holding
-        // more can make; a rack with no tiles can only pass, as a rack holding
-        // its last tile does short of ending the game, so it counts as one tile
+    // the longest line from the position to solve, player_idx to move: a move
+    // that does not end it places tiles and leaves the mover some, or passes; a
+    // pass answering a pass ends it, as does a pass bringing the scoreless turns
+    // to the config's count, and a play out. A mover holding one tile can pass
+    // before and after every tile the other places, so its line can run a ply
+    // longer than any a mover holding more can make; a rack with no tiles can
+    // only pass, as a rack holding its last tile does short of ending the game,
+    // so it counts as one tile
+    #[inline(always)]
+    fn longest_line(&self, player_idx: u8) -> usize {
         let mine = self.racks[player_idx as usize].len().max(1);
         let theirs = self.racks[player_idx as usize ^ 1].len().max(1);
-        let longest = (2 * (mine + theirs) + (mine == 1) as usize - 3).min(COMPLETE as usize - 1);
+        (2 * (mine + theirs) + (mine == 1) as usize - 3).min(COMPLETE as usize - 1)
+    }
+
+    // start a search of the position to solve within the limits, on the clock
+    // as it stands
+    #[inline(always)]
+    fn begin_search(&mut self, limits: &Limits) {
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
@@ -1018,6 +1019,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         work_buffer.root_best = NO_PLAY;
         work_buffer.answer = None;
         work_buffer.table.generation += 1;
+    }
+
+    #[inline]
+    fn run_id_loop(
+        &mut self,
+        player_idx: u8,
+        verbose: bool,
+        limits: &Limits,
+    ) -> error::Returns<Solved> {
+        let mut last_valuation = f32::NAN;
+        let longest = self.longest_line(player_idx);
+        self.begin_search(limits);
         // under a time or state limit, every depth is searched, so a stopped
         // solve answers from the latest. A memory limit rarely stops a solve
         // (the table reuses its room), so without the other two, each pass
@@ -1173,6 +1186,183 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock();
         self.run_id_loop(player_idx, false, limits)
+    }
+
+    // the move for player_idx to play, lead being their score less the other's
+    // (a game is won when lead plus the value of the rest is above zero). Under
+    // a time or state limit, a quarter of it first asks whether any move wins;
+    // then the solve runs on the same table and clock, a tenth kept back once a
+    // move won. The solve's answer is played when it finished or no win was
+    // found; else the found win is kept: the answer if it is the winning move
+    // or a check in the tenth shows it wins, else the winning move
+    pub fn best_move_to_win(
+        &mut self,
+        player_idx: u8,
+        lead: equity::Equity,
+        limits: &Limits,
+    ) -> error::Returns<Option<movegen::Play>> {
+        self.start_clock();
+        let margin = -lead.raw() as f32;
+        let share = |part: u32, whole: u32| Limits {
+            time: limits.time.map(|time| time * part / whole),
+            states: limits
+                .states
+                .map(|states| states / whole as usize * part as usize),
+            memory: limits.memory,
+        };
+        let mut winner = None;
+        if (limits.time.is_some() || limits.states.is_some())
+            && let Some(index) = self.ask_margin(player_idx, margin, &share(1, 4))?
+        {
+            winner = self.root_play(player_idx, index);
+        }
+        let solved = self.run_id_loop(
+            player_idx,
+            false,
+            &share(if winner.is_some() { 9 } else { 10 }, 10),
+        )?;
+        let mut line = Vec::new();
+        self.collect_pv(player_idx, &mut line);
+        let answer = line.into_iter().next().map(|(_, play)| play);
+        let Some(winner) = winner.filter(|_| !solved.exact) else {
+            return Ok(answer);
+        };
+        Ok(Some(match answer {
+            Some(answer)
+                if answer == winner || self.move_wins(player_idx, &answer, margin, limits)? =>
+            {
+                answer
+            }
+            _ => winner,
+        }))
+    }
+
+    // whether a move of player_idx is worth more than margin, asked depth by
+    // depth with a zero-width window there, within the limits on the clock as
+    // it stands: the winning move's index, once a pass that reaches the end of
+    // every line finds one
+    #[inline]
+    fn ask_margin(
+        &mut self,
+        player_idx: u8,
+        margin: f32,
+        limits: &Limits,
+    ) -> error::Returns<Option<u16>> {
+        let longest = self.longest_line(player_idx);
+        self.begin_search(limits);
+        let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
+        let point = equity::SCALE as f32;
+        for max_depth in 1..=longest as i8 {
+            self.work_buffer.max_depth = max_depth;
+            self.work_buffer.check_limits = max_depth > 1 && limited;
+            self.work_buffer.nodes = 0;
+            self.work_buffer.cut_short = false;
+            self.work_buffer.proven = None;
+            match self.root_search(player_idx, max_depth, margin, margin + point) {
+                Ok(searched) if searched.complete || max_depth as usize == longest => {
+                    return Ok((searched.value > margin).then_some(self.work_buffer.pass_best));
+                }
+                Ok(_) if self.past_a_limit() => return Ok(None),
+                Ok(_) => {}
+                Err(_) if self.work_buffer.cut_short => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
+    }
+
+    // the move of player_idx at the root with this index (its place in the
+    // whole order), a pass for PASS_PLAY
+    #[inline]
+    fn root_play(&mut self, player_idx: u8, index: u16) -> Option<movegen::Play> {
+        if index == PASS_PLAY {
+            return Some(movegen::Play::Exchange {
+                tiles: [][..].into(),
+            });
+        }
+        self.reset_position();
+        self.generate(0, player_idx, false);
+        let work_buffer = &mut self.work_buffer;
+        order(
+            &mut work_buffer.lists[0],
+            &mut work_buffer.orders[0],
+            0,
+            NO_PLAY,
+        );
+        self.work_buffer.lists[0]
+            .iter()
+            .find(|candidate| candidate.index == index)
+            .map(|candidate| candidate.play.clone())
+    }
+
+    // whether player_idx's move play from the position to solve is worth more
+    // than margin: its reply asked depth by depth with a zero-width window,
+    // within the limits on the clock as it stands, the table kept; false unless
+    // the reply's search reaches the end of every line
+    #[inline]
+    fn move_wins(
+        &mut self,
+        player_idx: u8,
+        play: &movegen::Play,
+        margin: f32,
+        limits: &Limits,
+    ) -> error::Returns<bool> {
+        self.reset_position();
+        let scoreless = self.entering();
+        // this list keeps no rack places, so two plies down generates whole
+        self.generate(0, player_idx, false);
+        let (valuation, after) = match play {
+            movegen::Play::Exchange { .. } => {
+                if self.pass_ends_the_line(scoreless) {
+                    return Ok(self.both_pass_value(player_idx) > margin);
+                }
+                (0.0, Scoreless::Answering)
+            }
+            movegen::Play::Place { .. } => {
+                let Some(candidate) = self.work_buffer.lists[0]
+                    .iter()
+                    .find(|candidate| candidate.play == *play)
+                else {
+                    return Ok(false);
+                };
+                if candidate.plays_out {
+                    return Ok(candidate.valuation > margin);
+                }
+                let counted = Scoreless::Counted {
+                    passes: 0,
+                    zeros: 0,
+                };
+                (candidate.valuation, counted)
+            }
+        };
+        self.place(player_idx, play);
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.time_limit = limits.time;
+        work_buffer.state_limit = limits.states;
+        work_buffer.memory_limit = limits.memory;
+        work_buffer.check_limits =
+            limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
+        // the move wins when its reply is worth less than valuation - margin
+        let beta = valuation - margin;
+        let point = equity::SCALE as f32;
+        let mut wins = Ok(false);
+        for depth in 1..COMPLETE {
+            self.work_buffer.cut_short = false;
+            match self.negamax_eval(1, player_idx ^ 1, depth, beta - point, beta, after) {
+                Ok(searched) if searched.complete => {
+                    wins = Ok(searched.value < beta);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) if self.work_buffer.cut_short => break,
+                Err(e) => {
+                    wins = Err(e);
+                    break;
+                }
+            }
+        }
+        self.unplace(player_idx, play);
+        wins
     }
 
     // based on https://en.wikipedia.org/wiki/Negamax
@@ -5080,6 +5270,184 @@ mod tests {
         }
         println!("a second pass proving a later move: {tried} positions tried");
         assert!(tried > 0);
+    }
+
+    // the exact value of a move from the position to solve, its reply searched
+    // deeper than any line of these racks, on the solver given (a fresh one)
+    #[inline]
+    fn move_value(
+        egs: &mut EndgameSolver<'_, kwg::Node22, kwg::Node22>,
+        mover: u8,
+        play: &movegen::Play,
+    ) -> f32 {
+        egs.reset_position();
+        egs.generate(0, mover, false);
+        let (valuation, after) = match play {
+            movegen::Play::Exchange { .. } => (0.0, super::Scoreless::Answering),
+            movegen::Play::Place { .. } => {
+                let candidate = egs.work_buffer.lists[0]
+                    .iter()
+                    .find(|candidate| candidate.play == *play)
+                    .unwrap();
+                if candidate.plays_out {
+                    return candidate.valuation;
+                }
+                let counted = super::Scoreless::Counted {
+                    passes: 0,
+                    zeros: 0,
+                };
+                (candidate.valuation, counted)
+            }
+        };
+        egs.place(mover, play);
+        let reply = egs
+            .negamax_eval(1, mover ^ 1, 20, f32::NEG_INFINITY, f32::INFINITY, after)
+            .unwrap();
+        assert!(reply.complete, "a line was cut short");
+        egs.unplace(mover, play);
+        valuation - reply.value
+    }
+
+    #[test]
+    #[inline]
+    fn a_move_wins_when_its_value_beats_the_margin() {
+        // with no limit, move_wins says of each first move, the pass among
+        // them, whether it is worth more than a margin a point under or at its
+        // value
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let point = equity::SCALE as f32;
+        let mut asked = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                egs.reset_position();
+                egs.generate(0, mover, false);
+                let mut plays = egs.work_buffer.lists[0]
+                    .iter()
+                    .map(|candidate| candidate.play.clone())
+                    .collect::<Vec<_>>();
+                plays.push(movegen::Play::Exchange {
+                    tiles: [][..].into(),
+                });
+                for play in &plays {
+                    let value = move_value(&mut egs, mover, play);
+                    for (below, wins) in [(point, true), (0.0, false)] {
+                        assert_eq!(
+                            egs.move_wins(mover, play, value - below, &super::Limits::NONE)
+                                .unwrap(),
+                            wins,
+                            "[{name}] a move of value {value} against {}",
+                            value - below
+                        );
+                        asked += 1;
+                    }
+                }
+            }
+        }
+        println!("moves asked: {asked}");
+        assert!(asked > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn playing_to_win_keeps_a_win_it_found() {
+        // at margins about the exact value, under state limits that stop the
+        // solve: wherever the margin's question, within the quarter of the
+        // limit best_move_to_win gives it, finds a win, the move played wins by
+        // exact value, where the solve alone sometimes does not; no win is
+        // found where none exists. With no limit, a win is found exactly where
+        // one exists, its move wins, and the move played is a best one
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let point = equity::SCALE as f32;
+        let fresh = |pos: &Position| {
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs
+        };
+        let states = |cap: usize| super::Limits {
+            time: None,
+            states: Some(cap),
+            memory: None,
+        };
+        let mut found = 0usize;
+        let mut kept = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                let mut egs = fresh(&pos);
+                let exact = egs.solve(mover).unwrap().raw() as f32;
+                let held = egs.work_buffer.table.held;
+                let mut egs = fresh(&pos);
+                let play = egs
+                    .best_move_to_win(mover, equity::Equity::new(0), &super::Limits::NONE)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    move_value(&mut fresh(&pos), mover, &play),
+                    exact,
+                    "[{name}] with no limit, a best move"
+                );
+                for k in [-3.0, -1.0, 0.0] {
+                    let margin = exact + k * point;
+                    let lead = equity::Equity::new(-margin as i32);
+                    let mut asking = fresh(&pos);
+                    asking.start_clock();
+                    let won = asking
+                        .ask_margin(mover, margin, &super::Limits::NONE)
+                        .unwrap();
+                    assert_eq!(
+                        won.is_some(),
+                        k < 0.0,
+                        "[{name}] with no limit, a win found exactly where one exists"
+                    );
+                    if let Some(index) = won {
+                        let play = asking.root_play(mover, index).unwrap();
+                        assert!(
+                            move_value(&mut fresh(&pos), mover, &play) > margin,
+                            "[{name}] the question's move wins"
+                        );
+                    }
+                    for cap in (1..=6).map(|j| (held >> j).max(8)) {
+                        let mut asking = fresh(&pos);
+                        asking.start_clock();
+                        let won = asking.ask_margin(mover, margin, &states(cap / 4)).unwrap();
+                        assert!(
+                            won.is_none() || k < 0.0,
+                            "[{name}] a win found where none exists"
+                        );
+                        let mut egs = fresh(&pos);
+                        let play = egs
+                            .best_move_to_win(mover, lead, &states(cap))
+                            .unwrap()
+                            .unwrap();
+                        if won.is_none() {
+                            continue;
+                        }
+                        assert!(
+                            move_value(&mut fresh(&pos), mover, &play) > margin,
+                            "[{name}] mover {mover}, margin {k} points, cap {cap}: a found win given up"
+                        );
+                        found += 1;
+                        let mut alone = fresh(&pos);
+                        alone.solve_within(mover, &states(cap)).unwrap();
+                        let mut line = Vec::new();
+                        alone.collect_pv(mover, &mut line);
+                        kept +=
+                            (move_value(&mut fresh(&pos), mover, &line[0].1) <= margin) as usize;
+                    }
+                }
+            }
+        }
+        println!("played to win: {found} found wins kept, {kept} the solve alone gives up");
+        assert!(found > 0 && kept > 0);
     }
 
     #[test]
