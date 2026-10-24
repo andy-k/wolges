@@ -1265,6 +1265,12 @@ impl Session {
                     solved.value,
                     if solved.exact {
                         "exactly".to_string()
+                    } else if let Some(partway) = solved.partway {
+                        format!(
+                            "cut short {partway} moves deep, by a move that beat the best \
+                             {} moves deep",
+                            solved.depth
+                        )
                     } else {
                         format!("as {} moves deep saw it, cut short", solved.depth)
                     }

@@ -424,6 +424,11 @@ struct WorkBuffer {
     cut_short: bool,    // a limit stopped this pass
     progress: Option<ProgressFn>,
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
+    at_root: bool,       // the next node searched is the root of a pass
+    pass_best: u16,      // the root's best move in the last finished root search
+    root_best: u16,      // the root's best move in the deepest finished pass
+    proven: Option<(u16, f32)>, // a move this pass found worth more than its first, and its value
+    answer: Option<(u16, f32)>, // the move and value a solve stopped partway answers with
 }
 
 impl WorkBuffer {
@@ -454,6 +459,11 @@ impl WorkBuffer {
             cut_short: false,
             progress: None,
             in_bag: None,
+            at_root: false,
+            pass_best: NO_PLAY,
+            root_best: NO_PLAY,
+            proven: None,
+            answer: None,
         }
     }
 
@@ -554,11 +564,13 @@ fn to_equity(v: f32) -> equity::Equity {
 }
 
 // a solve's answer: exact, or the value of the deepest search that finished
-// before a limit stopped it
+// before a limit stopped it, or that of a move the stopped search found worth
+// more (partway is that search's depth)
 pub struct Solved {
     pub value: equity::Equity,
     pub depth: i8,
     pub exact: bool,
+    pub partway: Option<i8>, // the depth stopped in, when its proved move answers
 }
 
 // how far a solve has got, sent to its listener at every node, and at each
@@ -1003,6 +1015,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         work_buffer.can_grow = true;
         work_buffer.searched = 0;
         work_buffer.finished = 0;
+        work_buffer.root_best = NO_PLAY;
+        work_buffer.answer = None;
         work_buffer.table.generation += 1;
         // under a time or state limit, every depth is searched, so a stopped
         // solve answers from the latest. A memory limit rarely stops a solve
@@ -1022,6 +1036,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.check_limits = max_depth > 1 && limited;
             self.work_buffer.nodes = 0;
             self.work_buffer.cut_short = false;
+            self.work_buffer.proven = None;
             let searched = if max_depth == 1 {
                 self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
             } else {
@@ -1029,19 +1044,28 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             };
             let searched = match searched {
                 Ok(searched) => searched,
-                // the deepest finished pass, which need not be the pass just
-                // before when depths go up by two
+                // the answer is the deepest finished pass's best move and
+                // value, named here because deepening by two can skip the pass
+                // before and the root's table entry may since hold another
+                // move; or, when the stopped pass recorded another move worth
+                // more than that best (proven), that move and its value
                 Err(_) if self.work_buffer.cut_short => {
+                    let work_buffer = &mut self.work_buffer;
+                    let best = (work_buffer.root_best != NO_PLAY)
+                        .then_some((work_buffer.root_best, last_valuation));
+                    work_buffer.answer = work_buffer.proven.or(best);
                     return Ok(Solved {
-                        value: to_equity(last_valuation),
-                        depth: self.work_buffer.finished,
+                        value: to_equity(work_buffer.answer.map_or(last_valuation, |(_, v)| v)),
+                        depth: work_buffer.finished,
                         exact: false,
+                        partway: work_buffer.proven.map(|_| max_depth),
                     });
                 }
                 Err(e) => return Err(e),
             };
             last_valuation = searched.value;
             self.work_buffer.finished = max_depth;
+            self.work_buffer.root_best = self.work_buffer.pass_best;
             if self.work_buffer.in_bag.is_none() {
                 self.report(Some(to_equity(searched.value)))?;
             }
@@ -1060,6 +1084,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     value: to_equity(searched.value),
                     depth: max_depth,
                     exact: false,
+                    partway: None,
                 });
             }
         }
@@ -1067,6 +1092,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             value: to_equity(last_valuation),
             depth: self.work_buffer.max_depth,
             exact: true,
+            partway: None,
         })
     }
 
@@ -1092,6 +1118,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         beta: f32,
     ) -> error::Returns<Searched> {
         self.reset_position();
+        self.work_buffer.at_root = true;
         self.negamax_eval(0, player_idx, depth, alpha, beta, self.entering())
     }
 
@@ -1168,6 +1195,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 complete: false,
             });
         }
+        // a pass's root, the only node that records moves for a solve stopped
+        // partway (the principal variation also searches from ply 0, never as a
+        // root)
+        let root = std::mem::take(&mut self.work_buffer.at_root);
 
         // the listener, if any, hears every node
         if self.work_buffer.progress.is_some() {
@@ -1209,6 +1240,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     Bound::Upper => entry.value <= alpha,
                 }
             {
+                if root {
+                    self.work_buffer.pass_best = entry.play;
+                }
                 return Ok(Searched {
                     value: entry.value,
                     complete: entry.depth == COMPLETE,
@@ -1237,6 +1271,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             complete: true,
         };
         let mut best_play = NO_PLAY;
+        // at a pass's root: true when the first move searched was the last
+        // finished pass's best, so that a later move with a higher exact value
+        // outranks it at this depth
+        let mut first_is_best = false;
         for i in 0..self.work_buffer.orders[ply].len() {
             if i == 1 && !table_first {
                 let work_buffer = &mut self.work_buffer;
@@ -1250,6 +1288,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             let found = self.work_buffer.orders[ply][i] as u32 as usize;
             let candidate = &self.work_buffer.lists[ply][found];
             let index = candidate.index;
+            if root && i == 0 {
+                first_is_best = index == self.work_buffer.root_best;
+            }
             let value = if candidate.plays_out {
                 candidate.valuation
             } else {
@@ -1307,6 +1348,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
             };
             if value > best.value {
+                if i > 0 && first_is_best && value > alpha_searched && value < beta {
+                    self.work_buffer.proven = Some((index, value));
+                }
                 best.value = value;
                 best_play = index;
                 if value > alpha {
@@ -1341,11 +1385,17 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 -child.value
             };
             if value > best.value {
+                if first_is_best && value > alpha_searched && value < beta {
+                    self.work_buffer.proven = Some((PASS_PLAY, value));
+                }
                 best.value = value;
                 best_play = PASS_PLAY;
             }
         }
 
+        if root {
+            self.work_buffer.pass_best = best_play;
+        }
         self.work_buffer.store(
             key,
             Entry {
@@ -1367,7 +1417,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // the principal variation of the deepest pass that finished: each move with
     // the value of the position it is played from, for its mover, read from the
     // table to the end of the line or as deep as that pass went; a position the
-    // table cannot answer exactly is searched again with a full window
+    // table cannot answer exactly is searched again with a full window. A
+    // stopped solve's line starts with the move it answers with
     #[inline]
     pub fn collect_pv(&mut self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
         out.clear();
@@ -1376,32 +1427,41 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut player_idx = player_idx;
         let mut scoreless = self.entering();
         let mut depth = self.work_buffer.finished;
+        let mut answer = self.work_buffer.answer;
         while depth > 0 {
             let key = self.node_key(player_idx, scoreless);
             let fits = |entry: &Entry| {
                 entry.bound == Bound::Exact && entry.depth >= depth && entry.play != NO_PLAY
             };
-            let entry = match self.work_buffer.table.probe(key).filter(fits) {
-                Some(entry) => entry,
-                None => {
-                    if self
-                        .negamax_eval(
-                            0,
-                            player_idx,
-                            depth,
-                            f32::NEG_INFINITY,
-                            f32::INFINITY,
-                            scoreless,
-                        )
-                        .is_err()
-                    {
-                        break;
+            let entry = match answer.take() {
+                Some((play, value)) => Entry {
+                    value,
+                    play,
+                    depth,
+                    bound: Bound::Exact,
+                },
+                None => match self.work_buffer.table.probe(key).filter(fits) {
+                    Some(entry) => entry,
+                    None => {
+                        if self
+                            .negamax_eval(
+                                0,
+                                player_idx,
+                                depth,
+                                f32::NEG_INFINITY,
+                                f32::INFINITY,
+                                scoreless,
+                            )
+                            .is_err()
+                        {
+                            break;
+                        }
+                        match self.work_buffer.table.probe(key).filter(fits) {
+                            Some(entry) => entry,
+                            None => break,
+                        }
                     }
-                    match self.work_buffer.table.probe(key).filter(fits) {
-                        Some(entry) => entry,
-                        None => break,
-                    }
-                }
+                },
             };
             let value = to_equity(entry.value);
             // a ply of depth, none for a forced pass, as in the search
@@ -3594,10 +3654,12 @@ mod tests {
             let solved = egs.solve_within(0, &limits).unwrap();
             if !solved.exact {
                 cut += 1;
+                // the finished pass's value, or that of a move the stopped pass
+                // found worth more; either way the depth is the finished pass's
                 assert!(
-                    finished
-                        .iter()
-                        .any(|&(d, v, _)| (d, v) == (solved.depth, solved.value)),
+                    finished.iter().any(|&(d, v, _)| d == solved.depth
+                        && (v == solved.value
+                            || solved.partway.is_some_and(|stopped| stopped > d))),
                     "[{name}] a state limit answers depth {} with {}, which no pass finished",
                     solved.depth,
                     solved.value
@@ -4756,11 +4818,19 @@ mod tests {
                 if solved.exact {
                     continue;
                 }
+                // the depth is the deepest that finished, and the value is that
+                // depth's unless the stopped pass found a move worth more
                 let heard = heard.borrow();
-                assert_eq!(
-                    heard.last().copied(),
-                    Some((solved.depth, solved.value)),
-                    "from look {from}: the answer is the deepest depth that finished: {heard:?}"
+                let &(depth, value) = heard.last().unwrap();
+                assert!(
+                    solved.depth == depth
+                        && (solved.value == value
+                            || solved.partway.is_some_and(|stopped| stopped > depth)),
+                    "from look {from}: the answer is the deepest depth that finished: {heard:?}, \
+                     answered {} at {} (partway {:?})",
+                    solved.value,
+                    solved.depth,
+                    solved.partway
                 );
                 stopped_late += (solved.depth >= 2) as usize;
             }
@@ -4769,6 +4839,247 @@ mod tests {
             stopped_late > 0,
             "no solve was stopped after its second depth"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn stopping_in_the_second_pass_can_change_the_answer() {
+        // a state limit that stops the second pass gives the first pass's best
+        // and value, or another move at its two-ply value, which must beat the
+        // best's; the line starts with the answer. Fresh solvers check the
+        // two-ply values
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let fresh = |pos: &Position| {
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs
+        };
+        let states = |cap: usize| super::Limits {
+            time: None,
+            states: Some(cap),
+            memory: None,
+        };
+        // a placing move's two-ply value, on a fresh solver
+        let at_two = |pos: &Position, mover: u8, play: &movegen::Play| {
+            let mut egs = fresh(pos);
+            egs.reset_position();
+            egs.generate(0, mover, false);
+            let candidate = egs.work_buffer.lists[0]
+                .iter()
+                .find(|candidate| candidate.play == *play)
+                .map(|candidate| (candidate.valuation, candidate.plays_out))
+                .unwrap();
+            if candidate.1 {
+                return candidate.0;
+            }
+            egs.place(mover, play);
+            let reply = egs
+                .negamax_eval(
+                    1,
+                    mover ^ 1,
+                    1,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    super::Scoreless::Counted {
+                        passes: 0,
+                        zeros: 0,
+                    },
+                )
+                .unwrap();
+            candidate.0 - reply.value
+        };
+        let mut proved = 0usize;
+        let mut kept = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                // the table's size after each pass of a solve nothing stops (a
+                // state limit never reached, so every depth)
+                let mut egs = fresh(&pos);
+                let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let seen = heard.clone();
+                egs.report_progress(move |p: &super::Progress| {
+                    if p.value.is_some() {
+                        seen.borrow_mut().push(p.held);
+                    }
+                    Ok(())
+                });
+                egs.solve_within(mover, &states(usize::MAX)).unwrap();
+                let (h1, h2) = match heard.borrow()[..] {
+                    [h1, h2, ..] => (h1, h2),
+                    _ => continue,
+                };
+                // stopped at the second pass's first node: the first pass's best
+                let mut egs = fresh(&pos);
+                let first = egs.solve_within(mover, &states(h1)).unwrap();
+                let mut line = Vec::new();
+                egs.collect_pv(mover, &mut line);
+                let Some((_, best)) = line.first().cloned() else {
+                    continue;
+                };
+                assert!(
+                    !first.exact && first.depth == 1,
+                    "[{name}] stopped after one ply"
+                );
+                for cap in h1 + 1..=h2 {
+                    let mut egs = fresh(&pos);
+                    let solved = egs.solve_within(mover, &states(cap)).unwrap();
+                    if solved.exact || solved.depth != 1 {
+                        continue;
+                    }
+                    egs.collect_pv(mover, &mut line);
+                    let (value, play) = line.first().cloned().unwrap();
+                    assert_eq!(
+                        value, solved.value,
+                        "[{name}] the line's value is the answer's"
+                    );
+                    if play == best {
+                        assert_eq!(
+                            (solved.value, solved.partway),
+                            (first.value, None),
+                            "[{name}] the first pass's answer"
+                        );
+                        kept += 1;
+                        continue;
+                    }
+                    assert_eq!(
+                        solved.partway,
+                        Some(2),
+                        "[{name}] cap {cap}: the pass stopped"
+                    );
+                    if let (movegen::Play::Place { .. }, movegen::Play::Place { .. }) =
+                        (&play, &best)
+                    {
+                        let proven = at_two(&pos, mover, &play);
+                        assert_eq!(
+                            super::to_equity(proven),
+                            solved.value,
+                            "[{name}] cap {cap}: the move's value at two plies"
+                        );
+                        assert!(
+                            at_two(&pos, mover, &best) < proven,
+                            "[{name}] cap {cap}: above the first pass's best at two plies"
+                        );
+                    }
+                    proved += 1;
+                }
+            }
+        }
+        println!("stopped in the second pass: {proved} proved another move, {kept} kept the first");
+        assert!(proved > 0 && kept > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_proof_needs_the_best_first_and_an_open_window() {
+        // after the first pass (its best, the table's move, searched first),
+        // the second records a later move that beats it at two plies when the
+        // window is open above; not when the first move searched is another
+        // one, nor when the window closes just above the first move's value
+        // (the later move then fails high: a bound, not a value)
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        // the second pass, at two plies after a first, with the first pass's
+        // best as given (or as found), in a window; what the pass recorded
+        let second_pass = |pos: &Position, mover: u8, best: Option<u16>, alpha: f32, beta: f32| {
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.root_search(mover, 1, f32::NEG_INFINITY, f32::INFINITY)
+                .unwrap();
+            let found = egs.work_buffer.pass_best;
+            egs.work_buffer.root_best = best.unwrap_or(found);
+            egs.work_buffer.proven = None;
+            egs.root_search(mover, 2, alpha, beta).unwrap();
+            (found, egs.work_buffer.proven)
+        };
+        let mut tried = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                let (found, open) =
+                    second_pass(&pos, mover, None, f32::NEG_INFINITY, f32::INFINITY);
+                let Some((later, value)) = open else {
+                    continue;
+                };
+                assert_ne!(later, found, "[{name}] a later move, not the first");
+                // the first move's two-ply value: a window around it keeps it
+                // exact and the later move above it failing high
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                egs.root_search(mover, 1, f32::NEG_INFINITY, f32::INFINITY)
+                    .unwrap();
+                egs.work_buffer.root_best = super::NO_PLAY;
+                let first = {
+                    egs.reset_position();
+                    egs.generate(0, mover, false);
+                    order_ply(&mut egs, 0, super::NO_PLAY);
+                    let candidate = egs.work_buffer.lists[0]
+                        .iter()
+                        .find(|candidate| candidate.index == found)
+                        .unwrap();
+                    let (play, valuation, plays_out) = (
+                        candidate.play.clone(),
+                        candidate.valuation,
+                        candidate.plays_out,
+                    );
+                    if plays_out {
+                        valuation
+                    } else {
+                        egs.place(mover, &play);
+                        let reply = egs
+                            .negamax_eval(
+                                1,
+                                mover ^ 1,
+                                1,
+                                f32::NEG_INFINITY,
+                                f32::INFINITY,
+                                super::Scoreless::Counted {
+                                    passes: 0,
+                                    zeros: 0,
+                                },
+                            )
+                            .unwrap();
+                        valuation - reply.value
+                    }
+                };
+                assert!(
+                    value > first,
+                    "[{name}] recorded above the first pass's best"
+                );
+                assert_eq!(
+                    second_pass(
+                        &pos,
+                        mover,
+                        Some(super::NO_PLAY),
+                        f32::NEG_INFINITY,
+                        f32::INFINITY
+                    )
+                    .1,
+                    None,
+                    "[{name}] the first move searched is not the first pass's best"
+                );
+                assert_eq!(
+                    second_pass(&pos, mover, None, first - 1.0, first + 1.0).1,
+                    None,
+                    "[{name}] the later move fails high in a window closing above the first"
+                );
+                assert!(
+                    second_pass(&pos, mover, None, first - 1.0, f32::INFINITY)
+                        .1
+                        .is_some_and(|(_, v)| v > first),
+                    "[{name}] the window open above records a later move"
+                );
+                tried += 1;
+            }
+        }
+        println!("a second pass proving a later move: {tried} positions tried");
+        assert!(tried > 0);
     }
 
     #[test]

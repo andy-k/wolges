@@ -444,6 +444,14 @@ fn run_batch<N: kwg::Node>(
                 "{line_index}\t{}\t{elapsed:?}",
                 solved.value
             )?;
+        } else if let Some(partway) = solved.partway {
+            writeln!(
+                std::io::stdout(),
+                "{line_index}\t{}\t{elapsed:?}\tcut short after depth {}; a move in depth \
+                 {partway} beat its best",
+                solved.value,
+                solved.depth,
+            )?;
         } else {
             writeln!(
                 std::io::stdout(),
@@ -1673,7 +1681,17 @@ fn solve_position<N: kwg::Node>(
             "total game margin (current score {score_diff:+} + future {future_margin}) = \
              {total_margin}",
         )?;
-        if !solved.exact {
+        if let Some(partway) = solved.partway {
+            // the lines so far stop at the finished depth; this one starts with
+            // the stopped pass's answer
+            writeln!(
+                std::io::stdout(),
+                "a limit cut the solve short in depth {partway}: the future is the value there \
+                 of a move that beat depth {}'s best",
+                solved.depth,
+            )?;
+            egs.print_best_line(0)?;
+        } else if !solved.exact {
             writeln!(
                 std::io::stdout(),
                 "a limit cut the solve short: the future is depth {}'s value",
