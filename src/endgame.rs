@@ -1226,17 +1226,19 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         // the pass, unless a move placing tiles has already reached beta: it ends
         // the line when it answers a pass or brings the scoreless turns to the
-        // config's count, each player losing their rack
+        // config's count, each player losing their rack. The depth stays the
+        // same across a forced pass (no move placing tiles)
         if best.value < beta {
             let value = if self.pass_ends_the_line(scoreless) {
                 self.both_pass_value(player_idx)
             } else {
                 self.work_buffer.zones[ply] = (0, 0);
                 self.work_buffer.spent[ply] = 0;
+                let forced = self.work_buffer.lists[ply].is_empty();
                 let child = self.negamax_eval(
                     ply + 1,
                     player_idx ^ 1,
-                    depth - 1,
+                    if forced { depth } else { depth - 1 },
                     -beta,
                     -alpha,
                     Scoreless::Answering,
@@ -1308,6 +1310,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
             };
             let value = to_equity(entry.value);
+            // a ply of depth, none for a forced pass, as in the search
+            let mut cost = 1;
             if entry.play == PASS_PLAY {
                 out.push((
                     value,
@@ -1319,6 +1323,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 // config's count, ends the line
                 if self.pass_ends_the_line(scoreless) {
                     break;
+                }
+                self.generate(0, player_idx, false);
+                if self.work_buffer.lists[0].is_empty() {
+                    cost = 0;
                 }
                 scoreless = Scoreless::Answering;
             } else {
@@ -1350,7 +1358,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 };
             }
             player_idx ^= 1;
-            depth -= 1;
+            depth -= cost;
         }
         self.work_buffer.check_limits = check_limits;
     }
@@ -4324,6 +4332,39 @@ mod tests {
         let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 4, 4);
         assert_eq!(value, equity::Equity::new(-10_000));
         assert_eq!(line, vec![vec![], vec![1, 20]]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_forced_pass_uses_no_depth() {
+        // the other side's Z fits no word, so its every turn is a forced pass:
+        // a two-ply search sees the mover's two B plays (no word takes both) to
+        // the end, the full value; a pass costing a ply would stop after the
+        // first
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let racks: [&[u8]; 2] = [&[2, 2], &[26]]; // B B, Z
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        egs.init(&board, racks);
+        let whole = egs.solve(0).unwrap();
+        let mut fresh =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        fresh.init(&board, racks);
+        let two = fresh
+            .root_search(0, 2, f32::NEG_INFINITY, f32::INFINITY)
+            .unwrap();
+        assert!(two.complete, "a line was cut short at two plies");
+        assert_eq!(super::to_equity(two.value), whole);
+        // the principal variation goes past the pass to the play out
+        let mut line = Vec::new();
+        fresh.work_buffer.finished = 2;
+        fresh.collect_pv(0, &mut line);
+        assert_eq!(line.len(), 3, "the line: a B, the pass, the other B");
     }
 
     #[test]
