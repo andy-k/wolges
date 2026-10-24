@@ -306,9 +306,75 @@ struct Searched {
 // a move generated for a position, as the search orders it
 struct Candidate {
     play: movegen::Play,
-    index: u16,     // its place among the moves generated, NO_PLAY past what fits
+    index: u16,     // its place in the sorted list, NO_PLAY past what fits
     valuation: f32, // a play out's whole value, else its score
     plays_out: bool,
+}
+
+// a move's sort key: valuation (best first), then direction, lane, and first
+// square as movegen::cmp_play has them, then the move's place in the list
+#[inline(always)]
+fn order_key(valuation: i32, down: bool, lane: i8, idx: i8, found: usize) -> u128 {
+    ((!(valuation as u32 ^ 1 << 31)) as u128) << 64
+        | (down as u128) << 48
+        | (lane as u8 as u128) << 40
+        | (idx as u8 as u128) << 32
+        | found as u32 as u128
+}
+
+// sort ordered (a key for each move of list, from order_key; list stays as
+// found) by valuation, ties broken by the plays, so the order does not depend
+// on how the moves were found. Each move's index becomes its place, counted
+// from first_place (ordered may be a tail); the table's move goes first
+#[inline(always)]
+fn order(list: &mut [Candidate], ordered: &mut [u128], first_place: usize, table_play: u16) {
+    ordered.sort_unstable();
+    let mut start = 0;
+    while start < ordered.len() {
+        let end = start
+            + ordered[start..]
+                .iter()
+                .take_while(|&&key| key >> 32 == ordered[start] >> 32)
+                .count();
+        if end - start > 1 {
+            ordered[start..end].sort_unstable_by(|&a, &b| {
+                movegen::cmp_play(&list[a as u32 as usize].play, &list[b as u32 as usize].play)
+            });
+        }
+        start = end;
+    }
+    for (place, &key) in (first_place..).zip(ordered.iter()) {
+        list[key as u32 as usize].index = if place < PASS_PLAY as usize {
+            place as u16
+        } else {
+            NO_PLAY
+        };
+    }
+    if table_play < PASS_PLAY && (table_play as usize) < ordered.len() {
+        ordered[..=table_play as usize].rotate_right(1);
+    }
+}
+
+// bring only the first move in order to the front of ordered, with index 0, the
+// rest left unsorted (most nodes cut off at their first move); ties as in order
+#[inline(always)]
+fn order_first(list: &mut [Candidate], ordered: &mut [u128]) {
+    let Some(mut first) = (0..ordered.len()).min_by_key(|&i| ordered[i]) else {
+        return;
+    };
+    for i in 0..ordered.len() {
+        if ordered[i] >> 32 == ordered[first] >> 32
+            && movegen::cmp_play(
+                &list[ordered[i] as u32 as usize].play,
+                &list[ordered[first] as u32 as usize].play,
+            )
+            .is_lt()
+        {
+            first = i;
+        }
+    }
+    ordered.swap(0, first);
+    list[ordered[0] as u32 as usize].index = 0;
 }
 
 // WorkBuffer contains reusable allocations.
@@ -324,6 +390,7 @@ struct WorkBuffer {
     rack_scores: [i32; 2], // what its racks' tiles score
     key: u64,              // its board's and racks' keys
     lists: Vec<Vec<Candidate>>, // the moves generated at each ply from the root
+    orders: Vec<Vec<u128>>, // each ply's sort keys (order_key)
     table: Table,
     can_grow: bool, // the memory limit has not yet refused the table more room this solve
     max_depth: i8,  // this pass's depth, for progress
@@ -350,6 +417,7 @@ impl WorkBuffer {
             rack_scores: [0, 0],
             key: 0,
             lists: Vec::new(),
+            orders: Vec::new(),
             table: Table::new(),
             can_grow: true,
             max_depth: 0,
@@ -711,13 +779,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     // generate player_idx's moves that place tiles (a pass is searched on its
-    // own) on the position searched, into this ply's list: the table's move
-    // first, then by valuation
+    // own) on the position searched, into this ply's list, and their keys,
+    // unsorted, into its orders
     #[inline]
-    fn generate(&mut self, ply: usize, player_idx: u8, table_play: u16) {
+    fn generate(&mut self, ply: usize, player_idx: u8) {
         let work_buffer = &mut self.work_buffer;
         if work_buffer.lists.len() <= ply {
             work_buffer.lists.resize_with(ply + 1, Vec::new);
+            work_buffer.orders.resize_with(ply + 1, Vec::new);
         }
         // timed only while something listens
         let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
@@ -740,32 +809,29 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let rack_len = work_buffer.racks[player_idx as usize].len();
         let out_bonus = 2 * work_buffer.rack_scores[player_idx as usize ^ 1];
         let list = &mut work_buffer.lists[ply];
+        let ordered = &mut work_buffer.orders[ply];
         list.clear();
-        for (i, candidate) in work_buffer.movegen.plays.iter().enumerate() {
-            if let movegen::Play::Place { word, score, .. } = &candidate.play {
+        ordered.clear();
+        for candidate in work_buffer.movegen.plays.iter() {
+            if let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = &candidate.play
+            {
                 let plays_out = word.iter().filter(|&&t| t != 0).count() == rack_len;
+                let valuation = if plays_out { score + out_bonus } else { *score };
+                ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
                 list.push(Candidate {
                     play: candidate.play.clone(),
-                    index: if i < PASS_PLAY as usize {
-                        i as u16
-                    } else {
-                        NO_PLAY
-                    },
-                    valuation: if plays_out {
-                        (score + out_bonus) as f32
-                    } else {
-                        *score as f32
-                    },
+                    index: NO_PLAY,
+                    valuation: valuation as f32,
                     plays_out,
                 });
             }
         }
-        let first = |candidate: &Candidate| table_play < PASS_PLAY && candidate.index == table_play;
-        list.sort_unstable_by(|a, b| {
-            first(b)
-                .cmp(&first(a))
-                .then_with(|| b.valuation.total_cmp(&a.valuation))
-        });
     }
 
     #[inline]
@@ -994,15 +1060,28 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
         let alpha_searched = alpha;
 
-        self.generate(ply, player_idx, table_play);
-        let list = std::mem::take(&mut self.work_buffer.lists[ply]);
+        // sort lazily: with a table move, all of them, that one first; else the
+        // first only, and the rest once it has not cut off
+        self.generate(ply, player_idx);
+        let mut list = std::mem::take(&mut self.work_buffer.lists[ply]);
+        let mut ordered = std::mem::take(&mut self.work_buffer.orders[ply]);
+        let table_first = table_play < PASS_PLAY && (table_play as usize) < ordered.len();
+        if table_first {
+            order(&mut list, &mut ordered, 0, table_play);
+        } else {
+            order_first(&mut list, &mut ordered);
+        }
         let mut best = Searched {
             value: f32::NEG_INFINITY,
             complete: true,
         };
         let mut best_play = NO_PLAY;
         let mut failed = None;
-        for candidate in &list {
+        for i in 0..ordered.len() {
+            if i == 1 && !table_first {
+                order(&mut list, &mut ordered[1..], 1, NO_PLAY);
+            }
+            let candidate = &list[ordered[i] as u32 as usize];
             let value = if candidate.plays_out {
                 candidate.valuation
             } else {
@@ -1051,6 +1130,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
         self.work_buffer.lists[ply] = list;
+        self.work_buffer.orders[ply] = ordered;
         if let Some(e) = failed {
             return Err(e);
         }
@@ -1152,7 +1232,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 scoreless = Scoreless::Answering;
             } else {
                 // the move the table keeps, generated again
-                self.generate(0, player_idx, NO_PLAY);
+                self.generate(0, player_idx);
+                let work_buffer = &mut self.work_buffer;
+                order(
+                    &mut work_buffer.lists[0],
+                    &mut work_buffer.orders[0],
+                    0,
+                    NO_PLAY,
+                );
                 let Some(candidate) = self.work_buffer.lists[0]
                     .iter()
                     .find(|candidate| candidate.index == entry.play)
@@ -2593,6 +2680,169 @@ mod tests {
         v
     }
 
+    // sort a ply's whole list, as the search does past the first move
+    #[inline]
+    fn order_ply(
+        egs: &mut EndgameSolver<'_, kwg::Node22, kwg::Node22>,
+        ply: usize,
+        table_play: u16,
+    ) {
+        let work_buffer = &mut egs.work_buffer;
+        super::order(
+            &mut work_buffer.lists[ply],
+            &mut work_buffer.orders[ply],
+            0,
+            table_play,
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn order_first_agrees_with_order() {
+        // order_first picks the move order sorts first, ties included, and
+        // gives it index 0
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut firsts = 0usize;
+        let mut tied = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                egs.reset_position();
+                egs.generate(0, mover);
+                let mut keys = egs.work_buffer.orders[0].clone();
+                super::order_first(&mut egs.work_buffer.lists[0], &mut keys);
+                let Some(&key) = keys.first() else {
+                    continue;
+                };
+                let first = egs.work_buffer.lists[0][key as u32 as usize].play.clone();
+                assert_eq!(
+                    egs.work_buffer.lists[0][key as u32 as usize].index, 0,
+                    "[{name}] the first move's index"
+                );
+                if keys.iter().filter(|&&k| k >> 32 == key >> 32).count() > 1 {
+                    tied += 1;
+                }
+                order_ply(&mut egs, 0, super::NO_PLAY);
+                let whole = egs.work_buffer.orders[0][0];
+                assert!(
+                    first == egs.work_buffer.lists[0][whole as u32 as usize].play,
+                    "[{name}] order_first's first is order's first"
+                );
+                firsts += 1;
+            }
+        }
+        println!("order_first: {firsts} lists, {tied} tied at the top");
+        assert!(firsts > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn the_order_ignores_generation_order() {
+        // the list reversed, or rotated, sorts the same: by valuation, ties by
+        // play, each index its place; a table move goes first and the rest keep
+        // their order
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut ties = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                egs.reset_position();
+                egs.generate(0, mover);
+                order_ply(&mut egs, 0, super::NO_PLAY);
+                let list = std::mem::take(&mut egs.work_buffer.lists[0]);
+                let ordered = std::mem::take(&mut egs.work_buffer.orders[0]);
+                let moves = ordered
+                    .iter()
+                    .map(|&key| &list[key as u32 as usize])
+                    .collect::<Vec<_>>();
+                for (i, candidate) in moves.iter().enumerate() {
+                    assert_eq!(
+                        candidate.index as usize, i,
+                        "[{name}] an index is its place"
+                    );
+                }
+                for pair in moves.windows(2) {
+                    let by_valuation = pair[1].valuation.total_cmp(&pair[0].valuation);
+                    if by_valuation.is_eq() {
+                        ties += 1;
+                        assert!(
+                            movegen::cmp_play(&pair[0].play, &pair[1].play).is_lt(),
+                            "[{name}] ties in play order"
+                        );
+                    } else {
+                        assert!(by_valuation.is_lt(), "[{name}] the best valuation first");
+                    }
+                }
+                for turn in [0, list.len() / 3] {
+                    let mut again = list
+                        .iter()
+                        .rev()
+                        .map(|candidate| super::Candidate {
+                            play: candidate.play.clone(),
+                            index: super::NO_PLAY,
+                            valuation: candidate.valuation,
+                            plays_out: candidate.plays_out,
+                        })
+                        .collect::<Vec<_>>();
+                    again.rotate_left(turn);
+                    let mut keys = again
+                        .iter()
+                        .enumerate()
+                        .map(|(found, candidate)| {
+                            let movegen::Play::Place {
+                                down, lane, idx, ..
+                            } = candidate.play
+                            else {
+                                unreachable!("a candidate places tiles");
+                            };
+                            super::order_key(candidate.valuation as i32, down, lane, idx, found)
+                        })
+                        .collect::<Vec<_>>();
+                    super::order(&mut again, &mut keys, 0, super::NO_PLAY);
+                    assert!(
+                        keys.iter()
+                            .map(|&key| &again[key as u32 as usize])
+                            .zip(&moves)
+                            .all(|(a, b)| a.play == b.play && a.index == b.index),
+                        "[{name}] the same order however generated"
+                    );
+                }
+                if moves.len() >= 2 {
+                    let table_play = (moves.len() / 2) as u16;
+                    egs.generate(0, mover);
+                    order_ply(&mut egs, 0, table_play);
+                    let again = &egs.work_buffer.lists[0];
+                    let first = egs.work_buffer.orders[0]
+                        .iter()
+                        .map(|&key| &again[key as u32 as usize])
+                        .collect::<Vec<_>>();
+                    assert!(
+                        first[0].play == moves[table_play as usize].play,
+                        "[{name}] the table's move first"
+                    );
+                    assert!(
+                        first[1..].iter().map(|c| &c.play).eq(moves
+                            .iter()
+                            .filter(|c| c.index != table_play)
+                            .map(|c| &c.play)),
+                        "[{name}] the rest in order"
+                    );
+                }
+            }
+        }
+        assert!(ties > 0, "no position had a tie");
+    }
+
     #[test]
     #[inline]
     fn differential_reference_vs_solve() {
@@ -2935,7 +3185,7 @@ mod tests {
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.reset_position();
                 let before = egs.work_buffer.key;
-                egs.generate(0, mover, super::NO_PLAY);
+                egs.generate(0, mover);
                 let list = std::mem::take(&mut egs.work_buffer.lists[0]);
                 for candidate in &list {
                     let movegen::Play::Place {
@@ -3018,7 +3268,7 @@ mod tests {
                 egs.init(&board, [&racks[0][..], &racks[1][..]]);
                 egs.reset_position();
                 let before = egs.work_buffer.key;
-                egs.generate(0, mover, super::NO_PLAY);
+                egs.generate(0, mover);
                 let list = std::mem::take(&mut egs.work_buffer.lists[0]);
                 for candidate in &list {
                     let movegen::Play::Place {

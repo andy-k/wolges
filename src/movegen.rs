@@ -3966,7 +3966,7 @@ impl PartialOrd for ValuedMove {
 }
 
 #[inline(always)]
-fn cmp_play(a: &Play, b: &Play) -> std::cmp::Ordering {
+pub(crate) fn cmp_play(a: &Play, b: &Play) -> std::cmp::Ordering {
     match (a, b) {
         (
             Play::Place {
