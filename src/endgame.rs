@@ -3059,6 +3059,105 @@ mod tests {
 
     #[test]
     #[inline]
+    fn reused_lists_equal_a_full_generation_along_random_lines() {
+        // over random play from each position, every reused list (a reuse of a
+        // reuse too) matches generating from scratch, order included, on both
+        // arms
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        // deep enough for most lines to keep rack places to their end
+        const DEPTH: usize = 12;
+        let mut seed = 0u64;
+        let mut checked = 0usize;
+        let mut chained = 0usize;
+        let in_order = |solver: &EndgameSolver<kwg::Node22, kwg::Node22>, ply: usize| {
+            solver.work_buffer.orders[ply]
+                .iter()
+                .map(|&key| &solver.work_buffer.lists[ply][key as u32 as usize])
+                .map(|c| (c.play.clone(), c.index, c.valuation, c.plays_out))
+                .collect::<Vec<_>>()
+        };
+        for (lean, arm_tables) in &both_arms(&kwg, &gc) {
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
+            let mut afresh =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
+            for (name, pos) in all_positions() {
+                for mover in 0..2u8 {
+                    for _ in 0..16 {
+                        egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                        egs.reset_position();
+                        let mut line = Vec::new();
+                        let mut made = [false; DEPTH];
+                        let mut player = mover;
+                        let mut passes = 0;
+                        for ply in 0..DEPTH {
+                            let depth = DEPTH - ply;
+                            egs.generate(ply, player, depth >= 3);
+                            order_ply(&mut egs, ply, super::NO_PLAY);
+                            if ply >= 2 && egs.work_buffer.keeps[ply - 2] {
+                                afresh.init(
+                                    &egs.work_buffer.board_tiles,
+                                    [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
+                                );
+                                afresh.reset_position();
+                                afresh.generate(0, player, false);
+                                order_ply(&mut afresh, 0, super::NO_PLAY);
+                                assert!(
+                                    in_order(&egs, ply) == in_order(&afresh, 0),
+                                    "[{name}] lean={lean} the moves made at ply {ply}"
+                                );
+                                made[ply] = true;
+                                checked += 1;
+                                chained += made[ply - 2] as usize;
+                            }
+                            // a random move or pass, lanes and rack places set
+                            // as the search sets them
+                            let moves = egs.work_buffer.lists[ply].len();
+                            let pick = (splitmix64(&mut seed) % (moves as u64 + 1)) as usize;
+                            let play = (pick < moves)
+                                .then(|| egs.work_buffer.lists[ply][pick].play.clone());
+                            if depth >= 2 {
+                                egs.work_buffer.zones[ply] =
+                                    play.as_ref().map_or((0, 0), |play| egs.zone_lanes(play));
+                                egs.work_buffer.spent[ply] = match &play {
+                                    Some(movegen::Play::Place { word, .. }) => super::rack_places(
+                                        &egs.work_buffer.racks[player as usize],
+                                        word,
+                                        true,
+                                    ),
+                                    _ => 0,
+                                };
+                            }
+                            if let Some(play) = &play {
+                                egs.place(player, play);
+                                passes = 0;
+                            } else {
+                                passes += 1;
+                            }
+                            line.push((player, play));
+                            // a play out or a second pass ends the line
+                            if egs.work_buffer.racks[player as usize].is_empty() || passes == 2 {
+                                break;
+                            }
+                            player ^= 1;
+                        }
+                        for (player, play) in line.iter().rev() {
+                            if let Some(play) = play {
+                                egs.unplace(*player, play);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("along random lines: {checked} reused lists, {chained} reused from a reused one");
+        assert!(checked > 0 && chained > 0);
+    }
+
+    #[test]
+    #[inline]
     fn differential_reference_vs_solve() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
