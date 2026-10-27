@@ -349,6 +349,13 @@ pub fn make_german_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/german.txt")
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#German
+// the 200-tile Super Scrabble set.
+#[inline(always)]
+pub fn make_super_german_alphabet() -> Alphabet {
+    new_static_alphabet_from_file!("alphabets/super_german.txt")
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Norwegian
 // https://en.wikipedia.org/wiki/Norwegian_orthography
 // https://unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
@@ -408,6 +415,7 @@ pub const ALPHABETS: &[(&str, MakeAlphabet)] = &[
     ("spanish", make_spanish_alphabet),
     ("super-catalan", make_super_catalan_alphabet),
     ("super-english", make_super_english_alphabet),
+    ("super-german", make_super_german_alphabet),
     ("swedish", make_swedish_alphabet),
 ];
 

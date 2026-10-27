@@ -1329,6 +1329,7 @@ mod tests {
             ("english", alphabet::make_english_alphabet()),
             ("french", alphabet::make_french_alphabet()),
             ("german", alphabet::make_german_alphabet()),
+            ("super_german", alphabet::make_super_german_alphabet()),
             ("hex", alphabet::make_hex_alphabet()),
             (
                 "hong_kong_english",
