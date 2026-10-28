@@ -732,6 +732,22 @@ impl WorkingBuffer {
                 .is_some_and(|layout| layout.covers(board_snapshot.game_config.alphabet(), extent))
     }
 
+    // the anagrams a jumbled turn reads its multisets and cross sets from by
+    // key: where they fit the game and init built the subracks, for a rack of
+    // at most two blanks as turn_is_supported takes for the classic table
+    #[inline]
+    fn jumbled_keys<'a, N: kwg::Node, L: kwg::Node>(
+        &self,
+        board_snapshot: &BoardSnapshot<'a, N, L>,
+    ) -> Option<&'a anagrams::Anagrams> {
+        match board_snapshot.game_config.game_rules() {
+            game_config::GameRules::Classic => None,
+            game_config::GameRules::Jumbled => board_snapshot.anagrams.filter(|_| {
+                self.anagrams_fit_config && self.rack_tally[0] <= 2 && !self.subracks.is_empty()
+            }),
+        }
+    }
+
     fn init<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -1247,12 +1263,13 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 }
 
 #[inline]
-fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
+fn gen_jumbled_cross_set<'a, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
     used_letters_tally: &'a mut [u8],
+    keys: K,
 ) {
     let len = output_strider.len();
     let step = output_strider.step() as usize;
@@ -1296,10 +1313,29 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             if k == j + 1 {
                 cross_sets[wp] = CrossSet { bits: 0, score: 0 };
             } else {
-                cross_sets[wp] = CrossSet {
-                    bits: kwg.compute_alpha_cross_set(used_letters_tally),
-                    score,
+                let bits = match keys.anagrams() {
+                    Some(anagrams) => {
+                        let layout = anagrams.layout();
+                        let mut key = 0u128;
+                        let mut letters = 0u8;
+                        for (tile, &count) in used_letters_tally.iter().enumerate().skip(1) {
+                            key += count as u128 * layout.place_value(tile as u8);
+                            letters += count;
+                        }
+                        let mut answer = 1; // bit 0 too, as compute_alpha_cross_set sets it
+                        anagrams.blank_groups(
+                            alphagram::Fitted(key),
+                            letters + 1,
+                            !1,
+                            |tile, _| {
+                                answer |= 1 << tile;
+                            },
+                        );
+                        answer
+                    }
+                    None => kwg.compute_alpha_cross_set(used_letters_tally),
                 };
+                cross_sets[wp] = CrossSet { bits, score };
                 // if j == i, this is the left side of a possible lone island.
                 // otherwise set to !0.
                 prev_wp = wp | ((j == i) as isize - 1) as usize;
@@ -1311,14 +1347,14 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 }
 
 #[inline(always)]
-fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
+fn gen_cross_set<'a, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
-    used_letters_tally: &'a mut [u8],
+    (used_letters_tally, keys): (&'a mut [u8], K),
 ) {
     match board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => gen_classic_cross_set(
@@ -1335,6 +1371,7 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             cross_sets,
             output_strider,
             used_letters_tally,
+            keys,
         ),
     }
 }
@@ -2131,6 +2168,27 @@ impl RunLetters for &[u64] {
     #[inline(always)]
     fn may_hold(self, p: i32, candidates: u64) -> bool {
         self[p as usize] & candidates != 0
+    }
+}
+
+// what a jumbled turn looks its multisets and cross sets up in
+trait JumbledKeys: Copy {
+    fn anagrams(&self) -> Option<&anagrams::Anagrams>;
+}
+
+// nothing, so it walks the alphagram graph
+impl JumbledKeys for () {
+    #[inline(always)]
+    fn anagrams(&self) -> Option<&anagrams::Anagrams> {
+        None
+    }
+}
+
+// the anagrams, by key (WorkingBuffer::jumbled_keys)
+impl JumbledKeys for &anagrams::Anagrams {
+    #[inline(always)]
+    fn anagrams(&self) -> Option<&anagrams::Anagrams> {
+        Some(*self)
     }
 }
 
@@ -3261,12 +3319,14 @@ impl JumbledMultisets {
 #[inline]
 fn gen_jumbled_place_moves<
     'a,
+    K: JumbledKeys,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
+    keys: K,
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
@@ -3335,6 +3395,82 @@ fn gen_jumbled_place_moves<
         }
         let len = c.out.current.len();
         c.out.current.truncate(len - pushed);
+    }
+
+    // collect_multisets' multisets, read from the anagrams instead: each
+    // subrack's letters and the forced letters, looked up by key at the word's
+    // length, a blank answered by blank_groups once any other is named; each
+    // kept once, in the walk's order, the descending order of its letters
+    fn collect_multisets_by_key(
+        anagrams: &anagrams::Anagrams,
+        alphabet_len: u8,
+        forced: &[u8; MAX_ALPHABET_LEN],
+        subracks: &[Subrack],
+        subracks_by_played: &[u32],
+        max_size: u8,
+        out: &mut JumbledMultisets,
+    ) {
+        // a multiset's letters, ascending, as the walk lists them
+        fn keep(layout: &alphagram::KeyLayout, played: u128, size: u8, out: &mut JumbledMultisets) {
+            out.by_size[size as usize].push(out.multisets.len() as u32);
+            for tile in layout.tiles_in(played) {
+                for _ in 0..layout.count_in(played, tile) {
+                    out.multisets.push(tile);
+                }
+            }
+        }
+        let layout = anagrams.layout();
+        let mut forced_key = 0u128;
+        let mut forced_len = 0u8;
+        for tile in 1..alphabet_len {
+            forced_key += forced[tile as usize] as u128 * layout.place_value(tile);
+            forced_len += forced[tile as usize];
+        }
+        debug_assert!(layout.holds(forced_key));
+        for size in 1..=max_size {
+            let len = forced_len + size;
+            let from = subracks_by_played[size as usize] as usize;
+            let upto = subracks_by_played[size as usize + 1] as usize;
+            for subrack in &subracks[from..upto] {
+                let key = forced_key + subrack.key;
+                match subrack.blanks {
+                    0 => {
+                        if anagrams.group_at(alphagram::Fitted(key), len).is_some() {
+                            keep(layout, subrack.key, size, out);
+                        }
+                    }
+                    1 => anagrams.blank_groups(alphagram::Fitted(key), len, !1, |tile, _| {
+                        keep(layout, subrack.key + layout.place_value(tile), size, out);
+                    }),
+                    _ => {
+                        for l1 in 1..alphabet_len {
+                            if layout.count_in(key, l1) >= layout.max_count(l1) {
+                                continue;
+                            }
+                            let played1 = subrack.key + layout.place_value(l1);
+                            anagrams.blank_groups(
+                                alphagram::Fitted(forced_key + played1),
+                                len,
+                                !1,
+                                |tile, _| {
+                                    if tile >= l1 {
+                                        keep(layout, played1 + layout.place_value(tile), size, out);
+                                    }
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            // descending, then each once
+            let n = size as usize;
+            let multisets = &out.multisets;
+            let found = &mut out.by_size[n];
+            found.sort_unstable_by(|&a, &b| {
+                multisets[b as usize..][..n].cmp(&multisets[a as usize..][..n])
+            });
+            found.dedup_by(|a, b| multisets[*a as usize..][..n] == multisets[*b as usize..][..n]);
+        }
     }
 
     #[inline(always)]
@@ -3506,20 +3642,31 @@ fn gen_jumbled_place_moves<
                 {
                     if collected_epoch != forced_epoch {
                         env.params.jumbled.clear(num_max_played as usize);
-                        collect_multisets(
-                            &mut Collect {
-                                kwg: env.params.board_snapshot.kwg,
+                        match keys.anagrams() {
+                            Some(anagrams) => collect_multisets_by_key(
+                                anagrams,
                                 alphabet_len,
-                                forced: &forced,
-                                rack_tally: env.params.rack_tally,
-                                max_size: num_max_played,
-                                out: env.params.jumbled,
-                            },
-                            0,
-                            1,
-                            env.params.rack_tally[0],
-                            0,
-                        );
+                                &forced,
+                                env.params.subracks,
+                                env.params.subracks_by_played,
+                                num_max_played,
+                                env.params.jumbled,
+                            ),
+                            None => collect_multisets(
+                                &mut Collect {
+                                    kwg: env.params.board_snapshot.kwg,
+                                    alphabet_len,
+                                    forced: &forced,
+                                    rack_tally: env.params.rack_tally,
+                                    max_size: num_max_played,
+                                    out: env.params.jumbled,
+                                },
+                                0,
+                                1,
+                                env.params.rack_tally[0],
+                                0,
+                            ),
+                        }
                         collected_epoch = forced_epoch;
                     }
                     env.idx_left = idx_l;
@@ -3589,6 +3736,7 @@ fn gen_jumbled_place_moves<
 fn gen_place_moves_lean<
     'a,
     R: RunLetters,
+    K: JumbledKeys,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -3597,12 +3745,13 @@ fn gen_place_moves_lean<
     single_tile_plays: bool,
     left_bounds: &'a [i32],
     runs: R,
+    keys: K,
 ) {
     match params.board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => {
             gen_classic_place_moves_lean(params, single_tile_plays, left_bounds, runs)
         }
-        game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
+        game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays, keys),
     }
 }
 
@@ -3621,18 +3770,20 @@ fn gen_place_moves<
             Some(held) => gen_classic_place_moves(params, held, single_tile_plays),
             None => gen_classic_place_moves_lean(params, single_tile_plays, &[], ()),
         },
-        game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
+        game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays, ()),
     }
 }
 
 struct GenPlaceMovesAtParams<
     'a,
     R: RunLetters,
+    K: JumbledKeys,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 > {
     runs: R,
+    keys: K,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer,
     multi_leaves: &'a klv::MultiLeaves,
@@ -3646,14 +3797,16 @@ struct GenPlaceMovesAtParams<
 fn gen_place_moves_at_lean<
     'a,
     R: RunLetters,
+    K: JumbledKeys,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: GenPlaceMovesAtParams<'a, R, FoundPlaceMove, N, L>,
+    p: GenPlaceMovesAtParams<'a, R, K, FoundPlaceMove, N, L>,
 ) {
     let GenPlaceMovesAtParams {
         runs,
+        keys,
         board_snapshot,
         working_buffer,
         multi_leaves,
@@ -3768,6 +3921,7 @@ fn gen_place_moves_at_lean<
         !placement.down,
         left_bounds,
         runs,
+        keys,
     );
 }
 
@@ -3778,10 +3932,11 @@ fn gen_place_moves_at<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: GenPlaceMovesAtParams<'a, (), FoundPlaceMove, N, L>,
+    p: GenPlaceMovesAtParams<'a, (), (), FoundPlaceMove, N, L>,
 ) {
     let GenPlaceMovesAtParams {
         runs: (),
+        keys: (),
         board_snapshot,
         working_buffer,
         multi_leaves,
@@ -4341,6 +4496,19 @@ impl KurniaMoveGenerator {
         if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
                 runs: (),
+                keys: (),
+                want_raw: true,
+                board_snapshot,
+                working_buffer,
+                multi_leaves: &multi_leaves,
+                found_place_move,
+                can_accept: |_best_possible_equity: i32| true,
+                current_threshold: || i32::MIN,
+            }) {}
+        } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(board_snapshot) {
+            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs,
+                keys: anagrams,
                 want_raw: true,
                 board_snapshot,
                 working_buffer,
@@ -4352,6 +4520,7 @@ impl KurniaMoveGenerator {
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
                 runs,
+                keys: (),
                 want_raw: true,
                 board_snapshot,
                 working_buffer,
@@ -4546,6 +4715,23 @@ impl KurniaMoveGenerator {
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
                 runs: (),
+                keys: (),
+                want_raw: false,
+                board_snapshot: params.board_snapshot,
+                working_buffer,
+                multi_leaves: &multi_leaves,
+                found_place_move,
+                can_accept: |best_possible_equity: i32| {
+                    threshold.get() <= equity::Equity::new(best_possible_equity)
+                },
+                current_threshold: || threshold.get().raw(),
+            }) {
+                breathe().await;
+            }
+        } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(params.board_snapshot) {
+            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs: (),
+                keys: anagrams,
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4561,6 +4747,7 @@ impl KurniaMoveGenerator {
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
                 runs: (),
+                keys: (),
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4772,6 +4959,21 @@ impl KurniaMoveGenerator {
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
                 runs: (),
+                keys: (),
+                want_raw: false,
+                board_snapshot: params.board_snapshot,
+                working_buffer,
+                multi_leaves: &multi_leaves,
+                found_place_move,
+                can_accept: |best_possible_equity: i32| {
+                    threshold.get() <= equity::Equity::new(best_possible_equity)
+                },
+                current_threshold: || threshold.get().raw(),
+            }) {}
+        } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(params.board_snapshot) {
+            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs: (),
+                keys: anagrams,
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4785,6 +4987,7 @@ impl KurniaMoveGenerator {
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
                 runs: (),
+                keys: (),
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4934,6 +5137,7 @@ fn kurnia_gen_exchange_moves<
 struct KurniaIterParams<
     'a,
     R: RunLetters,
+    K: JumbledKeys,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
@@ -4941,6 +5145,7 @@ struct KurniaIterParams<
     L: kwg::Node,
 > {
     runs: R,
+    keys: K,
     want_raw: bool,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer,
@@ -4954,16 +5159,18 @@ struct KurniaIterParams<
 fn kurnia_gen_place_moves_iter_lean<
     'a,
     R: 'a + RunLetters,
+    K: 'a + JumbledKeys,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: KurniaIterParams<'a, R, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
+    p: KurniaIterParams<'a, R, K, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         runs,
+        keys,
         want_raw,
         board_snapshot,
         working_buffer,
@@ -4994,7 +5201,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
-                &mut working_buffer.used_letters_tally,
+                (&mut working_buffer.used_letters_tally, keys),
             );
         }
     }
@@ -5016,7 +5223,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
-                &mut working_buffer.used_letters_tally,
+                (&mut working_buffer.used_letters_tally, keys),
             );
         }
     }
@@ -5178,6 +5385,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 };
                 gen_place_moves_at_lean(GenPlaceMovesAtParams {
                     runs,
+                    keys,
                     board_snapshot,
                     working_buffer,
                     multi_leaves,
@@ -5283,10 +5491,11 @@ fn kurnia_gen_place_moves_iter<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: KurniaIterParams<'a, (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
+    p: KurniaIterParams<'a, (), (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         runs: (),
+        keys: (),
         want_raw,
         board_snapshot,
         working_buffer,
@@ -5317,7 +5526,7 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
-                &mut working_buffer.used_letters_tally,
+                (&mut working_buffer.used_letters_tally, ()),
             );
         }
     }
@@ -5339,7 +5548,7 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
-                &mut working_buffer.used_letters_tally,
+                (&mut working_buffer.used_letters_tally, ()),
             );
         }
     }
@@ -5512,6 +5721,7 @@ fn kurnia_gen_place_moves_iter<
                 let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at(GenPlaceMovesAtParams {
                     runs: (),
+                    keys: (),
                     board_snapshot,
                     working_buffer,
                     multi_leaves,
@@ -6404,11 +6614,11 @@ mod tests {
     }
 
     #[inline]
-    fn test_kad(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+    fn test_kad(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::Node22> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
-        let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
-        for w in TEST_WORDS {
+        let mut words = Vec::<bites::Bites>::with_capacity(test_words.len());
+        for w in test_words {
             reader.set_word(w, &mut word_buf).unwrap();
             word_buf.sort_unstable();
             words.push(word_buf[..].into());
@@ -6978,7 +7188,7 @@ mod tests {
     #[inline]
     fn jumbled_placements_once(fen: &str, rack: &str, is_census: bool) -> Vec<String> {
         let gc = game_config::make_jumbled_english_game_config();
-        let kwg = test_kad(&gc);
+        let kwg = test_kad(&gc, TEST_WORDS);
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
@@ -7013,6 +7223,117 @@ mod tests {
     #[inline(always)]
     fn jumbled_placements(fen: &str, rack: &str) -> Vec<String> {
         jumbled_placements_once(fen, rack, false)
+    }
+
+    // the multisets and cross sets read from the anagrams by key make the
+    // walk's plays in the walk's order from every entry: sorted at every cap,
+    // async, and raw
+    #[inline]
+    #[test]
+    fn jumbled_movegen_finds_by_key_what_the_walk_finds() {
+        let fifteen = [
+            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
+        ];
+        let twenty_one = [
+            "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
+            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
+        ];
+        for (gc, boards) in [
+            (
+                game_config::make_jumbled_english_game_config(),
+                &fifteen[..],
+            ),
+            (
+                game_config::make_jumbled_super_english_game_config(),
+                &twenty_one[..],
+            ),
+        ] {
+            let kwg = test_kad(&gc, SWEEP_WORDS);
+            let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+                .unwrap()
+                .unwrap();
+            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            for fen in boards {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                // the last two need both blanks for one letter: TART, TREAT
+                for rack in SWEEP_RACKS.iter().chain(&["??AR", "??ERA"]) {
+                    let rack = parse_test_rack(gc.alphabet(), rack);
+                    let few_blanks = rack.iter().filter(|&&tile| tile == 0).count() <= 2;
+                    let mut made = Vec::new();
+                    for anagrams in [None, Some(&held)] {
+                        let board_snapshot = BoardSnapshot {
+                            board_tiles: &board_tiles,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams,
+                            rack_lengths: None,
+                            klv: &klv,
+                        };
+                        let plays = |g: &KurniaMoveGenerator| {
+                            g.plays
+                                .iter()
+                                .map(|p| {
+                                    format!("{} {}\n", p.equity.raw(), p.play.fmt(&board_snapshot))
+                                })
+                                .collect::<String>()
+                        };
+                        let mut move_generator = KurniaMoveGenerator::new(&gc);
+                        let mut sorted = Vec::new();
+                        for max_gen in [1usize, 5, usize::MAX] {
+                            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &rack,
+                                max_gen,
+                                num_exchanges_by_this_player: 0,
+                                pass_policy: PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            });
+                            sorted.push(plays(&move_generator));
+                        }
+                        assert_eq!(
+                            move_generator
+                                .working_buffer
+                                .jumbled_keys(&board_snapshot)
+                                .is_some(),
+                            anagrams.is_some() && few_blanks,
+                        );
+                        let params = GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &rack,
+                            max_gen: usize::MAX,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        };
+                        {
+                            let mut fut = std::pin::pin!(move_generator.gen_moves_filtered_async(
+                                &params,
+                                PlacePredicate::AcceptAll,
+                                klv::AdjustLeave::Identity,
+                                EquityPredicate::AcceptAll,
+                                || std::future::ready(()),
+                            ));
+                            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                            while fut.as_mut().poll(&mut cx).is_pending() {}
+                        }
+                        sorted.push(plays(&move_generator));
+                        move_generator.gen_moves_raw_all_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            0,
+                            PassPolicy::OnlyWhenForced,
+                        );
+                        made.push((sorted, plays(&move_generator)));
+                    }
+                    assert_eq!(made[0], made[1], "{fen}");
+                    assert!(!made[0].1.is_empty(), "{fen} generated nothing at all");
+                }
+            }
+        }
     }
 
     #[inline]
