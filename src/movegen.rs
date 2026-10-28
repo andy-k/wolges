@@ -2111,9 +2111,33 @@ fn leave_value_of<L: kwg::Node>(
     }
 }
 
+// what a walk along a run of the word graph's nodes knows of the tiles ahead of
+// it in the run
+trait RunLetters: Copy {
+    // whether the run from node p on may hold a tile in candidates
+    fn may_hold(self, p: i32, candidates: u64) -> bool;
+}
+
+// nothing, so every run may
+impl RunLetters for () {
+    #[inline(always)]
+    fn may_hold(self, _p: i32, _candidates: u64) -> bool {
+        true
+    }
+}
+
+// by node, the tiles from it to the end of its run (kwg::Kwg::compute_letter_bits)
+impl RunLetters for &[u64] {
+    #[inline(always)]
+    fn may_hold(self, p: i32, candidates: u64) -> bool {
+        self[p as usize] & candidates != 0
+    }
+}
+
 #[inline]
 fn gen_classic_place_moves_lean<
     'a,
+    R: RunLetters,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -2121,8 +2145,15 @@ fn gen_classic_place_moves_lean<
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
     left_bounds: &'a [i32],
+    runs: R,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
+    struct Env<
+        'a,
+        R: RunLetters,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    > {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -2130,6 +2161,7 @@ fn gen_classic_place_moves_lean<
         rack_bits: u64,
         letter_bits: u64,
         left_bounds: &'a [i32], // by left edge, the best span bound at it, then at or before it
+        runs: R,                // a walk along a run stops where these leave it no candidate
     }
     struct Accumulator {
         main_score: i32,
@@ -2141,11 +2173,12 @@ fn gen_classic_place_moves_lean<
     #[inline(always)]
     fn record<
         const SPELL_ONCE: bool,
+        R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
-        env: &mut Env<'_, CallbackType, N, L>,
+        env: &mut Env<'_, R, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
@@ -2193,11 +2226,12 @@ fn gen_classic_place_moves_lean<
 
     fn play_right<
         const SPELL_ONCE: bool,
+        R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
-        env: &mut Env<'_, CallbackType, N, L>,
+        env: &mut Env<'_, R, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut p: i32,
         mut idx: i8,
@@ -2224,7 +2258,7 @@ fn gen_classic_place_moves_lean<
             && idx - env.idx_left >= 2
             && node.accepts()
         {
-            record::<SPELL_ONCE, _, _, _>(env, acc, env.idx_left, idx);
+            record::<SPELL_ONCE, _, _, _, _>(env, acc, env.idx_left, idx);
         }
         if env.num_played >= env.params.num_max_played {
             return;
@@ -2252,7 +2286,7 @@ fn gen_classic_place_moves_lean<
                 } else {
                     env.rack_bits
                 };
-            if candidates == 0 {
+            if candidates == 0 || !env.runs.may_hold(p, candidates) {
                 return;
             }
             let new_word_multiplier = acc.word_multiplier
@@ -2296,7 +2330,7 @@ fn gen_classic_place_moves_lean<
                         let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
-                        play_right::<SPELL_ONCE, _, _, _>(
+                        play_right::<SPELL_ONCE, _, _, _, _>(
                             env,
                             &mut if SPELL_ONCE {
                                 Accumulator {
@@ -2333,7 +2367,7 @@ fn gen_classic_place_moves_lean<
                     {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_right::<SPELL_ONCE, _, _, _>(
+                        play_right::<SPELL_ONCE, _, _, _, _>(
                             env,
                             &mut Accumulator { ..*blank_acc },
                             p,
@@ -2342,7 +2376,8 @@ fn gen_classic_place_moves_lean<
                         );
                         env.params.rack_tally[0] += 1;
                     }
-                    if candidates == 0 {
+                    if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates))
+                    {
                         break;
                     }
                 }
@@ -2357,11 +2392,12 @@ fn gen_classic_place_moves_lean<
 
     fn play_left<
         const SPELL_ONCE: bool,
+        R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
-        env: &mut Env<'_, CallbackType, N, L>,
+        env: &mut Env<'_, R, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut p: i32,
         mut idx: i8,
@@ -2401,7 +2437,7 @@ fn gen_classic_place_moves_lean<
         }
         let mut node = env.params.board_snapshot.kwg[p];
         if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
-            record::<SPELL_ONCE, _, _, _>(env, acc, idx + 1, env.params.anchor + 1);
+            record::<SPELL_ONCE, _, _, _, _>(env, acc, idx + 1, env.params.anchor + 1);
         }
         if env.num_played >= env.params.num_max_played {
             return;
@@ -2449,7 +2485,7 @@ fn gen_classic_place_moves_lean<
                 if node.tile() == 0 {
                     // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
                     env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, _, _, _>(
+                    play_right::<SPELL_ONCE, _, _, _, _>(
                         env,
                         acc,
                         turnaround_p,
@@ -2473,7 +2509,7 @@ fn gen_classic_place_moves_lean<
                 } else {
                     env.rack_bits
                 });
-        if candidates == 0 {
+        if candidates == 0 || !env.runs.may_hold(p, candidates) {
             return;
         }
         let new_word_multiplier =
@@ -2514,7 +2550,7 @@ fn gen_classic_place_moves_lean<
                 if tile == 0 {
                     env.num_played -= 1;
                     env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, _, _, _>(
+                    play_right::<SPELL_ONCE, _, _, _, _>(
                         env,
                         acc,
                         p,
@@ -2529,7 +2565,7 @@ fn gen_classic_place_moves_lean<
                         let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
-                        play_left::<SPELL_ONCE, _, _, _>(
+                        play_left::<SPELL_ONCE, _, _, _, _>(
                             env,
                             &mut if SPELL_ONCE {
                                 Accumulator {
@@ -2566,7 +2602,7 @@ fn gen_classic_place_moves_lean<
                     {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_left::<SPELL_ONCE, _, _, _>(
+                        play_left::<SPELL_ONCE, _, _, _, _>(
                             env,
                             &mut Accumulator { ..*blank_acc },
                             p,
@@ -2576,7 +2612,7 @@ fn gen_classic_place_moves_lean<
                         env.params.rack_tally[0] += 1;
                     }
                 }
-                if candidates == 0 {
+                if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates)) {
                     break;
                 }
             }
@@ -2601,6 +2637,7 @@ fn gen_classic_place_moves_lean<
         rack_bits,
         letter_bits: (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
         left_bounds,
+        runs,
     };
     let mut acc = Accumulator {
         main_score: 0,
@@ -2609,9 +2646,9 @@ fn gen_classic_place_moves_lean<
         leave_idx: pass_leave_idx,
     };
     if is_census {
-        play_left::<true, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
+        play_left::<true, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
     } else {
-        play_left::<false, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
+        play_left::<false, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
     }
 }
 
@@ -3551,6 +3588,7 @@ fn gen_jumbled_place_moves<
 #[inline(always)]
 fn gen_place_moves_lean<
     'a,
+    R: RunLetters,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -3558,10 +3596,11 @@ fn gen_place_moves_lean<
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
     left_bounds: &'a [i32],
+    runs: R,
 ) {
     match params.board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => {
-            gen_classic_place_moves_lean(params, single_tile_plays, left_bounds)
+            gen_classic_place_moves_lean(params, single_tile_plays, left_bounds, runs)
         }
         game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
     }
@@ -3580,7 +3619,7 @@ fn gen_place_moves<
     match params.board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => match params.board_snapshot.anagrams {
             Some(held) => gen_classic_place_moves(params, held, single_tile_plays),
-            None => gen_classic_place_moves_lean(params, single_tile_plays, &[]),
+            None => gen_classic_place_moves_lean(params, single_tile_plays, &[], ()),
         },
         game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
     }
@@ -3588,10 +3627,12 @@ fn gen_place_moves<
 
 struct GenPlaceMovesAtParams<
     'a,
+    R: RunLetters,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 > {
+    runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer,
     multi_leaves: &'a klv::MultiLeaves,
@@ -3604,13 +3645,15 @@ struct GenPlaceMovesAtParams<
 #[inline(always)]
 fn gen_place_moves_at_lean<
     'a,
+    R: RunLetters,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: GenPlaceMovesAtParams<'a, FoundPlaceMove, N, L>,
+    p: GenPlaceMovesAtParams<'a, R, FoundPlaceMove, N, L>,
 ) {
     let GenPlaceMovesAtParams {
+        runs,
         board_snapshot,
         working_buffer,
         multi_leaves,
@@ -3724,6 +3767,7 @@ fn gen_place_moves_at_lean<
         },
         !placement.down,
         left_bounds,
+        runs,
     );
 }
 
@@ -3734,9 +3778,10 @@ fn gen_place_moves_at<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: GenPlaceMovesAtParams<'a, FoundPlaceMove, N, L>,
+    p: GenPlaceMovesAtParams<'a, (), FoundPlaceMove, N, L>,
 ) {
     let GenPlaceMovesAtParams {
+        runs: (),
         board_snapshot,
         working_buffer,
         multi_leaves,
@@ -4194,6 +4239,34 @@ impl KurniaMoveGenerator {
         self.working_buffer.lane_cols = !0;
     }
 
+    // as gen_moves_raw_lanes_unsorted with no exchange made and a pass a
+    // candidate, as an endgame searches, where each walk along a run of the
+    // word graph's nodes stops once run_letter_bits (by node, the tiles from it
+    // to the end of its run: kwg::Kwg::compute_letter_bits) leaves it no
+    // candidate
+    #[inline(always)]
+    pub(crate) fn gen_moves_raw_lanes_unsorted_by_runs<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        run_letter_bits: &'a [u64],
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        rows: u128,
+        cols: u128,
+    ) {
+        debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
+        self.working_buffer.lane_rows = rows;
+        self.working_buffer.lane_cols = cols;
+        self.gen_moves_raw_all_unsorted_impl::<false, _, _, _>(
+            board_snapshot,
+            rack,
+            0,
+            PassPolicy::AsACandidate,
+            run_letter_bits,
+        );
+        self.working_buffer.lane_rows = !0;
+        self.working_buffer.lane_cols = !0;
+    }
+
     // skip equity computation and sorting
     #[inline(always)]
     pub fn gen_moves_raw_all_unsorted<'a, N: kwg::Node, L: kwg::Node>(
@@ -4203,11 +4276,12 @@ impl KurniaMoveGenerator {
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
     ) {
-        self.gen_moves_raw_all_unsorted_impl::<false, _, _>(
+        self.gen_moves_raw_all_unsorted_impl::<false, _, _, _>(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
+            (),
         )
     }
 
@@ -4219,21 +4293,29 @@ impl KurniaMoveGenerator {
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
     ) {
-        self.gen_moves_raw_all_unsorted_impl::<true, _, _>(
+        self.gen_moves_raw_all_unsorted_impl::<true, _, _, _>(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
+            (),
         )
     }
 
     #[inline]
-    fn gen_moves_raw_all_unsorted_impl<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    fn gen_moves_raw_all_unsorted_impl<
+        'a,
+        const LEAN: bool,
+        R: 'a + RunLetters,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         rack: &'a [u8],
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
+        runs: R,
     ) {
         self.plays.clear();
         let mut vec_moves = std::mem::take(&mut self.plays);
@@ -4258,6 +4340,7 @@ impl KurniaMoveGenerator {
             };
         if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
+                runs: (),
                 want_raw: true,
                 board_snapshot,
                 working_buffer,
@@ -4268,6 +4351,7 @@ impl KurniaMoveGenerator {
             }) {}
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs,
                 want_raw: true,
                 board_snapshot,
                 working_buffer,
@@ -4461,6 +4545,7 @@ impl KurniaMoveGenerator {
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
+                runs: (),
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4475,6 +4560,7 @@ impl KurniaMoveGenerator {
             }
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs: (),
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4685,6 +4771,7 @@ impl KurniaMoveGenerator {
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
+                runs: (),
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4697,6 +4784,7 @@ impl KurniaMoveGenerator {
             }) {}
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs: (),
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
                 working_buffer,
@@ -4845,12 +4933,14 @@ fn kurnia_gen_exchange_moves<
 
 struct KurniaIterParams<
     'a,
+    R: RunLetters,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
 > {
+    runs: R,
     want_raw: bool,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer,
@@ -4863,15 +4953,17 @@ struct KurniaIterParams<
 #[inline]
 fn kurnia_gen_place_moves_iter_lean<
     'a,
+    R: 'a + RunLetters,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
+    p: KurniaIterParams<'a, R, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
+        runs,
         want_raw,
         board_snapshot,
         working_buffer,
@@ -5085,6 +5177,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     idx as usize * 2 * bounds_stride
                 };
                 gen_place_moves_at_lean(GenPlaceMovesAtParams {
+                    runs,
                     board_snapshot,
                     working_buffer,
                     multi_leaves,
@@ -5190,9 +5283,10 @@ fn kurnia_gen_place_moves_iter<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
+    p: KurniaIterParams<'a, (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
+        runs: (),
         want_raw,
         board_snapshot,
         working_buffer,
@@ -5417,6 +5511,7 @@ fn kurnia_gen_place_moves_iter<
             if can_accept(equity) {
                 let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at(GenPlaceMovesAtParams {
+                    runs: (),
                     board_snapshot,
                     working_buffer,
                     multi_leaves,
@@ -6097,6 +6192,85 @@ mod tests {
         let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
         let two = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15";
         both_arms_agree(&gc, &[empty, one, two], LONG_RACKS);
+    }
+
+    // a walk along a run that stops where the run letters leave it no candidate
+    // finds the plays a walk to the run's end finds, in its order
+    #[inline]
+    #[test]
+    fn stopping_at_the_last_candidate_finds_the_same_plays() {
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let fifteen = [
+            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
+        ];
+        let twenty_one = [
+            "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
+            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
+        ];
+        for (gc, boards, racks) in [
+            (
+                game_config::make_english_game_config(),
+                &fifteen[..],
+                SWEEP_RACKS,
+            ),
+            (
+                game_config::make_super_english_game_config(),
+                &twenty_one[..],
+                SWEEP_RACKS,
+            ),
+            (
+                game_config::make_hong_kong_english_game_config(),
+                &fifteen[..],
+                LONG_RACKS,
+            ),
+        ] {
+            let kwg = sweep_kwg_covering(&gc);
+            let run_letter_bits = kwg.compute_letter_bits().letter_bits;
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            for fen in boards {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                for rack in racks {
+                    let rack = parse_test_rack(gc.alphabet(), rack);
+                    let mut move_generator = KurniaMoveGenerator::new(&gc);
+                    let plays = |g: &KurniaMoveGenerator| {
+                        g.plays
+                            .iter()
+                            .map(|p| format!("{}\n", p.play.fmt(&board_snapshot)))
+                            .collect::<String>()
+                    };
+                    move_generator.gen_moves_raw_lanes_unsorted(
+                        &board_snapshot,
+                        &rack,
+                        0,
+                        PassPolicy::AsACandidate,
+                        !0,
+                        !0,
+                    );
+                    let walked = plays(&move_generator);
+                    move_generator.gen_moves_raw_lanes_unsorted_by_runs(
+                        &run_letter_bits,
+                        &board_snapshot,
+                        &rack,
+                        !0,
+                        !0,
+                    );
+                    let stopped = plays(&move_generator);
+                    assert_eq!(walked, stopped, "{fen}");
+                    assert!(!walked.is_empty(), "{fen} generated nothing at all");
+                }
+            }
+        }
     }
 
     // a generation of some lanes alone finds exactly the plays a whole one
