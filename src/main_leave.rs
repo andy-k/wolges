@@ -250,6 +250,19 @@ struct Gilles {
     games: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        help = "after the games, value the racks still short of this many samples on further games' snapshots until none is"
+    )]
+    min_samples: u64,
+    #[arg(
+        long,
+        value_name = "SUMMARY",
+        help = "start from this summary's samples, which count toward --min-samples and are written out with the new ones; give the run a seed of its own"
+    )]
+    resume: Option<String>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
     #[arg(long, help = "print no progress")]
@@ -932,6 +945,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     lean: a.lean,
                     quiet: a.quiet,
                 },
+                a.min_samples,
+                a.resume,
             )
         }
         Task::Census(a) => {
@@ -2317,6 +2332,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         lean,
         quiet,
     }: GamesParams,
+    min_samples: u64,
+    resume: Option<String>,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -2325,6 +2342,23 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let num_threads = threads;
 
     let run_identifier = format!("gilles-summary-{}", run_stamp());
+
+    // a resumed run starts from the summary's samples, which --min-samples
+    // counts and the summary it writes holds with the new ones
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    if let Some(path) = &resume {
+        let (records, racks) = read_summary_into(
+            &game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(path)?),
+            &mut full_rack_map,
+        )?;
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "resuming from {path}: {records} records, {racks} racks"
+        )?;
+    }
 
     let rack_size = game_config.rack_size();
     let num_tiles: u32 = {
@@ -2347,9 +2381,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_samples = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let mutexed = std::sync::Arc::new(std::sync::Mutex::new(GillesMutexed {
-        full_rack_map: fash::MyHashMap::<bites::Bites, Cumulate>::default(),
-    }));
+    let mutexed = std::sync::Arc::new(std::sync::Mutex::new(GillesMutexed { full_rack_map }));
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
 
@@ -2357,109 +2389,108 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| -> error::Returns<()> {
-        let mut threads = vec![];
-        for _ in 0..num_threads {
-            let game_config = std::sync::Arc::clone(&game_config);
-            let kwg = std::sync::Arc::clone(&kwg);
-            let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
-            let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
-            let num_processed_games = std::sync::Arc::clone(&num_processed_games);
-            let completed_games = std::sync::Arc::clone(&completed_games);
-            let completed_samples = std::sync::Arc::clone(&completed_samples);
-            let mutexed = std::sync::Arc::clone(&mutexed);
-            let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
-            let run_identifier = run_identifier.clone();
-            threads.push(s.spawn(move || -> error::Returns<()> {
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                let mut game_state = game_state::GameState::new(&game_config);
-                let alphabet = game_config.alphabet();
-                let num_letters = alphabet.len() as usize;
-                let base_freqs = (0..alphabet.len())
-                    .map(|t| alphabet.freq(t))
-                    .collect::<Vec<u8>>();
+    // --min-samples: after the games, rounds of further games, each snapshot of
+    // which values the next of the racks still short (at most once each),
+    // passing over them as often as their mean shortfall, until none is short.
+    // A snapshot takes as many as a group makes racks at most (group_size choose
+    // rack_size), so a forced snapshot costs no more than a sampled one.
+    let group_racks = (1..=rack_size as u64).fold(1u64, |ways, i| {
+        ways * (group_size as u64 - rack_size as u64 + i) / i
+    });
+    let mut forced = Vec::<bites::Bites>::new();
+    let mut forced_len = 0u64;
+    let forced_next = std::sync::atomic::AtomicU64::new(0);
+    let mut alphabet_freqs = {
+        let alphabet = game_config.alphabet();
+        (0..alphabet.len())
+            .map(|t| alphabet.freq(t))
+            .collect::<Vec<u8>>()
+    };
+    let mut full_rack_tally = vec![0u8; alphabet_freqs.len()];
+    let mut forced_exchange_buffer = Vec::with_capacity(rack_size as usize);
+    for round in 0u64.. {
+        let forcing = round > 0;
+        let forced_racks = &forced;
+        let forced_cursor = &forced_next;
+        std::thread::scope(|s| -> error::Returns<()> {
+            let mut threads = vec![];
+            for _ in 0..num_threads {
+                let game_config = std::sync::Arc::clone(&game_config);
+                let kwg = std::sync::Arc::clone(&kwg);
+                let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
+                let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
+                let num_processed_games = std::sync::Arc::clone(&num_processed_games);
+                let completed_games = std::sync::Arc::clone(&completed_games);
+                let completed_samples = std::sync::Arc::clone(&completed_samples);
+                let mutexed = std::sync::Arc::clone(&mutexed);
+                let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
+                let run_identifier = run_identifier.clone();
+                threads.push(s.spawn(move || -> error::Returns<()> {
+                    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                    let mut game_state = game_state::GameState::new(&game_config);
+                    let alphabet = game_config.alphabet();
+                    let num_letters = alphabet.len() as usize;
+                    let base_freqs = (0..alphabet.len())
+                        .map(|t| alphabet.freq(t))
+                        .collect::<Vec<u8>>();
 
-                let mut cand_tally = vec![0u8; num_letters];
-                let mut best_group_tally = vec![0u8; num_letters];
-                let mut rack_tally = vec![0u8; num_letters];
-                let mut unseen_pool = Vec::<u8>::new();
-                let mut exchange_buffer = Vec::with_capacity(rack_size as usize);
-                let mut thread_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-                let mut final_scores = vec![0; game_config.num_players() as usize];
+                    let mut cand_tally = vec![0u8; num_letters];
+                    let mut best_group_tally = vec![0u8; num_letters];
+                    let mut rack_tally = vec![0u8; num_letters];
+                    let mut unseen_pool = Vec::<u8>::new();
+                    let mut exchange_buffer = Vec::with_capacity(rack_size as usize);
+                    let mut thread_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                    let mut final_scores = vec![0; game_config.num_players() as usize];
 
-                let ln_fact = {
-                    let mut v = vec![0.0f64; num_tiles as usize + 1];
-                    for i in 2..v.len() {
-                        v[i] = v[i - 1] + (i as f64).ln();
-                    }
-                    v
-                };
-                let ln_choose = |n: usize, k: usize| -> f64 {
-                    if k > n {
-                        f64::NEG_INFINITY
-                    } else {
-                        ln_fact[n] - ln_fact[k] - ln_fact[n - k]
-                    }
-                };
+                    let ln_fact = {
+                        let mut v = vec![0.0f64; num_tiles as usize + 1];
+                        for i in 2..v.len() {
+                            v[i] = v[i - 1] + (i as f64).ln();
+                        }
+                        v
+                    };
+                    let ln_choose = |n: usize, k: usize| -> f64 {
+                        if k > n {
+                            f64::NEG_INFINITY
+                        } else {
+                            ln_fact[n] - ln_fact[k] - ln_fact[n - k]
+                        }
+                    };
 
-                loop {
-                    let num_prior_games =
-                        num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if num_prior_games >= num_games {
-                        num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        break;
-                    }
-
-                    let mut rng = GameRng::from_stream(seed, num_prior_games);
-                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-
-                    let mut turn_idx = 0u32;
-                    let mut base_turn: Option<u32> = None;
                     loop {
-                        let board_tiles_count =
-                            game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-
-                        let pool_count = (num_tiles as usize).saturating_sub(board_tiles_count);
-
-                        if pool_count >= pool_min
-                            && pool_count <= pool_max
-                            && board_tiles_count > 0
-                            && !game_state.bag.is_empty()
-                            && (turn_idx - *base_turn.get_or_insert(turn_idx))
-                                .is_multiple_of(turn_stride)
+                        if forcing
+                            && forced_cursor.load(std::sync::atomic::Ordering::Relaxed)
+                                >= forced_len
                         {
-                            let group_src: &[u8] = &base_freqs;
-                            let num_unseen = group_src.iter().map(|&c| c as usize).sum::<usize>();
-                            if num_unseen >= group_size {
-                                unseen_pool.clear();
-                                for (tile, &c) in group_src.iter().enumerate() {
-                                    for _ in 0..c {
-                                        unseen_pool.push(tile as u8);
-                                    }
-                                }
+                            break;
+                        }
+                        let num_prior_games =
+                            num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if !forcing && num_prior_games >= num_games {
+                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            break;
+                        }
 
-                                let mut best_lnp = f64::INFINITY;
-                                for _ in 0..num_draws {
-                                    for i in 0..group_size {
-                                        let j = rng.random_range(i..unseen_pool.len());
-                                        unseen_pool.swap(i, j);
-                                    }
-                                    cand_tally.iter_mut().for_each(|m| *m = 0);
-                                    for &t in &unseen_pool[..group_size] {
-                                        cand_tally[t as usize] += 1;
-                                    }
-                                    let mut lnp = 0.0f64;
-                                    for (tile, &k) in cand_tally.iter().enumerate() {
-                                        if k > 0 {
-                                            lnp += ln_choose(group_src[tile] as usize, k as usize);
-                                        }
-                                    }
-                                    if lnp < best_lnp {
-                                        best_lnp = lnp;
-                                        best_group_tally.clone_from(&cand_tally);
-                                    }
-                                }
+                        let mut rng = GameRng::from_stream(seed, num_prior_games);
+                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
 
+                        let mut turn_idx = 0u32;
+                        let mut base_turn: Option<u32> = None;
+                        loop {
+                            let board_tiles_count =
+                                game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+
+                            let pool_count = (num_tiles as usize).saturating_sub(board_tiles_count);
+
+                            let at_snapshot = pool_count >= pool_min
+                                && pool_count <= pool_max
+                                && board_tiles_count > 0
+                                && !game_state.bag.is_empty()
+                                && (turn_idx - *base_turn.get_or_insert(turn_idx))
+                                    .is_multiple_of(turn_stride);
+                            if at_snapshot && forcing {
+                                // a block of the racks still short, consecutive
+                                // and so each at most once on this board
                                 let board_snapshot = movegen::BoardSnapshot {
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
@@ -2472,96 +2503,206 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         &arc_klv1
                                     },
                                 };
-                                rack_tally.clone_from(&best_group_tally);
-                                let move_generator = &mut move_generator;
-                                let thread_map = &mut thread_map;
-                                let completed_samples = &completed_samples;
-                                generate_exchanges(&mut ExchangeEnv {
-                                    found_exchange_move: |rack_bytes: &[u8]| {
-                                        move_generator.gen_moves_unfiltered(
-                                            &movegen::GenMovesParams {
-                                                board_snapshot: &board_snapshot,
-                                                rack: rack_bytes,
-                                                max_gen: 1,
-                                                num_exchanges_by_this_player: 0,
-                                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                                dynamic_leaves: None,
-                                            },
-                                        );
-                                        let equity = move_generator.plays[0].equity.as_f64();
-                                        pool_one(thread_map, rack_bytes, equity);
-                                        completed_samples
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    },
-                                    rack_tally: &mut rack_tally,
-                                    min_len: rack_size,
-                                    max_len: rack_size,
-                                    exchange_buffer: &mut exchange_buffer,
-                                });
+                                let block = (forced_racks.len() as u64).min(group_racks);
+                                let start = forced_cursor
+                                    .fetch_add(block, std::sync::atomic::Ordering::Relaxed);
+                                for i in start..(start + block).min(forced_len) {
+                                    let rack =
+                                        &forced_racks[(i % forced_racks.len() as u64) as usize];
+                                    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                        board_snapshot: &board_snapshot,
+                                        rack,
+                                        max_gen: 1,
+                                        num_exchanges_by_this_player: 0,
+                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                        dynamic_leaves: None,
+                                    });
+                                    let equity = move_generator.plays[0].equity.as_f64();
+                                    pool_one(&mut thread_map, rack, equity);
+                                    completed_samples
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            } else if at_snapshot {
+                                let group_src: &[u8] = &base_freqs;
+                                let num_unseen =
+                                    group_src.iter().map(|&c| c as usize).sum::<usize>();
+                                if num_unseen >= group_size {
+                                    unseen_pool.clear();
+                                    for (tile, &c) in group_src.iter().enumerate() {
+                                        for _ in 0..c {
+                                            unseen_pool.push(tile as u8);
+                                        }
+                                    }
+
+                                    let mut best_lnp = f64::INFINITY;
+                                    for _ in 0..num_draws {
+                                        for i in 0..group_size {
+                                            let j = rng.random_range(i..unseen_pool.len());
+                                            unseen_pool.swap(i, j);
+                                        }
+                                        cand_tally.iter_mut().for_each(|m| *m = 0);
+                                        for &t in &unseen_pool[..group_size] {
+                                            cand_tally[t as usize] += 1;
+                                        }
+                                        let mut lnp = 0.0f64;
+                                        for (tile, &k) in cand_tally.iter().enumerate() {
+                                            if k > 0 {
+                                                lnp +=
+                                                    ln_choose(group_src[tile] as usize, k as usize);
+                                            }
+                                        }
+                                        if lnp < best_lnp {
+                                            best_lnp = lnp;
+                                            best_group_tally.clone_from(&cand_tally);
+                                        }
+                                    }
+
+                                    let board_snapshot = movegen::BoardSnapshot {
+                                        board_tiles: &game_state.board_tiles,
+                                        game_config: &game_config,
+                                        kwg: &kwg,
+                                        anagrams,
+                                        rack_lengths,
+                                        klv: if game_state.turn == 0 {
+                                            &arc_klv0
+                                        } else {
+                                            &arc_klv1
+                                        },
+                                    };
+                                    rack_tally.clone_from(&best_group_tally);
+                                    let move_generator = &mut move_generator;
+                                    let thread_map = &mut thread_map;
+                                    let completed_samples = &completed_samples;
+                                    generate_exchanges(&mut ExchangeEnv {
+                                        found_exchange_move: |rack_bytes: &[u8]| {
+                                            move_generator.gen_moves_unfiltered(
+                                                &movegen::GenMovesParams {
+                                                    board_snapshot: &board_snapshot,
+                                                    rack: rack_bytes,
+                                                    max_gen: 1,
+                                                    num_exchanges_by_this_player: 0,
+                                                    pass_policy:
+                                                        movegen::PassPolicy::OnlyWhenForced,
+                                                    dynamic_leaves: None,
+                                                },
+                                            );
+                                            let equity = move_generator.plays[0].equity.as_f64();
+                                            pool_one(thread_map, rack_bytes, equity);
+                                            completed_samples
+                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        },
+                                        rack_tally: &mut rack_tally,
+                                        min_len: rack_size,
+                                        max_len: rack_size,
+                                        exchange_buffer: &mut exchange_buffer,
+                                    });
+                                }
+                            }
+
+                            let board_snapshot = movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                anagrams,
+                                rack_lengths,
+                                klv: if game_state.turn == 0 {
+                                    &arc_klv0
+                                } else {
+                                    &arc_klv1
+                                },
+                            };
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &game_state.current_player().rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            });
+
+                            let play = &move_generator.plays[0];
+                            game_state.play(&game_config, &mut rng, &play.play)?;
+                            let game_ended =
+                                game_state.check_game_ended(&game_config, &mut final_scores)?;
+                            game_state.next_turn();
+                            turn_idx += 1;
+                            if !matches!(game_ended, game_state::CheckGameEnded::NotEnded) {
+                                break;
                             }
                         }
+                        completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                        let board_snapshot = movegen::BoardSnapshot {
-                            board_tiles: &game_state.board_tiles,
-                            game_config: &game_config,
-                            kwg: &kwg,
-                            anagrams,
-                            rack_lengths,
-                            klv: if game_state.turn == 0 {
-                                &arc_klv0
-                            } else {
-                                &arc_klv1
-                            },
-                        };
-                        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &game_state.current_player().rack,
-                            max_gen: 1,
-                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: None,
-                        });
-
-                        let play = &move_generator.plays[0];
-                        game_state.play(&game_config, &mut rng, &play.play)?;
-                        let game_ended =
-                            game_state.check_game_ended(&game_config, &mut final_scores)?;
-                        game_state.next_turn();
-                        turn_idx += 1;
-                        if !matches!(game_ended, game_state::CheckGameEnded::NotEnded) {
-                            break;
-                        }
-                    }
-                    completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                    let elapsed = t0.elapsed().as_secs();
-                    let mut tick = mutexed_tick.lock().unwrap();
-                    if !quiet && tick.update(elapsed) {
-                        writeln!(
+                        let elapsed = t0.elapsed().as_secs();
+                        let mut tick = mutexed_tick.lock().unwrap();
+                        if !quiet && tick.update(elapsed) {
+                            writeln!(
                             boxed_stdout_or_stderr(),
                             "After {elapsed} seconds, {} games, {} samples into {run_identifier}",
                             completed_games.load(std::sync::atomic::Ordering::Relaxed),
                             completed_samples.load(std::sync::atomic::Ordering::Relaxed),
                         )
                         .ok();
+                        }
+                    }
+
+                    let mut g = mutexed.lock().unwrap();
+                    merge_rack_map(&mut g.full_rack_map, &mut thread_map);
+                    Ok(())
+                }));
+            }
+            for thread in threads {
+                match thread.join() {
+                    Ok(done) => done?,
+                    Err(e) => {
+                        writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
                     }
                 }
-
-                let mut g = mutexed.lock().unwrap();
-                merge_rack_map(&mut g.full_rack_map, &mut thread_map);
-                Ok(())
-            }));
-        }
-        for thread in threads {
-            match thread.join() {
-                Ok(done) => done?,
-                Err(e) => {
-                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
-                }
             }
+            Ok(())
+        })?;
+        if min_samples == 0 {
+            break;
         }
-        Ok(())
-    })?;
+        let deficit = recompute_undersampled_racks(
+            &mutexed.lock().unwrap().full_rack_map,
+            &mut forced,
+            RecomputeScratch {
+                full_rack_tally: &mut full_rack_tally,
+                alphabet_freqs: &mut alphabet_freqs,
+                exchange_buffer: &mut forced_exchange_buffer,
+            },
+            rack_size,
+            min_samples,
+        );
+        if forced.is_empty() {
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "gilles: every full rack has {min_samples} {} or more after {round} forcing {}",
+                plural(min_samples, "sample", "samples"),
+                plural(round, "round", "rounds")
+            )?;
+            break;
+        }
+        let passes = deficit.div_ceil(forced.len() as u64);
+        forced_len = forced.len() as u64 * passes;
+        forced_next.store(0, std::sync::atomic::Ordering::Relaxed);
+        // shuffled, so a snapshot's block is not racks next to each other in order
+        let mut rng = GameRng::seed_from_u64(census_mix64(seed.wrapping_add(round)));
+        for i in (1..forced.len()).rev() {
+            forced.swap(i, rng.random_range(0..=i));
+        }
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "gilles: forcing round {}: {} {} short of {min_samples} {} by {deficit} in all, {passes} {} over them",
+            round + 1,
+            forced.len(),
+            plural(forced.len() as u64, "rack", "racks"),
+            plural(min_samples, "sample", "samples"),
+            plural(passes, "pass", "passes")
+        )?;
+    }
 
     let g = mutexed.lock().unwrap();
     let map = &g.full_rack_map;
