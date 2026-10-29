@@ -1046,6 +1046,13 @@ rack the tiles can deal is valued on N boards or more. Each round adds as many
 boards as the least-covered rack's rate says it needs, but never more than have
 been run, and the census says how many boards that rack got.
 
+A census can also go on later. --keep-state writes the last generation's state
+as census-state-<stamp>.bin -- the seed, the boards, the leaves it valued them
+with, and every multiset's sums -- and census --continue with that file samples
+the boards given more, from the board after its last, coming out exactly as one
+run over all those boards would. --min-boards and --keep-state go with it. The
+file's format is described where src/main_leave.rs reads it.
+
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
 
