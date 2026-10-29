@@ -402,6 +402,7 @@ struct WorkBuffer {
     t0: std::time::Instant,           // the solve's start, for its time limit
     dur_movegen: std::time::Duration, // for progress, timed only while something listens
     movegen: movegen::KurniaMoveGenerator,
+    run_letter_bits: Option<Box<[u64]>>,
     board_tiles: Vec<u8>,  // the position searched, made and unmade in place
     racks: [Vec<u8>; 2],   // its racks, each sorted
     rack_scores: [i32; 2], // what its racks' tiles score
@@ -432,11 +433,12 @@ struct WorkBuffer {
 }
 
 impl WorkBuffer {
-    fn new(game_config: &game_config::GameConfig) -> Self {
+    fn new(game_config: &game_config::GameConfig, run_letter_bits: Option<Box<[u64]>>) -> Self {
         Self {
             t0: std::time::Instant::now(),
             dur_movegen: Default::default(),
             movegen: movegen::KurniaMoveGenerator::new(game_config),
+            run_letter_bits,
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             rack_scores: [0, 0],
@@ -622,6 +624,37 @@ impl std::fmt::Display for ProgressLine<'_> {
 
 type ProgressFn = Box<dyn FnMut(&Progress) -> error::Returns<()>>;
 
+// the raw moves of rack on the rows and columns in the masks, as the search
+// generates them: with no exchange made, a pass a candidate, and on the default
+// arm each walk along a run stopping at its last candidate
+#[inline(always)]
+fn gen_raw_lanes<N: kwg::Node, L: kwg::Node>(
+    generator: &mut movegen::KurniaMoveGenerator,
+    run_letter_bits: Option<&[u64]>,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    rack: &[u8],
+    rows: u128,
+    cols: u128,
+) {
+    match run_letter_bits {
+        Some(run_letter_bits) => generator.gen_moves_raw_lanes_unsorted_by_runs(
+            run_letter_bits,
+            board_snapshot,
+            rack,
+            rows,
+            cols,
+        ),
+        None => generator.gen_moves_raw_lanes_unsorted(
+            board_snapshot,
+            rack,
+            0, // TODO: use game_state to track this
+            movegen::PassPolicy::AsACandidate,
+            rows,
+            cols,
+        ),
+    }
+}
+
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
@@ -647,6 +680,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         if game_config.num_players() != 2 {
             return Err("cannot solve non-2-player endgames".into());
         }
+        // the run letters, unless the tables are the lean arm's (rack lengths),
+        // which reads no more than the word graph
+        let run_letter_bits = arm_tables
+            .rack_lengths()
+            .is_none()
+            .then(|| kwg.compute_letter_bits().letter_bits);
         Ok(Self {
             game_config,
             kwg,
@@ -655,7 +694,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             scoreless: [0, 0],
-            work_buffer: WorkBuffer::new(game_config),
+            work_buffer: WorkBuffer::new(game_config, run_letter_bits),
         })
     }
 
@@ -851,7 +890,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
         // timed only while something listens
         let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
-        work_buffer.movegen.gen_moves_raw_lanes_unsorted(
+        gen_raw_lanes(
+            &mut work_buffer.movegen,
+            work_buffer.run_letter_bits.as_deref(),
             &movegen::BoardSnapshot {
                 board_tiles: &work_buffer.board_tiles,
                 game_config: self.game_config,
@@ -861,8 +902,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 klv: &self.klv,
             },
             &work_buffer.racks[player_idx as usize],
-            0,
-            movegen::PassPolicy::AsACandidate,
             rows,
             cols,
         );
@@ -921,7 +960,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         };
         // timed only while something listens
         let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
-        work_buffer.movegen.gen_moves_raw_lanes_unsorted(
+        gen_raw_lanes(
+            &mut work_buffer.movegen,
+            work_buffer.run_letter_bits.as_deref(),
             &movegen::BoardSnapshot {
                 board_tiles: &work_buffer.board_tiles,
                 game_config: self.game_config,
@@ -931,8 +972,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 klv: &self.klv,
             },
             &work_buffer.racks[player_idx as usize],
-            0, // TODO: use game_state to track this
-            movegen::PassPolicy::AsACandidate,
             rows,
             cols,
         );
