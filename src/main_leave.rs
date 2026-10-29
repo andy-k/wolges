@@ -286,6 +286,18 @@ struct Census {
     min_boards: u64,
     #[arg(
         long,
+        help = "also write the last generation's state as census-state-<stamp>.bin, which --continue reads"
+    )]
+    keep_state: bool,
+    #[arg(
+        long = "continue",
+        value_name = "STATE",
+        conflicts_with = "resume",
+        help = "continue the last generation of the census that wrote this census-state-<stamp>.bin, with its seed and leaves: the boards given are the boards to add"
+    )]
+    continue_state: Option<String>,
+    #[arg(
+        long,
         help = "also write the full-length leaves (what dynamic leaves read)"
     )]
     full: bool,
@@ -937,6 +949,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     threads,
                     resume: a.resume,
                     min_boards: a.min_boards,
+                    keep_state: a.keep_state,
+                    continue_state: a.continue_state,
                     full: a.full,
                     quiet: a.quiet,
                 },
@@ -3158,8 +3172,128 @@ struct CensusParams {
     threads: usize,
     resume: Option<String>,
     min_boards: u64,
+    keep_state: bool,
+    continue_state: Option<String>,
     full: bool,
     quiet: bool,
+}
+
+// a census's last generation, as --keep-state writes it and --continue reads
+// it, every number low byte first: the number of letters and the rack size (a
+// byte each), the tiles' counts (a byte a letter), the seed and the boards it
+// sampled (u64s), and 1 if generations came before it, else 0 (a byte); then
+// runs of one value a multiset, in the lattice's order: i32s (the leaves the
+// boards were valued with, in thousandths of a point), f64s (each multiset's
+// sum, in the same units), u64s (its count), and, after generations only, bytes
+// (1 if any generation valued it, else 0). The runs fill the rest, so their
+// size gives the number of multisets, which must be the lattice's.
+struct CensusState {
+    num_letters: usize,
+    rack_size: usize,
+    freqs: Vec<u8>,
+    seed: u64,
+    boards: u64,
+    multigen: bool,
+    leave: Vec<i32>,
+    sum: Vec<f64>,
+    cnt: Vec<u64>,
+    ever: Vec<bool>,
+}
+
+#[inline]
+fn census_state_bytes(st: &CensusState) -> Vec<u8> {
+    let n = st.leave.len();
+    let mut bin = Vec::with_capacity(2 + st.freqs.len() + 8 + 8 + 1 + n * 21);
+    bin.extend([st.num_letters as u8, st.rack_size as u8]);
+    bin.extend_from_slice(&st.freqs);
+    bin.extend_from_slice(&st.seed.to_le_bytes());
+    bin.extend_from_slice(&st.boards.to_le_bytes());
+    bin.push(st.multigen as u8);
+    for v in &st.leave {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in &st.sum {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in &st.cnt {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    if st.multigen {
+        bin.extend(st.ever.iter().map(|&v| v as u8));
+    }
+    bin
+}
+
+#[inline]
+fn census_state_from_bytes(bytes: &[u8], what: &str) -> error::Returns<CensusState> {
+    fn take<'a>(
+        bytes: &'a [u8],
+        at: &mut usize,
+        len: usize,
+        what: &str,
+    ) -> error::Returns<&'a [u8]> {
+        let s = at
+            .checked_add(len)
+            .and_then(|end| bytes.get(*at..end))
+            .ok_or_else(|| format!("{what} ends early: not a whole census state"))?;
+        *at += len;
+        Ok(s)
+    }
+    fn word(bytes: &[u8], at: &mut usize, what: &str) -> error::Returns<u64> {
+        Ok(u64::from_le_bytes(take(bytes, at, 8, what)?.try_into()?))
+    }
+    let mut at = 0;
+    let num_letters = take(bytes, &mut at, 1, what)?[0] as usize;
+    let rack_size = take(bytes, &mut at, 1, what)?[0] as usize;
+    let freqs = take(bytes, &mut at, num_letters, what)?.to_vec();
+    let seed = word(bytes, &mut at, what)?;
+    let boards = word(bytes, &mut at, what)?;
+    let multigen = take(bytes, &mut at, 1, what)?[0] != 0;
+    // the bytes each multiset takes across the runs
+    let per = 4 + 8 + 8 + multigen as usize;
+    let rest = bytes.len() - at;
+    if !rest.is_multiple_of(per) {
+        return Err(format!("{what} is not a whole census state").into());
+    }
+    let n = rest / per;
+    let leave = take(bytes, &mut at, n * 4, what)?
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| i32::from_le_bytes(c))
+        .collect();
+    let sum = take(bytes, &mut at, n * 8, what)?
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| f64::from_le_bytes(c))
+        .collect();
+    let cnt = take(bytes, &mut at, n * 8, what)?
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| u64::from_le_bytes(c))
+        .collect();
+    let ever = if multigen {
+        take(bytes, &mut at, n, what)?
+            .iter()
+            .map(|&v| v != 0)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(CensusState {
+        num_letters,
+        rack_size,
+        freqs,
+        seed,
+        boards,
+        multigen,
+        leave,
+        sum,
+        cnt,
+        ever,
+    })
 }
 
 // the fewest boards that any full rack the tiles can deal is valued on
@@ -3202,6 +3336,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         threads,
         resume,
         min_boards,
+        keep_state,
+        continue_state,
         full,
         quiet,
     }: CensusParams,
@@ -3218,10 +3354,37 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
 
+    // --continue: one generation, the stored one, sampling on from the board
+    // after its last with its own seed and leaves, to the boards given more
+    let mut continued = match &continue_state {
+        Some(path) => {
+            if board_counts.len() != 1 {
+                return Err("--continue takes one board count: the boards to add".into());
+            }
+            let st = census_state_from_bytes(&std::fs::read(path)?, path)?;
+            if seed.is_some_and(|s| s != st.seed) {
+                return Err(format!("a continued census keeps its seed, {}", st.seed).into());
+            }
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "census: continuing {path}: {} boards done, {} more, seed {}",
+                st.boards,
+                board_counts[0],
+                st.seed
+            )?;
+            Some(st)
+        }
+        None => None,
+    };
+    let (board_counts, seed) = match &continued {
+        Some(st) => (vec![st.boards + board_counts[0]], Some(st.seed)),
+        None => (board_counts, seed),
+    };
+
     let gens = board_counts.len();
 
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
-    let multigen = gens > 1;
+    let multigen = gens > 1 || continued.as_ref().is_some_and(|st| st.multigen);
 
     let sheet_reuse = multigen;
 
@@ -3314,6 +3477,23 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         .into());
     }
 
+    // a continued census values its boards with the stored generation's leaves,
+    // on the same lattice and tiles
+    if let Some(st) = &continued {
+        if st.num_letters != num_letters || st.rack_size != rack_size || st.freqs != base_freqs {
+            return Err("the census state is of other tiles or another rack size".into());
+        }
+        if st.leave.len() != lat.len() {
+            return Err(format!(
+                "the census state holds {} multisets, not the lattice's {}",
+                st.leave.len(),
+                lat.len()
+            )
+            .into());
+        }
+        leave_cur.copy_from_slice(&st.leave);
+    }
+
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
     let num_threads = threads.max(1).min(max_boards as usize);
@@ -3329,23 +3509,39 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             })
             .count()
     };
-    let next_board = std::sync::atomic::AtomicU64::new(0);
+    let next_board =
+        std::sync::atomic::AtomicU64::new(continued.as_ref().map_or(0, |st| st.boards));
     // --min-boards: the last generation's board count, which its top-up raises,
     // and whether the threads go on sampling
     let last_boards = std::sync::atomic::AtomicU64::new(board_counts[gens - 1]);
     let more_boards = std::sync::atomic::AtomicBool::new(false);
+    // --keep-state: the leaves the last generation valued its boards with,
+    // taken before its leader turns them into its own
+    let last_leave = std::sync::Mutex::new(None::<Vec<i32>>);
 
-    let shared = std::sync::Mutex::new((
-        vec![0f64; lat_len],
-        vec![0u64; lat_len],
-        0u64,
-        0u64,
-        if multigen {
-            vec![false; lat_len]
-        } else {
-            Vec::new()
-        },
-    ));
+    let shared = std::sync::Mutex::new(match continued.take() {
+        Some(st) => {
+            let valued = st.cnt.iter().filter(|&&c| c > 0).count() as u64;
+            (
+                st.sum,
+                st.cnt,
+                st.boards,
+                valued,
+                if multigen { st.ever } else { Vec::new() },
+            )
+        }
+        None => (
+            vec![0f64; lat_len],
+            vec![0u64; lat_len],
+            0u64,
+            0u64,
+            if multigen {
+                vec![false; lat_len]
+            } else {
+                Vec::new()
+            },
+        ),
+    });
 
     let barrier = std::sync::Barrier::new(num_threads);
     // a thread that fails sets this; every thread then stops at the next
@@ -3684,6 +3880,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 let mut g = shared.lock().unwrap();
                                 let (sum, cnt, completed, valued, ever) = &mut *g;
                                 let mut lv = leave_lock.write().unwrap();
+                                if keep_state && gen_idx + 1 == gens {
+                                    *last_leave.lock().unwrap() = Some(lv.clone());
+                                }
                                 let base = if cnt[empty_rank] > 0 {
                                     sum[empty_rank] / cnt[empty_rank] as f64
                                 } else {
@@ -3879,6 +4078,36 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         boxed_stdout_or_stderr(),
         "census: wrote the last generation's summary to {summary_name} ({num_racks} full racks)"
     )?;
+
+    if keep_state {
+        // one generation alone never changes its leaves, which are the input's
+        let leave = if multigen {
+            last_leave
+                .into_inner()
+                .unwrap()
+                .ok_or("census: the last generation's leaves were not kept")?
+        } else {
+            leave_final
+        };
+        let state_name = claim_output_path(&format!("census-state-{census_run_epoch}.bin"))?;
+        let boards = last_boards.into_inner();
+        make_writer(&state_name)?.write_all(&census_state_bytes(&CensusState {
+            num_letters,
+            rack_size,
+            freqs: base_freqs,
+            seed,
+            boards,
+            multigen,
+            leave,
+            sum: accum_sum,
+            cnt: accum_cnt,
+            ever,
+        }))?;
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "census: wrote the last generation's state to {state_name} ({boards} boards)"
+        )?;
+    }
     Ok(())
 }
 
@@ -8789,6 +9018,60 @@ mod tests {
         assert_eq!(census_more_boards(2048, 0, 500, 16), 2048);
         // at least one board a thread
         assert_eq!(census_more_boards(100, 499, 500, 16), 16);
+    }
+
+    #[test]
+    #[inline]
+    fn census_state_reads_back_as_written() {
+        for multigen in [false, true] {
+            let st = CensusState {
+                num_letters: 3,
+                rack_size: 2,
+                freqs: vec![1, 2, 0],
+                seed: u64::MAX,
+                boards: 96,
+                multigen,
+                leave: vec![0, -1500, 2500, i32::MIN, i32::MAX],
+                sum: vec![0.0, -3.5, 1e15, f64::MIN_POSITIVE, 7.0],
+                cnt: vec![0, 1, 2, 3, u64::MAX],
+                ever: if multigen {
+                    vec![false, true, true, false, true]
+                } else {
+                    Vec::new()
+                },
+            };
+            let bytes = census_state_bytes(&st);
+            // the letters, the rack size, three tiles' counts, the seed, the
+            // boards, whether generations came before, then five multisets
+            assert_eq!(
+                bytes.len(),
+                1 + 1 + 3 + 8 + 8 + 1 + 5 * (4 + 8 + 8 + multigen as usize)
+            );
+            let back = census_state_from_bytes(&bytes, "state").unwrap();
+            assert_eq!(
+                (back.num_letters, back.rack_size, &back.freqs[..]),
+                (3, 2, &[1, 2, 0][..])
+            );
+            assert_eq!(
+                (back.seed, back.boards, back.multigen),
+                (st.seed, 96, multigen)
+            );
+            assert_eq!(back.leave, st.leave);
+            assert_eq!(
+                back.sum.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                st.sum.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+            assert_eq!(back.cnt, st.cnt);
+            assert_eq!(back.ever, st.ever);
+            // cut short, run on, or not a state at all: refused
+            assert!(census_state_from_bytes(&bytes[..bytes.len() - 1], "state").is_err());
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert!(census_state_from_bytes(&longer, "state").is_err());
+            let mut other = bytes.clone();
+            other[0] ^= 1;
+            assert!(census_state_from_bytes(&other, "state").is_err());
+        }
     }
 
     #[test]
