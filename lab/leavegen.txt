@@ -274,6 +274,12 @@ the snapshot window scale with the game's tile count so they fit any variant;
 for the classic English game they reduce to his values (snapshot at 25 to 75
 tiles left, a group of 13 tiles, 7-tile racks).
 
+Board sampling can force the rare tail too. leave gilles takes --min-samples N:
+after its games it plays further rounds of them, and at each snapshot values a
+block of the full racks still short of N samples, each at most once a board,
+until none is short. It also takes --resume with an earlier summary, as autoplay
+does.
+
 
 HOW THE METHODS COMPARE
 
