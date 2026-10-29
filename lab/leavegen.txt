@@ -1040,6 +1040,12 @@ faith.
 
 For dynamic leaves add --full to keep the full-length values.
 
+To be sure every rack is covered, add --min-boards N: once the last
+generation's boards are done, the census keeps sampling boards until every full
+rack the tiles can deal is valued on N boards or more. Each round adds as many
+boards as the least-covered rack's rate says it needs, but never more than have
+been run, and the census says how many boards that rack got.
+
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
 

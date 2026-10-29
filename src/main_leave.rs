@@ -279,6 +279,13 @@ struct Census {
     resume: Option<String>,
     #[arg(
         long,
+        value_name = "N",
+        default_value_t = 0,
+        help = "keep the last generation sampling boards until every full rack the tiles can deal is valued on N boards"
+    )]
+    min_boards: u64,
+    #[arg(
+        long,
         help = "also write the full-length leaves (what dynamic leaves read)"
     )]
     full: bool,
@@ -929,6 +936,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     resume: a.resume,
+                    min_boards: a.min_boards,
                     full: a.full,
                     quiet: a.quiet,
                 },
@@ -3149,8 +3157,37 @@ struct CensusParams {
     seed: Option<u64>,
     threads: usize,
     resume: Option<String>,
+    min_boards: u64,
     full: bool,
     quiet: bool,
+}
+
+// the fewest boards that any full rack the tiles can deal is valued on
+#[inline]
+fn least_full_rack_boards(lat: &census::MultisetLattice, cnt: &[u64], freqs: &[u8]) -> u64 {
+    let mut tally = vec![0u8; lat.num_letters()];
+    let mut least = None::<u64>;
+    for (idx, &c) in cnt.iter().enumerate().skip(lat.full_rack_start()) {
+        lat.unrank_into(idx, &mut tally);
+        if tally.iter().zip(freqs).all(|(&have, &freq)| have <= freq) {
+            least = Some(least.map_or(c, |l| l.min(c)));
+        }
+    }
+    least.unwrap_or(0)
+}
+
+// how many boards the last generation adds when its least-covered full rack has
+// `least` of the `min_boards` it wants after `boards`: as many as that rack's
+// rate says it needs and at least one a thread, but never more than have been
+// run, since a rate read off a rack seen on few boards (or none) is rough, and
+// the next round reads it again off twice the boards
+#[inline]
+fn census_more_boards(boards: u64, least: u64, min_boards: u64, threads: u64) -> u64 {
+    if least >= min_boards {
+        return 0;
+    }
+    let want = (boards as u128 * (min_boards - least) as u128).div_ceil(least.max(1) as u128);
+    (want.min(boards as u128) as u64).max(threads)
 }
 
 #[inline]
@@ -3164,6 +3201,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         seed,
         threads,
         resume,
+        min_boards,
         full,
         quiet,
     }: CensusParams,
@@ -3292,6 +3330,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             .count()
     };
     let next_board = std::sync::atomic::AtomicU64::new(0);
+    // --min-boards: the last generation's board count, which its top-up raises,
+    // and whether the threads go on sampling
+    let last_boards = std::sync::atomic::AtomicU64::new(board_counts[gens - 1]);
+    let more_boards = std::sync::atomic::AtomicBool::new(false);
 
     let shared = std::sync::Mutex::new((
         vec![0f64; lat_len],
@@ -3492,7 +3534,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         seed.wrapping_add(census_mix64(b)),
                     ));
 
-                    let reuse_board = sheet_reuse && (b as usize) < prior_max_boards;
+                    // a board --min-boards adds past the generation's count was
+                    // never cached, so it is played afresh
+                    let reuse_board = sheet_reuse
+                        && (b as usize) < prior_max_boards
+                        && b < board_counts[gen_idx];
                     if !reuse_board {
 
                     let target = if high_tiles <= low_tiles {
@@ -3590,6 +3636,43 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         num_boards,
                     );
                     }
+                    }
+
+                    // --min-boards: once the last generation's boards are done,
+                    // its leader finds the least-covered full rack and adds
+                    // boards for it, and every thread samples on
+                    if min_boards > 0 && gen_idx + 1 == gens {
+                        if barrier.wait().is_leader()
+                            && !failed.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            let g = shared.lock().unwrap();
+                            let least = least_full_rack_boards(&lat, &g.1, &base_freqs);
+                            let boards = last_boards.load(std::sync::atomic::Ordering::Relaxed);
+                            let more =
+                                census_more_boards(boards, least, min_boards, num_threads as u64);
+                            let said = if more > 0 {
+                                format!(
+                                    "census: the least-covered full rack is valued on {least} of {min_boards} {} after {boards}: {more} {} more",
+                                    plural(min_boards, "board", "boards"),
+                                    plural(more, "board", "boards"),
+                                )
+                            } else {
+                                format!(
+                                    "census: every full rack the tiles can deal is valued on {min_boards} {} or more ({least} the fewest) after {boards}",
+                                    plural(min_boards, "board", "boards"),
+                                )
+                            };
+                            writeln!(boxed_stdout_or_stderr(), "{said}").ok();
+                            last_boards.store(boards + more, std::sync::atomic::Ordering::Relaxed);
+                            more_boards.store(more > 0, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        barrier.wait();
+                        if more_boards.load(std::sync::atomic::Ordering::Relaxed)
+                            && !failed.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            num_boards = last_boards.load(std::sync::atomic::Ordering::Relaxed);
+                            continue;
+                        }
                     }
 
                     if multigen {
@@ -8674,6 +8757,38 @@ mod tests {
                 "{counts:?} kept sheets after the last gen"
             );
         }
+    }
+
+    #[test]
+    #[inline]
+    fn census_counts_only_the_full_racks_the_tiles_can_deal() {
+        // three letters, racks of two; the tiles hold one of the first, two of
+        // the second, and none of the third, so only {0,1} and {1,1} are dealt
+        let lat = census::MultisetLattice::new(3, 2).unwrap();
+        let mut cnt = vec![0u64; lat.len()];
+        cnt[lat.rank(&[1, 1, 0]) as usize] = 5;
+        cnt[lat.rank(&[0, 2, 0]) as usize] = 7;
+        // a rack the tiles cannot deal, and a shorter one, are left out
+        cnt[lat.rank(&[2, 0, 0]) as usize] = 1;
+        cnt[lat.rank(&[0, 1, 0]) as usize] = 2;
+        assert_eq!(least_full_rack_boards(&lat, &cnt, &[1, 2, 0]), 5);
+        cnt[lat.rank(&[0, 2, 0]) as usize] = 3;
+        assert_eq!(least_full_rack_boards(&lat, &cnt, &[1, 2, 0]), 3);
+    }
+
+    #[test]
+    #[inline]
+    fn census_adds_boards_by_the_least_covered_racks_rate() {
+        // covered: nothing to add
+        assert_eq!(census_more_boards(2048, 500, 500, 16), 0);
+        assert_eq!(census_more_boards(2048, 600, 500, 16), 0);
+        // a quarter short: a quarter more
+        assert_eq!(census_more_boards(2048, 400, 500, 16), 512);
+        // far short, or never valued: at most as many again
+        assert_eq!(census_more_boards(2048, 58, 500, 16), 2048);
+        assert_eq!(census_more_boards(2048, 0, 500, 16), 2048);
+        // at least one board a thread
+        assert_eq!(census_more_boards(100, 499, 500, 16), 16);
     }
 
     #[test]
