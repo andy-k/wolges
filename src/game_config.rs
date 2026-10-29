@@ -545,6 +545,44 @@ pub fn make_jumbled_german_game_config() -> GameConfig {
 }
 
 #[inline]
+pub fn make_super_german_game_config() -> GameConfig {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_super_german_alphabet(),
+        board_layout: board_layout::make_super_board_layout(),
+        rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
+        num_players: 2,
+        num_passes_to_end: 4,
+        challenges_are_passes: false,
+        num_zeros_to_end: 0,
+        zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[inline]
+pub fn make_jumbled_super_german_game_config() -> GameConfig {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
+        alphabet: alphabet::make_super_german_alphabet(),
+        board_layout: board_layout::make_super_board_layout(),
+        rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
+        num_players: 2,
+        num_passes_to_end: 4,
+        challenges_are_passes: false,
+        num_zeros_to_end: 0,
+        zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[inline]
 pub fn make_norwegian_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -752,6 +790,7 @@ pub const GAME_CONFIGS: &[(&str, MakeGameConfig)] = &[
     ("spanish", make_spanish_game_config),
     ("super-catalan", make_super_catalan_game_config),
     ("super-english", make_super_english_game_config),
+    ("super-german", make_super_german_game_config),
     ("swedish", make_swedish_game_config),
 ];
 

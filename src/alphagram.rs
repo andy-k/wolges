@@ -199,6 +199,7 @@ mod tests {
             ("english", make_english_alphabet(), 15),
             ("french", make_french_alphabet(), 15),
             ("german", make_german_alphabet(), 15),
+            ("super_german", make_super_german_alphabet(), 21),
             ("hex", make_hex_alphabet(), 15),
             ("hong_kong_english", make_hong_kong_english_alphabet(), 15),
             ("norwegian", make_norwegian_alphabet(), 15),
