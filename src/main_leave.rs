@@ -226,6 +226,12 @@ struct SelfPlay {
     min_samples: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(
+        long,
+        value_name = "SUMMARY",
+        help = "start from this summary's samples, which count toward min_samples and are written out with the new ones; give the run a seed of its own (summarizing tasks only)"
+    )]
+    resume: Option<String>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
     #[arg(long, help = "print no progress")]
@@ -847,6 +853,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     num_games: a.games,
                     min_samples: a.min_samples,
                     seed: a.seed,
+                    resume: a.resume,
                     threads,
                     lean: a.lean,
                     quiet: a.quiet,
@@ -865,6 +872,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     num_games: a.games,
                     min_samples: a.min_samples,
                     seed: a.seed,
+                    resume: a.resume,
                     threads,
                     lean: a.lean,
                     quiet: a.quiet,
@@ -883,6 +891,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     num_games: a.games,
                     min_samples: a.min_samples,
                     seed: a.seed,
+                    resume: a.resume,
                     threads,
                     lean: a.lean,
                     quiet: a.quiet,
@@ -1398,6 +1407,7 @@ struct SelfPlayParams {
     num_games: u64,
     min_samples: u64,
     seed: Option<u64>,
+    resume: Option<String>,
     threads: usize,
     lean: bool,
     quiet: bool,
@@ -1426,6 +1436,7 @@ fn generate_autoplay_logs<
         num_games,
         min_samples: min_samples_per_rack,
         seed,
+        resume,
         threads,
         lean,
         quiet,
@@ -1433,6 +1444,9 @@ fn generate_autoplay_logs<
 ) -> error::Returns<()> {
     if !SUMMARIZE && min_samples_per_rack != 0 {
         return Err("min_samples_per_rack requires summarize".into());
+    }
+    if !SUMMARIZE && resume.is_some() {
+        return Err("resume requires summarize".into());
     }
 
     let game_config = std::sync::Arc::new(game_config);
@@ -1498,7 +1512,22 @@ fn generate_autoplay_logs<
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    // a resumed run starts from the summary's samples: the forcing below then
+    // counts them, and the summary it writes holds them with the new ones
+    if let Some(path) = &resume {
+        let (records, racks) = read_summary_into(
+            &game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(path)?),
+            &mut full_rack_map,
+        )?;
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "resuming from {path}: {records} records, {racks} racks"
+        )?;
+    }
 
     // 0 = threads are collaboratively accumulating first num_games games.
     // 1 = one thread is determining which racks are undersampled after the
@@ -2593,6 +2622,55 @@ fn merge_rack_map(
                 .or_insert(v);
         }
     }
+}
+
+// a summary's samples added to a run's full-rack map: each rack's equity sum
+// and count, its tiles in the order a run keeps them, its totals line (the
+// empty rack) skipped; a rack that is not full is refused, since forcing counts
+// full racks only. Returns the samples and the racks read.
+#[inline]
+fn read_summary_into<Readable: std::io::Read>(
+    game_config: &game_config::GameConfig,
+    mut csv_in: csv::Reader<Readable>,
+    full_rack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+) -> error::Returns<(u64, usize)> {
+    let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
+    let rack_size = game_config.rack_size() as usize;
+    let mut rack_bytes = Vec::new();
+    let mut records = 0u64;
+    let mut racks = 0usize;
+    for result in csv_in.records() {
+        let record = result?;
+        if record.len() < 3 {
+            return Err("a summary line has fewer than 3 fields".into());
+        }
+        parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
+        if rack_bytes.is_empty() {
+            continue;
+        }
+        if rack_bytes.len() != rack_size {
+            return Err(format!(
+                "the summary's {} is not a rack of {rack_size} tiles",
+                &record[0]
+            )
+            .into());
+        }
+        rack_bytes.sort_unstable();
+        let thing = Cumulate {
+            equity: f64::from_str(&record[1])?,
+            count: u64::from_str(&record[2])?,
+        };
+        records += thing.count;
+        racks += 1;
+        full_rack_map
+            .entry(rack_bytes[..].into())
+            .and_modify(|e| {
+                e.equity += thing.equity;
+                e.count += thing.count;
+            })
+            .or_insert(thing);
+    }
+    Ok((records, racks))
 }
 
 struct RecomputeScratch<'a> {
@@ -8625,6 +8703,37 @@ mod tests {
         let b = dst.get(&b"\x02"[..]).unwrap();
         assert_eq!(b.count, 1);
         assert!(src.is_empty(), "merge_rack_map must drain the source");
+    }
+
+    #[test]
+    #[inline]
+    fn resuming_adds_a_summarys_samples_to_the_rack_map() {
+        let game_config = game_config::make_english_game_config();
+        let read = |input: &str, m: &mut fash::MyHashMap<bites::Bites, Cumulate>| {
+            read_summary_into(
+                &game_config,
+                csv::ReaderBuilder::new()
+                    .has_headers(false)
+                    .from_reader(input.as_bytes()),
+                m,
+            )
+        };
+        // the totals line is skipped; a rack in any order is the run's sorted
+        // one, and its samples add to what the map holds
+        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        pool_one(&mut m, &[1, 5, 9, 14, 18, 19, 20][..], 2.0);
+        let summary = ",10.5,4\nAEINRST,6.5,2\nTSRNIEA,1.0,1\n?AEINST,3,1\n";
+        assert_eq!(read(summary, &mut m).unwrap(), (4, 3));
+        let a = m.get(&[1u8, 5, 9, 14, 18, 19, 20][..]).unwrap();
+        assert_eq!(a.count, 4);
+        assert!((a.equity - 9.5).abs() < 1e-9);
+        let b = m.get(&[0u8, 1, 5, 9, 14, 19, 20][..]).unwrap();
+        assert_eq!(b.count, 1);
+        assert!((b.equity - 3.0).abs() < 1e-9);
+        assert_eq!(m.len(), 2);
+        // a rack that is not full, and a line short of its count, are refused
+        assert!(read("AT,1,1\n", &mut m).is_err());
+        assert!(read("AEINRST,1\n", &mut m).is_err());
     }
 
     #[test]

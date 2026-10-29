@@ -702,6 +702,13 @@ kept on because a leave built on a real forced play is sounder than one left
 starved, and it costs nothing when the racks it targets are the ones self-play
 would have missed.
 
+A forced run can pick up where an earlier one stopped. autoplay-summarize and
+autoplay-summarize-only take --resume with an earlier summary: its samples count
+toward the min-samples target and are written out with the new ones, so topping
+up a finished run forces only the racks still short instead of replaying it.
+Give the resumed run a seed of its own; the earlier seed plays its first games
+again.
+
 
 THE PER-RACK DECOMPOSE BECOMES THE DEFAULT
 
