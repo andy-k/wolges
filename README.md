@@ -43,7 +43,7 @@ cargo run --release
 
 From src, with CSW24.kwg there (see Initial Setup).
 
-The strongest leaves measured, the census and self-play mixed (hours):
+The strongest leaves measured, the census and self-play mixed:
 
 ```
 mkdir t && cd t && cp -ip ../CSW24.kwg . && ../../genblend.sh --preset english

@@ -33,8 +33,7 @@ options:
   --passes-to-end N, --exchange-limit N, --exchanges N|unlimited. buildlex
   reads the leaves with --tiles, else the preset's tiles.
 defaults, spelled out: the census recipe above, then two self-play generations
-of 100 million games each, the first asking for 500 samples of every rack and
-the second 1000, then a half-and-half blend.
+of 10 million games each, with no rack forced, then a half-and-half blend.
 EOF
 }
 
@@ -125,7 +124,7 @@ if [ ! "$buildlex_tiles" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  set -- 100000000:500 100000000:1000
+  set -- 10000000 10000000
 fi
 
 kwg=""
