@@ -5692,6 +5692,19 @@ impl GameStats {
         )?;
         writeln!(std::io::stdout(), "WCMP_GAMES {total}")?;
         writeln!(std::io::stdout(), "WCMP_PAIRS {}", total / 2)?;
+        writeln!(std::io::stdout(), "WCMP_P0_WINS {}", self.p0_wins)?;
+        writeln!(std::io::stdout(), "WCMP_P0_LOSSES {}", self.p0_losses)?;
+        writeln!(std::io::stdout(), "WCMP_P0_DRAWS {}", self.p0_draws)?;
+        writeln!(
+            std::io::stdout(),
+            "WCMP_P0_SCORE {:.6}",
+            self.p0_score.mean()
+        )?;
+        writeln!(
+            std::io::stdout(),
+            "WCMP_P1_SCORE {:.6}",
+            self.p1_score.mean()
+        )?;
         Ok(())
     }
 }

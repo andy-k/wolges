@@ -179,8 +179,9 @@ matter which way its sign happens to fall.
 A table played against itself scores 50.00 by symmetry, which is the
 calibration check. leave compare also appends a machine-readable block after
 the normal output -- one NAME VALUE per line (each table's share, the win
-percent, the draws, the confidence, which side leads, and the game and pair
-counts) -- so a script reads the first table's share directly instead of
+percent, the draws, the confidence, which side leads, the game and pair
+counts, the first table's wins, losses, and draws, and each table's mean
+score) -- so a script reads the first table's share directly instead of
 pattern-matching the human-readable line.
 
 Every number below is a fresh leave compare run of our own tables against our
