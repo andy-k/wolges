@@ -184,6 +184,15 @@ counts, the first table's wins, losses, and draws, and each table's mean
 score) -- so a script reads the first table's share directly instead of
 pattern-matching the human-readable line.
 
+Runs of one comparison on several seeds add up to one run: leave
+compare-combine reads compare reports one after another, from a file or "-"
+for the standard input, sums the games each one's block counts, and reports
+them as one comparison, its confidence over all the games, with a block of
+its own that can be combined again:
+
+  cat cmp-seed1.txt cmp-seed2.txt cmp-seed3.txt |
+    cargo run --release --bin leave -- compare-combine -
+
 Every number below is a fresh leave compare run of our own tables against our
 own tables.
 

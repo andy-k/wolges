@@ -681,6 +681,12 @@ struct InOut {
 }
 
 #[derive(clap::Args)]
+struct CompareCombine {
+    #[arg(help = "compare reports, one after another (- for stdin)")]
+    input: String,
+}
+
+#[derive(clap::Args)]
 struct SummaryInOut {
     input: String,
     output: String,
@@ -744,6 +750,8 @@ enum Task {
     Census(Census),
     #[command(about = "play game pairs between two seats, each with its own leaves and picker")]
     Compare(Compare),
+    #[command(about = "combine compare reports by summing their games")]
+    CompareCombine(CompareCombine),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
     #[command(about = "play games and write their boards as fen, one per line")]
@@ -1333,6 +1341,11 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::WinpctCombine(a) => {
             let acc = win_pct::WinPctAccumulator::from_csv(make_reader(&a.input)?)?;
             acc.to_csv(make_writer(&a.output)?)
+        }
+        Task::CompareCombine(a) => {
+            let totals = CompareTotals::read(std::io::BufReader::new(make_reader(&a.input)?))?;
+            totals.print()?;
+            Ok(())
         }
         Task::Summarize(a) => generate_summary(
             game_config,
@@ -5630,82 +5643,260 @@ impl GameStats {
             self.p1_score.mean(),
             self.p1_score.standard_deviation(),
         )?;
-        let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
-        if corrected_pct > 0.5 {
-            let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
-            let confidence = stats::NormalDistribution::cumulative_normal_density(z) * 100.0;
-            let leading = if p0_total > p1_total {
-                "p0 (klv0)"
-            } else {
-                "p1 (klv1)"
-            };
-            writeln!(
-                std::io::stdout(),
-                "  {leading} leads, confidence: {confidence:.2}%"
-            )?;
-        } else {
-            writeln!(std::io::stdout(), "  no significant difference")?;
-        }
-        Ok(())
+        print_compare_lead(p0_total, p1_total, total)
     }
 
     #[inline]
     fn print_porcelain(&self) -> std::io::Result<()> {
-        let total = self.total_games();
-        if total == 0 {
-            return Ok(());
-        }
-        let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
-        let p1_total = total as f64 - p0_total;
-        let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
-        let confidence = if corrected_pct > 0.5 {
-            let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
-            stats::NormalDistribution::cumulative_normal_density(z) * 100.0
+        print_compare_porcelain(
+            self.p0_wins,
+            self.p0_losses,
+            self.p0_draws,
+            self.p0_score.mean(),
+            self.p1_score.mean(),
+        )
+    }
+}
+
+// which seat leads, and the confidence that it does
+#[inline]
+fn print_compare_lead(p0_total: f64, p1_total: f64, total: u64) -> std::io::Result<()> {
+    let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
+    if corrected_pct > 0.5 {
+        let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
+        let confidence = stats::NormalDistribution::cumulative_normal_density(z) * 100.0;
+        let leading = if p0_total > p1_total {
+            "p0 (klv0)"
         } else {
-            0.0
+            "p1 (klv1)"
         };
         writeln!(
             std::io::stdout(),
-            "WCMP_P0_PCT {:.4}",
-            p0_total / total as f64 * 100.0
+            "  {leading} leads, confidence: {confidence:.2}%"
         )?;
-        writeln!(
-            std::io::stdout(),
-            "WCMP_P1_PCT {:.4}",
-            p1_total / total as f64 * 100.0
-        )?;
-        writeln!(
-            std::io::stdout(),
-            "WCMP_P0_WINS_PCT {:.4}",
-            self.p0_wins as f64 / total as f64 * 100.0
-        )?;
-        writeln!(
-            std::io::stdout(),
-            "WCMP_DRAWS_PCT {:.4}",
-            self.p0_draws as f64 / total as f64 * 100.0
-        )?;
-        writeln!(std::io::stdout(), "WCMP_CONF_PCT {confidence:.4}")?;
-        writeln!(
-            std::io::stdout(),
-            "WCMP_LEADER {}",
-            if p0_total >= p1_total { 0 } else { 1 }
-        )?;
-        writeln!(std::io::stdout(), "WCMP_GAMES {total}")?;
-        writeln!(std::io::stdout(), "WCMP_PAIRS {}", total / 2)?;
-        writeln!(std::io::stdout(), "WCMP_P0_WINS {}", self.p0_wins)?;
-        writeln!(std::io::stdout(), "WCMP_P0_LOSSES {}", self.p0_losses)?;
-        writeln!(std::io::stdout(), "WCMP_P0_DRAWS {}", self.p0_draws)?;
-        writeln!(
-            std::io::stdout(),
-            "WCMP_P0_SCORE {:.6}",
-            self.p0_score.mean()
-        )?;
-        writeln!(
-            std::io::stdout(),
-            "WCMP_P1_SCORE {:.6}",
-            self.p1_score.mean()
-        )?;
+    } else {
+        writeln!(std::io::stdout(), "  no significant difference")?;
+    }
+    Ok(())
+}
+
+// compare's machine-readable block, a name and its value a line, which
+// compare-combine reads back
+#[inline]
+fn print_compare_porcelain(
+    p0_wins: u64,
+    p0_losses: u64,
+    p0_draws: u64,
+    p0_score: f64,
+    p1_score: f64,
+) -> std::io::Result<()> {
+    let total = p0_wins + p0_losses + p0_draws;
+    if total == 0 {
+        return Ok(());
+    }
+    let p0_total = p0_wins as f64 + p0_draws as f64 / 2.0;
+    let p1_total = total as f64 - p0_total;
+    let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
+    let confidence = if corrected_pct > 0.5 {
+        let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
+        stats::NormalDistribution::cumulative_normal_density(z) * 100.0
+    } else {
+        0.0
+    };
+    writeln!(
+        std::io::stdout(),
+        "WCMP_P0_PCT {:.4}",
+        p0_total / total as f64 * 100.0
+    )?;
+    writeln!(
+        std::io::stdout(),
+        "WCMP_P1_PCT {:.4}",
+        p1_total / total as f64 * 100.0
+    )?;
+    writeln!(
+        std::io::stdout(),
+        "WCMP_P0_WINS_PCT {:.4}",
+        p0_wins as f64 / total as f64 * 100.0
+    )?;
+    writeln!(
+        std::io::stdout(),
+        "WCMP_DRAWS_PCT {:.4}",
+        p0_draws as f64 / total as f64 * 100.0
+    )?;
+    writeln!(std::io::stdout(), "WCMP_CONF_PCT {confidence:.4}")?;
+    writeln!(
+        std::io::stdout(),
+        "WCMP_LEADER {}",
+        if p0_total >= p1_total { 0 } else { 1 }
+    )?;
+    writeln!(std::io::stdout(), "WCMP_GAMES {total}")?;
+    writeln!(std::io::stdout(), "WCMP_PAIRS {}", total / 2)?;
+    writeln!(std::io::stdout(), "WCMP_P0_WINS {p0_wins}")?;
+    writeln!(std::io::stdout(), "WCMP_P0_LOSSES {p0_losses}")?;
+    writeln!(std::io::stdout(), "WCMP_P0_DRAWS {p0_draws}")?;
+    writeln!(std::io::stdout(), "WCMP_P0_SCORE {p0_score:.6}")?;
+    writeln!(std::io::stdout(), "WCMP_P1_SCORE {p1_score:.6}")?;
+    Ok(())
+}
+
+// one block of a compare report, as its lines are read
+struct CompareBlock {
+    games: Option<u64>,
+    p0_wins: Option<u64>,
+    p0_losses: Option<u64>,
+    p0_draws: Option<u64>,
+    p0_score: Option<f64>,
+    p1_score: Option<f64>,
+}
+
+// compare reports' games added up from their machine-readable blocks, so that
+// runs of one comparison on several seeds read as one run
+struct CompareTotals {
+    reports: u64,
+    p0_wins: u64,
+    p0_losses: u64,
+    p0_draws: u64,
+    p0_score_sum: f64,
+    p1_score_sum: f64,
+}
+
+impl CompareTotals {
+    // every block in the reader: each starts at its WCMP_P0_PCT line, and
+    // anything that is not a block's line is passed over
+    #[inline]
+    fn read(reader: impl std::io::BufRead) -> error::Returns<Self> {
+        let mut totals = Self {
+            reports: 0,
+            p0_wins: 0,
+            p0_losses: 0,
+            p0_draws: 0,
+            p0_score_sum: 0.0,
+            p1_score_sum: 0.0,
+        };
+        let mut block: Option<CompareBlock> = None;
+        for line in reader.lines() {
+            let line = line?;
+            let Some((name, value)) = line.trim_end().split_once(' ') else {
+                continue;
+            };
+            if name == "WCMP_P0_PCT" {
+                if let Some(b) = block.take() {
+                    totals.add(b)?;
+                }
+                block = Some(CompareBlock {
+                    games: None,
+                    p0_wins: None,
+                    p0_losses: None,
+                    p0_draws: None,
+                    p0_score: None,
+                    p1_score: None,
+                });
+                continue;
+            }
+            let Some(b) = block.as_mut() else {
+                continue;
+            };
+            match name {
+                "WCMP_GAMES" => b.games = Some(value.parse()?),
+                "WCMP_P0_WINS" => b.p0_wins = Some(value.parse()?),
+                "WCMP_P0_LOSSES" => b.p0_losses = Some(value.parse()?),
+                "WCMP_P0_DRAWS" => b.p0_draws = Some(value.parse()?),
+                "WCMP_P0_SCORE" => b.p0_score = Some(value.parse()?),
+                "WCMP_P1_SCORE" => b.p1_score = Some(value.parse()?),
+                _ => {}
+            }
+        }
+        if let Some(b) = block.take() {
+            totals.add(b)?;
+        }
+        if totals.reports == 0 {
+            wolges::return_error!("no compare report's block (WCMP_P0_PCT) found".to_string());
+        }
+        Ok(totals)
+    }
+
+    #[inline]
+    fn add(&mut self, b: CompareBlock) -> error::Returns<()> {
+        let report = self.reports + 1;
+        let (
+            Some(games),
+            Some(p0_wins),
+            Some(p0_losses),
+            Some(p0_draws),
+            Some(p0_score),
+            Some(p1_score),
+        ) = (
+            b.games,
+            b.p0_wins,
+            b.p0_losses,
+            b.p0_draws,
+            b.p0_score,
+            b.p1_score,
+        )
+        else {
+            wolges::return_error!(format!(
+                "report {report} has no wins, losses, draws, and scores in its block: compare it again with this leave"
+            ));
+        };
+        if p0_wins + p0_losses + p0_draws != games {
+            wolges::return_error!(format!(
+                "report {report} counts {p0_wins} wins, {p0_losses} losses, and {p0_draws} draws, not its {games} games"
+            ));
+        }
+        self.reports = report;
+        self.p0_wins += p0_wins;
+        self.p0_losses += p0_losses;
+        self.p0_draws += p0_draws;
+        self.p0_score_sum += p0_score * games as f64;
+        self.p1_score_sum += p1_score * games as f64;
         Ok(())
+    }
+
+    #[inline]
+    fn print(&self) -> std::io::Result<()> {
+        let total = self.p0_wins + self.p0_losses + self.p0_draws;
+        let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
+        let p1_total = total as f64 - p0_total;
+        let p0_score = self.p0_score_sum / total as f64;
+        let p1_score = self.p1_score_sum / total as f64;
+        writeln!(
+            std::io::stdout(),
+            "{} games ({} pairs) in {} {}:",
+            total,
+            total / 2,
+            self.reports,
+            plural(self.reports, "report", "reports")
+        )?;
+        writeln!(
+            std::io::stdout(),
+            "  p0 (klv0): {:.1} ({:.2}%)  p1 (klv1): {:.1} ({:.2}%)",
+            p0_total,
+            p0_total / total as f64 * 100.0,
+            p1_total,
+            p1_total / total as f64 * 100.0,
+        )?;
+        writeln!(
+            std::io::stdout(),
+            "  wins: {} ({:.2}%)  losses: {} ({:.2}%)  draws: {} ({:.2}%)",
+            self.p0_wins,
+            self.p0_wins as f64 / total as f64 * 100.0,
+            self.p0_losses,
+            self.p0_losses as f64 / total as f64 * 100.0,
+            self.p0_draws,
+            self.p0_draws as f64 / total as f64 * 100.0,
+        )?;
+        writeln!(
+            std::io::stdout(),
+            "  score: p0={p0_score:.2}  p1={p1_score:.2}"
+        )?;
+        print_compare_lead(p0_total, p1_total, total)?;
+        print_compare_porcelain(
+            self.p0_wins,
+            self.p0_losses,
+            self.p0_draws,
+            p0_score,
+            p1_score,
+        )
     }
 }
 
@@ -9104,6 +9295,55 @@ mod tests {
             assert_eq!(live_after, want_live, "live_after for {counts:?}");
             assert_eq!(cache_len, want_len, "cache_len for {counts:?}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn compare_reports_combine_by_their_blocks() {
+        let two = "\
+4000 games (2000 pairs):
+  wins: 1993 (49.83%)  losses: 1988 (49.70%)  draws: 19 (0.47%)
+WCMP_P0_PCT 50.0625
+WCMP_GAMES 4000
+WCMP_PAIRS 2000
+WCMP_P0_WINS 1993
+WCMP_P0_LOSSES 1988
+WCMP_P0_DRAWS 19
+WCMP_P0_SCORE 461.557750
+WCMP_P1_SCORE 460.890250
+20 games (10 pairs):
+WCMP_P0_PCT 47.5000
+WCMP_P0_WINS_PCT 45.0000
+WCMP_GAMES 20
+WCMP_P0_WINS 9
+WCMP_P0_LOSSES 10
+WCMP_P0_DRAWS 1
+WCMP_P0_SCORE 400.000000
+WCMP_P1_SCORE 402.000000
+";
+        let totals = CompareTotals::read(two.as_bytes()).unwrap();
+        assert_eq!(
+            (
+                totals.reports,
+                totals.p0_wins,
+                totals.p0_losses,
+                totals.p0_draws
+            ),
+            (2, 2002, 1998, 20)
+        );
+        assert!((totals.p0_score_sum - (461.55775 * 4000.0 + 400.0 * 20.0)).abs() < 1e-6);
+        assert!((totals.p1_score_sum - (460.89025 * 4000.0 + 402.0 * 20.0)).abs() < 1e-6);
+        // a block from before the counts were written, one whose counts are not
+        // its games, and no block at all are each refused
+        assert!(CompareTotals::read("WCMP_P0_PCT 50.0000\nWCMP_GAMES 2\n".as_bytes()).is_err());
+        assert!(
+            CompareTotals::read(
+                "WCMP_P0_PCT 50.0000\nWCMP_GAMES 4\nWCMP_P0_WINS 1\nWCMP_P0_LOSSES 1\nWCMP_P0_DRAWS 1\nWCMP_P0_SCORE 1\nWCMP_P1_SCORE 1\n"
+                    .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(CompareTotals::read("no block here\n".as_bytes()).is_err());
     }
 
     #[test]
