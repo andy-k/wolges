@@ -1099,7 +1099,10 @@ The game is given the way leave takes it: --preset english (the default),
 options such as --tiles or --jumbled. The leave table is compiled with --tiles
 if given, else the preset's tiles. Each trailing number is one generation's
 game count, so three numbers means three generations; append :N to a count to
-have autoplay gather N samples of every rack that generation.
+have autoplay gather N samples of every rack that generation. The counts are
+the whole run's: the same command again, in the same directory, carries on at
+the first generation with no table yet, and more generations take the counts
+again with the new ones after them.
 
 Options, each written before the counts:
   --threads N   worker threads for every leave run (default: every core)
