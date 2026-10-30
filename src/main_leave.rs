@@ -3648,6 +3648,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         leave_cur.copy_from_slice(&st.leave);
     }
 
+    // the leaves as the means found them, before the rounding to whole
+    // millipoints the next generation plays with: what the census writes
+    let leave_exact =
+        std::sync::Mutex::new(leave_cur.iter().map(|&v| v as f64).collect::<Vec<_>>());
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
     let num_threads = threads.max(1).min(max_boards as usize);
@@ -4042,12 +4046,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 } else {
                                     0.0
                                 };
+                                let mut exact = leave_exact.lock().unwrap();
                                 for idx in 0..lat_len {
                                     if cnt[idx] > 0 {
                                         ever[idx] = true;
-                                        lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
-                                            .round()
-                                            as i32;
+                                        exact[idx] = sum[idx] / cnt[idx] as f64 - base;
+                                        lv[idx] = exact[idx].round() as i32;
                                     }
                                 }
                                 if !quiet {
@@ -4124,10 +4128,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
+    let leave_exact = leave_exact.into_inner().unwrap();
 
     let value_mp = |idx: usize| -> f64 {
         if multigen {
-            leave_final[idx] as f64
+            leave_exact[idx]
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
         } else {
