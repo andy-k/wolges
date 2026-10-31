@@ -232,6 +232,22 @@ while :; do
   fi
 done
 
+# the counts are the whole run's, so the generations found are the first
+# counts' own: the same command again carries on where it stopped, and more
+# generations take every count again with the new ones after them
+if [ "$num_processed" -gt "$#" ]; then
+  echo "${last_leave} is here, past the last count given: give every generation's count, the built ones first" >&2
+  exit 1
+fi
+if [ "$num_processed" -eq "$#" ]; then
+  echo "${last_leave} is here already, the last count's: to add generations, give the same counts again with the new ones after them" >&2
+  exit 0
+fi
+if [ "$num_processed" -gt 0 ]; then
+  echo "${last_leave} is here: carrying on at generation $[num_processed + 1]"
+fi
+shift "$num_processed"
+
 for full_arg in "$@"; do
   before_colon="${full_arg%%:*}"
   if [ "${full_arg}" != "${before_colon}" ]; then
