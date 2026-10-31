@@ -142,7 +142,9 @@ impl WgReader for QuackleReader {
 
     #[inline(always)]
     fn accepts(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 7 + self.offset) + 6] != 0
+        bytes[(idx * 7 + self.offset) + 4] != 0
+            || bytes[(idx * 7 + self.offset) + 5] != 0
+            || bytes[(idx * 7 + self.offset) + 6] != 0
     }
 
     #[inline(always)]
