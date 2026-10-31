@@ -35,17 +35,15 @@ for. Those alternatives, and every lever that turned out not to help, are
 described below; the best current way to run each method is collected at the
 end of this file.
 
-There is one table that measures stronger than that, and it costs hours instead
-of minutes: the census table mixed half and half with a self-play table. One
-script builds it start to finish, and its defaults are the recipe that was
-measured:
+There is one table that measures stronger than that: the census table mixed
+half and half with a self-play table. One script builds it start to finish,
+and its defaults are the recipe that was measured:
 
   ./genblend.sh --preset english
 
-Reach for it when the table is one you mean to keep and you can spare an
-overnight run; reach for the census above when you want a good table now. Why
-the mixture wins, and what it costs, is under MIXING TWO TABLES BEATS EITHER
-ONE below.
+Reach for it when the table is one you mean to keep; reach for the census
+above when you want a good table now. Why the mixture wins is under MIXING TWO
+TABLES BEATS EITHER ONE below.
 
 The last generation's board count is the number that matters, and it is the
 only reason this costs more than the older recommendation of 4x256 (four
@@ -979,12 +977,18 @@ errors are independent.
 
 The expensive half is self-play, and two generations are enough. A blend built
 from generation 2 measured level with one built from generation 4 -- 50.0063,
-49.9956 and 50.0033 on three seeds, a mean of 50.0017 -- while costing a third
-as much. Fifteen further hours of self-play bought nothing measurable, which
+49.9956, and 50.0033 on three seeds, a mean of 50.0017 -- while costing a third
+as much. Two further generations of self-play bought nothing measurable, which
 matches what the generations themselves show: by generation 2 the tiles that
-settle slowly have mostly settled. So the recipe is the census (minutes), two
-self-play generations of a hundred million games each seeded from it (about
-seven and a half hours), and the mix (under a second).
+settle slowly have mostly settled.
+
+Nor do the generations need to be large. Those were a hundred million games
+each, the first forcing every rack to 500 samples and the second to 1000. Two
+generations of ten million games each, with no rack forced, built the same
+way, measured level with them: head to head the larger table took 50.0025 over
+five million game pairs on CSW24, at confidence 56, a margin no run here can
+resolve. So the recipe is the census, two self-play generations of ten million
+games each seeded from it, and the mix.
 
 genblend.sh runs exactly that, and keeps both ingredients so the mixture can be
 remade at another weight without replaying a game:
@@ -997,7 +1001,9 @@ At a hundred million games there is almost nothing left unmeasured to fill in:
 the floor changes 12,913 of 914,624 leaves, all of them six-tile keeps of
 doubled rare consonants such as JWWXYY, and over a million game pairs a table
 built with it and one built without it played identically -- the comparison
-reads 50.0000 at confidence 0.
+reads 50.0000 at confidence 0. At ten million games it fills in more, 143,154
+of those 914,624 in a CSW24 generation, and that recipe still measured level
+with the larger one, as above.
 
 
 BEST CURRENT WAY TO RUN EACH METHOD
@@ -1005,12 +1011,12 @@ BEST CURRENT WAY TO RUN EACH METHOD
 This section stays current: whatever the defaults have become, it shows how to
 get the most competitive leaves out of each method. Each recipe is one command
 (indented) followed by a note on how to push it further. If you want a good
-table in minutes, use the census; if you want the strongest table measured and
-can spare hours, mix the census with self-play.
+table quickly, use the census; for the strongest table measured, mix the
+census with self-play.
 
-Census and self-play mixed -- the strongest measured table, and hours rather
-than minutes. One script builds all of it: the census, two self-play
-generations seeded from it, and the half-and-half mix.
+Census and self-play mixed -- the strongest measured table. One script builds
+all of it: the census, two self-play generations seeded from it, and the
+half-and-half mix.
 
     ./genblend.sh --preset english
 
@@ -1075,6 +1081,11 @@ It forces the rare tail by default; add genleaves.sh's --no-forcing option for
 plain natural sampling. The genleaves.sh arguments are explained under RUNNING
 GENLEAVES.SH below.
 
+If you built your tables this way, genblend.sh is the step up from it: give it
+the same game options, and it adds the census, plays two self-play generations
+of ten million games where this plays three of two million, and mixes the two
+into the strongest table measured.
+
 RUNNING GENLEAVES.SH
 
 The autoplay and board-sampling recipes above are driven by the genleaves.sh
@@ -1106,12 +1117,16 @@ three stages in one command:
     ./genblend.sh [options] [count-per-gen]...
 
 The game options mean what they mean for genleaves.sh. Trailing counts, if given,
-spell out the self-play generations as games:samples-of-every-rack, defaulting
-to 100000000:500 100000000:1000 -- two generations, the recipe that was
-measured. Each stage is skipped if its result is already on disk, so an
-interrupted run carries on rather than replaying finished generations, and each
-generation's per-game log is deleted once its summary is renamed, because at
-these game counts that log runs to gigabytes and nothing downstream reads it.
+spell out the self-play generations as games, or as games:samples-of-every-rack
+to force every rack to that many samples, defaulting to 10000000 10000000 --
+two generations of ten million games with no rack forced, the recipe MIXING
+TWO TABLES BEATS EITHER ONE settles on; 100000000:500 100000000:1000 is the
+larger recipe it measured level with. Each stage is skipped if its result is
+already on disk, so an interrupted run carries on rather than replaying
+finished generations, and each generation's per-game log is deleted once its
+summary is renamed, because that log runs to hundreds of megabytes a
+generation, gigabytes at a hundred million games, and nothing downstream reads
+it.
 
 Options, each written before the counts:
   --recipe LIST     board counts for the census stage (default 3x256,2048)
