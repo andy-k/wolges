@@ -166,11 +166,12 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 }
 
 #[inline]
-fn read_kwg<N: kwg::Node>(
+fn read_kwg(
     game_config: &game_config::GameConfig,
     path: &str,
-) -> error::Returns<kwg::Kwg<N>> {
-    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(path)?)?)?;
+    kbwg: bool,
+) -> error::Returns<kwg::Kwg<kwg::Node24>> {
+    let kwg = kwg::kbwg_from_bytes_alloc(read_to_end(&mut make_reader(path)?)?, kbwg)?;
     refuse_a_wider_graph(&kwg, game_config, path)?;
     Ok(kwg)
 }
@@ -179,19 +180,19 @@ fn read_kwg<N: kwg::Node>(
 fn read_klv(
     game_config: &game_config::GameConfig,
     path: &str,
-) -> error::Returns<klv::Klv<kwg::Node22>> {
+) -> error::Returns<klv::Klv<kwg::Node24>> {
     let klv = if path == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
+        klv::Klv::<kwg::Node24>::empty()?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)?
+        klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     Ok(klv)
 }
 
 type KlvPair = (
-    std::sync::Arc<klv::Klv<kwg::Node22>>,
-    std::sync::Arc<klv::Klv<kwg::Node22>>,
+    std::sync::Arc<klv::Klv<kwg::Node24>>,
+    std::sync::Arc<klv::Klv<kwg::Node24>>,
 );
 
 #[inline]
@@ -875,14 +876,15 @@ struct Cli {
 }
 
 #[inline]
-fn run<N: kwg::Node + Sync + Send>(
+fn run(
     task: Task,
     game_config: game_config::GameConfig,
     threads: usize,
+    kbwg: bool,
 ) -> error::Returns<()> {
     match task {
         Task::Autoplay(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
             generate_autoplay_logs::<true, false, _, _>(
                 game_config,
@@ -901,7 +903,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::AutoplaySummarize(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
             generate_autoplay_logs::<true, true, _, _>(
                 game_config,
@@ -920,7 +922,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::AutoplaySummarizeOnly(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
             generate_autoplay_logs::<false, true, _, _>(
                 game_config,
@@ -939,7 +941,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::Gilles(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
             generate_gilles_summary(
                 game_config,
@@ -959,7 +961,7 @@ fn run<N: kwg::Node + Sync + Send>(
         }
         Task::Census(a) => {
             let board_counts = parse_board_counts(&a.boards)?;
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
             generate_census_leaves(
                 game_config,
@@ -1001,7 +1003,7 @@ fn run<N: kwg::Node + Sync + Send>(
             };
             let p0_window = window(a.p0_window, ever_deft(a.p0_picker, a.p0_endgame))?;
             let p1_window = window(a.p1_window, ever_deft(a.p1_picker, a.p1_endgame))?;
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
             let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
                 && hasty_throughout(a.p1_picker, a.p1_endgame);
@@ -1041,7 +1043,7 @@ fn run<N: kwg::Node + Sync + Send>(
         }
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
@@ -1108,7 +1110,7 @@ fn run<N: kwg::Node + Sync + Send>(
             }
         }
         Task::HarvestBoards(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
             harvest_boards(
                 game_config,
@@ -1125,17 +1127,17 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::CensusBoard(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             census_one_board(game_config, kwg, klv, &a.board, &a.racks)
         }
         Task::Infer(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             infer_one_move(game_config, kwg, klv, &a, threads)
         }
         Task::InferFit(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             infer_fit(
                 game_config,
@@ -1158,7 +1160,7 @@ fn run<N: kwg::Node + Sync + Send>(
         }
         Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?, a.quiet),
         Task::Openness(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             board_openness(game_config, kwg, klv, &a.boards, threads, a.quiet)
         }
@@ -1169,7 +1171,7 @@ fn run<N: kwg::Node + Sync + Send>(
                         .to_string()
                 );
             }
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             openness_moves(
                 game_config,
@@ -1186,7 +1188,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::Position(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             inspect_position(
                 game_config,
@@ -1204,12 +1206,12 @@ fn run<N: kwg::Node + Sync + Send>(
         }
         Task::SimChunkCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             sim_chunk_check(game_config, kwg, klv, &a)
         }
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
@@ -1300,11 +1302,11 @@ fn run<N: kwg::Node + Sync + Send>(
         }
         Task::SimFieldCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             sim_field_check(game_config, kwg, klv, a.seed, a.turns, a.lean)
         }
         Task::Winpct(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
             generate_winpct_table(
                 game_config,
@@ -1321,7 +1323,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::WinpctEval(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
             let table = win_pct::WinPctTable::from_csv(make_reader(&a.table)?)?;
             generate_winpct_eval(
@@ -1394,7 +1396,7 @@ fn run<N: kwg::Node + Sync + Send>(
             a.quiet,
         ),
         Task::Study(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
             let sizes = a
                 .sizes
@@ -1416,7 +1418,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::Playability(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
             discover_playability(
                 game_config,
@@ -1444,11 +1446,7 @@ fn main() -> error::Returns<()> {
     let threads = cli
         .threads
         .map_or_else(wolges::parallelism::available, std::num::NonZeroUsize::get);
-    if cli.kbwg {
-        run::<kwg::Node24>(cli.task, game_config, threads)?;
-    } else {
-        run::<kwg::Node22>(cli.task, game_config, threads)?;
-    }
+    run(cli.task, game_config, threads, cli.kbwg)?;
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
 }
@@ -3607,7 +3605,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 "--resume wants a census-gen-<stamp>-<generation>.klv2 snapshot, got {path}"
             ))
         };
-        let bytes = std::fs::read(&path)?;
+        // a snapshot is a klv2 file, its leaves' graph a kwg's
+        let mut bytes = std::fs::read(&path)?;
+        klv::repack_in_place::<kwg::Node22, L>(&mut bytes)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes)?;
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
             lat.unrank_into(idx, &mut tally_buf);

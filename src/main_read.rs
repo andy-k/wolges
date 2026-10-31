@@ -15,9 +15,12 @@ trait WgReader {
     fn len(&self, bytes: &[u8]) -> usize;
 }
 
-struct KwgReader {}
+// a .dwg: four bytes a node, the arc index in the low 22 bits, the end and
+// accepts flags above it, and the tile, a letter's own code, in the high byte;
+// its tiles are past kbwg's 6 bits, so the file is walked as it is
+struct ZyzzyvaReader {}
 
-impl WgReader for KwgReader {
+impl WgReader for ZyzzyvaReader {
     #[inline(always)]
     fn tile(&self, bytes: &[u8], idx: usize) -> u8 {
         bytes[(idx * 4) + 3]
@@ -43,28 +46,6 @@ impl WgReader for KwgReader {
     #[inline(always)]
     fn len(&self, bytes: &[u8]) -> usize {
         bytes.len() / 4
-    }
-}
-
-// a word graph read here node by node is first loaded and counted by the
-// library, which refuses one that is cut short, points outside itself or loops
-trait CheckedWg: WgReader {
-    fn check(&self, bytes: &[u8]) -> error::Returns<()>;
-}
-
-impl CheckedWg for KwgReader {
-    #[inline]
-    fn check(&self, bytes: &[u8]) -> error::Returns<()> {
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(bytes)?.count_words_alloc()?;
-        Ok(())
-    }
-}
-
-impl CheckedWg for KbwgReader {
-    #[inline]
-    fn check(&self, bytes: &[u8]) -> error::Returns<()> {
-        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(bytes)?.count_words_alloc()?;
-        Ok(())
     }
 }
 
@@ -600,12 +581,15 @@ fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
 }
 
 // a leave table read here raw is first loaded by the library, which refuses one
-// that is cut short, sized wrong or loops, or that has a value too few or too
-// many for its leaves
+// that is cut short, is sized wrong, or loops, one with too few or too many
+// values for its leaves, and one with a value a leave cannot hold; the copy it
+// loads, its leaves' graph repacked into kbwg's layout, is the one read walks
 #[inline(always)]
-fn check_klv(klv_bytes: &[u8]) -> error::Returns<()> {
-    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes)?;
-    Ok(())
+fn check_klv(klv_bytes: &[u8]) -> error::Returns<Vec<u8>> {
+    let mut repacked = klv_bytes.to_vec();
+    klv::repack_in_place::<kwg::Node22, kwg::Node24>(&mut repacked)?;
+    klv::Klv::<kwg::Node24>::from_bytes_alloc(&repacked)?;
+    Ok(repacked)
 }
 
 #[inline(always)]
@@ -624,15 +608,13 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
 }
 
 #[inline]
-fn do_wg_check<R: CheckedWg>(
-    kwg_path: &str,
+fn do_wg_check(
+    kwg_bytes: &[u8],
     words: &[String],
     alphabet: &alphabet::Alphabet,
-    reader: &R,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_words(alphabet);
-    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
-    reader.check(kwg_bytes)?;
+    let reader = &KbwgReader {};
     let mut not_found = false;
     for word in words {
         let sb = &word.as_bytes();
@@ -685,17 +667,15 @@ enum AnagramMode {
 }
 
 #[inline]
-fn do_wg_anagram<R: CheckedWg>(
-    kwg_path: &str,
+fn do_wg_anagram(
+    kwg_bytes: &[u8],
     out: &str,
     rack_str: &str,
     alphabet: &alphabet::Alphabet,
-    reader: &R,
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
-    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
-    reader.check(kwg_bytes)?;
+    let reader = &KbwgReader {};
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
     let sb = &rack_str.as_bytes();
@@ -785,25 +765,7 @@ fn wg_anagram(
     alphabet: &alphabet::Alphabet,
     mode: AnagramMode,
 ) -> error::Returns<()> {
-    if graph_file.kbwg {
-        do_wg_anagram(
-            &graph_file.kwg,
-            out,
-            rack_str,
-            alphabet,
-            &KbwgReader {},
-            mode,
-        )
-    } else {
-        do_wg_anagram(
-            &graph_file.kwg,
-            out,
-            rack_str,
-            alphabet,
-            &KwgReader {},
-            mode,
-        )
-    }
+    do_wg_anagram(&graph_file.load()?, out, rack_str, alphabet, mode)
 }
 
 #[inline]
@@ -837,17 +799,16 @@ fn dump_dawg<R: WgReader, A: AlphabetLabel>(
 }
 
 #[inline]
-fn do_klv_anagram<R: WgReader>(
+fn do_klv_anagram(
     klv_path: &str,
     out: &str,
     rack_str: &str,
     alphabet: &alphabet::Alphabet,
-    reader: &R,
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
-    let klv_bytes = &read_to_end(&mut make_reader(klv_path)?)?;
-    check_klv(klv_bytes)?;
+    let klv_bytes = &check_klv(&read_to_end(&mut make_reader(klv_path)?)?)?;
+    let reader = &KbwgReader {};
     let parts = parse_klv(klv_bytes)?;
     let kwg_bytes = parts.kwg_bytes;
     let mut r = parts.r;
@@ -929,16 +890,14 @@ fn do_klv_anagram<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_dawg<R: CheckedWg>(
-    kwg_path: &str,
+fn do_wg_dawg(
+    bytes: &[u8],
     out: &str,
     alphabet: &alphabet::Alphabet,
-    reader: &R,
     initial_node_idx: usize,
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
-    let bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
-    reader.check(bytes)?;
+    let reader = &KbwgReader {};
     if initial_node_idx >= reader.len(bytes) {
         return Err("out of bounds".into());
     }
@@ -953,16 +912,14 @@ fn do_wg_dawg<R: CheckedWg>(
 }
 
 #[inline]
-fn do_wg_nodes<R: CheckedWg>(
-    kwg_path: &str,
+fn do_wg_nodes(
+    kwg_bytes: &[u8],
     out: &str,
     alphabet: &alphabet::Alphabet,
-    reader: &R,
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
     let alphabet_label = &WolgesAlphabetLabel { alphabet };
-    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
-    reader.check(kwg_bytes)?;
+    let reader = &KbwgReader {};
     let kwg_len = reader.len(kwg_bytes);
     let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
     let mut kwg_pointed_to = vec![false; kwg_len];
@@ -1000,16 +957,10 @@ fn do_wg_nodes<R: CheckedWg>(
 }
 
 #[inline]
-fn do_wg_prob<R: CheckedWg>(
-    kwg_path: &str,
-    out: &str,
-    alphabet: &alphabet::Alphabet,
-    reader: &R,
-) -> error::Returns<()> {
+fn do_wg_prob(kwg_bytes: &[u8], out: &str, alphabet: &alphabet::Alphabet) -> error::Returns<()> {
     let mut word_prob = prob::WordProbability::new(alphabet);
     let word_cell = std::cell::RefCell::new(Vec::new());
-    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
-    reader.check(kwg_bytes)?;
+    let reader = &KbwgReader {};
     let vec_out_cell = std::cell::RefCell::new(Vec::new());
     iter_dawg(
         DawgSource {
@@ -1769,9 +1720,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             // for use with olaugh/magpie-retro.
             let is_klv16 = klv.is_some();
             let alphabet = make_alphabet()?;
-            let reader = &KwgReader {};
-            let klv_bytes = &read_to_end(&mut make_reader(&leaves)?)?;
-            check_klv(klv_bytes)?;
+            let reader = &KbwgReader {};
+            let klv_bytes = &check_klv(&read_to_end(&mut make_reader(&leaves)?)?)?;
             let parts = parse_klv(klv_bytes)?;
             let kwg_bytes = parts.kwg_bytes;
             let mut r = parts.r;
@@ -1828,25 +1778,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 (Graph::Dawg, true) => (0, alphabet.of_rack(0)),
                 (Graph::Gaddag, _) => (1, Some("@")),
             };
-            if graph_file.kbwg {
-                do_wg_dawg(
-                    &graph_file.kwg,
-                    &out,
-                    &alphabet,
-                    &KbwgReader {},
-                    initial_node_idx,
-                    blank_str,
-                )
-            } else {
-                do_wg_dawg(
-                    &graph_file.kwg,
-                    &out,
-                    &alphabet,
-                    &KwgReader {},
-                    initial_node_idx,
-                    blank_str,
-                )
-            }
+            do_wg_dawg(
+                &graph_file.load()?,
+                &out,
+                &alphabet,
+                initial_node_idx,
+                blank_str,
+            )
         }
         Task::KwgNodes {
             graph_file,
@@ -1855,19 +1793,11 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         } => {
             let alphabet = make_alphabet()?;
             let blank_str = if blanks { alphabet.of_rack(0) } else { None };
-            if graph_file.kbwg {
-                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KbwgReader {}, blank_str)
-            } else {
-                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KwgReader {}, blank_str)
-            }
+            do_wg_nodes(&graph_file.load()?, &out, &alphabet, blank_str)
         }
         Task::KwgProb { graph_file, out } => {
             let alphabet = make_alphabet()?;
-            if graph_file.kbwg {
-                do_wg_prob(&graph_file.kwg, &out, &alphabet, &KbwgReader {})
-            } else {
-                do_wg_prob(&graph_file.kwg, &out, &alphabet, &KwgReader {})
-            }
+            do_wg_prob(&graph_file.load()?, &out, &alphabet)
         }
         Task::Prob { words } => {
             let alphabet = make_alphabet()?;
@@ -1890,30 +1820,15 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             }
             Ok(())
         }
-        Task::KlvAnagramSub { leaves, out, rack } => do_klv_anagram(
-            &leaves,
-            &out,
-            &rack,
-            &make_alphabet()?,
-            &KwgReader {},
-            AnagramMode::Sub,
-        ),
-        Task::KlvAnagram { leaves, out, rack } => do_klv_anagram(
-            &leaves,
-            &out,
-            &rack,
-            &make_alphabet()?,
-            &KwgReader {},
-            AnagramMode::Exact,
-        ),
-        Task::KlvAnagramSuper { leaves, out, rack } => do_klv_anagram(
-            &leaves,
-            &out,
-            &rack,
-            &make_alphabet()?,
-            &KwgReader {},
-            AnagramMode::Super,
-        ),
+        Task::KlvAnagramSub { leaves, out, rack } => {
+            do_klv_anagram(&leaves, &out, &rack, &make_alphabet()?, AnagramMode::Sub)
+        }
+        Task::KlvAnagram { leaves, out, rack } => {
+            do_klv_anagram(&leaves, &out, &rack, &make_alphabet()?, AnagramMode::Exact)
+        }
+        Task::KlvAnagramSuper { leaves, out, rack } => {
+            do_klv_anagram(&leaves, &out, &rack, &make_alphabet()?, AnagramMode::Super)
+        }
         Task::KwgAnagramSub {
             graph_file,
             out,
@@ -1949,11 +1864,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         ),
         Task::KwgCheck { graph_file, words } => {
             let alphabet = make_alphabet()?;
-            if graph_file.kbwg {
-                do_wg_check(&graph_file.kwg, &words, &alphabet, &KbwgReader {})
-            } else {
-                do_wg_check(&graph_file.kwg, &words, &alphabet, &KwgReader {})
-            }
+            do_wg_check(&graph_file.load()?, &words, &alphabet)
         }
         Task::Q2Ort { ort, out } => {
             let alphabet = make_alphabet()?;
@@ -2730,37 +2641,16 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             out,
             graph,
         } => {
-            let kwg_bytes = &read_to_end(&mut make_reader(&graph_file.kwg)?)?;
+            let kwg_bytes = &graph_file.load()?;
             let initial_idx = if matches!(graph, Graph::Gaddag) { 1 } else { 0 };
             let mut ret = String::new();
-            if graph_file.kbwg {
-                kwg_hitcheck(
-                    &mut ret,
-                    &KbwgReader {},
-                    kwg_bytes,
-                    initial_idx,
-                    cls,
-                    csa,
-                    ncs,
-                )?;
-            } else {
-                kwg_hitcheck(
-                    &mut ret,
-                    &KwgReader {},
-                    kwg_bytes,
-                    initial_idx,
-                    cls,
-                    csa,
-                    ncs,
-                )?;
-            }
+            kwg_hitcheck(&mut ret, kwg_bytes, initial_idx, cls, csa, ncs)?;
             make_writer(&out)?.write_all(ret.as_bytes())?;
             Ok(())
         }
         Task::QuackleMakeSuperleaves { leaves, out } => {
-            let reader = &KwgReader {};
-            let klv_bytes = &read_to_end(&mut make_reader(&leaves)?)?;
-            check_klv(klv_bytes)?;
+            let reader = &KbwgReader {};
+            let klv_bytes = &check_klv(&read_to_end(&mut make_reader(&leaves)?)?)?;
             let parts = parse_klv(klv_bytes)?;
             let kwg_bytes = parts.kwg_bytes;
             let mut r = parts.r;
@@ -2839,7 +2729,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             dump_dawg(
                 &out,
                 &LexpertAlphabetLabel {},
-                &KwgReader {},
+                &ZyzzyvaReader {},
                 bytes,
                 1,
                 None,
@@ -2907,16 +2797,15 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 // note: kwg in legacy layout is reported to be slower than the newer layouts.
 // this cache simulation contradicts that observation. can someone explain?
 #[inline]
-fn kwg_hitcheck<R: CheckedWg>(
+fn kwg_hitcheck(
     ret: &mut String,
-    r: &R,
     b: &[u8],
     initial_idx: usize,
     cache_line_size: u32,
     cache_set_associativity: u32,
     num_cache_sets: u32,
 ) -> error::Returns<()> {
-    r.check(b)?;
+    let r = &KbwgReader {};
     if cache_line_size == 0 || cache_set_associativity == 0 || num_cache_sets == 0 {
         return Err("a cache has lines, ways and sets of 1 or more".into());
     }
@@ -3089,6 +2978,21 @@ struct WordGraph {
     kbwg: bool,
     #[arg(help = "the word graph")]
     kwg: String,
+}
+
+impl WordGraph {
+    // the graph read in kbwg's layout, the one read walks: a kwg's nodes
+    // repacked as it loads; then loaded and counted by the library, which
+    // refuses one that is cut short, points outside itself, or loops
+    #[inline]
+    fn load(&self) -> error::Returns<Vec<u8>> {
+        let mut bytes = read_to_end(&mut make_reader(&self.kwg)?)?;
+        if !self.kbwg {
+            kwg::repack_in_place::<kwg::Node22, kwg::Node24>(&mut bytes)?;
+        }
+        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&bytes)?.count_words_alloc()?;
+        Ok(bytes)
+    }
 }
 
 #[derive(clap::Subcommand)]

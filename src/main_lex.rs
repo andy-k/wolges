@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use std::io::Write;
+use wolges::kwg::Node;
 use wolges::{alphabet, bites, error, fash, kwg};
 
 #[inline(always)]
@@ -353,27 +354,24 @@ fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
     let alphabet =
         alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))?;
-    if cli.kbwg {
-        find_words::<kwg::Node24>(&alphabet, &cli.kwg, &cli.kwg2)
-    } else {
-        find_words::<kwg::Node22>(&alphabet, &cli.kwg, &cli.kwg2)
-    }
+    find_words(&alphabet, &cli.kwg, &cli.kwg2, cli.kbwg)
 }
 
 #[inline(always)]
-fn find_words<N: kwg::Node>(
+fn find_words(
     alphabet: &alphabet::Alphabet,
     kwg_path: &str,
     kwg2_path: &str,
+    kbwg: bool,
 ) -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?)?;
+        let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
         print_dawg(alphabet, &kwg)?;
         return Ok(());
     }
-    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?)?;
+    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
     if true {
-        let nwl23_kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg2_path)?)?;
+        let nwl23_kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg2_path)?, kbwg)?;
         let known_boards = [
             &[
                 1, 1, 1, 1, //

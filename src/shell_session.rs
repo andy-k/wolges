@@ -231,7 +231,7 @@ enum Seat {
 // takes either back.
 struct Sim {
     move_generator: movegen::KurniaMoveGenerator,
-    simmer: move_picker::Simmer<'static, kwg::Node22, kwg::Node22, true>,
+    simmer: move_picker::Simmer<'static, kwg::Node24, kwg::Node24, true>,
     stream_of: Vec<u64>,
 }
 
@@ -240,10 +240,10 @@ struct Sim {
 // borrows them, can be kept between commands
 pub struct Session {
     game_config: &'static game_config::GameConfig,
-    kwg: Option<(String, &'static kwg::Kwg<kwg::Node22>)>,
-    klv: &'static klv::Klv<kwg::Node22>,
-    kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node22>>,
-    klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node22>>,
+    kwg: Option<(String, &'static kwg::Kwg<kwg::Node24>)>,
+    klv: &'static klv::Klv<kwg::Node24>,
+    kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node24>>,
+    klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node24>>,
     arm_tables_built: std::collections::HashMap<String, &'static anagrams::ArmTables>,
     infer_tables: Option<infer::InferTables>, // for klv, built at its first use
     game: Option<Game>,
@@ -433,9 +433,7 @@ impl Session {
         Ok(Self {
             game_config,
             kwg: None,
-            klv: Box::leak(Box::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                klv::EMPTY_KLV_BYTES,
-            )?)),
+            klv: Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?)),
             kwgs_read: Default::default(),
             klvs_read: Default::default(),
             arm_tables_built: Default::default(),
@@ -536,9 +534,12 @@ impl Session {
                 let kwg = match self.kwgs_read.get(path) {
                     Some(&kwg) => kwg,
                     None => {
-                        let kwg: &'static _ = Box::leak(Box::new(
-                            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)?,
-                        ));
+                        // a .kbwg is in the layout the engine works in; a kwg
+                        // is repacked into it as it loads
+                        let kwg: &'static _ = Box::leak(Box::new(kwg::kbwg_from_bytes_alloc(
+                            std::fs::read(path)?,
+                            path.ends_with(".kbwg"),
+                        )?));
                         self.kwgs_read.insert(path.clone(), kwg);
                         kwg
                     }
@@ -553,12 +554,11 @@ impl Session {
                 let klv = match self.klvs_read.get(path) {
                     Some(&klv) => klv,
                     None => {
-                        let bytes = if path == "-" {
-                            klv::EMPTY_KLV_BYTES.to_vec()
+                        let klv = if path == "-" {
+                            klv::Klv::<kwg::Node24>::empty()?
                         } else {
-                            std::fs::read(path)?
+                            klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
                         };
-                        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&bytes)?;
                         self.game_config.check_leaves(klv.leave_range())?;
                         let klv: &'static _ = Box::leak(Box::new(klv));
                         self.klvs_read.insert(path.clone(), klv);
@@ -1367,7 +1367,7 @@ impl Session {
         Ok(())
     }
 
-    fn use_kwg(&mut self, path: &str, kwg: &'static kwg::Kwg<kwg::Node22>) {
+    fn use_kwg(&mut self, path: &str, kwg: &'static kwg::Kwg<kwg::Node24>) {
         self.kwg = Some((path.to_string(), kwg));
         self.move_generator.reset_for_another_kwg();
         self.infer_generator.reset_for_another_kwg();
@@ -1393,9 +1393,7 @@ impl Session {
         self.loser = None;
         self.racks_given = [false; 2];
         if game_config.check_leaves(self.klv.leave_range()).is_err() {
-            self.klv = Box::leak(Box::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                klv::EMPTY_KLV_BYTES,
-            )?));
+            self.klv = Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?));
             writeln!(
                 std::io::stdout(),
                 "the leave values do not fit these rules: none now (leaves FILE for others)"
@@ -1405,7 +1403,7 @@ impl Session {
     }
 
     // the word graph, or an error saying to read one
-    fn kwg(&self) -> error::Returns<&'static kwg::Kwg<kwg::Node22>> {
+    fn kwg(&self) -> error::Returns<&'static kwg::Kwg<kwg::Node24>> {
         Ok(self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.1)
     }
 
@@ -1975,7 +1973,7 @@ impl Session {
         };
         let rack = self.state.current_player().rack.clone();
         let Some(ms) = sim_ms else {
-            move_picker::MovePicker::<kwg::Node22, kwg::Node22>::Hasty.pick_a_move(
+            move_picker::MovePicker::<kwg::Node24, kwg::Node24>::Hasty.pick_a_move(
                 &mut move_filter::GenMoves::Unfiltered,
                 &mut self.move_generator,
                 board_snapshot,
@@ -2801,7 +2799,7 @@ impl Session {
     // rack as show prints it, and the move with its score
     fn endgame_line(
         &self,
-        solver: &mut endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
+        solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
         state: &game_state::GameState,
     ) -> error::Returns<Vec<String>> {
         let mut line = Vec::new();
@@ -2994,11 +2992,11 @@ fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usi
 // are known, printing its progress unless quiet
 fn endgame_solver(
     game_config: &'static game_config::GameConfig,
-    kwg: &'static kwg::Kwg<kwg::Node22>,
+    kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
     state: &game_state::GameState,
     quiet: bool,
-) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>> {
+) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
     if !state.bag.is_empty() {
         return Err("the bag is not empty, and an endgame needs it to be".into());
     }
@@ -3022,13 +3020,13 @@ fn endgame_solver(
 // limits: returns the solver, whose best line can be read, and what it found
 fn solve_endgame(
     game_config: &'static game_config::GameConfig,
-    kwg: &'static kwg::Kwg<kwg::Node22>,
+    kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
     state: &game_state::GameState,
     limits: &endgame::Limits,
     quiet: bool,
 ) -> error::Returns<(
-    endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
+    endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
     endgame::Solved,
 )> {
     let mut solver = endgame_solver(game_config, kwg, arm_tables, state, quiet)?;
@@ -3577,7 +3575,7 @@ mod tests {
     use wolges::build;
 
     // every two- and three-letter word of A, E, and T
-    fn tiny_lexicon() -> kwg::Kwg<kwg::Node22> {
+    fn tiny_lexicon() -> kwg::Kwg<kwg::Node24> {
         const LETTERS: [u8; 3] = [1, 5, 20];
         let mut words = Vec::new();
         for &a in &LETTERS {
@@ -3589,14 +3587,14 @@ mod tests {
             }
         }
         words.sort_unstable();
-        let bytes = build::build(
+        let bytes = build::build_big(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
             &words,
         )
         .unwrap();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
+        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&bytes).unwrap()
     }
 
     fn session() -> Session {

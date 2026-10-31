@@ -316,38 +316,25 @@ fn main() -> error::Returns<()> {
     };
     let kwg_bytes = std::fs::read(&files.kwg)?;
     let klv_bytes = std::fs::read(&files.klv)?;
-    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes)?;
+    let klv = klv::kbwg_from_bytes_alloc(klv_bytes.clone())?;
     let game_config = cli.game.make_game_config()?;
     game_config.check_leaves(klv.leave_range())?;
-    if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
-        run(
-            &kwg,
-            &klv,
-            &game_config,
-            check_mode,
-            files,
-            &kwg_bytes,
-            &klv_bytes,
-        )
-    } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
-        run(
-            &kwg,
-            &klv,
-            &game_config,
-            check_mode,
-            files,
-            &kwg_bytes,
-            &klv_bytes,
-        )
-    }
+    let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.clone(), cli.kbwg)?;
+    run(
+        &kwg,
+        &klv,
+        &game_config,
+        check_mode,
+        files,
+        &kwg_bytes,
+        &klv_bytes,
+    )
 }
 
 #[inline(always)]
-fn run<N: kwg::Node>(
-    kwg: &kwg::Kwg<N>,
-    klv: &klv::Klv<kwg::Node22>,
+fn run(
+    kwg: &kwg::Kwg<kwg::Node24>,
+    klv: &klv::Klv<kwg::Node24>,
     game_config: &game_config::GameConfig,
     check_mode: bool,
     files: &Files,

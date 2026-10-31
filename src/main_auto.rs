@@ -86,21 +86,14 @@ fn main() -> error::Returns<()> {
         wolges::return_error!("auto plays two seats, so it needs exactly 2 players".to_string());
     }
     let klv = if cli.klv == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
+        klv::Klv::<kwg::Node24>::empty()?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)?
+        klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
-    let kwg_bytes = std::fs::read(&cli.kwg)?;
-    if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
-        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        do_it(&kwg, &klv, &game_config, harvest, cli.lean)
-    } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
-        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        do_it(&kwg, &klv, &game_config, harvest, cli.lean)
-    }
+    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
+    refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+    do_it(&kwg, &klv, &game_config, harvest, cli.lean)
 }
 
 #[inline]
@@ -119,9 +112,9 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 }
 
 #[inline(always)]
-fn do_it<N: kwg::Node + Sync>(
-    kwg: &kwg::Kwg<N>,
-    klv: &klv::Klv<kwg::Node22>,
+fn do_it(
+    kwg: &kwg::Kwg<kwg::Node24>,
+    klv: &klv::Klv<kwg::Node24>,
     game_config: &game_config::GameConfig,
     harvest: Option<HarvestWriter>,
     lean: bool,
@@ -218,7 +211,7 @@ fn do_it<N: kwg::Node + Sync>(
         let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
         vec_of_words.sort_unstable();
         //println!("{:?}", vec_of_words);
-        let smaller_kwg_bytes = build::build(
+        let smaller_kwg_bytes = build::build_big(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
@@ -230,7 +223,7 @@ fn do_it<N: kwg::Node + Sync>(
             smaller_kwg_bytes.len()
         )?;
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
-        let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes)?;
+        let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
         let smaller_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
         let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -382,7 +375,7 @@ fn do_it<N: kwg::Node + Sync>(
                     )?;
                     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
                     vec_of_words.sort_unstable();
-                    let smaller_kwg_bytes = build::build(
+                    let smaller_kwg_bytes = build::build_big(
                         build::BuildContent::Gaddawg,
                         build::BuildLayout::Wolges,
                         build::BuildOrder::Sorted,
@@ -393,7 +386,8 @@ fn do_it<N: kwg::Node + Sync>(
                         "word_prune: {} bytes kwg",
                         smaller_kwg_bytes.len()
                     )?;
-                    let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes)?;
+                    let smaller_kwg =
+                        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
                     let smaller_tables =
                         anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
                     move_generator.reset_for_another_kwg();
