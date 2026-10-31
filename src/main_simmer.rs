@@ -95,7 +95,7 @@ fn main() -> error::Returns<()> {
     } else {
         klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
     };
-    game_config.check_leaves(klv.leave_range())?;
+    game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
     simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)

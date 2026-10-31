@@ -318,7 +318,7 @@ fn main() -> error::Returns<()> {
     let klv_bytes = std::fs::read(&files.klv)?;
     let klv = klv::kbwg_from_bytes_alloc(klv_bytes.clone())?;
     let game_config = cli.game.make_game_config()?;
-    game_config.check_leaves(klv.leave_range())?;
+    game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.clone(), cli.kbwg)?;
     run(
         &kwg,

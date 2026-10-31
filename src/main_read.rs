@@ -585,10 +585,15 @@ fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
 // values for its leaves, and one with a value a leave cannot hold; the copy it
 // loads, its leaves' graph repacked into kbwg's layout, is the one read walks
 #[inline(always)]
-fn check_klv(klv_bytes: &[u8]) -> error::Returns<Vec<u8>> {
+fn check_klv(klv_bytes: &[u8], alphabet: Option<&alphabet::Alphabet>) -> error::Returns<Vec<u8>> {
     let mut repacked = klv_bytes.to_vec();
     klv::repack_in_place::<kwg::Node22, kwg::Node24>(&mut repacked)?;
-    klv::Klv::<kwg::Node24>::from_bytes_alloc(&repacked)?;
+    let klv = klv::Klv::<kwg::Node24>::from_bytes_alloc(&repacked)?;
+    if let Some(alphabet) = alphabet
+        && !klv.fits_alphabet(alphabet.len())
+    {
+        return Err(format!("the leaves have tiles past these tiles' {}", alphabet.len()).into());
+    }
     Ok(repacked)
 }
 
@@ -765,7 +770,13 @@ fn wg_anagram(
     alphabet: &alphabet::Alphabet,
     mode: AnagramMode,
 ) -> error::Returns<()> {
-    do_wg_anagram(&graph_file.load()?, out, rack_str, alphabet, mode)
+    do_wg_anagram(
+        &graph_file.load(Some(alphabet))?,
+        out,
+        rack_str,
+        alphabet,
+        mode,
+    )
 }
 
 #[inline]
@@ -807,7 +818,7 @@ fn do_klv_anagram(
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
-    let klv_bytes = &check_klv(&read_to_end(&mut make_reader(klv_path)?)?)?;
+    let klv_bytes = &check_klv(&read_to_end(&mut make_reader(klv_path)?)?, Some(alphabet))?;
     let reader = &KbwgReader {};
     let parts = parse_klv(klv_bytes)?;
     let kwg_bytes = parts.kwg_bytes;
@@ -1721,7 +1732,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             let is_klv16 = klv.is_some();
             let alphabet = make_alphabet()?;
             let reader = &KbwgReader {};
-            let klv_bytes = &check_klv(&read_to_end(&mut make_reader(&leaves)?)?)?;
+            let klv_bytes = &check_klv(&read_to_end(&mut make_reader(&leaves)?)?, Some(&alphabet))?;
             let parts = parse_klv(klv_bytes)?;
             let kwg_bytes = parts.kwg_bytes;
             let mut r = parts.r;
@@ -1779,7 +1790,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 (Graph::Gaddag, _) => (1, Some("@")),
             };
             do_wg_dawg(
-                &graph_file.load()?,
+                &graph_file.load(Some(&alphabet))?,
                 &out,
                 &alphabet,
                 initial_node_idx,
@@ -1793,11 +1804,16 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         } => {
             let alphabet = make_alphabet()?;
             let blank_str = if blanks { alphabet.of_rack(0) } else { None };
-            do_wg_nodes(&graph_file.load()?, &out, &alphabet, blank_str)
+            do_wg_nodes(
+                &graph_file.load(Some(&alphabet))?,
+                &out,
+                &alphabet,
+                blank_str,
+            )
         }
         Task::KwgProb { graph_file, out } => {
             let alphabet = make_alphabet()?;
-            do_wg_prob(&graph_file.load()?, &out, &alphabet)
+            do_wg_prob(&graph_file.load(Some(&alphabet))?, &out, &alphabet)
         }
         Task::Prob { words } => {
             let alphabet = make_alphabet()?;
@@ -1864,7 +1880,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         ),
         Task::KwgCheck { graph_file, words } => {
             let alphabet = make_alphabet()?;
-            do_wg_check(&graph_file.load()?, &words, &alphabet)
+            do_wg_check(&graph_file.load(Some(&alphabet))?, &words, &alphabet)
         }
         Task::Q2Ort { ort, out } => {
             let alphabet = make_alphabet()?;
@@ -2627,7 +2643,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         }
         Task::KlvKwgExtract { leaves, out } => {
             let klv_bytes = &read_to_end(&mut make_reader(&leaves)?)?;
-            check_klv(klv_bytes)?;
+            check_klv(klv_bytes, None)?;
             let parts = parse_klv(klv_bytes)?;
             // binary output
             make_writer(&out)?.write_all(parts.kwg_bytes)?;
@@ -2641,7 +2657,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             out,
             graph,
         } => {
-            let kwg_bytes = &graph_file.load()?;
+            let kwg_bytes = &graph_file.load(None)?;
             let initial_idx = if matches!(graph, Graph::Gaddag) { 1 } else { 0 };
             let mut ret = String::new();
             kwg_hitcheck(&mut ret, kwg_bytes, initial_idx, cls, csa, ncs)?;
@@ -2650,7 +2666,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         }
         Task::QuackleMakeSuperleaves { leaves, out } => {
             let reader = &KbwgReader {};
-            let klv_bytes = &check_klv(&read_to_end(&mut make_reader(&leaves)?)?)?;
+            let klv_bytes = &check_klv(&read_to_end(&mut make_reader(&leaves)?)?, None)?;
             let parts = parse_klv(klv_bytes)?;
             let kwg_bytes = parts.kwg_bytes;
             let mut r = parts.r;
@@ -2983,14 +2999,26 @@ struct WordGraph {
 impl WordGraph {
     // the graph read in kbwg's layout, the one read walks: a kwg's nodes
     // repacked as it loads; then loaded and counted by the library, which
-    // refuses one that is cut short, points outside itself, or loops
+    // refuses one that is cut short, points outside itself, or loops. One with
+    // tiles past the alphabet a task reads it with is refused here too
     #[inline]
-    fn load(&self) -> error::Returns<Vec<u8>> {
+    fn load(&self, alphabet: Option<&alphabet::Alphabet>) -> error::Returns<Vec<u8>> {
         let mut bytes = read_to_end(&mut make_reader(&self.kwg)?)?;
         if !self.kbwg {
             kwg::repack_in_place::<kwg::Node22, kwg::Node24>(&mut bytes)?;
         }
-        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&bytes)?.count_words_alloc()?;
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&bytes)?;
+        kwg.count_words_alloc()?;
+        if let Some(alphabet) = alphabet
+            && !kwg.fits_alphabet(alphabet.len())
+        {
+            return Err(format!(
+                "{} has tiles past these tiles' {}",
+                self.kwg,
+                alphabet.len()
+            )
+            .into());
+        }
         Ok(bytes)
     }
 }

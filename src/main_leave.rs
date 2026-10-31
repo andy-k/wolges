@@ -186,7 +186,7 @@ fn read_klv(
     } else {
         klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
     };
-    game_config.check_leaves(klv.leave_range())?;
+    game_config.check_klv(&klv)?;
     Ok(klv)
 }
 
@@ -3609,6 +3609,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         let mut bytes = std::fs::read(&path)?;
         klv::repack_in_place::<kwg::Node22, L>(&mut bytes)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes)?;
+        game_config.check_klv(&resume_klv)?;
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
             lat.unrank_into(idx, &mut tally_buf);
             *slot = resume_klv.leave_value_from_tally(&tally_buf);
