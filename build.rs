@@ -58,8 +58,39 @@ fn main() {
                 rerun_if_changed(&Path::new(&git_dir).join(file));
             }
         }
+        // each of these, all but what git ignores in it. Cargo watches a
+        // directory to its depths: one file written to src/lexbin or
+        // src/lexsrc, where the lexicon files live, would rerun this,
+        // rebuilding everything. So a directory is watched entry by entry.
+        let ignored = git(&[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "--",
+        ]
+        .iter()
+        .chain(&BUILT_FROM)
+        .copied()
+        .collect::<Vec<_>>())
+        .unwrap_or_default();
+        let ignored = ignored
+            .lines()
+            .map(|line| Path::new(line.trim_end_matches('/')))
+            .collect::<Vec<_>>();
         for path in BUILT_FROM {
-            rerun_if_changed(Path::new(path));
+            match std::fs::read_dir(path) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let entry = entry.path();
+                        if !ignored.contains(&entry.as_path()) {
+                            rerun_if_changed(&entry);
+                        }
+                    }
+                }
+                Err(_) => rerun_if_changed(Path::new(path)),
+            }
         }
         (|| {
             let time = git(&[
