@@ -33,7 +33,7 @@ bash allows this syntax:
 options:
   --full        generate full-rack leaves
   --klv N       the leave table buildlex writes: 2 (klv2, default), 1 (klv,
-                not recommended) or 16 (klv16)
+                not recommended), or 16 (klv16)
   --logs        log complete games (not recommended if not needed)
   --no-forcing  disable full-rack forcing (on by default for autoplay). by
                 default the autoplay path forces each undersampled full rack to
@@ -42,6 +42,8 @@ options:
                 --no-forcing reverts to plain natural-rack sampling. ignored
                 under --gilles.
   --threads N   worker threads for every leave run (default: every core)
+  --seed S      fix each generation's seed: S for the first, one more for
+                each after it (default: each picks one and prints it)
   --gilles      collect samples via gillesb board-sampling instead
                 of autoplay. counts take no :min_samples_per_rack.
   the game, as leave takes it (see leave --help): --preset NAME|FILE (default
@@ -58,6 +60,7 @@ logs_mode=""
 gilles_mode=""
 no_forcing_mode=""
 threads=""
+seed=""
 preset="english"
 tiles=""
 jumbled=""
@@ -73,7 +76,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --klv)
-      klv_format="${2:?--klv needs 1, 2 or 16}"
+      klv_format="${2:?--klv needs 1, 2, or 16}"
       shift 2
       ;;
     --logs)
@@ -90,6 +93,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --threads)
       threads="${2:?--threads needs a number}"
+      shift 2
+      ;;
+    --seed)
+      seed="${2:?--seed needs a number}"
       shift 2
       ;;
     --preset)
@@ -125,12 +132,17 @@ while [ "$#" -gt 0 ]; do
 done
 leave_options=(--preset "$preset" "${game_options[@]}")
 
+if [ "$seed" ] && ! [[ "$seed" =~ ^[0-9]+$ ]]; then
+  echo "invalid seed: $seed" >&2
+  exit 1
+fi
+
 case "$klv_format" in
   1) klv_ext="klv" ;;
   2) klv_ext="klv2" ;;
   16) klv_ext="klv16" ;;
   *)
-    echo "--klv takes 1, 2 or 16, not $klv_format" >&2
+    echo "--klv takes 1, 2, or 16, not $klv_format" >&2
     exit 2
     ;;
 esac
@@ -263,13 +275,19 @@ for full_arg in "$@"; do
   effective_generate_subcommand="${generate_subcommand}"
   leave_name="leaves"
 
+  # each generation's seed, the same whether or not an earlier run stopped
+  gen_seed=""
+  if [ "$seed" ]; then
+    gen_seed="$[seed + num_processed]"
+  fi
+
   if [ "$gilles_mode" ]; then
-    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" ${gen_seed:+"$gen_seed"}
     summary_file="$(ls -1td gilles-summary-* | head -1)"
     echo "$summary_file"
     mv -fv "$summary_file" "summary${num_processed}.csv"
   else
-    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon" ${gen_seed:+"$gen_seed"}
     log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
     echo "$log_file"
     mv -fv "summary-${log_file}" "summary${num_processed}.csv"

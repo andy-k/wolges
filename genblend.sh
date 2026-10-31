@@ -26,6 +26,9 @@ options:
                     the census alone, 1 self-play alone. Default 0.5.
   --census-seed S   fix the census's seed. Omitted means the census picks one
                     and prints it.
+  --seed S          fix the self-play generations' seeds: S for the first, one
+                    more for each after it. Omitted means each picks one and
+                    prints it.
   --threads N       worker threads for every leave run. Default every core.
   the game, as leave takes it (see leave --help): --preset NAME|FILE (default
   english), --tiles NAME|FILE, --board NAME|FILE, --rack-size N, --jumbled,
@@ -45,6 +48,7 @@ fi
 recipe="3x256,2048"
 weight="0.5"
 census_seed=""
+seed=""
 threads=""
 preset="english"
 tiles=""
@@ -66,6 +70,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --census-seed)
       census_seed="${2:?--census-seed needs a number}"
+      shift 2
+      ;;
+    --seed)
+      seed="${2:?--seed needs a number}"
       shift 2
       ;;
     --threads)
@@ -104,6 +112,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 leave_options=(--preset "$preset" "${game_options[@]}")
+
+if [ "$seed" ] && ! [[ "$seed" =~ ^[0-9]+$ ]]; then
+  echo "invalid seed: $seed" >&2
+  exit 1
+fi
 
 # buildlex reads the leaves with the game's tiles: --tiles, else the preset's
 # (a bundled preset's tiles have its name; a preset file names its own)
@@ -207,8 +220,12 @@ for full_arg in "$@"; do
     continue
   fi
 
+  gen_seed=""
+  if [ "$seed" ]; then
+    gen_seed="$[seed + num_processed - 1]"
+  fi
   time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} \
-    "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon" ${gen_seed:+"$gen_seed"}
   log_file="$(ls -1td summary-log-* | head -1 | cut -f2- -d-)"
   echo "$log_file"
   mv -fv "summary-${log_file}" "summary${num_processed}.csv"

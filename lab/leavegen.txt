@@ -1102,15 +1102,20 @@ game count, so three numbers means three generations; append :N to a count to
 have autoplay gather N samples of every rack that generation. The counts are
 the whole run's: the same command again, in the same directory, carries on at
 the first generation with no table yet, and more generations take the counts
-again with the new ones after them.
+again with the new ones after them. With --seed and --no-forcing, each
+generation plays the same games however many threads run it, so a generation
+run again after a stop plays the games it would have played; forcing racks
+(the default) adds a number of games that varies with the threads' timing.
 
 Options, each written before the counts:
   --threads N   worker threads for every leave run (default: every core)
+  --seed S      fix each generation's seed: S for the first, one more for each
+                after it (default: each picks one and prints it)
   --gilles      collect samples by board sampling instead of self-play autoplay
   --no-forcing  turn off autoplay's full-rack forcing, reverting to plain
                 natural sampling (ignored under --gilles)
   --full        also write the full-length leaves (what dynamic leaves read)
-  --klv N       the leave table written: 2 (klv2, the default), 1 or 16
+  --klv N       the leave table written: 2 (klv2, the default), 1, or 16
 
 RUNNING GENBLEND.SH
 
@@ -1136,6 +1141,9 @@ Options, each written before the counts:
   --weight W        how much of the self-play table the mix takes, 0 being the
                     census alone and 1 self-play alone (default 0.5)
   --census-seed S   fix the census stage's seed so that stage is reproducible
+  --seed S          fix the self-play generations' seeds: S for the first, one
+                    more for each after it, so that with --census-seed and no
+                    rack forced every stage plays as it did
   --threads N       worker threads for every leave run (default every core)
   and the game options, as for genleaves.sh
 
