@@ -4176,7 +4176,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let mut csv_out = csv::Writer::from_path(&out_name)?;
     for (_, leave, value) in &rows {
-        csv_out.serialize((leave, value))?;
+        csv_out.serialize((leave, klv::value_text(*value)))?;
     }
     csv_out.flush()?;
     writeln!(
@@ -4559,7 +4559,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         for &tile in k.iter() {
             cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
-        csv_out.serialize((&cur_rack_ser, v))?;
+        csv_out.serialize((&cur_rack_ser, klv::value_text(*v)))?;
         /*
         if let Some(orig_v) = subrack_map.get(k) {
             csv_out.serialize((&cur_rack_ser, v, orig_v.equity, orig_v.count))?;
