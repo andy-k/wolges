@@ -80,7 +80,9 @@ impl Alphabet {
         })
     }
 
-    #[inline(always)]
+    // runs once for each alphabet made, at startup: inlined, every maker would
+    // carry its own copy of it
+    #[inline(never)]
     pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
         let mut tiles = Vec::new();
         for line_str in text::lines(s) {
@@ -280,6 +282,8 @@ impl WriteableRack<'_> {
     }
 }
 
+// each make_*_alphabet below runs once for each game config made with it, at
+// startup, so none is worth a copy in each of its callers
 macro_rules! new_static_alphabet_from_file {
     ($filename: expr) => {
         Alphabet::new_static_from_text(include_str!($filename)).unwrap()
@@ -288,70 +292,70 @@ macro_rules! new_static_alphabet_from_file {
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
 // with QU tile instead of Q
-#[inline(always)]
+#[inline(never)]
 pub fn make_catalan_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/catalan.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
 // note: Ç and L·L have different scores from regular.
-#[inline(always)]
+#[inline(never)]
 pub fn make_super_catalan_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_catalan.txt")
 }
 
 // for pass-through kwg reading/building, cannot be used for games.
-#[inline(always)]
+#[inline(never)]
 pub fn make_decimal_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/decimal.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Dutch
-#[inline(always)]
+#[inline(never)]
 pub fn make_dutch_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/dutch.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
-#[inline(always)]
+#[inline(never)]
 pub fn make_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/english.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#French
 // https://en.wikipedia.org/wiki/French_orthography
-#[inline(always)]
+#[inline(never)]
 pub fn make_french_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/french.txt")
 }
 
 // for pass-through kwg reading/building, cannot be used for games.
-#[inline(always)]
+#[inline(never)]
 pub fn make_hex_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hex.txt")
 }
 
 // https://web.archive.org/web/20220207074935/http://hkcrosswordclub.com/?cat=14
-#[inline(always)]
+#[inline(never)]
 pub fn make_hong_kong_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hong_kong_english.txt")
 }
 
 // https://en.wikipedia.org/wiki/Super_Scrabble
-#[inline(always)]
+#[inline(never)]
 pub fn make_super_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_english.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#German
-#[inline(always)]
+#[inline(never)]
 pub fn make_german_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/german.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#German
 // the 200-tile Super Scrabble set.
-#[inline(always)]
+#[inline(never)]
 pub fn make_super_german_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_german.txt")
 }
@@ -360,7 +364,7 @@ pub fn make_super_german_alphabet() -> Alphabet {
 // https://en.wikipedia.org/wiki/Norwegian_orthography
 // https://unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
 // also this ordering matches system locale files
-#[inline(always)]
+#[inline(never)]
 pub fn make_norwegian_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/norwegian.txt")
 }
@@ -368,13 +372,13 @@ pub fn make_norwegian_alphabet() -> Alphabet {
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Polish
 // https://en.wikipedia.org/wiki/Polish_alphabet#Letters
 // https://en.wikipedia.org/wiki/Polish_phonology#Vowels
-#[inline(always)]
+#[inline(never)]
 pub fn make_polish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/polish.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Slovenian
-#[inline(always)]
+#[inline(never)]
 pub fn make_slovene_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/slovene.txt")
 }
@@ -382,7 +386,7 @@ pub fn make_slovene_alphabet() -> Alphabet {
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Spanish
 // based on Spanish-language sets sold outside North America
 // (CH/LL/RR are ambiguous and should not be supported)
-#[inline(always)]
+#[inline(never)]
 pub fn make_spanish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/spanish.txt")
 }
@@ -393,7 +397,7 @@ pub fn make_spanish_alphabet() -> Alphabet {
 // Å Ä Ö are distinct letters sorted after Z; Ü collates after Y ("German y"),
 // Æ as Ä, Ø as Ö (Unicode CLDR sv: &Y<<ü, &z<å<ä<<æ<ö<<ø).
 // also this ordering matches system locale files.
-#[inline(always)]
+#[inline(never)]
 pub fn make_swedish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/swedish.txt")
 }
