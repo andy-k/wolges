@@ -308,7 +308,9 @@ impl BoardLayout {
 }
 
 // https://en.wikipedia.org/wiki/Scrabble
-#[inline(always)]
+// runs once for each game config made with it, at startup, so it is not worth a
+// copy in each of its callers
+#[inline(never)]
 pub fn make_standard_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
@@ -784,7 +786,9 @@ pub fn make_punctured_board_layout() -> BoardLayout {
 }
 
 // https://www.boardgamegeek.com/image/52794/super-scrabble
-#[inline(always)]
+// runs once for each game config made with it, at startup, so it is not worth a
+// copy in each of its callers
+#[inline(never)]
 pub fn make_super_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
