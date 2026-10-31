@@ -4559,57 +4559,8 @@ impl KurniaMoveGenerator {
     }
 
     #[inline(always)]
-    pub async fn gen_moves_filtered_async<
-        'a,
-        BreatheFuture: std::future::Future,
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
-        &mut self,
-        params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlacePredicate<'_>,
-        adjust_leave_value: klv::AdjustLeave,
-        equity_predicate: EquityPredicate<'_>,
-        breathe: impl FnMut() -> BreatheFuture,
-    ) {
-        self.gen_moves_filtered_async_impl::<false, _, _, _>(
-            params,
-            place_move_predicate,
-            adjust_leave_value,
-            equity_predicate,
-            breathe,
-        )
-        .await
-    }
-
-    #[inline(always)]
     pub async fn gen_moves_filtered_async_lean<
         'a,
-        BreatheFuture: std::future::Future,
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
-        &mut self,
-        params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlacePredicate<'_>,
-        adjust_leave_value: klv::AdjustLeave,
-        equity_predicate: EquityPredicate<'_>,
-        breathe: impl FnMut() -> BreatheFuture,
-    ) {
-        self.gen_moves_filtered_async_impl::<true, _, _, _>(
-            params,
-            place_move_predicate,
-            adjust_leave_value,
-            equity_predicate,
-            breathe,
-        )
-        .await
-    }
-
-    #[inline]
-    async fn gen_moves_filtered_async_impl<
-        'a,
-        const LEAN: bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
         L: kwg::Node,
@@ -4712,54 +4663,20 @@ impl KurniaMoveGenerator {
                 }
                 threshold.get().raw()
             };
-        if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
-            for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
-                runs: (),
-                keys: (),
-                want_raw: false,
-                board_snapshot: params.board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |best_possible_equity: i32| {
-                    threshold.get() <= equity::Equity::new(best_possible_equity)
-                },
-                current_threshold: || threshold.get().raw(),
-            }) {
-                breathe().await;
-            }
-        } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(params.board_snapshot) {
-            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-                runs: (),
-                keys: anagrams,
-                want_raw: false,
-                board_snapshot: params.board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |best_possible_equity: i32| {
-                    threshold.get() <= equity::Equity::new(best_possible_equity)
-                },
-                current_threshold: || threshold.get().raw(),
-            }) {
-                breathe().await;
-            }
-        } else {
-            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-                runs: (),
-                keys: (),
-                want_raw: false,
-                board_snapshot: params.board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |best_possible_equity: i32| {
-                    threshold.get() <= equity::Equity::new(best_possible_equity)
-                },
-                current_threshold: || threshold.get().raw(),
-            }) {
-                breathe().await;
-            }
+        for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+            runs: (),
+            keys: (),
+            want_raw: false,
+            board_snapshot: params.board_snapshot,
+            working_buffer,
+            multi_leaves: &multi_leaves,
+            found_place_move,
+            can_accept: |best_possible_equity: i32| {
+                threshold.get() <= equity::Equity::new(best_possible_equity)
+            },
+            current_threshold: || threshold.get().raw(),
+        }) {
+            breathe().await;
         }
         kurnia_gen_exchange_moves(
             params.board_snapshot,
@@ -7310,13 +7227,14 @@ mod tests {
                             dynamic_leaves: None,
                         };
                         {
-                            let mut fut = std::pin::pin!(move_generator.gen_moves_filtered_async(
-                                &params,
-                                PlacePredicate::AcceptAll,
-                                klv::AdjustLeave::Identity,
-                                EquityPredicate::AcceptAll,
-                                || std::future::ready(()),
-                            ));
+                            let mut fut =
+                                std::pin::pin!(move_generator.gen_moves_filtered_async_lean(
+                                    &params,
+                                    PlacePredicate::AcceptAll,
+                                    klv::AdjustLeave::Identity,
+                                    EquityPredicate::AcceptAll,
+                                    || std::future::ready(()),
+                                ));
                             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
                             while fut.as_mut().poll(&mut cx).is_pending() {}
                         }
