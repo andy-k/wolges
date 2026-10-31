@@ -284,6 +284,32 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> error::Returns<bool> {
+        self.simulate_impl::<false, _, _>(game_config, kwg, arm_tables, klv, candidate_play)
+    }
+
+    // as simulate, its moves found by the move generator's lean arm, so that a
+    // build that runs only that arm (the wasm) need not carry the other
+    #[inline(always)]
+    pub fn simulate_lean<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        candidate_play: &movegen::Play,
+    ) -> error::Returns<bool> {
+        self.simulate_impl::<true, _, _>(game_config, kwg, arm_tables, klv, candidate_play)
+    }
+
+    #[inline(always)]
+    fn simulate_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        candidate_play: &movegen::Play,
+    ) -> error::Returns<bool> {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
@@ -306,28 +332,35 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 next_play.clone_from(candidate_play);
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
                 next_play = self
-                    .reply_at_ply_one(game_config, kwg, arm_tables, klv, candidate_play)
+                    .reply_at_ply_one::<LEAN, _, _>(
+                        game_config,
+                        kwg,
+                        arm_tables,
+                        klv,
+                        candidate_play,
+                    )
                     .play;
             } else {
-                self.move_generator
-                    .gen_moves_unfiltered(&movegen::GenMovesParams {
-                        board_snapshot: &movegen::BoardSnapshot {
-                            board_tiles: &self.game_state.board_tiles,
-                            game_config,
-                            kwg,
-                            anagrams: arm_tables.anagrams(),
-                            rack_lengths: arm_tables.rack_lengths(),
-                            klv,
-                        },
-                        rack: &self.game_state.current_player().rack,
-                        max_gen: 1,
-                        num_exchanges_by_this_player: self
-                            .game_state
-                            .current_player()
-                            .num_exchanges,
-                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                        dynamic_leaves: None,
-                    });
+                let params = &movegen::GenMovesParams {
+                    board_snapshot: &movegen::BoardSnapshot {
+                        board_tiles: &self.game_state.board_tiles,
+                        game_config,
+                        kwg,
+                        anagrams: arm_tables.anagrams(),
+                        rack_lengths: arm_tables.rack_lengths(),
+                        klv,
+                    },
+                    rack: &self.game_state.current_player().rack,
+                    max_gen: 1,
+                    num_exchanges_by_this_player: self.game_state.current_player().num_exchanges,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                };
+                if LEAN {
+                    self.move_generator.gen_moves_unfiltered_lean(params);
+                } else {
+                    self.move_generator.gen_moves_unfiltered(params);
+                }
                 next_play.clone_from(&self.move_generator.plays[0].play);
             }
             set_rack_tally_from_leave(
@@ -384,7 +417,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
     // since of equal equities it keeps the smaller play whichever it finds
     // first; a forced pass yields to any play.
     #[inline]
-    fn reply_at_ply_one<N: kwg::Node, L: kwg::Node>(
+    fn reply_at_ply_one<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
         kwg: &kwg::Kwg<N>,
@@ -403,25 +436,27 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             .iter()
             .position(|&(_, down, lane)| !on(down, lane));
         while off.is_none() && !self.lanes_exhausted {
-            self.move_generator.gen_moves_unfiltered_lanes(
-                &movegen::GenMovesParams {
-                    board_snapshot: &movegen::BoardSnapshot {
-                        board_tiles: &self.initial_game_state.board_tiles,
-                        game_config,
-                        kwg,
-                        anagrams: arm_tables.anagrams(),
-                        rack_lengths: arm_tables.rack_lengths(),
-                        klv,
-                    },
-                    rack: &self.game_state.players[self.game_state.turn as usize].rack,
-                    max_gen: 1,
-                    num_exchanges_by_this_player: i16::MAX,
-                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
+            let params = &movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &self.initial_game_state.board_tiles,
+                    game_config,
+                    kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv,
                 },
-                !self.lane_rows_taken,
-                !self.lane_cols_taken,
-            );
+                rack: &self.game_state.players[self.game_state.turn as usize].rack,
+                max_gen: 1,
+                num_exchanges_by_this_player: i16::MAX,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            };
+            let (rows, cols) = (!self.lane_rows_taken, !self.lane_cols_taken);
+            if LEAN {
+                (self.move_generator).gen_moves_unfiltered_lanes_lean(params, rows, cols);
+            } else {
+                (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols);
+            }
             match self.move_generator.plays[0].play {
                 movegen::Play::Place { down, lane, .. } => {
                     if down {
@@ -438,27 +473,27 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 movegen::Play::Exchange { .. } => self.lanes_exhausted = true,
             }
         }
-        self.move_generator.gen_moves_unfiltered_lanes(
-            &movegen::GenMovesParams {
-                board_snapshot: &movegen::BoardSnapshot {
-                    board_tiles: &self.game_state.board_tiles,
-                    game_config,
-                    kwg,
-                    anagrams: arm_tables.anagrams(),
-                    rack_lengths: arm_tables.rack_lengths(),
-                    klv,
-                },
-                rack: &self.game_state.players[self.game_state.turn as usize].rack,
-                max_gen: 1,
-                num_exchanges_by_this_player: self.game_state.players
-                    [self.game_state.turn as usize]
-                    .num_exchanges,
-                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
+        let params = &movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &self.game_state.board_tiles,
+                game_config,
+                kwg,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
+                klv,
             },
-            rows,
-            cols,
-        );
+            rack: &self.game_state.players[self.game_state.turn as usize].rack,
+            max_gen: 1,
+            num_exchanges_by_this_player: self.game_state.players[self.game_state.turn as usize]
+                .num_exchanges,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        if LEAN {
+            (self.move_generator).gen_moves_unfiltered_lanes_lean(params, rows, cols);
+        } else {
+            (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols);
+        }
         let masked = &self.move_generator.plays[0];
         let forced_pass =
             matches!(masked.play, movegen::Play::Exchange { ref tiles } if tiles.is_empty());
@@ -1068,8 +1103,13 @@ mod tests {
                 if infer::bag_size(&simmer.game_state.board_tiles, &game_config) <= 0 {
                     continue;
                 }
-                let reply =
-                    simmer.reply_at_ply_one(&game_config, &kwg, &arm_tables, &klv, candidate);
+                let reply = simmer.reply_at_ply_one::<false, _, _>(
+                    &game_config,
+                    &kwg,
+                    &arm_tables,
+                    &klv,
+                    candidate,
+                );
                 let want = whole_reply(
                     &mut whole,
                     &game_config,
@@ -1102,6 +1142,89 @@ mod tests {
         assert!(checked > 500, "{checked} checked");
         assert!(reused > 50, "{reused} replies came from the lanes");
         assert!(from_lanes > 16, "{from_lanes} lane-bests found");
+    }
+
+    #[test]
+    #[inline]
+    fn a_lean_rollout_moves_as_the_full_one() {
+        // the same rollouts, move for move, from the start of a game and from
+        // boards a few plies in, over a wide field and several draws: the full
+        // arm with anagram tables, as the bins run it, and the lean arm with
+        // none, as the wasm does
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let no_tables = anagrams::ArmTables::None;
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let mut whole = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut field = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut checked = 0usize;
+        for seed in 0..12u64 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(seed);
+            game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+            for _ in 0..(seed % 6) {
+                let play = whole_reply(
+                    &mut whole,
+                    &game_config,
+                    &kwg,
+                    &arm_tables,
+                    &klv,
+                    &game_state,
+                );
+                game_state
+                    .play(&game_config, &mut deal_rng, &play.play)
+                    .unwrap();
+                game_state.next_turn();
+            }
+            field.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 30,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            let mut full = Simmer::new(&game_config).unwrap();
+            let mut lean = Simmer::new(&game_config).unwrap();
+            full.prepare(&game_config, &game_state, 2, true, &[]);
+            lean.prepare(&game_config, &game_state, 2, true, &[]);
+            let pristine = full.prepared_state().clone();
+            for iteration in 0..4 {
+                for simmer in [&mut full, &mut lean] {
+                    simmer.restore_prepared(&pristine);
+                    simmer.reseed(seed * 100 + iteration);
+                    simmer.prepare_iteration();
+                }
+                for candidate in field.plays.iter().map(|m| &m.play) {
+                    let ended = full
+                        .simulate(&game_config, &kwg, &arm_tables, &klv, candidate)
+                        .unwrap();
+                    let lean_ended = lean
+                        .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                        .unwrap();
+                    assert_eq!(ended, lean_ended, "seed {seed}");
+                    assert_eq!(
+                        full.final_equity_spread().unwrap(),
+                        lean.final_equity_spread().unwrap(),
+                        "seed {seed}"
+                    );
+                    assert_eq!(
+                        full.game_state.board_tiles, lean.game_state.board_tiles,
+                        "seed {seed}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked} checked");
     }
 
     #[test]

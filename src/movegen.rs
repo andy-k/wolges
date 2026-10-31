@@ -4976,6 +4976,21 @@ impl KurniaMoveGenerator {
         self.working_buffer.lane_cols = !0;
     }
 
+    // as gen_moves_unfiltered_lanes, by the lean arm
+    #[inline(always)]
+    pub fn gen_moves_unfiltered_lanes_lean<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        rows: u128,
+        cols: u128,
+    ) {
+        self.working_buffer.lane_rows = rows;
+        self.working_buffer.lane_cols = cols;
+        self.gen_moves_unfiltered_lean(params);
+        self.working_buffer.lane_rows = !0;
+        self.working_buffer.lane_cols = !0;
+    }
+
     #[inline(always)]
     pub fn gen_moves_unfiltered<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
