@@ -279,22 +279,6 @@ fn read_leaves_f32<Readable: std::io::Read>(
 }
 
 #[inline]
-fn leave_as_decimal(v: f32, scratch: &mut String) -> f64 {
-    use std::fmt::Write as _;
-    scratch.clear();
-    let _ = write!(scratch, "{v}");
-    scratch.parse::<f64>().unwrap_or(v as f64)
-}
-
-#[inline]
-fn leave_at_millipoint(v: f64, scratch: &mut String) -> f32 {
-    use std::fmt::Write as _;
-    scratch.clear();
-    let _ = write!(scratch, "{v:.3}");
-    scratch.parse::<f32>().unwrap_or(v as f32)
-}
-
-#[inline]
 fn refuse_a_wider_graph<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     alphabet: &alphabet::Alphabet,
@@ -724,14 +708,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             let leaves_b = klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args.b)?)?;
             let num_a = leaves_a.len();
             let num_b = leaves_b.len();
-            let mut scratch = String::new();
             let mut mixed = fash::MyHashMap::<bites::Bites, f64>::default();
             for (leave, value) in leaves_b {
-                mixed.insert(leave, leave_as_decimal(value, &mut scratch));
+                mixed.insert(leave, value as f64);
             }
             let mut in_both = 0usize;
             for (leave, value) in leaves_a {
-                let value_a = leave_as_decimal(value, &mut scratch);
+                let value_a = value as f64;
                 mixed
                     .entry(leave)
                     .and_modify(|value_b| {
@@ -743,7 +726,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
             leaves_map.reserve(mixed.len());
             for (leave, value) in mixed.drain() {
-                leaves_map.insert(leave, leave_at_millipoint(value, &mut scratch));
+                leaves_map.insert(leave, value as f32);
             }
             drop(mixed);
             writeln!(
