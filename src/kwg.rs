@@ -8,6 +8,9 @@ pub trait Node: Copy {
     fn accepts(&self) -> bool;
     fn is_end(&self) -> bool;
     fn arc_index(&self) -> i32;
+    // the word a node with these fields is in this layout, or None where one of
+    // them does not fit it
+    fn pack(tile: u8, accepts: bool, is_end: bool, arc_index: i32) -> Option<u32>;
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +40,13 @@ impl Node for Node22 {
     #[inline(always)]
     fn arc_index(&self) -> i32 {
         (self.0 & 0x3fffff) as i32
+    }
+
+    #[inline(always)]
+    fn pack(tile: u8, accepts: bool, is_end: bool, arc_index: i32) -> Option<u32> {
+        (0..=0x3fffff).contains(&arc_index).then_some(
+            (tile as u32) << 24 | (accepts as u32) << 23 | (is_end as u32) << 22 | arc_index as u32,
+        )
     }
 }
 
@@ -68,6 +78,35 @@ impl Node for Node24 {
     fn arc_index(&self) -> i32 {
         (self.0 >> 8) as i32
     }
+
+    #[inline(always)]
+    fn pack(tile: u8, accepts: bool, is_end: bool, arc_index: i32) -> Option<u32> {
+        (tile < 0x40 && (0..=0xffffff).contains(&arc_index)).then_some(
+            (arc_index as u32) << 8 | (accepts as u32) << 7 | (is_end as u32) << 6 | tile as u32,
+        )
+    }
+}
+
+// a graph's nodes rewritten in place from one layout to the other, the same
+// tile, flags, and arc in each; a node the new layout cannot hold stops it with
+// the nodes before it rewritten. A part node at the end is left as it is, for
+// from_bytes_alloc to refuse.
+#[inline(always)]
+pub fn repack_in_place<Old: Node, New: Node>(buf: &mut [u8]) -> error::Returns<()> {
+    for node in buf.as_chunks_mut::<4>().0 {
+        let old = Old::new(u32::from_le_bytes(*node));
+        let new = New::pack(old.tile(), old.accepts(), old.is_end(), old.arc_index()).ok_or_else(
+            || {
+                format!(
+                    "a node of tile {} and arc {} does not fit the new layout",
+                    old.tile(),
+                    old.arc_index()
+                )
+            },
+        )?;
+        *node = new.to_le_bytes();
+    }
+    Ok(())
 }
 
 #[inline(always)]
@@ -524,6 +563,29 @@ mod tests {
         let kwg = Kwg::<Node22>::from_bytes_alloc(&looping).unwrap();
         assert!(kwg.count_words_alloc().is_err());
         assert!(kwg.count_dawg_words_alloc().is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_graph_repacks_into_either_layout_and_back() {
+        let bytes = bytes_of(&game_config::make_polish_game_config(), &["ZOLZA", "ZABA"]);
+        let mut repacked = bytes.clone();
+        repack_in_place::<Node22, Node24>(&mut repacked).unwrap();
+        let wide = Kwg::<Node24>::from_bytes_alloc(&repacked).unwrap();
+        let narrow = Kwg::<Node22>::from_bytes_alloc(&bytes).unwrap();
+        assert_eq!(wide.0.len(), narrow.0.len());
+        for (w, n) in wide.0.iter().zip(&narrow.0) {
+            assert_eq!(
+                (w.tile(), w.accepts(), w.is_end(), w.arc_index()),
+                (n.tile(), n.accepts(), n.is_end(), n.arc_index())
+            );
+        }
+        repack_in_place::<Node24, Node22>(&mut repacked).unwrap();
+        assert_eq!(repacked, bytes);
+
+        // a tile past Node24's six bits, an arc past Node22's 22
+        assert!(repack_in_place::<Node22, Node24>(&mut (0x40u32 << 24).to_le_bytes()).is_err());
+        assert!(repack_in_place::<Node24, Node22>(&mut (0x400000u32 << 8).to_le_bytes()).is_err());
     }
 
     #[test]
