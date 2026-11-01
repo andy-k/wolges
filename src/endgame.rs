@@ -252,10 +252,17 @@ impl Table {
         false
     }
 
-    // move the table to this many buckets, keeping every entry that fits
+    // move the table to this many buckets, keeping every entry that fits; false,
+    // the table as it was, when the memory for them is refused (as a wasm32
+    // page's may be before any limit set here is reached)
     #[inline(never)]
-    fn resize(&mut self, buckets: usize) {
-        let old = std::mem::replace(&mut self.buckets, vec![[0; 8]; buckets]);
+    fn resize(&mut self, buckets: usize) -> bool {
+        let mut new = Vec::new();
+        if new.try_reserve_exact(buckets).is_err() {
+            return false;
+        }
+        new.resize(buckets, [0; 8]);
+        let old = std::mem::replace(&mut self.buckets, new);
         self.held = 0;
         for bucket in &old {
             for slot in 0..4 {
@@ -265,6 +272,7 @@ impl Table {
                 }
             }
         }
+        true
     }
 
     // place a stored word of a position not in the table, as a resize keeps it:
@@ -473,8 +481,8 @@ impl WorkBuffer {
 
     // store a value, growing the table once three quarters of it holds
     // positions: to twice its size, or as big as the memory limit allows while
-    // the old table is still held. Once the limit refuses, the table keeps its
-    // size and stores replace other positions
+    // the old table is still held. Once the limit or the allocator refuses, the
+    // table keeps its size and stores replace other positions
     #[inline(always)]
     fn store(&mut self, key: u64, entry: Entry) {
         if self.table.store(key, entry)
@@ -488,11 +496,7 @@ impl WorkBuffer {
                     / std::mem::size_of::<[u64; 8]>();
                 buckets = buckets.min(room);
             }
-            if buckets > now {
-                self.table.resize(buckets);
-            } else {
-                self.can_grow = false;
-            }
+            self.can_grow = buckets > now && self.table.resize(buckets);
         }
     }
 }
@@ -4305,8 +4309,13 @@ mod tests {
         assert!(table.probe(1).is_none(), "the shallowest entry made room");
         assert!((2..=5).all(|key| table.probe(key).is_some()));
         // a table twice as big keeps every entry
-        table.resize(2);
+        assert!(table.resize(2));
         assert_eq!(table.held, 4);
+        assert!((2..=5).all(|key| table.probe(key).is_some()));
+        // more buckets than memory can hold are refused, and the table is as it
+        // was, not the program stopped
+        assert!(!table.resize(usize::MAX));
+        assert_eq!((table.buckets.len(), table.held), (2, 4));
         assert!((2..=5).all(|key| table.probe(key).is_some()));
     }
 
