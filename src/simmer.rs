@@ -72,6 +72,14 @@ impl CopyState for rand_xoshiro::Xoshiro256PlusPlus {
 // the generator a simmer draws with unless it is given another.
 pub type DefaultRng = rand_xoshiro::Xoshiro256PlusPlus;
 
+// a ply a rollout played after its candidate: the play's score, in millipoints,
+// and how many tiles it placed (none for an exchange or a pass)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlyPlayed {
+    pub score: i32,
+    pub tiles: u8,
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
@@ -86,6 +94,7 @@ pub struct Simmer<R = DefaultRng> {
     game_state: game_state::GameState,
     last_seen_leave_values: Box<[i32]>,
     final_scores: Box<[i32]>,
+    plies_played: Vec<PlyPlayed>, // the last rollout's, after its candidate
 
     move_generator: movegen::KurniaMoveGenerator,
     rack_tally: Box<[u8]>,
@@ -125,6 +134,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             last_seen_leave_values: vec![0i32; game_config.num_players() as usize]
                 .into_boxed_slice(),
             final_scores: vec![0; game_config.num_players() as usize].into_boxed_slice(),
+            plies_played: Vec::new(),
 
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
@@ -313,6 +323,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
+        self.plies_played.clear();
         // a rollout that needs randomness snapshots the rng into a local copy, so the
         // shared state stays put for the next candidate.
         let mut rollout_rng: Option<R> = None;
@@ -362,6 +373,15 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                     self.move_generator.gen_moves_unfiltered(params);
                 }
                 next_play.clone_from(&self.move_generator.plays[0].play);
+            }
+            if ply > 0 {
+                self.plies_played.push(match &next_play {
+                    movegen::Play::Exchange { .. } => PlyPlayed { score: 0, tiles: 0 },
+                    movegen::Play::Place { word, score, .. } => PlyPlayed {
+                        score: *score,
+                        tiles: word.iter().filter(|&&tile| tile != 0).count() as u8,
+                    },
+                });
             }
             set_rack_tally_from_leave(
                 &mut self.rack_tally,
@@ -503,6 +523,14 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             }
             _ => masked.clone(),
         }
+    }
+
+    // the plies the last rollout played after its candidate, in order: as many
+    // as it was prepared to play, fewer if the game ended, and more if the bag
+    // emptied and it played the endgame out
+    #[inline(always)]
+    pub fn plies_played(&self) -> &[PlyPlayed] {
+        &self.plies_played
     }
 
     #[inline(always)]
@@ -1225,6 +1253,79 @@ mod tests {
             }
         }
         assert!(checked > 1000, "{checked} checked");
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_keeps_each_ply_it_played() {
+        // after a rollout that did not end the game, each seat's score is its
+        // score before, plus the candidate's for the mover, plus the plies kept
+        // for that seat, which take turns from the seat after the mover; with
+        // tiles left in the bag it played the plies it was prepared to play
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let no_tables = anagrams::ArmTables::None;
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let mut field = movegen::KurniaMoveGenerator::new(&game_config);
+        let (mut checked, mut placed) = (0usize, 0usize);
+        for seed in 0..8u64 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(seed);
+            game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+            field.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 20,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            let mut simmer = Simmer::new(&game_config).unwrap();
+            simmer.prepare(&game_config, &game_state, 3, true, &[]);
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            let turn = game_state.turn as usize;
+            for candidate in field.plays.iter().map(|m| &m.play) {
+                let ended = simmer
+                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .unwrap();
+                if ended {
+                    continue;
+                }
+                let plies = simmer.plies_played();
+                if !simmer.game_state.bag.is_empty() {
+                    assert_eq!(plies.len(), 3, "seed {seed}");
+                }
+                let mut gained = [0, 0];
+                if let movegen::Play::Place { score, .. } = candidate {
+                    gained[turn] = *score;
+                }
+                for (i, ply) in plies.iter().enumerate() {
+                    gained[(turn + 1 + i) % 2] += ply.score;
+                    assert!(ply.tiles <= game_config.rack_size(), "seed {seed}");
+                    if ply.tiles > 0 {
+                        placed += 1;
+                    }
+                }
+                for (seat, gained) in gained.iter().enumerate() {
+                    assert_eq!(
+                        simmer.game_state.players[seat].score - game_state.players[seat].score,
+                        *gained,
+                        "seed {seed}, seat {seat}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 50, "{checked} checked");
+        assert!(placed > 50, "{placed} plies placed tiles");
     }
 
     #[test]
