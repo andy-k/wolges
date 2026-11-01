@@ -357,6 +357,19 @@ fn main() -> error::Returns<()> {
     find_words(&alphabet, &cli.kwg, &cli.kwg2, cli.kbwg)
 }
 
+#[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    alphabet: &alphabet::Alphabet,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = alphabet.len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    Err(format!("{kwg_path} has tiles past these tiles' {alphabet_len}").into())
+}
+
 #[inline(always)]
 fn find_words(
     alphabet: &alphabet::Alphabet,
@@ -366,12 +379,15 @@ fn find_words(
 ) -> error::Returns<()> {
     if false {
         let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
+        refuse_a_wider_graph(&kwg, alphabet, kwg_path)?;
         print_dawg(alphabet, &kwg)?;
         return Ok(());
     }
     let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
+    refuse_a_wider_graph(&kwg, alphabet, kwg_path)?;
     if true {
         let nwl23_kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg2_path)?, kbwg)?;
+        refuse_a_wider_graph(&nwl23_kwg, alphabet, kwg2_path)?;
         let known_boards = [
             &[
                 1, 1, 1, 1, //

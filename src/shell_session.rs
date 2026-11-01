@@ -544,6 +544,10 @@ impl Session {
                         kwg
                     }
                 };
+                let alphabet_len = self.game_config.alphabet().len();
+                if !kwg.fits_alphabet(alphabet_len) {
+                    return Err(format!("{path} has tiles past these rules' {alphabet_len}").into());
+                }
                 self.use_kwg(path, kwg);
                 line.to_string()
             }
@@ -559,7 +563,7 @@ impl Session {
                         } else {
                             klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
                         };
-                        self.game_config.check_leaves(klv.leave_range())?;
+                        self.game_config.check_klv(&klv)?;
                         let klv: &'static _ = Box::leak(Box::new(klv));
                         self.klvs_read.insert(path.clone(), klv);
                         klv
@@ -1375,8 +1379,8 @@ impl Session {
 
     // play by these rules from here on: the game ends (its tiles were the old
     // rules'), the tables built for the old rules go (the lexicon stays, read
-    // again by the next lexicon command if it is another alphabet's), and leave
-    // values that the new rules cannot hold go too
+    // again by the next lexicon command if it is another alphabet's), and a
+    // lexicon or leaves with tiles or values the new rules cannot hold go too
     fn use_rules(&mut self, game_config: &'static game_config::GameConfig) -> error::Returns<()> {
         self.game_config = game_config;
         self.change(|game| {
@@ -1392,7 +1396,16 @@ impl Session {
         self.final_scores = None;
         self.loser = None;
         self.racks_given = [false; 2];
-        if game_config.check_leaves(self.klv.leave_range()).is_err() {
+        if let Some((_, kwg)) = self.kwg
+            && !kwg.fits_alphabet(game_config.alphabet().len())
+        {
+            self.kwg = None;
+            writeln!(
+                std::io::stdout(),
+                "the lexicon has tiles these rules do not: none now (lexicon FILE for another)"
+            )?;
+        }
+        if game_config.check_klv(self.klv).is_err() {
             self.klv = Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?));
             writeln!(
                 std::io::stdout(),
@@ -4171,6 +4184,43 @@ mod tests {
         run(&mut first, "rules english").unwrap();
         assert_eq!(first.game_config.alphabet().len(), english);
         assert!(first.game.is_none());
+    }
+
+    #[test]
+    #[inline]
+    fn rules_drop_a_lexicon_or_leaves_with_tiles_they_lack() {
+        // a lexicon and leaves holding tile 30, polish's but past english's 27,
+        // stay under polish rules and go at a change to english
+        use wolges::bites;
+        let mut session = session();
+        run(&mut session, "rules polish").unwrap();
+        let words: Vec<bites::Bites> = vec![[1u8, 30][..].into(), [30u8, 1][..].into()];
+        let graph = |content, words: &[bites::Bites]| {
+            build::build_big(
+                content,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                words,
+            )
+            .unwrap()
+        };
+        let wide =
+            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&graph(build::BuildContent::Gaddawg, &words))
+                .unwrap();
+        session.use_kwg("wide", Box::leak(Box::new(wide)));
+        let leaves = graph(build::BuildContent::DawgOnly, &[[30u8][..].into()]);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((leaves.len() / 4) as u32).to_le_bytes());
+        bytes.extend_from_slice(&leaves);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1.5f32.to_le_bytes());
+        session.klv = Box::leak(Box::new(
+            klv::Klv::<kwg::Node24>::from_bytes_alloc(&bytes).unwrap(),
+        ));
+        assert_eq!(session.klv.leave_range(), (0, 1500));
+        run(&mut session, "rules english").unwrap();
+        assert!(session.kwg.is_none());
+        assert_eq!(session.klv.leave_range(), (0, 0));
     }
 
     #[test]
