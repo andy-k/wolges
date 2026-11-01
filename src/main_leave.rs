@@ -1560,7 +1560,7 @@ fn generate_autoplay_logs<
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, RackSum>::default();
     // a resumed run starts from the summary's samples: the forcing below then
     // counts them, and the summary it writes holds them with the new ones
     if let Some(path) = &resume {
@@ -1602,7 +1602,7 @@ fn generate_autoplay_logs<
     struct MutexedStuffs {
         csv_game_writer: std::fs::File,
         csv_log_writer: Option<std::fs::File>,
-        full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
+        full_rack_map: fash::MyHashMap<bites::Bites, RackSum>,
         undersampled_racks: Vec<bites::Bites>,
         undersampled_generation: u64,
         undersampling_comment: String,
@@ -1676,7 +1676,7 @@ fn generate_autoplay_logs<
                 let mut num_batched_games_here = 0;
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
-                let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, RackSum>::default();
 
                 let mut exchange_buffer = if SUMMARIZE && min_samples_per_rack != 0 {
                     Vec::with_capacity(game_config.rack_size() as usize)
@@ -1937,8 +1937,11 @@ fn generate_autoplay_logs<
                             });
                             let play = &move_generator.plays[0];
 
-                            let rounded_equity = play.equity.as_f64();
-                            pool_one(&mut thread_full_rack_map, &sample_rack_buf[..], rounded_equity);
+                            pool_one(
+                                &mut thread_full_rack_map,
+                                &sample_rack_buf[..],
+                                play.equity.raw() as i64,
+                            );
                             undersampled_thread_racks
                                 .swap_remove(chosen_undersampled_thread_rack_index);
                             if undersampling_remediation_countdown
@@ -2084,8 +2087,11 @@ fn generate_autoplay_logs<
 
                         if SUMMARIZE && old_bag_len > 0 {
 
-                            let rounded_equity = play.equity.as_f64();
-                            pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
+                            pool_one(
+                                &mut thread_full_rack_map,
+                                &cur_rack_as_vec[..],
+                                play.equity.raw() as i64,
+                            );
                         }
 
                         if WRITE_LOGS {
@@ -2264,10 +2270,10 @@ fn generate_autoplay_logs<
         let mutex_guard = mutexed_stuffs.lock().unwrap();
         let full_rack_map = &mutex_guard.full_rack_map;
 
-        let mut total_equity = 0.0;
+        let mut total_millipoints = 0i64;
         let mut row_count = 0;
         for x in full_rack_map.values() {
-            total_equity += x.equity;
+            total_millipoints += x.millipoints;
             row_count += x.count;
         }
 
@@ -2284,13 +2290,13 @@ fn generate_autoplay_logs<
         let mut csv_out =
             csv::Writer::from_path(claim_output_path(&format!("summary-{run_identifier}"))?)?;
         let mut cur_rack_ser = String::new();
-        csv_out.serialize(("", total_equity, row_count))?;
+        csv_out.serialize(("", summary_points(total_millipoints), row_count))?;
         for (k, fv) in kv.iter() {
             cur_rack_ser.clear();
             for &tile in k.iter() {
                 cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
             }
-            csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+            csv_out.serialize((&cur_rack_ser, summary_points(fv.millipoints), fv.count))?;
         }
     }
 
@@ -2356,7 +2362,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
     // a resumed run starts from the summary's samples, which --min-samples
     // counts and the summary it writes holds with the new ones
-    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, RackSum>::default();
     if let Some(path) = &resume {
         let (records, racks) = read_summary_into(
             &game_config,
@@ -2450,7 +2456,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     let mut rack_tally = vec![0u8; num_letters];
                     let mut unseen_pool = Vec::<u8>::new();
                     let mut exchange_buffer = Vec::with_capacity(rack_size as usize);
-                    let mut thread_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                    let mut thread_map = fash::MyHashMap::<bites::Bites, RackSum>::default();
                     let mut final_scores = vec![0; game_config.num_players() as usize];
 
                     let ln_fact = {
@@ -2528,8 +2534,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                         dynamic_leaves: None,
                                     });
-                                    let equity = move_generator.plays[0].equity.as_f64();
-                                    pool_one(&mut thread_map, rack, equity);
+                                    let millipoints = move_generator.plays[0].equity.raw() as i64;
+                                    pool_one(&mut thread_map, rack, millipoints);
                                     completed_samples
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 }
@@ -2597,8 +2603,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     dynamic_leaves: None,
                                                 },
                                             );
-                                            let equity = move_generator.plays[0].equity.as_f64();
-                                            pool_one(thread_map, rack_bytes, equity);
+                                            let millipoints =
+                                                move_generator.plays[0].equity.raw() as i64;
+                                            pool_one(thread_map, rack_bytes, millipoints);
                                             completed_samples
                                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                         },
@@ -2717,10 +2724,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
     let g = mutexed.lock().unwrap();
     let map = &g.full_rack_map;
-    let mut total_equity = 0.0;
+    let mut total_millipoints = 0i64;
     let mut row_count = 0u64;
     for v in map.values() {
-        total_equity += v.equity;
+        total_millipoints += v.millipoints;
         row_count += v.count;
     }
     writeln!(
@@ -2733,13 +2740,13 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
     let mut csv_out = csv::Writer::from_path(claim_output_path(&run_identifier)?)?;
     let mut cur_rack_ser = String::new();
-    csv_out.serialize(("", total_equity, row_count))?;
+    csv_out.serialize(("", summary_points(total_millipoints), row_count))?;
     for (k, fv) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
             cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
-        csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        csv_out.serialize((&cur_rack_ser, summary_points(fv.millipoints), fv.count))?;
     }
     writeln!(
         boxed_stdout_or_stderr(),
@@ -2767,30 +2774,53 @@ struct Cumulate {
     count: u64,
 }
 
+// a rack's samples in a summary: the sum of their equities, each the move
+// generator's whole millipoints, so that sums add exactly however a run, its
+// resumes, and resummarize split them; and their count
+struct RackSum {
+    millipoints: i64,
+    count: u64,
+}
+
+// a summary's sum, which it writes in points, back in millipoints
 #[inline]
-fn pool_one(map: &mut fash::MyHashMap<bites::Bites, Cumulate>, key: &[u8], equity: f64) {
+fn summary_millipoints(field: &str) -> error::Returns<i64> {
+    Ok((f64::from_str(field)? * equity::SCALE as f64).round() as i64)
+}
+
+// millipoints in points, as a summary writes a sum
+#[inline]
+fn summary_points(millipoints: i64) -> f64 {
+    millipoints as f64 / equity::SCALE as f64
+}
+
+#[inline]
+fn pool_one(map: &mut fash::MyHashMap<bites::Bites, RackSum>, key: &[u8], millipoints: i64) {
     map.entry(key.into())
         .and_modify(|v| {
-            v.equity += equity;
+            v.millipoints += millipoints;
             v.count += 1;
         })
-        .or_insert_with(|| Cumulate { equity, count: 1 });
+        .or_insert_with(|| RackSum {
+            millipoints,
+            count: 1,
+        });
 }
 
 struct GillesMutexed {
-    full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
+    full_rack_map: fash::MyHashMap<bites::Bites, RackSum>,
 }
 
 #[inline]
 fn merge_rack_map(
-    dst: &mut fash::MyHashMap<bites::Bites, Cumulate>,
-    src: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    dst: &mut fash::MyHashMap<bites::Bites, RackSum>,
+    src: &mut fash::MyHashMap<bites::Bites, RackSum>,
 ) {
     for (k, v) in src.drain() {
         if v.count > 0 {
             dst.entry(k)
                 .and_modify(|e| {
-                    e.equity += v.equity;
+                    e.millipoints += v.millipoints;
                     e.count += v.count;
                 })
                 .or_insert(v);
@@ -2806,7 +2836,7 @@ fn merge_rack_map(
 fn read_summary_into<Readable: std::io::Read>(
     game_config: &game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
-    full_rack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    full_rack_map: &mut fash::MyHashMap<bites::Bites, RackSum>,
 ) -> error::Returns<(u64, usize)> {
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let rack_size = game_config.rack_size() as usize;
@@ -2830,8 +2860,8 @@ fn read_summary_into<Readable: std::io::Read>(
             .into());
         }
         rack_bytes.sort_unstable();
-        let thing = Cumulate {
-            equity: f64::from_str(&record[1])?,
+        let thing = RackSum {
+            millipoints: summary_millipoints(&record[1])?,
             count: u64::from_str(&record[2])?,
         };
         records += thing.count;
@@ -2839,7 +2869,7 @@ fn read_summary_into<Readable: std::io::Read>(
         full_rack_map
             .entry(rack_bytes[..].into())
             .and_modify(|e| {
-                e.equity += thing.equity;
+                e.millipoints += thing.millipoints;
                 e.count += thing.count;
             })
             .or_insert(thing);
@@ -2855,7 +2885,7 @@ struct RecomputeScratch<'a> {
 
 #[inline]
 fn recompute_undersampled_racks(
-    full_rack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
+    full_rack_map: &fash::MyHashMap<bites::Bites, RackSum>,
     undersampled: &mut Vec<bites::Bites>,
     scratch: RecomputeScratch<'_>,
     rack_size: u8,
@@ -2915,7 +2945,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     let mut rack_bytes = Vec::new();
-    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, RackSum>::default();
     // playerID,gameID,turn,rack,play,score,totalscore,tilesplayed,leave,equity,tilesremaining,oppscore
     // 0       ,1     ,2   ,3   ,4   ,5    ,6         ,7          ,8    ,9     ,10            ,11
     let t0 = std::time::Instant::now();
@@ -2928,12 +2958,13 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 return Err("a log line has fewer than 11 fields".into());
             }
             if i16::from_str(&record[10])? > 0 {
-                let equity = f32::from_str(&record[9])? as f64;
+                let millipoints =
+                    (f32::from_str(&record[9])? as f64 * equity::SCALE as f64).round() as i64;
                 //let score = i16::from_str(&record[5])? as i64;
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
                 row_count += 1;
-                pool_one(&mut full_rack_map, &rack_bytes[..], equity);
+                pool_one(&mut full_rack_map, &rack_bytes[..], millipoints);
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if !quiet && tick_periods.update(elapsed_time_secs) {
                     writeln!(
@@ -2954,7 +2985,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
         }
     }
     drop(csv_reader);
-    let total_equity = full_rack_map.values().fold(0.0, |a, x| a + x.equity);
+    let total_millipoints = full_rack_map.values().map(|x| x.millipoints).sum::<i64>();
     writeln!(
         stdout_or_stderr,
         "{} records, {} unique racks",
@@ -2966,13 +2997,13 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
 
     let mut cur_rack_ser = String::new();
-    csv_out.serialize(("", total_equity, row_count))?;
+    csv_out.serialize(("", summary_points(total_millipoints), row_count))?;
     for (k, fv) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
             cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
-        csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        csv_out.serialize((&cur_rack_ser, summary_points(fv.millipoints), fv.count))?;
     }
 
     Ok(())
@@ -3067,6 +3098,8 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     // points
     let playability = SORT_MODE != 'a';
     let mut fields = None;
+    // a rack summary's sums (the rack mode), exactly
+    let mut rack_sums = fash::MyHashMap::<bites::Bites, RackSum>::default();
     let mut word_loss = fash::MyHashMap::<bites::Bites, i64>::default();
     let mut rack_loss = fash::MyHashMap::<bites::Bites, i64>::default();
     let mut move_loss = fash::MyHashMap::<bites::Bites, f64>::default();
@@ -3098,17 +3131,32 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
             .into());
         }
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
-        let thing = Cumulate {
-            equity: f64::from_str(&record[1])?,
-            count: u64::from_str(&record[2])?,
-        };
-        full_rack_map
-            .entry(rack_bytes[..].into())
-            .and_modify(|e| {
-                e.equity += thing.equity;
-                e.count += thing.count;
-            })
-            .or_insert(thing);
+        let count = u64::from_str(&record[2])?;
+        if playability {
+            let thing = Cumulate {
+                equity: f64::from_str(&record[1])?,
+                count,
+            };
+            full_rack_map
+                .entry(rack_bytes[..].into())
+                .and_modify(|e| {
+                    e.equity += thing.equity;
+                    e.count += thing.count;
+                })
+                .or_insert(thing);
+        } else {
+            let thing = RackSum {
+                millipoints: summary_millipoints(&record[1])?,
+                count,
+            };
+            rack_sums
+                .entry(rack_bytes[..].into())
+                .and_modify(|e| {
+                    e.millipoints += thing.millipoints;
+                    e.count += thing.count;
+                })
+                .or_insert(thing);
+        }
         if playability && width == 6 {
             if rack_bytes.is_empty() {
                 racks_in_file.clear();
@@ -3129,6 +3177,34 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
 
     full_rack_map.remove([][..].into());
+    rack_sums.remove([][..].into());
+
+    if !playability {
+        let mut total_millipoints = 0i64;
+        let mut row_count = 0;
+        for x in rack_sums.values() {
+            total_millipoints += x.millipoints;
+            row_count += x.count;
+        }
+        writeln!(
+            stdout_or_stderr,
+            "{} records, {} unique racks",
+            row_count,
+            rack_sums.len()
+        )?;
+        let mut kv = rack_sums.into_iter().collect::<Vec<_>>();
+        kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+        let mut cur_rack_ser = String::new();
+        csv_out.serialize(("", summary_points(total_millipoints), row_count))?;
+        for (k, fv) in kv.iter() {
+            cur_rack_ser.clear();
+            for &tile in k.iter() {
+                cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+            }
+            csv_out.serialize((&cur_rack_ser, summary_points(fv.millipoints), fv.count))?;
+        }
+        return Ok(());
+    }
 
     let mut total_equity = 0.0;
     let mut row_count = 0;
@@ -9577,26 +9653,26 @@ WCMP_P1_SCORE 402.000000
     #[test]
     #[inline]
     fn pooling_keeps_value_and_count_together() {
-        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-        pool_one(&mut m, &b"\x01"[..], 3.0);
-        pool_one(&mut m, &b"\x01"[..], 4.0);
+        let mut m = fash::MyHashMap::<bites::Bites, RackSum>::default();
+        pool_one(&mut m, &b"\x01"[..], 3000);
+        pool_one(&mut m, &b"\x01"[..], 4000);
         let a = m.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 2);
-        assert!((a.equity - 7.0).abs() < 1e-9);
+        assert_eq!(a.millipoints, 7000);
     }
 
     #[test]
     #[inline]
     fn merging_thread_maps_keeps_every_sample() {
-        let mut dst = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-        pool_one(&mut dst, &b"\x01"[..], 3.0);
-        let mut src = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-        pool_one(&mut src, &b"\x01"[..], 4.0);
-        pool_one(&mut src, &b"\x02"[..], 5.0);
+        let mut dst = fash::MyHashMap::<bites::Bites, RackSum>::default();
+        pool_one(&mut dst, &b"\x01"[..], 3000);
+        let mut src = fash::MyHashMap::<bites::Bites, RackSum>::default();
+        pool_one(&mut src, &b"\x01"[..], 4000);
+        pool_one(&mut src, &b"\x02"[..], 5000);
         merge_rack_map(&mut dst, &mut src);
         let a = dst.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 2);
-        assert!((a.equity - 7.0).abs() < 1e-9);
+        assert_eq!(a.millipoints, 7000);
 
         let b = dst.get(&b"\x02"[..]).unwrap();
         assert_eq!(b.count, 1);
@@ -9607,7 +9683,7 @@ WCMP_P1_SCORE 402.000000
     #[inline]
     fn resuming_adds_a_summarys_samples_to_the_rack_map() {
         let game_config = game_config::make_english_game_config();
-        let read = |input: &str, m: &mut fash::MyHashMap<bites::Bites, Cumulate>| {
+        let read = |input: &str, m: &mut fash::MyHashMap<bites::Bites, RackSum>| {
             read_summary_into(
                 &game_config,
                 csv::ReaderBuilder::new()
@@ -9618,16 +9694,16 @@ WCMP_P1_SCORE 402.000000
         };
         // the totals line is skipped; a rack in any order is the run's sorted
         // one, and its samples add to what the map holds
-        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-        pool_one(&mut m, &[1, 5, 9, 14, 18, 19, 20][..], 2.0);
+        let mut m = fash::MyHashMap::<bites::Bites, RackSum>::default();
+        pool_one(&mut m, &[1, 5, 9, 14, 18, 19, 20][..], 2000);
         let summary = ",10.5,4\nAEINRST,6.5,2\nTSRNIEA,1.0,1\n?AEINST,3,1\n";
         assert_eq!(read(summary, &mut m).unwrap(), (4, 3));
         let a = m.get(&[1u8, 5, 9, 14, 18, 19, 20][..]).unwrap();
         assert_eq!(a.count, 4);
-        assert!((a.equity - 9.5).abs() < 1e-9);
+        assert_eq!(a.millipoints, 9500);
         let b = m.get(&[0u8, 1, 5, 9, 14, 19, 20][..]).unwrap();
         assert_eq!(b.count, 1);
-        assert!((b.equity - 3.0).abs() < 1e-9);
+        assert_eq!(b.millipoints, 3000);
         assert_eq!(m.len(), 2);
         // a rack that is not full, and a line short of its count, are refused
         assert!(read("AT,1,1\n", &mut m).is_err());
@@ -9661,6 +9737,26 @@ WCMP_P1_SCORE 402.000000
         assert_eq!(resummarize(",2,3\nAT,2,3\n").unwrap(), ",2.0,3\nAT,2.0,3\n");
         assert!(resummarize(",2,3\nAT,2,3\n,1,1,1,2,1\nAT,1,1,1,2,1\n").is_err());
         assert!(resummarize(",1,1,1,1\nAT,1,1,1,1\n").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn resummarizing_racks_adds_their_sums_exactly() {
+        let mut out = Vec::new();
+        resummarize_summaries::<'a', _, _>(
+            game_config::make_english_game_config(),
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(&b",0.1,1\nAT,0.1,1\n,0.2,2\nAT,0.1,1\nAE,0.1,1\n"[..]),
+            csv::Writer::from_writer(&mut out),
+            true,
+        )
+        .unwrap();
+        // in f64, 0.1 and 0.1 and 0.1 come to 0.30000000000000004
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            ",0.3,3\nAE,0.1,1\nAT,0.2,2\n"
+        );
     }
 
     #[test]
