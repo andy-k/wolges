@@ -92,6 +92,14 @@ fn split_klv(buf: &[u8]) -> error::Returns<KlvParts<'_>> {
     })
 }
 
+// a klv's leave graph rewritten in place from one layout to the other, as
+// kwg::repack_in_place does a word graph's; its values stay as they are
+#[inline(always)]
+pub fn repack_in_place<Old: kwg::Node, New: kwg::Node>(buf: &mut [u8]) -> error::Returns<()> {
+    let kwg_len = split_klv(buf)?.kwg_bytes.len();
+    kwg::repack_in_place::<Old, New>(&mut buf[4..4 + kwg_len])
+}
+
 // a klv2 value as the millipoints a leave is kept in; one that is not a number,
 // or too big for an i32 of them, is refused (`as` would make it 0 or the
 // nearest end of i32), as buildlex refuses it in a leave file. The refusal
@@ -790,6 +798,22 @@ mod tests {
             assert_eq!(&got[i].0[..], tiles, "leave {i}");
             assert_eq!(got[i].1, value, "value {i}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_table_repacks_into_either_layout_with_its_leaves_and_values() {
+        let leaves: &[(&[u8], f32)] = &[(&[1], -1.25), (&[1, 2], 27.636), (&[2], 3.5)];
+        let bin = make_klv2(leaves);
+        let mut repacked = bin.clone();
+        repack_in_place::<kwg::Node22, kwg::Node24>(&mut repacked).unwrap();
+        let got = read_leaves_alloc::<kwg::Node24>(&repacked).unwrap();
+        for (i, &(tiles, value)) in leaves.iter().enumerate() {
+            assert_eq!(&got[i].0[..], tiles, "leave {i}");
+            assert_eq!(got[i].1, value, "value {i}");
+        }
+        repack_in_place::<kwg::Node24, kwg::Node22>(&mut repacked).unwrap();
+        assert_eq!(repacked, bin);
     }
 
     #[test]
