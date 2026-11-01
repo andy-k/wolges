@@ -138,7 +138,8 @@ fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-const PRUNE_CADENCE: u64 = 16;
+// how many iterations apart the looks that retire candidates come
+pub const PRUNE_CADENCE: u64 = 16;
 
 #[inline(always)]
 fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + simmer::CopyState>(
@@ -219,9 +220,48 @@ fn normal_quantile(p: f64) -> f64 {
 // whole decision to one in twenty, split evenly over its looks (one every
 // PRUNE_CADENCE iterations)
 #[inline]
-fn paired_z(budget: u64) -> f64 {
+pub fn paired_z(budget: u64) -> f64 {
     let looks = (budget / PRUNE_CADENCE).max(1) as f64;
     -normal_quantile(0.05 / looks)
+}
+
+// a candidate's objective minus the leader's on each iteration both were rolled
+// out. Each list holds a candidate's objectives from its first iteration on,
+// NaN where it sat one out.
+#[inline]
+pub fn paired_difference(
+    objectives: &[f64],
+    first_iter: u64,
+    lead_objectives: &[f64],
+    lead_first_iter: u64,
+) -> stats::Stats {
+    let from = first_iter.max(lead_first_iter);
+    let to =
+        (first_iter + objectives.len() as u64).min(lead_first_iter + lead_objectives.len() as u64);
+    let mut diff = stats::Stats::new();
+    for iter in from..to {
+        let mine = objectives[(iter - first_iter) as usize];
+        let leads = lead_objectives[(iter - lead_first_iter) as usize];
+        if !mine.is_nan() && !leads.is_nan() {
+            diff.update(mine - leads);
+        }
+    }
+    diff
+}
+
+// whether a candidate is behind the leader on the iterations both were rolled
+// out: its objective minus the leader's is below 0 even at the top of its
+// interval
+#[inline]
+pub fn behind_paired(
+    objectives: &[f64],
+    first_iter: u64,
+    lead_objectives: &[f64],
+    lead_first_iter: u64,
+    z: f64,
+) -> bool {
+    let diff = paired_difference(objectives, first_iter, lead_objectives, lead_first_iter);
+    diff.count() >= 2.0 && diff.ci_max(z) < 0.0
 }
 
 // compare each candidate with the leader (the highest mean) on the iterations
@@ -238,18 +278,13 @@ fn retire_paired(candidates: &mut Vec<Candidate>, retired: &mut Vec<Candidate>, 
     let below = candidates
         .iter()
         .map(|candidate| {
-            let from = candidate.first_iter.max(lead.first_iter);
-            let to = (candidate.first_iter + candidate.objectives.len() as u64)
-                .min(lead.first_iter + lead.objectives.len() as u64);
-            let mut diff = stats::Stats::new();
-            for iter in from..to {
-                let mine = candidate.objectives[(iter - candidate.first_iter) as usize];
-                let leads = lead.objectives[(iter - lead.first_iter) as usize];
-                if !mine.is_nan() && !leads.is_nan() {
-                    diff.update(mine - leads);
-                }
-            }
-            diff.count() >= 2.0 && diff.ci_max(z) < 0.0
+            behind_paired(
+                &candidate.objectives,
+                candidate.first_iter,
+                &lead.objectives,
+                lead.first_iter,
+                z,
+            )
         })
         .collect::<Vec<_>>();
     let mut write = 0;
@@ -2213,6 +2248,36 @@ mod tests {
         retire_paired(&mut candidates, &mut retired, 3.0);
         assert_eq!(candidates.len(), 1);
         assert_eq!(retired[0].play_index, 1);
+    }
+
+    #[test]
+    #[inline]
+    fn behind_paired_skips_the_iterations_either_sat_out() {
+        // from iteration 5 the candidate is a point behind wherever both were
+        // rolled out; where only it was, it scored 100, which compared with
+        // nothing must not count
+        let lead = (1..=40u64)
+            .map(|i| if i % 4 == 3 { f64::NAN } else { 10.0 })
+            .collect::<Vec<_>>();
+        let mine = (5..=40u64)
+            .map(|i| match i % 4 {
+                1 => f64::NAN,
+                3 => 100.0,
+                _ => 9.0,
+            })
+            .collect::<Vec<_>>();
+        assert!(behind_paired(&mine, 5, &lead, 1, 3.0));
+        // both were rolled out on iterations 6, 8, 10, ... 40
+        let diff = paired_difference(&mine, 5, &lead, 1);
+        assert_eq!(
+            (diff.count(), diff.mean(), diff.variance()),
+            (18.0, -1.0, 0.0)
+        );
+        // ahead where both were rolled out: not behind
+        let ahead = mine.iter().map(|v| v + 2.0).collect::<Vec<_>>();
+        assert!(!behind_paired(&ahead, 5, &lead, 1, 3.0));
+        // one shared iteration is too few to judge
+        assert!(!behind_paired(&mine[..2], 5, &lead, 1, 3.0));
     }
 
     #[test]
