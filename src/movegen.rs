@@ -5029,6 +5029,68 @@ impl KurniaMoveGenerator {
         working_buffer.prev_board_tiles.fill(0xff);
         gen_remaining_words(board_snapshot, working_buffer, found_word)
     }
+
+    // the letters each square of the board takes, the cross sets a generation
+    // reads: for each square, row by row, those that make the run of tiles down
+    // through it a word, then those that make the run across one, a bit (1 <<
+    // tile) for each, and bit 0 when a tile is beside the square that way; 0
+    // when none is. A square of the board's own tiles is given too, and means
+    // nothing
+    pub fn gen_hooks<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        mut found: impl FnMut(usize, u64, u64),
+    ) {
+        let working_buffer = &mut self.working_buffer;
+        working_buffer.init(board_snapshot, &[], klv::AdjustLeave::Identity, None);
+        let dim = board_snapshot.game_config.board_layout().dim();
+        let transposed_dim = matrix::Dim {
+            rows: dim.cols,
+            cols: dim.rows,
+        };
+        for col in 0..dim.cols {
+            let strip_range_start = (col as isize * dim.rows as isize) as usize;
+            let strip_range_end = strip_range_start + dim.rows as usize;
+            gen_cross_set(
+                board_snapshot,
+                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.cross_set_for_across_plays,
+                dim.down(col),
+                &mut working_buffer.cross_set_buffer_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.cached_cross_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                (&mut working_buffer.used_letters_tally, ()),
+            );
+        }
+        for row in 0..dim.rows {
+            let strip_range_start = (row as isize * dim.cols as isize) as usize;
+            let strip_range_end = strip_range_start + dim.cols as usize;
+            gen_cross_set(
+                board_snapshot,
+                &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.cross_set_for_down_plays,
+                transposed_dim.down(row),
+                &mut working_buffer.cross_set_buffer_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.cached_cross_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                (&mut working_buffer.used_letters_tally, ()),
+            );
+        }
+        for row in 0..dim.rows {
+            for col in 0..dim.cols {
+                found(
+                    dim.at_row_col(row, col),
+                    working_buffer.cross_set_for_across_plays[dim.at_row_col(row, col)].bits,
+                    working_buffer.cross_set_for_down_plays[transposed_dim.at_row_col(col, row)]
+                        .bits,
+                );
+            }
+        }
+        // the next generation computes every cross set again, its own way
+        working_buffer.prev_board_tiles.fill(0xff);
+    }
 }
 
 #[inline]
@@ -6809,6 +6871,141 @@ mod tests {
         assert_ne!(all[4].split(' ').next().unwrap(), top_equity);
         for k in 1..=6 {
             assert_eq!(valued_plays(empty, "AEST", k), all[..k], "cap of {k}");
+        }
+    }
+
+    // the letters that, put between the tiles before a square (nearest last)
+    // and those after it, make a word, each looked up from the graph's start (a
+    // jumbled graph's by its alphagram): a bit each, and bit 0 when there is a
+    // run of tiles to make a word with; 0 when there is none
+    fn hooks_by_hand(
+        kwg: &kwg::Kwg<kwg::Node22>,
+        jumbled: bool,
+        alphabet_len: u8,
+        before: &[u8],
+        after: &[u8],
+    ) -> u64 {
+        if before.is_empty() && after.is_empty() {
+            return 0;
+        }
+        let mut bits = 1u64;
+        for letter in 1..alphabet_len {
+            let mut word = before.to_vec();
+            word.push(letter);
+            word.extend_from_slice(after);
+            if jumbled {
+                word.sort_unstable();
+            }
+            let mut p = 0;
+            if word.iter().all(|&tile| {
+                p = kwg.seek(p, tile);
+                p > 0
+            }) && kwg::Node::accepts(&kwg[p])
+            {
+                bits |= 1 << letter;
+            }
+        }
+        bits
+    }
+
+    // the cross sets gen_hooks gives, for the run down through each empty
+    // square and the run across, are what looking each word up finds, under
+    // classic rules and under jumbled ones (a graph of alphagrams)
+    #[test]
+    #[inline]
+    fn gen_hooks_gives_the_letters_looking_each_word_up_finds() {
+        let boards = [
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/4TRANCE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/4TRANCE5/15/6NEST5/15/15/15/15/15",
+            "15/15/15/15/15/6C8/6A8/4TRANCE5/6E8/6S8/15/15/15/15/15",
+        ];
+        for jumbled in [false, true] {
+            let gc = if jumbled {
+                game_config::make_jumbled_english_game_config()
+            } else {
+                game_config::make_english_game_config()
+            };
+            let kwg = if jumbled {
+                let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+                let mut word_buf = Vec::new();
+                let words = (SWEEP_WORDS.iter())
+                    .map(|w| {
+                        reader.set_word(w, &mut word_buf).unwrap();
+                        word_buf[..].into()
+                    })
+                    .collect::<Vec<bites::Bites>>();
+                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+                    &build::build(
+                        build::BuildContent::DawgOnly,
+                        build::BuildLayout::Wolges,
+                        build::BuildOrder::Sorted,
+                        &build::make_alphagrams(&words),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            } else {
+                sweep_kwg(&gc)
+            };
+            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            let dim = gc.board_layout().dim();
+            let alphabet_len = gc.alphabet().len();
+            let mut hooked = 0;
+            for fen in boards {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                let mut got = vec![(0u64, 0u64); board_tiles.len()];
+                KurniaMoveGenerator::new(&gc).gen_hooks(
+                    &BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    },
+                    |idx, down, across| got[idx] = (down, across),
+                );
+                let tile_at = |r: i8, c: i8| {
+                    if (0..dim.rows).contains(&r) && (0..dim.cols).contains(&c) {
+                        board_tiles[dim.at_row_col(r, c)] & 0x7f
+                    } else {
+                        0
+                    }
+                };
+                let run = |mut r: i8, mut c: i8, dr: i8, dc: i8| {
+                    let mut tiles = Vec::new();
+                    while tile_at(r + dr, c + dc) != 0 {
+                        r += dr;
+                        c += dc;
+                        tiles.push(tile_at(r, c));
+                    }
+                    tiles
+                };
+                for r in 0..dim.rows {
+                    for c in 0..dim.cols {
+                        if tile_at(r, c) != 0 {
+                            continue;
+                        }
+                        let mut above = run(r, c, -1, 0);
+                        above.reverse();
+                        let mut left = run(r, c, 0, -1);
+                        left.reverse();
+                        let want = (
+                            hooks_by_hand(&kwg, jumbled, alphabet_len, &above, &run(r, c, 1, 0)),
+                            hooks_by_hand(&kwg, jumbled, alphabet_len, &left, &run(r, c, 0, 1)),
+                        );
+                        assert_eq!(
+                            got[dim.at_row_col(r, c)],
+                            want,
+                            "[{fen}] row {r} col {c}, jumbled {jumbled}"
+                        );
+                        hooked += (want.0 | want.1 > 1) as usize;
+                    }
+                }
+            }
+            assert!(hooked > 0, "jumbled {jumbled}: no square took a letter");
         }
     }
 
