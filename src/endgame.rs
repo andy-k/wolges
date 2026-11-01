@@ -687,6 +687,13 @@ fn gen_raw_lanes<N: kwg::Node, L: kwg::Node>(
     }
 }
 
+// a solver's table kept apart from it (take_table), to be given back only to a
+// solver of the game_config, kwg, and arm_tables it was made with, by address
+pub struct KeptTable {
+    table: Table,
+    made_with: [usize; 3],
+}
+
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
@@ -1955,6 +1962,39 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
         std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
         Ok(())
+    }
+
+    // the table taken out, an empty one left in its place, for a caller that
+    // keeps it apart from any solver between solves (a wasm32 page keeps it in
+    // a handle, as it can keep no solver)
+    #[inline(always)]
+    pub fn take_table(&mut self) -> KeptTable {
+        KeptTable {
+            table: std::mem::replace(&mut self.work_buffer.table, Table::new()),
+            made_with: self.made_with(),
+        }
+    }
+
+    // a taken table given back, to this solver or another of the same
+    // game_config, kwg, and arm_tables; any other is refused the table, which
+    // comes back whole
+    #[inline(always)]
+    pub fn give_table(&mut self, kept: KeptTable) -> Result<(), KeptTable> {
+        if kept.made_with != self.made_with() {
+            return Err(kept);
+        }
+        self.work_buffer.table = kept.table;
+        Ok(())
+    }
+
+    // the game_config, kwg, and arm_tables this solver was made with, by address
+    #[inline(always)]
+    fn made_with(&self) -> [usize; 3] {
+        [
+            std::ptr::from_ref(self.game_config).addr(),
+            std::ptr::from_ref(self.kwg).addr(),
+            std::ptr::from_ref(self.arm_tables).addr(),
+        ]
     }
 
     // the one-in-bag value within the limits; an endgame inside it that a limit
@@ -4559,6 +4599,64 @@ mod tests {
         assert_eq!(egs.work_buffer.table.held, 0);
         egs.swap_tables(&mut same).unwrap();
         assert_eq!(egs.work_buffer.table.held, held);
+    }
+
+    #[test]
+    #[inline]
+    fn a_taken_table_goes_back_only_to_a_solver_of_the_same_game() {
+        // take_table leaves an empty table and keeps the full one apart; a
+        // solver of another game_config, kwg, or arm_tables is refused it,
+        // whole, and one of the same takes it and answers on it as before
+        let gc = game_config::make_english_game_config();
+        let other_gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let other_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let other_arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        egs.init(&board, [&[1, 2], &[8, 20]]); // A B, H T
+        let value = egs.solve(0).unwrap();
+        let held = egs.work_buffer.table.held;
+        assert!(held > 0, "the solve left nothing in the table");
+        let mut kept = egs.take_table();
+        assert_eq!(egs.work_buffer.table.held, 0, "the table was not taken");
+        for (name, mut other) in [
+            (
+                "another game_config",
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&other_gc, &kwg, &arm_tables)
+                    .unwrap(),
+            ),
+            (
+                "another kwg",
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &other_kwg, &arm_tables)
+                    .unwrap(),
+            ),
+            (
+                "other arm_tables",
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &other_arm_tables)
+                    .unwrap(),
+            ),
+        ] {
+            kept = other.give_table(kept).expect_err(name);
+            assert_eq!(
+                other.work_buffer.table.held, 0,
+                "{name} was given the table"
+            );
+            assert_eq!(kept.table.held, held, "{name}: the table came back short");
+        }
+        let mut same =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        assert!(
+            same.give_table(kept).is_ok(),
+            "a solver of the same game was refused"
+        );
+        assert_eq!(same.work_buffer.table.held, held);
+        same.init(&board, [&[1, 2], &[8, 20]]);
+        assert_eq!(same.solve(0).unwrap(), value);
     }
 
     #[test]
