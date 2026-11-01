@@ -399,7 +399,8 @@ fn order_first(list: &mut [Candidate], ordered: &mut [u128]) {
 // (Refer to note at KurniaMoveGenerator.)
 // The EndgameSolver holding it enforces this.
 struct WorkBuffer {
-    t0: std::time::Instant,           // the solve's start, for its time limit
+    clock: Option<Clock>,             // the clock solves read, std's if none
+    t0: Option<Started>,              // the solve's start, for its time limit
     dur_movegen: std::time::Duration, // for progress, timed only while something listens
     movegen: movegen::KurniaMoveGenerator,
     run_letter_bits: Option<Box<[u64]>>,
@@ -435,7 +436,8 @@ struct WorkBuffer {
 impl WorkBuffer {
     fn new(game_config: &game_config::GameConfig, run_letter_bits: Option<Box<[u64]>>) -> Self {
         Self {
-            t0: std::time::Instant::now(),
+            clock: None,
+            t0: None,
             dur_movegen: Default::default(),
             movegen: movegen::KurniaMoveGenerator::new(game_config),
             run_letter_bits,
@@ -528,6 +530,36 @@ impl MemoryLimit {
     }
 }
 
+// a clock: the time since any fixed start, never going back. A solve reads
+// std's (Instant) unless its solver is given one, as a wasm32 page must give
+// its own: std's has no clock there and panics when read
+pub type Clock = fn() -> std::time::Duration;
+
+// when a solve started, on std's clock or on a given one
+#[derive(Clone, Copy)]
+enum Started {
+    Std(std::time::Instant),
+    Given(Clock, std::time::Duration),
+}
+
+impl Started {
+    #[inline(always)]
+    fn now(clock: Option<Clock>) -> Self {
+        match clock {
+            None => Self::Std(std::time::Instant::now()),
+            Some(clock) => Self::Given(clock, clock()),
+        }
+    }
+
+    #[inline(always)]
+    fn elapsed(&self) -> std::time::Duration {
+        match *self {
+            Self::Std(t0) => t0.elapsed(),
+            Self::Given(clock, t0) => clock().saturating_sub(t0),
+        }
+    }
+}
+
 // a search with a tile in the bag solves many endgames as one solve: its time
 // limit is one deadline for them all, on its clock, and its state limit applies
 // to the table they share (the solver's own, lent with what its earlier solves
@@ -536,21 +568,21 @@ struct BagLimits {
     time: Option<std::time::Duration>,
     states: Option<usize>,
     memory: Option<MemoryLimit>,
-    t0: std::time::Instant,
+    t0: Started,
     dur_movegen: std::cell::Cell<std::time::Duration>,
     endgames: std::cell::Cell<u64>,
     progress: std::cell::Cell<Option<ProgressFn>>,
 }
 
 impl BagLimits {
-    // its clock starts now
+    // its clock (std's if none is given) starts now
     #[inline(always)]
-    fn new(limits: &Limits, progress: Option<ProgressFn>) -> Self {
+    fn new(limits: &Limits, progress: Option<ProgressFn>, clock: Option<Clock>) -> Self {
         Self {
             time: limits.time,
             states: limits.states,
             memory: limits.memory,
-            t0: std::time::Instant::now(),
+            t0: Started::now(clock),
             dur_movegen: Default::default(),
             endgames: Default::default(),
             progress: std::cell::Cell::new(progress),
@@ -889,7 +921,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             return best as f32;
         }
         // timed only while something listens
-        let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
+        let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
         gen_raw_lanes(
             &mut work_buffer.movegen,
             work_buffer.run_letter_bits.as_deref(),
@@ -959,7 +991,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             0
         };
         // timed only while something listens
-        let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
+        let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
         gen_raw_lanes(
             &mut work_buffer.movegen,
             work_buffer.run_letter_bits.as_deref(),
@@ -1153,7 +1185,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let work_buffer = &self.work_buffer;
         work_buffer
             .time_limit
-            .is_some_and(|limit| work_buffer.t0.elapsed() >= limit)
+            .is_some_and(|limit| work_buffer.t0.is_some_and(|t0| t0.elapsed() >= limit))
             || work_buffer
                 .state_limit
                 .is_some_and(|limit| work_buffer.table.held >= limit)
@@ -1202,10 +1234,17 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         self.work_buffer.progress = Some(Box::new(progress));
     }
 
+    // read the time of later solves on this clock instead of std's, as a wasm32
+    // page must
+    #[inline(always)]
+    pub fn set_clock(&mut self, clock: Clock) {
+        self.work_buffer.clock = Some(clock);
+    }
+
     // a solve of its own starts its clock
     #[inline(always)]
     fn start_clock(&mut self) {
-        self.work_buffer.t0 = std::time::Instant::now();
+        self.work_buffer.t0 = Some(Started::now(self.work_buffer.clock));
         self.work_buffer.dur_movegen = Default::default();
     }
 
@@ -1444,10 +1483,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .state_limit
                 .is_some_and(|limit| work_buffer.table.held >= limit)
                 || (work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
-                    && (work_buffer
-                        .time_limit
-                        .is_some_and(|limit| work_buffer.t0.elapsed() >= limit)
-                        || work_buffer.memory_limit.is_some_and(|limit| limit.passed())))
+                    && (work_buffer.time_limit.is_some_and(|limit| {
+                        work_buffer.t0.is_some_and(|t0| t0.elapsed() >= limit)
+                    }) || work_buffer.memory_limit.is_some_and(|limit| limit.passed())))
             {
                 work_buffer.cut_short = true;
                 return Err("a limit stopped the search".into());
@@ -1860,7 +1898,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         player_idx: u8,
         bag_tile: u8,
     ) -> error::Returns<equity::Equity> {
-        let limits = BagLimits::new(&Limits::NONE, self.work_buffer.progress.take());
+        let limits = BagLimits::new(
+            &Limits::NONE,
+            self.work_buffer.progress.take(),
+            self.work_buffer.clock,
+        );
         let mut exact = true;
         let value = self.one_in_bag(player_idx, bag_tile, &limits, &mut exact);
         self.work_buffer.progress = limits.progress.take();
@@ -1878,7 +1920,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         exact: &mut bool,
     ) -> error::Returns<f32> {
         let work_buffer = &mut self.work_buffer;
-        work_buffer.t0 = limits.t0;
+        work_buffer.t0 = Some(limits.t0);
         work_buffer.dur_movegen = limits.dur_movegen.get();
         work_buffer.in_bag = Some(limits.endgames.get());
         work_buffer.progress = limits.progress.take();
@@ -2221,7 +2263,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
         let score_diff = score_diff.raw() as f32;
-        let limits = BagLimits::new(limits, self.work_buffer.progress.take());
+        let limits = BagLimits::new(
+            limits,
+            self.work_buffer.progress.take(),
+            self.work_buffer.clock,
+        );
 
         let result = if one_in_bag_exchange_legal(gc) {
             self.peg_clairvoyant_aggregate(
@@ -3807,6 +3853,29 @@ mod tests {
                 "[{name}] a zero time limit answers the first depth"
             );
 
+            // the time read on a given clock, never std's: on one that never
+            // moves, however little time is given is never used up
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.set_clock(|| std::time::Duration::ZERO);
+            let limits = super::Limits {
+                time: Some(std::time::Duration::from_nanos(1)),
+                states: None,
+                memory: None,
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            assert!(
+                solved.exact
+                    && solved.value == full.value
+                    && (solved.depth, solved.value) == (every.depth, every.value),
+                "[{name}] on a clock that never moves, a time limit is never reached: \
+                 depth {} value {} exact {}",
+                solved.depth,
+                solved.value,
+                solved.exact
+            );
+
             // the memory past its limit from the start: the same
             let mut egs =
                 EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -3924,6 +3993,7 @@ mod tests {
                 seen.borrow_mut().push((p.endgames, p.value));
                 Ok(())
             })),
+            None,
         );
         let positions = all_positions();
         let mut egs =
@@ -5947,7 +6017,7 @@ mod tests {
                                     mrack,
                                     &unseen_tally,
                                     0.0,
-                                    &super::BagLimits::new(&super::Limits::NONE, None),
+                                    &super::BagLimits::new(&super::Limits::NONE, None, None),
                                 )
                                 .unwrap();
 
