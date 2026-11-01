@@ -146,7 +146,7 @@ struct Entry {
 // each, a cache line's size (not aligned to one). An entry is two words: the
 // position's key, then, from the low bits up, the value's bits, the best move,
 // the depth, the bound (none for an empty entry), and the generation of the
-// solve that stored it
+// solve that stored it or last read it
 struct Table {
     buckets: Vec<[u64; 8]>,
     held: usize,     // entries holding a position
@@ -206,12 +206,20 @@ impl Table {
         })
     }
 
+    // the position's entry, which becomes this solve's: what a solve reads is
+    // kept before what earlier solves stored and no solve since has read, as a
+    // solve in steps or a search with a tile in the bag reads what it stored
+    // before
     #[inline(always)]
-    fn probe(&self, key: u64) -> Option<Entry> {
-        let bucket = &self.buckets[self.bucket(key)];
-        (0..4)
-            .find(|&slot| bucket[2 * slot] == key && (bucket[2 * slot + 1] >> 56) & 3 != 0)
-            .and_then(|slot| Self::entry(bucket[2 * slot + 1]))
+    fn probe(&mut self, key: u64) -> Option<Entry> {
+        let generation = self.generation & 0x3f;
+        let index = self.bucket(key);
+        let bucket = &mut self.buckets[index];
+        let slot = (0..4)
+            .find(|&slot| bucket[2 * slot] == key && (bucket[2 * slot + 1] >> 56) & 3 != 0)?;
+        let word = &mut bucket[2 * slot + 1];
+        *word = *word & !(0x3f << 58) | generation << 58;
+        Self::entry(*word)
     }
 
     // store into the position's own entry, else an empty one, else over the
@@ -4662,6 +4670,94 @@ mod tests {
         assert!(!table.resize(usize::MAX));
         assert_eq!((table.buckets.len(), table.held), (2, 4));
         assert!((2..=5).all(|key| table.probe(key).is_some()));
+    }
+
+    #[test]
+    #[inline]
+    fn an_entry_a_later_solve_reads_is_kept_before_one_it_does_not() {
+        let entry = |depth: i8| super::Entry {
+            value: 0.0,
+            play: 7,
+            depth,
+            bound: super::Bound::Exact,
+        };
+        // one bucket, filled by a solve: the shallowest entry is 1's
+        let mut table = super::Table::new();
+        table.generation = 1;
+        for key in 1..=4 {
+            assert!(table.store(key, entry(key as i8)));
+        }
+        // a later solve reads 1, then stores 5: 2's, the shallowest it did not
+        // read, makes room
+        table.generation = 2;
+        assert!(table.probe(1).is_some());
+        assert!(!table.store(5, entry(9)));
+        assert!(table.probe(2).is_none(), "the entry not read made room");
+        assert!(
+            (1..=5)
+                .filter(|&key| key != 2)
+                .all(|key| table.probe(key).is_some())
+        );
+    }
+
+    // a solve in steps, as a wasm32 page runs one: each step a new solver,
+    // given the table the steps before kept, stopped once it holds 30 positions
+    // more. A step never answers from a shallower depth than one before it did,
+    // and the steps end with the position's value; also with the table kept to
+    // 256 buckets by a memory limit no solve passes, where once it is full each
+    // step's entries replace earlier steps'
+    #[test]
+    #[inline]
+    fn a_solve_in_steps_on_a_kept_table_never_answers_shallower() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_kwg_bytes()).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        for memory in [
+            None,
+            Some(super::MemoryLimit {
+                bytes: 256 * std::mem::size_of::<[u64; 8]>() + 1,
+                held: || 0,
+            }),
+        ] {
+            let mut stepped = 0;
+            for (name, pos) in all_positions() {
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                let full = egs.solve(0).unwrap();
+                let mut kept = None;
+                let mut deepest = 0;
+                for step in 1.. {
+                    assert!(step < 10000, "[{name}] the steps never ended");
+                    let mut egs =
+                        EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    if let Some(table) = kept.take() {
+                        assert!(egs.give_table(table).is_ok());
+                    }
+                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    let limits = super::Limits {
+                        time: None,
+                        states: Some(egs.work_buffer.table.held + 30),
+                        memory,
+                    };
+                    let solved = egs.solve_within(0, &limits).unwrap();
+                    kept = Some(egs.take_table());
+                    assert!(
+                        solved.depth >= deepest,
+                        "[{name}] step {step} answered from depth {} after depth {deepest}",
+                        solved.depth
+                    );
+                    deepest = solved.depth;
+                    if solved.exact {
+                        assert_eq!(solved.value, full, "[{name}]");
+                        stepped += (step > 1) as usize;
+                        break;
+                    }
+                }
+            }
+            assert!(stepped > 0, "no position took more than one step");
+        }
     }
 
     #[test]
