@@ -5974,6 +5974,148 @@ fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Nod
     );
 }
 
+// under jumbled rules a word's tiles lie on the board in any order, and the
+// graph holds each word's alphagram, its tiles in rising order. A word fills a
+// run of a line, the squares between an empty square or the edge and the next:
+// it holds every tile of the board in its run, and the rest of its tiles, at
+// least one, come from those not on the board. So, for each such run, each
+// alphagram as long as the run that holds its board tiles; and the words of the
+// tiles not on the board alone. found_word may be called multiple times for the
+// same word
+fn gen_remaining_jumbled_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer,
+    mut found_word: FoundWord,
+) {
+    struct Env<'a, FoundWord: FnMut(&[u8]), N: kwg::Node> {
+        kwg: &'a kwg::Kwg<N>,
+        available: &'a mut [u8], // the tiles not on the board, a blank at 0
+        required: &'a mut [u8],  // the run's tiles still to place
+        word: &'a mut Vec<u8>,
+        found_word: &'a mut FoundWord,
+    }
+
+    // the alphagrams of left more tiles from the node list at p that place
+    // every required tile, owed of them still to place
+    fn walk<FoundWord: FnMut(&[u8]), N: kwg::Node>(
+        env: &mut Env<'_, FoundWord, N>,
+        mut p: i32,
+        left: usize,
+        owed: usize,
+    ) {
+        // a required tile is placed before any tile above it, or never
+        let lowest_owed = if owed > 0 {
+            env.required.iter().position(|&count| count > 0)
+        } else {
+            None
+        };
+        loop {
+            let node = env.kwg[p];
+            let tile = node.tile() as usize;
+            if lowest_owed.is_some_and(|lowest| tile > lowest) {
+                break;
+            }
+            // a board tile first, then a tile not on the board, then a blank
+            let from = if env.required[tile] > 0 {
+                Some((true, tile))
+            } else if env.available[tile] > 0 {
+                Some((false, tile))
+            } else if env.available[0] > 0 {
+                Some((false, 0))
+            } else {
+                None
+            };
+            if let Some((required, index)) = from {
+                let tally = if required {
+                    &mut *env.required
+                } else {
+                    &mut *env.available
+                };
+                tally[index] -= 1;
+                env.word.push(tile as u8);
+                let owed = owed - required as usize;
+                if left == 1 {
+                    if owed == 0 && node.accepts() {
+                        (env.found_word)(env.word);
+                    }
+                } else if owed < left {
+                    let next = node.arc_index();
+                    if next != 0 {
+                        walk(env, next, left - 1, owed);
+                    }
+                }
+                env.word.pop();
+                let tally = if required {
+                    &mut *env.required
+                } else {
+                    &mut *env.available
+                };
+                tally[index] += 1;
+            }
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+
+    let game_config = &board_snapshot.game_config;
+    let dim = game_config.board_layout().dim();
+    let mut required = vec![0u8; game_config.alphabet().len() as usize];
+    let root = board_snapshot.kwg[0].arc_index();
+    working_buffer.exchange_buffer.clear();
+    for (tiles, len) in [
+        (board_snapshot.board_tiles, dim.cols as usize),
+        (
+            &working_buffer.transposed_board_tiles[..],
+            dim.rows as usize,
+        ),
+    ] {
+        for line in tiles.chunks_exact(len) {
+            for start in 0..len {
+                if start > 0 && line[start - 1] != 0 {
+                    continue;
+                }
+                required.fill(0);
+                let mut held = 0;
+                for end in start..len {
+                    if line[end] != 0 {
+                        required[(line[end] & 0x7f) as usize] += 1;
+                        held += 1;
+                    }
+                    if end + 1 < len && line[end + 1] != 0 {
+                        continue;
+                    }
+                    let run = end + 1 - start;
+                    if run >= 2 && held > 0 && held < run && root != 0 {
+                        walk(
+                            &mut Env {
+                                kwg: board_snapshot.kwg,
+                                available: &mut working_buffer.used_letters_tally,
+                                required: &mut required,
+                                word: &mut working_buffer.exchange_buffer,
+                                found_word: &mut found_word,
+                            },
+                            root,
+                            run,
+                            held,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    gen_remaining_unconnected_words(
+        &mut GenRemainingUnconnectedWordsParams {
+            kwg: board_snapshot.kwg,
+            rack_tally: &mut working_buffer.used_letters_tally, // intentional.
+            word_vec: &mut working_buffer.exchange_buffer,      // intentional.
+            max_len: dim.rows.max(dim.cols) as usize,
+        },
+        &mut found_word,
+    );
+}
+
 // found_word may be called multiple times for the same word.
 #[inline]
 fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
@@ -6001,6 +6143,10 @@ fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::N
                 available_tally[0] -= 1;
             }
         }
+    }
+    if let game_config::GameRules::Jumbled = game_config.game_rules() {
+        gen_remaining_jumbled_words(board_snapshot, working_buffer, found_word);
+        return;
     }
     let mut max_space_len = 0;
     let mut found_space = |space_len: u8| max_space_len = max_space_len.max(space_len);
