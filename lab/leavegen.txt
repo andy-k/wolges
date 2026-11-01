@@ -772,7 +772,10 @@ picking up at the generation after the one it saved. If the specification given
 on resume holds no more generations than the snapshot has already done, the
 resume index would run off the end of the specification and a worker would
 panic. It now stops with a clear error -- extend the specification -- instead
-of crashing. Fresh runs are unaffected.
+of crashing. Fresh runs are unaffected. Given the same seed and specification,
+a resumed census comes out exactly as one unbroken run would: it values its
+boards with the snapshot's leaves, as the run did, and takes their means before
+rounding from the .means file each generation writes beside its snapshot.
 
 Each census run also writes its last generation as a summary,
 census-summary-<stamp>.csv, in the autoplay summary format: a totals row, then
@@ -1068,12 +1071,14 @@ rack the tiles can deal is valued on N boards or more. Each round adds as many
 boards as the least-covered rack's rate says it needs, but never more than have
 been run, and the census says how many boards that rack got.
 
-A census can also go on later. --keep-state writes the last generation's state
-as census-state-<stamp>.bin -- the seed, the boards, the leaves it valued them
-with, and every multiset's sums -- and census --continue with that file samples
-the boards given more, from the board after its last, coming out exactly as one
-run over all those boards would. --min-boards and --keep-state go with it. The
-file's format is described where src/main_leave.rs reads it.
+A census can also go on later. --keep-state writes where it stands as
+census-state-<stamp>.bin -- the seed, the generations run, the leaves a next
+generation would value its boards with and their means before rounding, and
+which multisets a generation valued -- and census --continue with that file
+runs the generations given after its own, coming out exactly as one run of both
+would: 3x256,2048 continued with 2x100 is 3x256,2048,2x100. --min-boards and
+--keep-state go with --continue. The file's format is described where
+src/main_leave.rs reads it.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -1162,7 +1167,8 @@ OUTPUT FILE NAMES
 
 Output files carry a run stamp -- the wall-clock time at 1/65536-second
 resolution, in hex -- shared by a census run's snapshots
-(census-gen-<stamp>-<gen>.klv2), summary and leaves, a board-sampling summary,
+(census-gen-<stamp>-<gen>.klv2, each with its .means), summary, leaves, and
+state (census-state-<stamp>.bin, with --keep-state), a board-sampling summary,
 a playability scan, and an autoplay pass's log, games, and summary, so a run's
 files stay grouped. Two runs started within the same 1/65536 second share a
 stamp; every file is created without overwriting an existing one, inserting a
