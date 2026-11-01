@@ -3824,6 +3824,78 @@ mod tests {
         assert_eq!(disagreements, 0, "solve() disagreed with the reference");
     }
 
+    // as differential_reference_vs_solve, under the super board's rules, each
+    // position in the top left of its 21x21 board, and under jumbled rules, the
+    // words a graph of alphagrams: the solver, written for any board and rules,
+    // agrees with the reference on both
+    #[test]
+    #[inline]
+    fn differential_reference_vs_solve_on_super_and_jumbled_rules() {
+        let classic = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_kwg_bytes()).unwrap();
+        let jumbled = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &build::make_alphagrams(&tiny_word_list()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        for (rules, gc, kwg) in [
+            (
+                "super",
+                game_config::make_super_english_game_config(),
+                &classic,
+            ),
+            (
+                "jumbled",
+                game_config::make_jumbled_english_game_config(),
+                &jumbled,
+            ),
+        ] {
+            let cols = gc.board_layout().dim().cols as usize;
+            let rows = gc.board_layout().dim().rows as usize;
+            let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+            let arms = both_arms(kwg, &gc);
+            let mut total = 0usize;
+            for (name, pos) in all_positions() {
+                let mut board = vec![0u8; rows * cols];
+                for r in 0..15 {
+                    board[r * cols..r * cols + 15].copy_from_slice(&pos.board[r * 15..r * 15 + 15]);
+                }
+                let refv = reference(
+                    &mut Reference {
+                        gc: &gc,
+                        kwg,
+                        klv: &klv,
+                        mg: &mut mg,
+                        memo: Default::default(),
+                    },
+                    &board,
+                    &pos.racks,
+                    0,
+                    0,
+                    0,
+                );
+                for (lean, arm_tables) in &arms {
+                    total += 1;
+                    let mut egs =
+                        EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, kwg, arm_tables)
+                            .unwrap();
+                    egs.init(&board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    assert_eq!(
+                        egs.solve(0).unwrap(),
+                        super::to_equity(refv),
+                        "[{rules} {name}] lean={lean}"
+                    );
+                }
+            }
+            assert!(total > 0, "{rules}: no position solved");
+        }
+    }
+
     #[test]
     #[inline]
     fn a_solve_a_limit_stops_answers_from_a_finished_depth() {
