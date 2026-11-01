@@ -87,6 +87,22 @@ impl Node for Node24 {
     }
 }
 
+// a node of one layout in the other, the same tile, flags, and arc; refused
+// where the new layout cannot hold it
+#[inline(always)]
+fn repack_node<Old: Node, New: Node>(node: u32) -> error::Returns<u32> {
+    let old = Old::new(node);
+    Ok(
+        New::pack(old.tile(), old.accepts(), old.is_end(), old.arc_index()).ok_or_else(|| {
+            format!(
+                "a node of tile {} and arc {} does not fit the new layout",
+                old.tile(),
+                old.arc_index()
+            )
+        })?,
+    )
+}
+
 // a graph's nodes rewritten in place from one layout to the other, the same
 // tile, flags, and arc in each; a node the new layout cannot hold stops it with
 // the nodes before it rewritten. A part node at the end is left as it is, for
@@ -94,17 +110,7 @@ impl Node for Node24 {
 #[inline(always)]
 pub fn repack_in_place<Old: Node, New: Node>(buf: &mut [u8]) -> error::Returns<()> {
     for node in buf.as_chunks_mut::<4>().0 {
-        let old = Old::new(u32::from_le_bytes(*node));
-        let new = New::pack(old.tile(), old.accepts(), old.is_end(), old.arc_index()).ok_or_else(
-            || {
-                format!(
-                    "a node of tile {} and arc {} does not fit the new layout",
-                    old.tile(),
-                    old.arc_index()
-                )
-            },
-        )?;
-        *node = new.to_le_bytes();
+        *node = repack_node::<Old, New>(u32::from_le_bytes(*node))?.to_le_bytes();
     }
     Ok(())
 }
@@ -112,12 +118,18 @@ pub fn repack_in_place<Old: Node, New: Node>(buf: &mut [u8]) -> error::Returns<(
 // a word graph's file read into kbwg's layout, the one layout the engine works
 // in: a kwg's nodes are repacked as it loads, a kbwg's are taken as they are
 #[inline]
-pub fn kbwg_from_bytes_alloc(mut buf: Vec<u8>, is_kbwg: bool) -> error::Returns<Kwg<Node24>> {
-    if !is_kbwg {
-        repack_in_place::<Node22, Node24>(&mut buf)?;
+pub fn kbwg_from_bytes_alloc(buf: Vec<u8>, is_kbwg: bool) -> error::Returns<Kwg<Node24>> {
+    let read = |at: usize, piece: &mut [u8]| piece.copy_from_slice(&buf[at..at + piece.len()]);
+    if is_kbwg {
+        Kwg::from_reader::<Node24>(buf.len(), read)
+    } else {
+        Kwg::from_reader::<Node22>(buf.len(), read)
     }
-    Kwg::from_bytes_alloc(&buf)
 }
+
+// the bytes of a file a graph or leave table is read from at a time, a whole
+// number of nodes, so that the file is never held whole beside what it makes
+pub(crate) const READ_PIECE: usize = 1 << 16;
 
 #[inline(always)]
 pub fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
@@ -154,21 +166,52 @@ impl<N: Node> std::ops::Index<i32> for Kwg<N> {
 }
 
 impl<N: Node> Kwg<N> {
-    // every arc must land inside the graph and the last node must end its run,
-    // so no walk leaves it. an empty lexicon's dawg is one node; its copy
-    // stands in for the empty gaddag a classic game enters at node 1.
     #[inline(always)]
     pub fn from_bytes_alloc(buf: &[u8]) -> error::Returns<Self> {
-        let kwg_len = buf.len() / 4;
-        if kwg_len == 0 || !buf.len().is_multiple_of(4) {
-            return Err(format!("a word graph of {} bytes is not whole nodes", buf.len()).into());
+        Self::from_reader::<N>(buf.len(), |at, piece| {
+            piece.copy_from_slice(&buf[at..at + piece.len()])
+        })
+    }
+
+    // a graph read from a file of len bytes whose nodes are in Old's layout, a
+    // piece at a time, each node put in this layout as it comes, so that the
+    // file's bytes are never held whole beside the nodes: read(at, piece) fills
+    // piece with the file's bytes from at on
+    #[inline]
+    pub fn from_reader<Old: Node>(
+        len: usize,
+        mut read: impl FnMut(usize, &mut [u8]),
+    ) -> error::Returns<Self> {
+        Self::from_pieces::<Old>(0, len, READ_PIECE, &mut read)
+    }
+
+    // the same from the len bytes at base on, in pieces of piece_len, a whole
+    // number of nodes. every arc must land inside the graph and the last node
+    // must end its run, so no walk leaves it. an empty lexicon's dawg is one
+    // node; its copy stands in for the empty gaddag a classic game enters at
+    // node 1.
+    #[inline]
+    pub(crate) fn from_pieces<Old: Node>(
+        base: usize,
+        len: usize,
+        piece_len: usize,
+        read: &mut impl FnMut(usize, &mut [u8]),
+    ) -> error::Returns<Self> {
+        let kwg_len = len / 4;
+        if kwg_len == 0 || !len.is_multiple_of(4) {
+            return Err(format!("a word graph of {len} bytes is not whole nodes").into());
         }
-        let mut elts = buf
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|&b| N::new(u32::from_le_bytes(b)))
-            .collect::<Vec<_>>();
+        let mut elts = Vec::with_capacity(kwg_len.max(2));
+        let mut buf = vec![0u8; piece_len.min(len)];
+        let mut at = 0;
+        while at < len {
+            let piece = &mut buf[..piece_len.min(len - at)];
+            read(base + at, piece);
+            for node in piece.as_chunks::<4>().0 {
+                elts.push(N::new(repack_node::<Old, N>(u32::from_le_bytes(*node))?));
+            }
+            at += piece.len();
+        }
         // the largest arc, found in one pass with no early exit
         let max_arc_index = elts.iter().fold(0, |m, node| m.max(node.arc_index()));
         if max_arc_index as usize >= kwg_len {
@@ -596,6 +639,57 @@ mod tests {
         // a tile past Node24's six bits, an arc past Node22's 22
         assert!(repack_in_place::<Node22, Node24>(&mut (0x40u32 << 24).to_le_bytes()).is_err());
         assert!(repack_in_place::<Node24, Node22>(&mut (0x400000u32 << 8).to_le_bytes()).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_graph_read_a_piece_at_a_time_is_the_graph_read_whole() {
+        let bytes = bytes_of(&game_config::make_polish_game_config(), &["ZOLZA", "ZABA"]);
+        let mut repacked = bytes.clone();
+        repack_in_place::<Node22, Node24>(&mut repacked).unwrap();
+        let whole = Kwg::<Node24>::from_bytes_alloc(&repacked).unwrap();
+        for piece_len in [4, 8, 12, bytes.len(), READ_PIECE] {
+            let mut reads = Vec::new();
+            let pieces = Kwg::<Node24>::from_pieces::<Node22>(
+                0,
+                bytes.len(),
+                piece_len,
+                &mut |at, piece: &mut [u8]| {
+                    reads.push((at, piece.len()));
+                    piece.copy_from_slice(&bytes[at..at + piece.len()]);
+                },
+            )
+            .unwrap();
+            assert_eq!(pieces.0.len(), whole.0.len());
+            for (p, w) in pieces.0.iter().zip(&whole.0) {
+                assert_eq!(
+                    (p.tile(), p.accepts(), p.is_end(), p.arc_index()),
+                    (w.tile(), w.accepts(), w.is_end(), w.arc_index())
+                );
+            }
+            // each byte read once, in order, in pieces of at most piece_len
+            let mut next = 0;
+            for &(at, len) in &reads {
+                assert_eq!(at, next);
+                assert!(len <= piece_len);
+                next += len;
+            }
+            assert_eq!(next, bytes.len());
+        }
+
+        // a whole read's checks: part of a node, or an arc out of the graph
+        let mut read = |at: usize, piece: &mut [u8]| {
+            piece.copy_from_slice(&bytes[at..at + piece.len()]);
+        };
+        assert!(Kwg::<Node24>::from_pieces::<Node22>(0, bytes.len() - 2, 4, &mut read).is_err());
+        let mut out = bytes.clone();
+        out[..4].copy_from_slice(
+            &((read_le_u32(&bytes, 0) & !0x3fffff) | (bytes.len() / 4) as u32).to_le_bytes(),
+        );
+        let mut read = |at: usize, piece: &mut [u8]| {
+            piece.copy_from_slice(&out[at..at + piece.len()]);
+        };
+        assert!(Kwg::<Node24>::from_pieces::<Node22>(0, out.len(), 8, &mut read).is_err());
     }
 
     #[test]

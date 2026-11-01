@@ -103,9 +103,10 @@ pub fn repack_in_place<Old: kwg::Node, New: kwg::Node>(buf: &mut [u8]) -> error:
 // a klv or klv2 file, whose leaves' graph is a kwg's, read into kbwg's layout,
 // the one layout the engine works in
 #[inline]
-pub fn kbwg_from_bytes_alloc(mut buf: Vec<u8>) -> error::Returns<Klv<kwg::Node24>> {
-    repack_in_place::<kwg::Node22, kwg::Node24>(&mut buf)?;
-    Klv::from_bytes_alloc(&buf)
+pub fn kbwg_from_bytes_alloc(buf: Vec<u8>) -> error::Returns<Klv<kwg::Node24>> {
+    Klv::from_reader::<kwg::Node22>(buf.len(), |at, piece| {
+        piece.copy_from_slice(&buf[at..at + piece.len()])
+    })
 }
 
 // a leave's value as a leave file writes it: ryu's digits, the fewest that read
@@ -186,31 +187,83 @@ fn load_leaves_graph<L: kwg::Node>(
 
 impl<L: kwg::Node> Klv<L> {
     pub fn from_bytes_alloc(buf: &[u8]) -> error::Returns<Self> {
-        let KlvParts {
-            kwg_bytes,
-            lv_len,
-            values,
-            is_klv2,
-        } = split_klv(buf)?;
-        let (kwg, counts) = load_leaves_graph::<L>(kwg_bytes, lv_len)?;
-        let mut r = 0;
-        let mut elts = Vec::with_capacity(lv_len);
-        if !is_klv2 {
-            for _ in 0..lv_len {
-                elts.push((kwg::read_le_u16(values, r) as i16 as i32 * equity::SCALE + 128) / 256);
-                r += 2;
-            }
+        Self::from_reader::<L>(buf.len(), |at, piece| {
+            piece.copy_from_slice(&buf[at..at + piece.len()])
+        })
+    }
+
+    // a klv or klv2 of len bytes whose leaves' graph is in Old's layout, read a
+    // piece at a time as kwg::Kwg::from_reader reads a graph, each value made
+    // the millipoints it is kept in as it comes: read(at, piece) fills piece
+    // with the file's bytes from at on
+    #[inline]
+    pub fn from_reader<Old: kwg::Node>(
+        len: usize,
+        mut read: impl FnMut(usize, &mut [u8]),
+    ) -> error::Returns<Self> {
+        Self::from_pieces::<Old>(len, kwg::READ_PIECE, &mut read)
+    }
+
+    // the same in pieces of piece_len, a whole number of nodes; its parts and
+    // their checks are split_klv's and load_leaves_graph's
+    #[inline]
+    fn from_pieces<Old: kwg::Node>(
+        len: usize,
+        piece_len: usize,
+        read: &mut impl FnMut(usize, &mut [u8]),
+    ) -> error::Returns<Self> {
+        let mut word = [0u8; 4];
+        if len < 4 {
+            return Err("klv is too short for its header".into());
+        }
+        read(0, &mut word);
+        let kwg_bytes_len = (u32::from_le_bytes(word) as usize)
+            .checked_mul(4)
+            .filter(|&kwg_bytes_len| kwg_bytes_len <= len - 4)
+            .ok_or("klv is too short for the kwg it declares")?;
+        if len - 4 - kwg_bytes_len < 4 {
+            return Err("klv is too short for the kwg it declares".into());
+        }
+        read(4 + kwg_bytes_len, &mut word);
+        let lv_len = u32::from_le_bytes(word) as usize;
+        let values_at = 8 + kwg_bytes_len;
+        let values_len = len - values_at;
+        let is_klv2 = if lv_len.checked_mul(4) == Some(values_len) {
+            true
+        } else if lv_len.checked_mul(2) == Some(values_len) {
+            false
         } else {
-            // klv2 uses f32
-            for i in 0..lv_len {
-                elts.push(millipoints(i, f32::from_bits(kwg::read_le_u32(values, r)))?);
-                r += 4;
+            return Err(format!("klv has {values_len} bytes for its {lv_len} leave values").into());
+        };
+        let kwg = kwg::Kwg::<L>::from_pieces::<Old>(4, kwg_bytes_len, piece_len, read)?;
+        let counts = kwg.count_words_alloc()?;
+        let root = kwg[0].arc_index();
+        let num_leaves = if root != 0 { counts[root as usize] } else { 0 };
+        if num_leaves as usize != lv_len {
+            return Err(format!("klv has {lv_len} leave values for {num_leaves} leaves").into());
+        }
+        let mut leaves = Vec::with_capacity(lv_len);
+        let mut buf = vec![0u8; piece_len.min(values_len)];
+        let mut at = 0;
+        while at < values_len {
+            let piece = &mut buf[..piece_len.min(values_len - at)];
+            read(values_at + at, piece);
+            if is_klv2 {
+                for value in piece.as_chunks::<4>().0 {
+                    leaves.push(millipoints(leaves.len(), f32::from_le_bytes(*value))?);
+                }
+            } else {
+                // a klv's i16 counts 1/256 of a point
+                for value in piece.as_chunks::<2>().0 {
+                    leaves.push((i16::from_le_bytes(*value) as i32 * equity::SCALE + 128) / 256);
+                }
             }
+            at += piece.len();
         }
         Ok(Klv {
             kwg,
             counts,
-            leaves: elts.into_boxed_slice(),
+            leaves: leaves.into_boxed_slice(),
         })
     }
 
@@ -945,6 +998,67 @@ mod tests {
                 "node {i}"
             );
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_table_read_a_piece_at_a_time_holds_each_value_at_its_leave() {
+        let leaves: &[(&[u8], f32)] = &[
+            (&[1], -1.25),
+            (&[1, 2], 27.636),
+            (&[1, 2, 2], 0.0),
+            (&[2], 3.5),
+            (&[2, 3], 1e-3),
+            (&[3], -0.5),
+        ];
+        let klv2 = make_klv2(leaves);
+        // the same leaves with their values as a klv's i16s, 1/256 of a point
+        let values_at = 8 + 4 * kwg::read_le_u32(&klv2, 0) as usize;
+        let mut klv1 = klv2[..values_at].to_vec();
+        for &(_, value) in leaves {
+            klv1.extend_from_slice(&((value * 256.0).round() as i16).to_le_bytes());
+        }
+        for (bin, as_i16) in [(&klv2, false), (&klv1, true)] {
+            for piece_len in [4, 8, 12, 20, bin.len(), kwg::READ_PIECE] {
+                let mut read = |at: usize, piece: &mut [u8]| {
+                    piece.copy_from_slice(&bin[at..at + piece.len()]);
+                };
+                let klv =
+                    Klv::<kwg::Node24>::from_pieces::<kwg::Node22>(bin.len(), piece_len, &mut read)
+                        .unwrap();
+                let mut tally = [0u8; 4];
+                for &(tiles, value) in leaves {
+                    tally.fill(0);
+                    for &tile in tiles {
+                        tally[tile as usize] += 1;
+                    }
+                    let want = if as_i16 {
+                        ((value * 256.0).round() as i16 as i32 * equity::SCALE + 128) / 256
+                    } else {
+                        (value * equity::SCALE as f32).round() as i32
+                    };
+                    assert_eq!(
+                        klv.leave_value_from_tally(&tally),
+                        want,
+                        "{tiles:?} in pieces of {piece_len}"
+                    );
+                }
+            }
+        }
+
+        // a whole read's checks: cut short, or a value no leave can hold
+        let mut read = |at: usize, piece: &mut [u8]| {
+            piece.copy_from_slice(&klv2[at..at + piece.len()]);
+        };
+        let short = klv2.len() - 4;
+        assert!(Klv::<kwg::Node24>::from_pieces::<kwg::Node22>(short, 8, &mut read).is_err());
+        let mut nan = klv2.clone();
+        let last = nan.len() - 4;
+        nan[last..].copy_from_slice(&f32::NAN.to_le_bytes());
+        let mut read = |at: usize, piece: &mut [u8]| {
+            piece.copy_from_slice(&nan[at..at + piece.len()]);
+        };
+        assert!(Klv::<kwg::Node24>::from_pieces::<kwg::Node22>(nan.len(), 8, &mut read).is_err());
     }
 
     #[test]
