@@ -3448,6 +3448,52 @@ fn census_state_from_bytes(bytes: &[u8], what: &str) -> error::Returns<CensusSta
     })
 }
 
+// a generation snapshot's means before their rounding to whole millipoints,
+// written beside it: one f64 a leave, low byte first, for the leaves the
+// snapshot holds (each multiset of 1 to rack_size tiles a generation up to it
+// valued) in the lattice's order. --resume reads them back, so that a leave no
+// later generation values is written as one unbroken run writes it.
+#[inline]
+fn census_means_path(snapshot: &str) -> String {
+    format!(
+        "{}.means",
+        snapshot.strip_suffix(".klv2").unwrap_or(snapshot)
+    )
+}
+
+#[inline]
+fn census_means_bytes(lat: &census::MultisetLattice, ever: &[bool], exact: &[f64]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for idx in (lat.size_start(1)..lat.len()).filter(|&idx| ever[idx]) {
+        bytes.extend_from_slice(&exact[idx].to_le_bytes());
+    }
+    bytes
+}
+
+// the means census_means_bytes wrote, read into exact at the leaves ever marks
+#[inline]
+fn census_means_from_bytes(
+    lat: &census::MultisetLattice,
+    ever: &[bool],
+    bytes: &[u8],
+    exact: &mut [f64],
+    what: &str,
+) -> error::Returns<()> {
+    let held = (lat.size_start(1)..lat.len()).filter(|&idx| ever[idx]);
+    let num_held = held.clone().count();
+    if bytes.len() != num_held * 8 {
+        return Err(format!(
+            "{what} holds {} bytes, not 8 for each of the snapshot's {num_held} leaves",
+            bytes.len()
+        )
+        .into());
+    }
+    for (idx, value) in held.zip(bytes.as_chunks::<8>().0) {
+        exact[idx] = f64::from_le_bytes(*value);
+    }
+    Ok(())
+}
+
 // the fewest boards that any full rack the tiles can deal is valued on
 #[inline]
 fn least_full_rack_boards(lat: &census::MultisetLattice, cnt: &[u64], freqs: &[u8]) -> u64 {
@@ -3589,7 +3635,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
     }
 
-    let (start_gen, census_run_epoch) = if let Some(path) = resume {
+    let (start_gen, census_run_epoch, resumed) = if let Some(path) = resume {
         let name = std::path::Path::new(&path)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -3610,19 +3656,46 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         klv::repack_in_place::<kwg::Node22, L>(&mut bytes)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes)?;
         game_config.check_klv(&resume_klv)?;
-        for (idx, slot) in leave_cur.iter_mut().enumerate() {
-            lat.unrank_into(idx, &mut tally_buf);
-            *slot = resume_klv.leave_value_from_tally(&tally_buf);
+        // the snapshot holds every leave its generation or an earlier one
+        // valued: those take its values and count as valued, and every other
+        // multiset keeps leave0's value, all as in one unbroken run
+        let mut ever = vec![false; lat.len()];
+        for (leave, _) in klv::read_leaves_alloc::<L>(&bytes)? {
+            if leave.len() > rack_size {
+                wolges::return_error!(format!(
+                    "{path} holds a leave of more than {rack_size} tiles"
+                ))
+            }
+            tally_buf.fill(0);
+            for &tile in leave.iter() {
+                tally_buf[tile as usize] += 1;
+            }
+            let idx = lat.rank(&tally_buf) as usize;
+            leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf);
+            ever[idx] = true;
+        }
+        // and its means before their rounding, beside it, where the run that
+        // wrote it kept them (census_means_bytes)
+        let mut exact = leave_cur.iter().map(|&v| v as f64).collect::<Vec<_>>();
+        let means = census_means_path(&path);
+        match std::fs::read(&means) {
+            Ok(bytes) => census_means_from_bytes(&lat, &ever, &bytes, &mut exact, &means)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => writeln!(
+                boxed_stdout_or_stderr(),
+                "census: no {means}: a leave no later generation values is written in the snapshot's whole millipoints"
+            )?,
+            Err(e) => return Err(e.into()),
         }
         writeln!(
             boxed_stdout_or_stderr(),
             "census: resuming from {path} (gen {num} done) -> starting gen {}",
             num + 1
         )?;
-        (num, rid)
+        (num, rid, Some((ever, exact)))
     } else {
-        (0, run_stamp())
+        (0, run_stamp(), None)
     };
+    let (resumed_ever, resumed_exact) = resumed.unzip();
 
     if start_gen >= gens {
         return Err(format!(
@@ -3651,8 +3724,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     // the leaves as the means found them, before the rounding to whole
     // millipoints the next generation plays with: what the census writes
-    let leave_exact =
-        std::sync::Mutex::new(leave_cur.iter().map(|&v| v as f64).collect::<Vec<_>>());
+    let leave_exact = std::sync::Mutex::new(
+        resumed_exact.unwrap_or_else(|| leave_cur.iter().map(|&v| v as f64).collect()),
+    );
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
     let num_threads = threads.max(1).min(max_boards as usize);
@@ -3695,7 +3769,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             0u64,
             0u64,
             if multigen {
-                vec![false; lat_len]
+                resumed_ever.unwrap_or_else(|| vec![false; lat_len])
             } else {
                 Vec::new()
             },
@@ -4096,6 +4170,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         gen_idx + 1).ok(); },
                                     Err(e) => { writeln!(boxed_stdout_or_stderr(),
      "census: gen {} klv2 persist failed: {e}",
+                                        gen_idx + 1).ok(); },
+                                }
+                                let q = census_means_path(&p);
+                                let bytes =
+                                    census_means_bytes(&lat, &g.4, &leave_exact.lock().unwrap());
+                                match std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .create_new(true)
+                                    .open(&q)
+                                    .and_then(|mut f| f.write_all(&bytes))
+                                {
+                                    Ok(()) => { writeln!(boxed_stdout_or_stderr(),
+     "census: persisted gen {} means -> {q}",
+                                        gen_idx + 1).ok(); },
+                                    Err(e) => { writeln!(boxed_stdout_or_stderr(),
+     "census: gen {} means persist failed: {e}",
                                         gen_idx + 1).ok(); },
                                 }
                             }
@@ -9472,6 +9562,51 @@ WCMP_P1_SCORE 402.000000
             other[0] ^= 1;
             assert!(census_state_from_bytes(&other, "state").is_err());
         }
+    }
+
+    #[test]
+    #[inline]
+    fn census_means_read_back_at_the_leaves_written() {
+        // 3 letters, racks of 2: the empty multiset, 3 of 1 tile, and 6 of 2
+        let lat = census::MultisetLattice::new(3, 2).unwrap();
+        assert_eq!(
+            (lat.size_start(1), lat.size_start(2), lat.len()),
+            (1, 4, 10)
+        );
+        let mut ever = vec![false; lat.len()];
+        for idx in [0, 1, 4, 9] {
+            ever[idx] = true;
+        }
+        let exact = (0..lat.len())
+            .map(|idx| idx as f64 * -1.25 + 0.1)
+            .collect::<Vec<_>>();
+        let bytes = census_means_bytes(&lat, &ever, &exact);
+        // the empty multiset is no leave of a snapshot's
+        assert_eq!(bytes.len(), 3 * 8);
+        let mut back = vec![7.5; lat.len()];
+        census_means_from_bytes(&lat, &ever, &bytes, &mut back, "means").unwrap();
+        for idx in 0..lat.len() {
+            let want = if idx != 0 && ever[idx] {
+                exact[idx]
+            } else {
+                7.5
+            };
+            assert_eq!(back[idx].to_bits(), want.to_bits());
+        }
+        // cut short or run on: refused
+        let short = &bytes[..bytes.len() - 1];
+        assert!(census_means_from_bytes(&lat, &ever, short, &mut back, "means").is_err());
+        let mut longer = bytes.clone();
+        longer.extend_from_slice(&[0; 8]);
+        assert!(census_means_from_bytes(&lat, &ever, &longer, &mut back, "means").is_err());
+        assert_eq!(
+            census_means_path("census-gen-6ae6-04.klv2"),
+            "census-gen-6ae6-04.means"
+        );
+        assert_eq!(
+            census_means_path("dir/census-gen-6ae6-04_1.klv2"),
+            "dir/census-gen-6ae6-04_1.means"
+        );
     }
 
     #[test]
