@@ -108,6 +108,43 @@ pub fn kbwg_from_bytes_alloc(mut buf: Vec<u8>) -> error::Returns<Klv<kwg::Node24
     Klv::from_bytes_alloc(&buf)
 }
 
+// a leave's value as a leave file writes it: ryu's digits, the fewest that read
+// back as this very number (a tie to the even one, as kwgc's printf takes it),
+// as csv would write them, but never with an exponent: 8.34465e-7 is written
+// 0.000000834465, as kwgc's read-klv writes it
+#[inline]
+pub fn value_text<F: ryu::Float>(value: F) -> String {
+    let mut buffer = ryu::Buffer::new();
+    let text = buffer.format(value);
+    let Some((mantissa, exponent)) = text.split_once('e') else {
+        return text.to_string();
+    };
+    let exponent = exponent.parse::<i32>().unwrap_or(0);
+    let (sign, mantissa) = match mantissa.strip_prefix('-') {
+        Some(unsigned) => ("-", unsigned),
+        None => ("", mantissa),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{whole}{fraction}");
+    // where the point falls among the digits
+    let point = whole.len() as i32 + exponent;
+    let mut out = String::from(sign);
+    if point <= 0 {
+        out.push_str("0.");
+        out.extend(std::iter::repeat_n('0', point.unsigned_abs() as usize));
+        out.push_str(&digits);
+    } else if point as usize >= digits.len() {
+        out.push_str(&digits);
+        out.extend(std::iter::repeat_n('0', point as usize - digits.len()));
+        out.push_str(".0");
+    } else {
+        out.push_str(&digits[..point as usize]);
+        out.push('.');
+        out.push_str(&digits[point as usize..]);
+    }
+    out
+}
+
 // a klv2 value as the millipoints a leave is kept in; one that is not a number,
 // or too big for an i32 of them, is refused (`as` would make it 0 or the
 // nearest end of i32), as buildlex refuses it in a leave file. The refusal
@@ -844,6 +881,39 @@ mod tests {
         }
         repack_in_place::<kwg::Node24, kwg::Node22>(&mut repacked).unwrap();
         assert_eq!(repacked, bin);
+    }
+
+    #[test]
+    #[inline]
+    fn a_value_is_written_in_full_with_a_point() {
+        assert_eq!(value_text(8.344_65e-7_f32), "0.000000834465");
+        assert_eq!(value_text(-1.5e-5_f32), "-0.000015");
+        assert_eq!(value_text(100.0_f32), "100.0");
+        assert_eq!(value_text(-2.025_417_3_f32), "-2.0254173");
+        assert_eq!(value_text(0.0_f32), "0.0");
+        assert_eq!(value_text(2_147_483.5_f32), "2147483.5");
+        // exactly halfway between two shortest forms: the even one
+        assert_eq!(value_text(5517.0_f32 / 128.0), "43.101562");
+        assert_eq!(value_text(1e16_f64), "10000000000000000.0");
+        assert_eq!(
+            value_text(-3.4e38_f32),
+            "-340000000000000000000000000000000000000.0"
+        );
+        assert_eq!(value_text(0.1_f64), "0.1");
+        assert_eq!(value_text(-3.0_f64), "-3.0");
+        assert_eq!(value_text(f32::NAN), "NaN");
+        assert_eq!(value_text(f32::NEG_INFINITY), "-inf");
+        // each reads back as the same number
+        for v in [
+            8.344_65e-7_f32,
+            27.360_924,
+            -2.025_417_3,
+            1e-30,
+            3.4e38,
+            5517.0 / 128.0,
+        ] {
+            assert_eq!(value_text(v).parse::<f32>().unwrap(), v, "{v:e}");
+        }
     }
 
     #[test]

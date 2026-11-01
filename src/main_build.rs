@@ -832,7 +832,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 for &tile in &k[..] {
                     s.push_str(alphabet.of_rack(tile).unwrap());
                 }
-                csv_out.serialize((&s, v))?;
+                csv_out.serialize((&s, klv::value_text(v)))?;
             }
             Ok(())
         }

@@ -862,7 +862,7 @@ fn do_klv_anagram(
                 }
             };
             if !dominated {
-                csv_out.serialize((s, leave_value))?;
+                csv_out.serialize((s, klv::value_text(leave_value)))?;
             }
             Ok(())
         },
@@ -1763,7 +1763,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     } else {
                         return Err("missing leaves".into());
                     };
-                    csv_out.serialize((s, v))?;
+                    csv_out.serialize((s, klv::value_text(v)))?;
                     Ok(())
                 },
                 &mut default_in,
@@ -2725,7 +2725,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 i += l + 3;
                 csv_out.serialize((
                     &s,
-                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
+                    klv::value_text((read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0),
                 ))?;
             }
             Ok(())

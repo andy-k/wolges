@@ -549,6 +549,7 @@ dependencies = [
  "rand_xoshiro",
  "rustyline",
  "rustyline-derive",
+ "ryu",
  "serde",
  "serde_json",
  "shell-words",
