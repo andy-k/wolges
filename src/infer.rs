@@ -690,7 +690,7 @@ mod tests {
 
     // every word of two or three tiles from A, E, and T
     #[inline]
-    fn tiny_kwg() -> kwg::Kwg<kwg::Node22> {
+    fn tiny_kwg() -> kwg::Kwg<kwg::Node24> {
         const LETTERS: [u8; 3] = [1, 5, 20];
         let mut words = Vec::new();
         for &a in &LETTERS {
@@ -709,7 +709,7 @@ mod tests {
             &words,
         )
         .unwrap();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
+        kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap()
     }
 
     // the leaves a move keeps, seen either on an empty board by a player
@@ -722,7 +722,7 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let alphabet = game_config.alphabet();
         let kwg = tiny_kwg();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; 15 * 15];
         let mut watcher_rack = vec![5];
         if on_board > 0 {

@@ -1203,7 +1203,7 @@ mod tests {
     fn a_leave_table_fits_the_game_only_with_its_tiles_and_values() {
         let gc = make_english_game_config();
         let load = |leaves: &[(&[u8], f32)]| {
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv::make_klv2(leaves)).unwrap()
+            klv::kbwg_from_bytes_alloc(klv::make_klv2(leaves).to_vec()).unwrap()
         };
         let fits = load(&[(&[1], 1.5), (&[1, 26], -2.0), (&[0, 26], 30.0)]);
         assert_eq!(fits.max_tile(), Some(26));
