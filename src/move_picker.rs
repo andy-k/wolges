@@ -981,10 +981,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 footprint: footprint(dim, board_tiles, &m.play),
             });
         }
-        replies.sort_by_key(|reply| std::cmp::Reverse(reply.weight));
+        // by weight, highest first, ties as generated
+        let mut replies = replies.into_iter().enumerate().collect::<Vec<_>>();
+        replies.sort_unstable_by_key(|(i, reply)| (std::cmp::Reverse(reply.weight), *i));
+        let replies = replies
+            .into_iter()
+            .map(|(_, reply)| reply)
+            .collect::<Vec<_>>();
         let n = replies.len();
         let mut by_score = (0..n).collect::<Vec<_>>();
-        by_score.sort_by(|&a, &b| replies[b].score.cmp(&replies[a].score));
+        by_score.sort_unstable_by(|&a, &b| replies[b].score.cmp(&replies[a].score).then(a.cmp(&b)));
         let mut fills_at = vec![PlaySet::new(n); area];
         let mut zone_at = vec![PlaySet::new(n); area];
         let mut going_out = PlaySet::new(n);
@@ -1028,7 +1034,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             });
         }
         for list in outs_of.values_mut() {
-            list.sort_by(|&a, &b| choices[b].score.cmp(&choices[a].score));
+            list.sort_unstable_by(|&a, &b| choices[b].score.cmp(&choices[a].score).then(a.cmp(&b)));
         }
         Some(Self {
             board_snapshot,
@@ -1208,7 +1214,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                     )
                 }),
         );
-        outs.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
+        // ties in any order: of an out, only the score is read
+        outs.sort_unstable_by_key(|&(s, _)| std::cmp::Reverse(s));
         let mut v = match outs.first() {
             Some(&(best, _)) => c + best,
             None => s_m + stuck,
@@ -1272,7 +1279,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         // on the board after each; the best of those, if it beats the play at
         // fewest
         let mut order = (0..self.choices.len()).collect::<Vec<_>>();
-        order.sort_by_key(|&i| std::cmp::Reverse(values[i]));
+        order.sort_unstable_by_key(|&i| (std::cmp::Reverse(values[i]), i));
         let mut best: Option<(i64, usize)> = None;
         for &i in order.iter().take(OUT_IN_TWO_CHECKED) {
             if self.choices[i].play == *fewest_play {
@@ -1375,7 +1382,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         let mut hoping = (0..self.choices.len())
             .filter(|&i| hopes[i] > values[i])
             .collect::<Vec<_>>();
-        hoping.sort_by(|&a, &b| hopes[b].cmp(&hopes[a]));
+        hoping.sort_unstable_by(|&a, &b| hopes[b].cmp(&hopes[a]).then(a.cmp(&b)));
         for &i in hoping.iter().take(OUT_IN_TWO_OPENERS) {
             let choice = &self.choices[i];
             glance::board_after(
@@ -1410,8 +1417,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                         )
                     }),
             );
-            real.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
-            let outs = real.iter().map(|(s, b)| (*s, b)).collect::<Vec<_>>();
+            // by score, highest first, ties as found
+            let mut order = (0..real.len()).collect::<Vec<_>>();
+            order.sort_unstable_by_key(|&k| (std::cmp::Reverse(real[k].0), k));
+            let outs = order
+                .iter()
+                .map(|&k| (real[k].0, &real[k].1))
+                .collect::<Vec<_>>();
             self.changed_by(&choice.footprint.fills, &mut changed);
             let (value, _) = self.value_on_footprints(
                 &changed,
@@ -3068,7 +3080,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        outs.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
+        outs.sort_unstable_by_key(|&(s, _)| std::cmp::Reverse(s));
         let mut v = match outs.first() {
             Some(&(best, _)) => c + best,
             None => s_m + stuck,

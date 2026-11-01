@@ -2875,7 +2875,7 @@ impl Session {
                     let gcg = |extension: &std::ffi::OsStr| extension.eq_ignore_ascii_case("gcg");
                     file.extension().is_some_and(gcg)
                 });
-                found.sort();
+                found.sort_unstable();
                 files.extend(found);
             } else {
                 files.push(std::path::PathBuf::from(path));
