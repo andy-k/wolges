@@ -1644,11 +1644,23 @@ fn solve_position<N: kwg::Node>(
             result.expected_margin,
         )?;
         if !result.exact {
-            writeln!(
-                std::io::stdout(),
-                "a limit cut an endgame inside the solve short: its value is the deepest \
-                 depth that finished"
-            )?;
+            match result.depth {
+                0 => writeln!(
+                    std::io::stdout(),
+                    "a limit stopped the solve in its first pass: the answer is the best of \
+                     the moves it valued"
+                )?,
+                i8::MAX => writeln!(
+                    std::io::stdout(),
+                    "a limit cut an endgame inside the solve short: its value is the deepest \
+                     depth that finished"
+                )?,
+                depth => writeln!(
+                    std::io::stdout(),
+                    "a limit stopped the solve: the answer is that of depth {depth}, the deepest \
+                     every endgame inside it was searched to"
+                )?,
+            }
         }
     } else {
         egs.init_after_scoreless_turns(
