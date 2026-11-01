@@ -3733,8 +3733,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let last_boards = std::sync::atomic::AtomicU64::new(board_counts[gens - 1]);
     let more_boards = std::sync::atomic::AtomicBool::new(false);
 
+    // each multiset's sum of its boards' means, whole millipoints each, and its
+    // count, for the generation running; the boards it has done, and how many
+    // multisets it has valued; and whether any generation valued each
     let shared = std::sync::Mutex::new((
-        vec![0f64; lat_len],
+        vec![0i64; lat_len],
         vec![0u64; lat_len],
         0u64,
         0u64,
@@ -3892,7 +3895,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             if cnt[idx] == 0 {
                                 *valued += 1;
                             }
-                            sum[idx] += v as f64;
+                            sum[idx] += v as i64;
                             cnt[idx] += 1;
                         }
                     }
@@ -4083,7 +4086,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 let (sum, cnt, completed, valued, ever) = &mut *g;
                                 let mut lv = leave_lock.write().unwrap();
                                 let base = if cnt[empty_rank] > 0 {
-                                    sum[empty_rank] / cnt[empty_rank] as f64
+                                    sum[empty_rank] as f64 / cnt[empty_rank] as f64
                                 } else {
                                     0.0
                                 };
@@ -4091,7 +4094,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 for idx in 0..lat_len {
                                     if cnt[idx] > 0 {
                                         ever[idx] = true;
-                                        exact[idx] = sum[idx] / cnt[idx] as f64 - base;
+                                        exact[idx] = sum[idx] as f64 / cnt[idx] as f64 - base;
                                         lv[idx] = exact[idx].round() as i32;
                                     }
                                 }
@@ -4107,7 +4110,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 if gen_idx + 1 < gens {
 
                                     for idx in 0..lat_len {
-                                        sum[idx] = 0.0;
+                                        sum[idx] = 0;
                                         cnt[idx] = 0;
                                     }
                                     *completed = 0;
@@ -4191,7 +4194,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         if multigen {
             leave_exact[idx]
         } else if accum_cnt[idx] > 0 {
-            accum_sum[idx] / accum_cnt[idx] as f64
+            accum_sum[idx] as f64 / accum_cnt[idx] as f64
         } else {
             0.0
         }
@@ -4265,7 +4268,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut total_count = 0u64;
     for idx in full_racks.clone() {
         if accum_cnt[idx] > 0 {
-            total_points += accum_sum[idx] / equity::SCALE as f64;
+            total_points += accum_sum[idx] as f64 / equity::SCALE as f64;
             total_count += accum_cnt[idx];
         }
     }
@@ -4284,7 +4287,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         summary_out.serialize((
             &leave_ser,
-            accum_sum[idx] / equity::SCALE as f64,
+            accum_sum[idx] as f64 / equity::SCALE as f64,
             accum_cnt[idx],
         ))?;
         num_racks += 1;
@@ -4304,7 +4307,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             (leave_final, leave_exact, ever)
         } else {
             let base = if accum_cnt[empty_rank] > 0 {
-                accum_sum[empty_rank] / accum_cnt[empty_rank] as f64
+                accum_sum[empty_rank] as f64 / accum_cnt[empty_rank] as f64
             } else {
                 0.0
             };
@@ -4312,7 +4315,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             let mut exact = leave_exact;
             for idx in 0..lat_len {
                 if accum_cnt[idx] > 0 {
-                    exact[idx] = accum_sum[idx] / accum_cnt[idx] as f64 - base;
+                    exact[idx] = accum_sum[idx] as f64 / accum_cnt[idx] as f64 - base;
                     leave[idx] = exact[idx].round() as i32;
                 }
             }
