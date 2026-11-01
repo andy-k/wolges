@@ -181,6 +181,18 @@ impl<L: kwg::Node> Klv<L> {
             .fold((0, 0), |(lo, hi), &leave| (lo.min(leave), hi.max(leave)))
     }
 
+    // the largest tile on any node of its leaves' graph, found in one pass; a
+    // reader that takes it once can check the table against any alphabet
+    #[inline]
+    pub fn max_tile(&self) -> Option<u8> {
+        self.kwg.0.iter().map(|node| node.tile()).max()
+    }
+
+    #[inline]
+    pub fn fits_alphabet(&self, alphabet_len: u8) -> bool {
+        self.kwg.fits_alphabet(alphabet_len)
+    }
+
     #[inline(always)]
     pub fn count(&self, i: i32) -> u32 {
         self.counts[i as usize]

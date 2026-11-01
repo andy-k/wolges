@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout, equity, error, text};
+use super::{alphabet, board_layout, equity, error, klv, kwg, text};
 use std::str::FromStr;
 
 pub enum GameRules {
@@ -1121,6 +1121,19 @@ impl GameConfig {
         Ok(())
     }
 
+    // a leave table these rules can play with: no tile past this game's, and
+    // values no equity outgrows (check_leaves)
+    #[inline]
+    pub fn check_klv<L: kwg::Node>(&self, klv: &klv::Klv<L>) -> error::Returns<()> {
+        let alphabet_len = self.alphabet().len();
+        if !klv.fits_alphabet(alphabet_len) {
+            return_error!(format!(
+                "the leaves have tiles past this game's {alphabet_len}"
+            ));
+        }
+        self.check_leaves(klv.leave_range())
+    }
+
     // the tiles not on a board, by tile: what the game has, less what the board
     // holds (a blank as tile 0); a board holding more of a tile than the game
     // has is refused
@@ -1183,6 +1196,28 @@ mod tests {
         assert_eq!((off[0], off[a as usize]), (freq(0) - 2, freq(a) - 2));
         board[114] = z;
         assert!(gc.tiles_off_board(&board).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_leave_table_fits_the_game_only_with_its_tiles_and_values() {
+        let gc = make_english_game_config();
+        let load = |leaves: &[(&[u8], f32)]| {
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv::make_klv2(leaves)).unwrap()
+        };
+        let fits = load(&[(&[1], 1.5), (&[1, 26], -2.0), (&[0, 26], 30.0)]);
+        assert_eq!(fits.max_tile(), Some(26));
+        gc.check_klv(&fits).unwrap();
+        // tile 27 is past english's 27 tiles (the blank and A to Z)
+        let wider = load(&[(&[1], 1.5), (&[27], 2.0)]);
+        assert_eq!(wider.max_tile(), Some(27));
+        assert!(!wider.fits_alphabet(27));
+        assert!(gc.check_klv(&wider).is_err());
+        assert!(make_polish_game_config().check_klv(&wider).is_ok());
+        // a value a klv holds, but no equity does once this game's best play is
+        // added to it
+        assert!(gc.check_klv(&load(&[(&[1], 2_000_000.0)])).is_ok());
+        assert!(gc.check_klv(&load(&[(&[1], 2_147_000.0)])).is_err());
     }
 
     #[test]
