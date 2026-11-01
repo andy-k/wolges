@@ -92,6 +92,28 @@ fn split_klv(buf: &[u8]) -> error::Returns<KlvParts<'_>> {
     })
 }
 
+// a klv2 value as the millipoints a leave is kept in; one that is not a number,
+// or too big for an i32 of them, is refused (`as` would make it 0 or the
+// nearest end of i32), as buildlex refuses it in a leave file. The refusal
+// names the kind of value, not the value: writing an f32 would build float
+// formatting into the wasm, which never prints one otherwise.
+#[inline(always)]
+fn millipoints(i: usize, value: f32) -> error::Returns<i32> {
+    let scaled = (value * equity::SCALE as f32).round();
+    if (i32::MIN as f32..-(i32::MIN as f32)).contains(&scaled) {
+        Ok(scaled as i32)
+    } else {
+        let kind = if value.is_nan() {
+            "not a number"
+        } else if value.is_infinite() {
+            "an infinity"
+        } else {
+            "past an i32 of millipoints"
+        };
+        Err(format!("klv's leave {i} has a value that is {kind}, which a leave cannot hold").into())
+    }
+}
+
 // the leaves' graph and its word counts, which also refuse a graph that loops;
 // it must hold one leave for each value.
 #[inline(always)]
@@ -127,9 +149,8 @@ impl<L: kwg::Node> Klv<L> {
             }
         } else {
             // klv2 uses f32
-            for _ in 0..lv_len {
-                let raw = f32::from_bits(kwg::read_le_u32(values, r));
-                elts.push((raw * equity::SCALE as f32).round() as i32);
+            for i in 0..lv_len {
+                elts.push(millipoints(i, f32::from_bits(kwg::read_le_u32(values, r)))?);
                 r += 4;
             }
         }
@@ -191,7 +212,10 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
     let mut values = Vec::with_capacity(lv_len);
     if is_klv2 {
         for i in 0..lv_len {
-            values.push(f32::from_bits(kwg::read_le_u32(value_bytes, i * 4)));
+            let value = f32::from_bits(kwg::read_le_u32(value_bytes, i * 4));
+            // refused as a load refuses it, so what is read builds again
+            millipoints(i, value)?;
+            values.push(value);
         }
     } else {
         // klv holds each value as an i16 counting 1/256 of a point.
@@ -809,6 +833,36 @@ mod tests {
         let mut cut = bin.clone();
         cut[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Klv::<kwg::Node22>::from_bytes_alloc(&cut).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_klv_refuses_a_value_no_leave_can_hold() {
+        // i32::MAX millipoints is 2147483.647 points
+        for bad in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            2_200_000.0,
+            -2_200_000.0,
+        ] {
+            let bin = make_klv2(&[(&[1], 1.0), (&[2], bad)]);
+            assert!(Klv::<kwg::Node22>::from_bytes_alloc(&bin).is_err(), "{bad}");
+        }
+        let bin = make_klv2(&[(&[1], 2_100_000.0), (&[2], -2_100_000.0)]);
+        let klv = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
+        assert_eq!(klv.leave_range(), (-2_100_000_000, 2_100_000_000));
+
+        // read_leaves_alloc refuses the same, and hands the rest on as they are
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2_200_000.0] {
+            let bin = make_klv2(&[(&[1], 1.0), (&[2], bad)]);
+            assert!(read_leaves_alloc::<kwg::Node22>(&bin).is_err(), "{bad}");
+        }
+        let bin = make_klv2(&[(&[1], 2_147_483.5)]);
+        assert_eq!(
+            read_leaves_alloc::<kwg::Node22>(&bin).unwrap()[0].1,
+            2_147_483.5
+        );
     }
 
     #[test]
