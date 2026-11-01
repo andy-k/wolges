@@ -1239,13 +1239,15 @@ fn old_main() -> error::Returns<()> {
         let dawg_root = kwg[0].arc_index();
         let english_alphabet = alphabet::make_english_alphabet();
         let mut word_prob = prob::WordProbability::new(&english_alphabet);
+        // the indexes right-aligned, as wide as the last
+        let width = format!("{}", word_counts[dawg_root as usize].saturating_sub(1)).len();
         for i in 0..word_counts[dawg_root as usize] {
             out_vec.clear();
             kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
                 out_vec.push(v);
             })?;
             let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
-            write!(std::io::stdout(), "{i} {j} {out_vec:?}")?;
+            write!(std::io::stdout(), "{i:width$} {j:width$} {out_vec:?}")?;
             let byte_index = j as usize / 8;
             let bit = 1 << (j as usize % 8);
             if v_csw24_bits[byte_index] & bit != 0 {

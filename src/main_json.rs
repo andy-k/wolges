@@ -288,7 +288,7 @@ fn answer<N: kwg::Node + Sync>(
         for play in plays.iter() {
             writeln!(
                 std::io::stdout(),
-                "{} {}",
+                "{:>8} {}",
                 play.equity,
                 play.play.fmt(board_snapshot)
             )?;
@@ -310,7 +310,7 @@ fn answer<N: kwg::Node + Sync>(
     for play in plays.iter() {
         writeln!(
             std::io::stdout(),
-            "{} {}",
+            "{:>8} {}",
             play.equity,
             play.play.fmt(board_snapshot)
         )?;

@@ -478,13 +478,15 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
     writeln!(std::io::stdout(), "{:?}", &word_counts[0..100])?;
     let mut out_vec = Vec::new();
     let dawg_root = kwg[0].arc_index();
+    // the indexes right-aligned, as wide as the last
+    let width = format!("{}", word_counts[dawg_root as usize].saturating_sub(1)).len();
     for i in 0..word_counts[dawg_root as usize] {
         out_vec.clear();
         kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
             out_vec.push(v);
         })?;
         let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
-        writeln!(std::io::stdout(), "{i} {j} {out_vec:?}")?;
+        writeln!(std::io::stdout(), "{i:width$} {j:width$} {out_vec:?}")?;
         assert_eq!(i, j);
     }
     assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);

@@ -1973,7 +1973,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             ));
             writeln!(
                 std::io::stdout(),
-                "{}: p{}: {}{:width$} {} {}",
+                "{:>2}: p{}: {}{:width$} {:>4} {}",
                 i,
                 player_turn_idx,
                 self.game_config.alphabet().fmt_rack(rack),
@@ -2018,14 +2018,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             let leftover = leftovers[player_turn_idx];
             write!(
                 std::io::stdout(),
-                "e: p{}: {}",
+                " e: p{}: {}",
                 player_turn_idx,
                 self.game_config.alphabet().fmt_rack(rack)
             )?;
             if let Some(leftover) = leftover {
                 write!(
                     std::io::stdout(),
-                    "{:width$} {}",
+                    "{:width$} {:>4}",
                     "",
                     leftover,
                     width = self.game_config.rack_size() as usize - rack.len(),
