@@ -109,6 +109,16 @@ pub fn repack_in_place<Old: Node, New: Node>(buf: &mut [u8]) -> error::Returns<(
     Ok(())
 }
 
+// a word graph's file read into kbwg's layout, the one layout the engine works
+// in: a kwg's nodes are repacked as it loads, a kbwg's are taken as they are
+#[inline]
+pub fn kbwg_from_bytes_alloc(mut buf: Vec<u8>, is_kbwg: bool) -> error::Returns<Kwg<Node24>> {
+    if !is_kbwg {
+        repack_in_place::<Node22, Node24>(&mut buf)?;
+    }
+    Kwg::from_bytes_alloc(&buf)
+}
+
 #[inline(always)]
 pub fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
     bytes[p] as u16 | ((bytes[p + 1] as u16) << 8)

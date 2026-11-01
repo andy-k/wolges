@@ -100,6 +100,14 @@ pub fn repack_in_place<Old: kwg::Node, New: kwg::Node>(buf: &mut [u8]) -> error:
     kwg::repack_in_place::<Old, New>(&mut buf[4..4 + kwg_len])
 }
 
+// a klv or klv2 file, whose leaves' graph is a kwg's, read into kbwg's layout,
+// the one layout the engine works in
+#[inline]
+pub fn kbwg_from_bytes_alloc(mut buf: Vec<u8>) -> error::Returns<Klv<kwg::Node24>> {
+    repack_in_place::<kwg::Node22, kwg::Node24>(&mut buf)?;
+    Klv::from_bytes_alloc(&buf)
+}
+
 // a klv2 value as the millipoints a leave is kept in; one that is not a number,
 // or too big for an i32 of them, is refused (`as` would make it 0 or the
 // nearest end of i32), as buildlex refuses it in a leave file. The refusal
@@ -167,6 +175,16 @@ impl<L: kwg::Node> Klv<L> {
             counts,
             leaves: elts.into_boxed_slice(),
         })
+    }
+
+    // the table of no leaves, its one node in this layout
+    #[inline]
+    pub fn empty() -> error::Returns<Self> {
+        let node = L::pack(0, false, true, 0).ok_or("a layout without the empty node")?;
+        let mut buf = [0u8; 12];
+        buf[..4].copy_from_slice(&1u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&node.to_le_bytes());
+        Self::from_bytes_alloc(&buf)
     }
 
     #[inline(always)]
@@ -826,6 +844,37 @@ mod tests {
         }
         repack_in_place::<kwg::Node24, kwg::Node22>(&mut repacked).unwrap();
         assert_eq!(repacked, bin);
+    }
+
+    #[test]
+    #[inline]
+    fn a_file_loads_into_kbwgs_layout() {
+        let bin = make_klv2(&[(&[1], 1.0), (&[1, 2], 2.0), (&[2], 3.0)]);
+        let klv = kbwg_from_bytes_alloc(bin.clone()).unwrap();
+        assert_eq!(klv.leave_value_from_tally(&[0, 1, 1]), 2 * equity::SCALE);
+        let klv22 = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
+        assert_eq!(klv.leave_range(), klv22.leave_range());
+        assert_eq!(klv.max_tile(), klv22.max_tile());
+        let empty = kbwg_from_bytes_alloc(EMPTY_KLV_BYTES.to_vec()).unwrap();
+        assert_eq!(empty.leave_range(), (0, 0));
+        assert_eq!(empty.leave_value_from_tally(&[0, 1, 1]), 0);
+        // the empty table, made in either layout, is the file's
+        let made = Klv::<kwg::Node24>::empty().unwrap();
+        assert_eq!(made.leave_range(), (0, 0));
+        assert_eq!(made.leave_value_from_tally(&[0, 1, 1]), 0);
+        assert_eq!(made.max_tile(), empty.max_tile());
+        use kwg::Node;
+        let made22 = Klv::<kwg::Node22>::empty().unwrap();
+        let file22 = Klv::<kwg::Node22>::from_bytes_alloc(EMPTY_KLV_BYTES).unwrap();
+        assert_eq!(made22.kwg.0.len(), file22.kwg.0.len());
+        for i in 0..made22.kwg.0.len() as i32 {
+            let (a, b) = (made22.kwg(i), file22.kwg(i));
+            assert_eq!(
+                (a.tile(), a.accepts(), a.is_end(), a.arc_index()),
+                (b.tile(), b.accepts(), b.is_end(), b.arc_index()),
+                "node {i}"
+            );
+        }
     }
 
     #[test]

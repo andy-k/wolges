@@ -74,10 +74,10 @@ impl Question {
         gcg: &str,
         rack: &str,
     ) -> Result<Question, error::MyError> {
-        let empty_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES)
+        let empty_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(kwg::EMPTY_KBWG_BYTES)
             .map_err(|e| error::new(format!("{}", e)))?;
-        let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
-            .map_err(|e| error::new(format!("{}", e)))?;
+        let empty_klv =
+            klv::Klv::<kwg::Node24>::empty().map_err(|e| error::new(format!("{}", e)))?;
         let mut ps = play_scorer::PlayScorer::new();
         let alphabet = game_config.alphabet();
         let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
@@ -343,7 +343,7 @@ fn run_batch<N: kwg::Node>(
     path: &str,
     solving: &Solving,
 ) -> error::Returns<()> {
-    let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
+    let empty_klv = klv::Klv::<kwg::Node24>::empty()?;
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
@@ -416,10 +416,10 @@ fn run_batch<N: kwg::Node>(
         let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
         vec_of_words.sort_unstable();
         let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
-        let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
+        let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
         let arm_tables = solver_tables(&smaller_kwg, &game_config, solving.lean)?;
 
-        let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
+        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
             &game_config,
             &smaller_kwg,
             &arm_tables,
@@ -566,16 +566,9 @@ fn main() -> error::Returns<()> {
     };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
         (Some(batch_path), Some(kwg_path), None, None) => {
-            let kwg_bytes = std::fs::read(&kwg_path)?;
-            return if cli.kbwg {
-                let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
-                refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-                run_batch(game_config, kwg, &batch_path, &solving)
-            } else {
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
-                refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-                run_batch(game_config, kwg, &batch_path, &solving)
-            };
+            let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&kwg_path)?, cli.kbwg)?;
+            refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
+            return run_batch(game_config, kwg, &batch_path, &solving);
         }
         (None, Some(kwg_path), Some(fen), Some(rack)) => {
             return run_cli(
@@ -1320,17 +1313,9 @@ fn run_cli(
     solving: &Solving,
 ) -> error::Returns<()> {
     let question = Question::from_fen(game_config, kwg_path, fen, rack)?;
-    let kwg_bytes = std::fs::read(kwg_path)?;
-
-    if kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
-        refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
-        solve_position(game_config, &kwg, &question, score_diff, solving)
-    } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
-        refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
-        solve_position(game_config, &kwg, &question, score_diff, solving)
-    }
+    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
+    refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
+    solve_position(game_config, &kwg, &question, score_diff, solving)
 }
 
 #[inline]
@@ -1354,13 +1339,13 @@ fn build_pruned_kwg(
     words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
     match game_config.game_rules() {
-        game_config::GameRules::Classic => build::build(
+        game_config::GameRules::Classic => build::build_big(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
             words,
         ),
-        game_config::GameRules::Jumbled => build::build(
+        game_config::GameRules::Jumbled => build::build_big(
             build::BuildContent::DawgOnly,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
@@ -1373,7 +1358,7 @@ fn build_pruned_kwg(
 // default arm builds none; the lean arm adds the rack lengths' prune
 #[inline]
 fn solver_tables(
-    kwg: &kwg::Kwg<kwg::Node22>,
+    kwg: &kwg::Kwg<kwg::Node24>,
     game_config: &game_config::GameConfig,
     lean: bool,
 ) -> error::Returns<anagrams::ArmTables> {
@@ -1389,11 +1374,11 @@ fn solve_question(question: &Question, score_diff: i32, solving: &Solving) -> er
     // of course this should be cached
     let (kwg, game_config) = match question.lexicon.as_str() {
         "CSW24" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)?,
+            kwg::kbwg_from_bytes_alloc(std::fs::read("lexbin/CSW24.kwg")?, false)?,
             game_config::make_english_game_config(),
         ),
         "NWL23" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?)?,
+            kwg::kbwg_from_bytes_alloc(std::fs::read("lexbin/NWL23.kwg")?, false)?,
             game_config::make_english_game_config(),
         ),
         _ => {
@@ -1527,7 +1512,7 @@ fn solve_position<N: kwg::Node>(
             kwg,
             anagrams: None,
             rack_lengths: None,
-            klv: &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?,
+            klv: &klv::Klv::<kwg::Node24>::empty()?,
         },
         |word: &[u8]| {
             set_of_words.insert(word.into());
@@ -1546,11 +1531,11 @@ fn solve_position<N: kwg::Node>(
         "word_prune: {} bytes kwg",
         smaller_kwg_bytes.len()
     )?;
-    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
+    let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
     let arm_tables = solver_tables(&smaller_kwg, game_config, solving.lean)?;
     move_generator.reset_for_another_kwg();
 
-    let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
+    let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
         game_config,
         &smaller_kwg,
         &arm_tables,
@@ -1767,20 +1752,20 @@ mod tests {
         assert_ne!(word, sorted);
         let words = [word.clone()];
 
-        let present = |kwg: &kwg::Kwg<kwg::Node22>, w: &[u8]| {
+        let present = |kwg: &kwg::Kwg<kwg::Node24>, w: &[u8]| {
             let counts = kwg.count_dawg_words_alloc().unwrap();
             kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
         };
 
         let classic_kwg =
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap())
+            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap())
                 .unwrap();
 
         assert!(present(&classic_kwg, &word));
         assert!(!present(&classic_kwg, &sorted));
 
         let jumbled_kwg =
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap())
+            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap())
                 .unwrap();
 
         assert!(present(&jumbled_kwg, &sorted));

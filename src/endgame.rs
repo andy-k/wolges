@@ -690,7 +690,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             game_config,
             kwg,
             arm_tables,
-            klv: Box::new(klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?),
+            klv: Box::new(klv::Klv::<L>::empty()?),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             scoreless: [0, 0],
@@ -1932,7 +1932,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
 
-        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
+        let klv = klv::Klv::<L>::empty()?;
 
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
@@ -2338,7 +2338,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let gc = sub.game_config;
         let kwg = sub.kwg;
         let arm_tables = sub.arm_tables;
-        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
+        let klv = klv::Klv::<L>::empty()?;
         let alphabet = gc.alphabet();
         let opp = mover ^ 1;
         let mut exact = true;
