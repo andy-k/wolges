@@ -2095,6 +2095,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             memo: fash::MyHashMap::default(),
             limits,
             exact: true,
+            line: None,
         };
         let [passes, zeros] = self.scoreless;
         let value = if one_in_bag_exchange_solvable(gc) {
@@ -2126,7 +2127,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // the one-in-bag value for the mover, who places and draws the tile, or
     // passes; passes and zeros are the scoreless turns before the position,
     // counted to the config's end as the game counts them, since a pass here is
-    // a move the peg model values on its own, not a node's best
+    // a move the peg model values on its own, not a node's best. With a pass
+    // line, a position valued before answers at once, and one a limit stopped
+    // goes on at the move it stopped at
     fn one_in_bag_minimax(
         search: &mut OneInBag<'_, 'a, N, L>,
         board: &[u8],
@@ -2136,6 +2139,44 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         passes: u8,
         zeros: u8,
     ) -> error::Returns<f32> {
+        let key = [bag_tile, mover, passes, zeros];
+        if let Some(&(value, exact)) = search.line.as_ref().and_then(|line| line.valued.get(&key)) {
+            search.exact &= exact;
+            return Ok(value);
+        }
+        let (start, mut best, exact_so_far) = (search.line.as_mut())
+            .and_then(|line| line.partway.remove(&key))
+            .unwrap_or((0, f32::NEG_INFINITY, true));
+        // the position's own exactness, apart from that of the line before it
+        let exact_before = std::mem::replace(&mut search.exact, exact_so_far);
+        let value = Self::one_in_bag_minimax_from(search, board, racks, key, start, &mut best);
+        match value {
+            Ok(value) => {
+                if let Some(line) = search.line.as_mut() {
+                    line.valued.insert(key, (value, search.exact));
+                }
+                search.exact &= exact_before;
+                Ok(value)
+            }
+            Err(e) => {
+                search.exact = exact_before;
+                Err(e)
+            }
+        }
+    }
+
+    // one_in_bag_minimax's search of a position (key: the tile in the bag, the
+    // mover, the passes, and the zeros), its places from the start-th on, best
+    // the best so far; a limit that stops it leaves where in the pass line
+    fn one_in_bag_minimax_from(
+        search: &mut OneInBag<'_, 'a, N, L>,
+        board: &[u8],
+        racks: &[Vec<u8>; 2],
+        key: [u8; 4],
+        start: usize,
+        best: &mut f32,
+    ) -> error::Returns<f32> {
+        let [bag_tile, mover, passes, zeros] = key;
         let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
         let snapshot = movegen::BoardSnapshot {
@@ -2155,7 +2196,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
-        let mut best = f32::NEG_INFINITY;
+        // the places, numbered as generated, skipping those valued before
+        let mut place = 0;
         for vm in &search.mg.plays {
             if let movegen::Play::Place {
                 down,
@@ -2165,6 +2207,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 score,
             } = &vm.play
             {
+                place += 1;
+                if place <= start {
+                    continue;
+                }
                 let mut nb = board.to_vec();
                 let mut nr = racks.clone();
                 {
@@ -2183,13 +2229,17 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
 
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search
+                let v = match search
                     .sub
-                    .solve_in_bag(opp, search.limits, &mut search.exact)?;
+                    .solve_in_bag(opp, search.limits, &mut search.exact)
+                {
+                    Ok(v) => v,
+                    Err(e) => return Err(Self::stopped_at(search, key, place - 1, *best, e)),
+                };
 
                 let val = *score as f32 - v;
-                if val > best {
-                    best = val;
+                if val > *best {
+                    *best = val;
                 }
             }
         }
@@ -2200,12 +2250,42 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             (alphabet.scaled_rack_score(&racks[opp as usize])
                 - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
         } else {
-            -Self::one_in_bag_minimax(search, board, racks, opp, bag_tile, pass_passes, pass_zeros)?
+            match Self::one_in_bag_minimax(
+                search,
+                board,
+                racks,
+                opp,
+                bag_tile,
+                pass_passes,
+                pass_zeros,
+            ) {
+                Ok(v) => -v,
+                Err(e) => return Err(Self::stopped_at(search, key, place, *best, e)),
+            }
         };
-        if pass_val > best {
-            best = pass_val;
+        if pass_val > *best {
+            *best = pass_val;
         }
-        Ok(best)
+        Ok(*best)
+    }
+
+    // the error a stop in a position of the pass line passes on, its place in
+    // the line kept when a limit stopped it: the places valued, the best of
+    // them, and whether all were exact
+    #[inline(always)]
+    fn stopped_at(
+        search: &mut OneInBag<'_, 'a, N, L>,
+        key: [u8; 4],
+        valued: usize,
+        best: f32,
+        e: error::BoxAnyError,
+    ) -> error::BoxAnyError {
+        if search.limits.stopped.get()
+            && let Some(line) = search.line.as_mut()
+        {
+            line.partway.insert(key, (valued, best, search.exact));
+        }
+        e
     }
 
     fn one_in_bag_minimax_ex(
@@ -2361,11 +2441,24 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         score_diff: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<Result<PegResult, PegUnsupported>> {
+        self.resume_peg_one_in_bag(
+            &mut PegProgress::new(mover, board, mover_rack, unseen_tally, score_diff),
+            limits,
+        )
+    }
+
+    // the search with a tile in the bag that progress holds, going on from
+    // where the last solve given it stopped
+    #[inline]
+    pub fn resume_peg_one_in_bag(
+        &mut self,
+        progress: &mut PegProgress,
+        limits: &Limits,
+    ) -> error::Returns<Result<PegResult, PegUnsupported>> {
         let gc = self.game_config;
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
-        let score_diff = score_diff.raw() as f32;
         let limits = BagLimits::new(
             limits,
             self.work_buffer.progress.take(),
@@ -2373,22 +2466,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         );
 
         let result = if one_in_bag_exchange_legal(gc) {
-            self.peg_clairvoyant_aggregate(
-                mover,
-                board,
-                mover_rack,
-                unseen_tally,
-                score_diff,
-                &limits,
-            )
+            self.peg_clairvoyant_aggregate(progress, &limits)
         } else {
-            let unseen: Vec<(u8, u32)> = unseen_tally
-                .iter()
-                .enumerate()
-                .filter(|&(_, &c)| c != 0)
-                .map(|(t, &c)| (t as u8, c as u32))
-                .collect();
-            self.peg_committed_no_exchange(mover, board, mover_rack, &unseen, score_diff, &limits)
+            self.peg_committed_no_exchange(progress, &limits)
         };
         self.work_buffer.progress = limits.progress.take();
         Ok(Ok(result?))
@@ -2396,17 +2476,19 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
     // the clairvoyant model's search: each tile's value, the mover knowing it.
     // Deepening, it answers from the deepest pass that valued every tile; a
-    // limit stops it only after the first
+    // limit stops it only after the first, and a solve resuming it starts at
+    // the pass after the deepest it holds
     #[inline]
     fn peg_clairvoyant_aggregate(
         &mut self,
-        mover: u8,
-        board: &[u8],
-        mover_rack: &[u8],
-        unseen_tally: &[u8],
-        score_diff: f32,
+        progress: &mut PegProgress,
         limits: &BagLimits,
     ) -> error::Returns<PegResult> {
+        let mover = progress.mover;
+        let board = &progress.board[..];
+        let mover_rack = &progress.mover_rack[..];
+        let unseen_tally = &progress.unseen_tally[..];
+        let score_diff = progress.score_diff.raw() as f32;
         // each tile's value to the pass's depth
         let pass = |this: &mut Self| -> error::Returns<PegResult> {
             let mut hypotheses: Vec<(u8, u32, equity::Equity)> = Vec::new();
@@ -2446,30 +2528,36 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             })
         };
         let deepens = limits.deepens();
-        limits.depth.set(if deepens { 1 } else { COMPLETE });
-        let mut result = pass(self)?;
+        let found = &mut progress.clairvoyant;
+        if found.is_none() {
+            limits.depth.set(if deepens { 1 } else { COMPLETE });
+            *found = Some(pass(self)?);
+        }
         limits.may_stop.set(true);
-        while deepens && !result.exact {
-            limits.depth.set(limits.depth.get() + 1);
+        while let Some(result) = found.as_ref().filter(|r| !r.exact && r.depth < COMPLETE) {
+            limits.depth.set(result.depth + 1);
             match pass(self) {
-                Ok(deeper) => result = deeper,
+                Ok(deeper) => *found = Some(deeper),
                 Err(_) if limits.stopped.get() => break,
                 Err(e) => return Err(e),
             }
         }
-        Ok(result)
+        let Some(result) = found else {
+            unreachable!("the first pass always finishes");
+        };
+        Ok(result.clone())
     }
 
     #[inline]
     fn peg_committed_no_exchange(
         &mut self,
-        mover: u8,
-        board: &[u8],
-        mover_rack: &[u8],
-        unseen: &[(u8, u32)],
-        score_diff: f32,
+        progress: &mut PegProgress,
         limits: &BagLimits,
     ) -> error::Returns<PegResult> {
+        let unseen: Vec<(u8, u32)> = (progress.unseen_tally.iter().enumerate())
+            .filter(|&(_, &c)| c != 0)
+            .map(|(t, &c)| (t as u8, c as u32))
+            .collect();
         let mut sub = EndgameSolver::<N, L>::new(self.game_config, self.kwg, self.arm_tables)?;
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
@@ -2477,14 +2565,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let result = Self::peg_committed_by(
             &mut sub,
             &PegPosition {
-                mover,
-                board,
-                mover_rack,
-                unseen,
+                mover: progress.mover,
+                board: &progress.board,
+                mover_rack: &progress.mover_rack,
+                unseen: &unseen,
                 scoreless: self.scoreless,
             },
-            score_diff,
+            progress.score_diff.raw() as f32,
             limits,
+            &mut progress.committed,
         );
         self.swap_tables(&mut sub)?;
         result
@@ -2496,13 +2585,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // values the places by score, highest first, then the pass, and each later
     // pass the moves best first by the pass before; a limit stops it once the
     // first move is valued, and the answer is the best move of the deepest pass
-    // that valued every move, or, the first stopped, the best of those it valued
+    // that valued every move, or, the first stopped, the best of those it valued.
+    // A solve resuming it goes on at the move it stopped before
     #[inline]
     fn peg_committed_by(
         sub: &mut Self,
         position: &PegPosition<'_>,
         score_diff: f32,
         limits: &BagLimits,
+        state: &mut PegCommitted,
     ) -> error::Returns<PegResult> {
         let PegPosition {
             mover,
@@ -2523,41 +2614,45 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let pass_ends_the_game = scoreless_turns_end(gc, None, pass_passes, pass_zeros);
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
-        mg.gen_moves_raw_all_unsorted(
-            &movegen::BoardSnapshot {
-                board_tiles: board,
-                game_config: gc,
-                kwg,
-                anagrams: arm_tables.anagrams(),
-                rack_lengths: arm_tables.rack_lengths(),
-                klv: &klv,
-            },
-            mover_rack,
-            0,
-            movegen::PassPolicy::AsACandidate,
-        );
-        let mut candidates: Vec<PegMove> = Vec::with_capacity(mg.plays.len() + 1);
-        candidates.push(PegMove::Pass);
-        for vm in &mg.plays {
-            if matches!(vm.play, movegen::Play::Place { .. }) {
-                candidates.push(PegMove::Place(vm.play.clone()));
-            }
-        }
-
         let deepens = limits.deepens();
-        // the order a pass values the moves in
-        let mut order: Vec<usize> = (0..candidates.len()).collect();
-        if deepens {
-            order.sort_unstable_by_key(|&i| {
-                let score = match &candidates[i] {
-                    PegMove::Place(movegen::Play::Place { score, .. }) => *score,
-                    _ => i32::MIN,
-                };
-                (std::cmp::Reverse(score), i)
-            });
+        if state.moves.is_empty() {
+            mg.gen_moves_raw_all_unsorted(
+                &movegen::BoardSnapshot {
+                    board_tiles: board,
+                    game_config: gc,
+                    kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: &klv,
+                },
+                mover_rack,
+                0,
+                movegen::PassPolicy::AsACandidate,
+            );
+            state.moves.reserve(mg.plays.len() + 1);
+            state.moves.push(PegMove::Pass);
+            for vm in &mg.plays {
+                if matches!(vm.play, movegen::Play::Place { .. }) {
+                    state.moves.push(PegMove::Place(vm.play.clone()));
+                }
+            }
+            // the order the first pass values the moves in
+            state.order = (0..state.moves.len()).collect();
+            if deepens {
+                state.order.sort_unstable_by_key(|&i| {
+                    let score = match &state.moves[i] {
+                        PegMove::Place(movegen::Play::Place { score, .. }) => *score,
+                        _ => i32::MIN,
+                    };
+                    (std::cmp::Reverse(score), i)
+                });
+            }
+            state.valued = state.moves.iter().map(|_| None).collect();
+            state.pass_exact = true;
+            state.depth = if deepens { 1 } else { COMPLETE };
         }
 
-        let mut value_move = |cand: &PegMove| -> error::Returns<PegValue> {
+        let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
             let mut exact = true;
             let mut win = 0.0f32;
             let mut marg = 0.0f32;
@@ -2623,6 +2718,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             memo: fash::MyHashMap::default(),
                             limits,
                             exact: true,
+                            line: Some(&mut *line),
                         };
                         let v = -Self::one_in_bag_minimax(
                             &mut search,
@@ -2662,74 +2758,153 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             })
         };
 
-        // each move's value in the latest pass that reached it
-        let mut valued: Vec<Option<PegValue>> = candidates.iter().map(|_| None).collect();
-        // the best move of the deepest pass that valued every move, its value
-        // then, and that pass's depth
-        let mut answer: Option<(usize, PegValue, i8)> = None;
-        limits.depth.set(if deepens { 1 } else { COMPLETE });
-        let exact = loop {
-            let mut reached: Vec<usize> = Vec::with_capacity(order.len());
-            let mut pass_exact = true;
-            for &i in &order {
+        while !state.done {
+            limits.depth.set(state.depth);
+            let mut stopped = false;
+            while let Some(&i) = state.order.get(state.next) {
                 limits
                     .may_stop
-                    .set(deepens && (answer.is_some() || !reached.is_empty()));
-                match value_move(&candidates[i]) {
+                    .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
+                match value_move(&state.moves[i], &mut state.passing) {
                     Ok(value) => {
-                        pass_exact &= value.exact;
-                        valued[i] = Some(value);
-                        reached.push(i);
+                        state.pass_exact &= value.exact;
+                        state.valued[i] = Some(value);
+                        state.reached.push(i);
+                        state.next += 1;
                     }
-                    Err(_) if limits.stopped.get() => break,
+                    Err(_) if limits.stopped.get() => {
+                        stopped = true;
+                        break;
+                    }
                     Err(e) => return Err(e),
                 }
             }
-            let stopped = limits.stopped.get();
-            if stopped && answer.is_some() {
-                break false;
-            }
-            // the best move the pass reached: a stopped first pass answers with
-            // it, at depth 0 as no pass valued every move
-            reached.sort_unstable();
-            let mut best = reached[0];
-            for &i in &reached[1..] {
-                let (value, other) = (valued[i].as_ref().unwrap(), valued[best].as_ref().unwrap());
-                if value.win > other.win || (value.win == other.win && value.marg > other.marg) {
-                    best = i;
-                }
-            }
-            let depth = if stopped { 0 } else { limits.depth.get() };
-            answer = Some((best, valued[best].clone().unwrap(), depth));
             if stopped {
-                break false;
+                if state.answer.is_none() {
+                    // no pass valued every move: the best of those valued
+                    let best = peg_best(&mut state.reached, &state.valued);
+                    let value = state.valued[best].as_ref().unwrap();
+                    return Ok(peg_result(&state.moves, best, value, 0, false));
+                }
+                break;
             }
-            if pass_exact || !deepens {
-                break pass_exact;
+            let best = peg_best(&mut state.reached, &state.valued);
+            state.answer = Some((best, state.valued[best].clone().unwrap(), state.depth));
+            if state.pass_exact || state.depth == COMPLETE {
+                state.done = true;
+                break;
             }
-            order = reached;
-            order.sort_unstable_by(|&a, &b| {
+            // the next pass values the moves best first by this one
+            state.order = std::mem::take(&mut state.reached);
+            let valued = &state.valued;
+            state.order.sort_unstable_by(|&a, &b| {
                 let (x, y) = (valued[a].as_ref().unwrap(), valued[b].as_ref().unwrap());
                 (y.win.total_cmp(&x.win))
                     .then(y.marg.total_cmp(&x.marg))
                     .then(a.cmp(&b))
             });
-            limits.depth.set(limits.depth.get() + 1);
-        };
-        let Some((best, value, depth)) = answer else {
+            state.next = 0;
+            state.pass_exact = true;
+            state.passing = Default::default();
+            state.depth += 1;
+        }
+        let Some((best, value, depth)) = &state.answer else {
             unreachable!("the first move of the first pass is always valued");
         };
-
-        Ok(PegResult {
-            win_pct: value.win,
-            expected_margin: to_equity(value.marg),
-            hypotheses: value.hyps,
-            best_move: Some(candidates[best].clone()),
-            committed: true,
-            exact,
-            depth,
-        })
+        let exact = state.done && state.pass_exact;
+        Ok(peg_result(&state.moves, *best, value, *depth, exact))
     }
+}
+
+// the best of these moves: the most wins, then the best mean margin, ties going
+// to the move generated first
+fn peg_best(reached: &mut [usize], valued: &[Option<PegValue>]) -> usize {
+    reached.sort_unstable();
+    let mut best = reached[0];
+    for &i in &reached[1..] {
+        let (value, other) = (valued[i].as_ref().unwrap(), valued[best].as_ref().unwrap());
+        if value.win > other.win || (value.win == other.win && value.marg > other.marg) {
+            best = i;
+        }
+    }
+    best
+}
+
+// the committed model's answer: a move, its value, and the depth it is of
+fn peg_result(
+    moves: &[PegMove],
+    best: usize,
+    value: &PegValue,
+    depth: i8,
+    exact: bool,
+) -> PegResult {
+    PegResult {
+        win_pct: value.win,
+        expected_margin: to_equity(value.marg),
+        hypotheses: value.hyps.clone(),
+        best_move: Some(moves[best].clone()),
+        committed: true,
+        exact,
+        depth,
+    }
+}
+
+// a search with a tile in the bag that goes on across solves, its position in
+// it: a caller keeps it (as a wasm32 page solving in steps keeps it with the
+// solver's table), and a solve given it starts where the last one stopped,
+// keeping what the passes before found. Each solve reads the solver's scoreless
+// turns, which a caller sets alike for every one
+pub struct PegProgress {
+    mover: u8,
+    board: Vec<u8>,
+    mover_rack: Vec<u8>,
+    unseen_tally: Vec<u8>,
+    score_diff: equity::Equity,
+    committed: PegCommitted,
+    clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
+}
+
+impl PegProgress {
+    // a search of the position, mover to move with score_diff the lead, not yet
+    // begun
+    #[inline]
+    pub fn new(
+        mover: u8,
+        board: &[u8],
+        mover_rack: &[u8],
+        unseen_tally: &[u8],
+        score_diff: equity::Equity,
+    ) -> Self {
+        Self {
+            mover,
+            board: board.to_vec(),
+            mover_rack: mover_rack.to_vec(),
+            unseen_tally: unseen_tally.to_vec(),
+            score_diff,
+            committed: Default::default(),
+            clairvoyant: None,
+        }
+    }
+}
+
+// the committed model's search so far: the moves; the order its pass values
+// them in, the next to value, each one's latest value, and those the pass has
+// valued; whether all the pass's endgames were exact, and its depth; the pass
+// move's own search in it, so far; the best move of the deepest pass that
+// valued every move, with its value and that depth; and whether that answer is
+// final
+#[derive(Default)]
+struct PegCommitted {
+    moves: Vec<PegMove>,
+    order: Vec<usize>,
+    next: usize,
+    valued: Vec<Option<PegValue>>,
+    reached: Vec<usize>,
+    pass_exact: bool,
+    depth: i8,
+    passing: PassLine,
+    answer: Option<(usize, PegValue, i8)>,
+    done: bool,
 }
 
 #[derive(Clone)]
@@ -2738,6 +2913,7 @@ pub enum PegMove {
     Place(movegen::Play),
 }
 
+#[derive(Clone)]
 pub struct PegResult {
     pub win_pct: f32,
     pub expected_margin: equity::Equity,
@@ -2787,6 +2963,18 @@ struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
     memo: fash::MyHashMap<BagExchangeKey, f32>,
     limits: &'s BagLimits,
     exact: bool, // cleared by an endgame a limit cut short
+    line: Option<&'s mut PassLine>,
+}
+
+// a deepening pass's search after the committed model's pass, kept across
+// solves: each position of its line (by the tile in the bag, the mover, the
+// passes, and the zeros) valued, with whether every endgame inside was exact,
+// or stopped by a limit, with the places it had valued, the best of them, and
+// whether those were exact
+#[derive(Default)]
+struct PassLine {
+    valued: fash::MyHashMap<[u8; 4], (f32, bool)>,
+    partway: fash::MyHashMap<[u8; 4], (usize, f32, bool)>,
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -5166,6 +5354,209 @@ mod tests {
         assert!(stopped > 0, "some state limit stopped a search");
     }
 
+    // a position after the committed model's pass, valued in solve after solve
+    // that each go on where a limit stopped the last (each a new solver, given
+    // the table and the pass line kept, stopped once the table holds 5
+    // positions more), is valued as one unlimited solve values it
+    #[test]
+    #[inline]
+    fn a_pass_line_resumed_values_as_one_search() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_kwg_bytes()).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut resumed = 0;
+        for &x in &tiles {
+            for &y in &tiles {
+                for (bag_tile, other) in [(8u8, 20u8), (20, 8)] {
+                    // seat 1 to move after seat 0 passed, the bag holding bag_tile
+                    let racks = [vec![x, y], vec![other]];
+                    let value = |line: Option<&mut super::PassLine>,
+                                 kept: Option<super::KeptTable>,
+                                 states: Option<usize>| {
+                        let mut egs =
+                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables)
+                                .unwrap();
+                        if let Some(table) = kept {
+                            assert!(egs.give_table(table).is_ok());
+                        }
+                        let limits = super::Limits {
+                            time: None,
+                            states: states.map(|more| egs.work_buffer.table.held + more),
+                            memory: None,
+                        };
+                        let limits = super::BagLimits::new(&limits, None, None);
+                        limits.may_stop.set(true);
+                        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+                        let mut search = super::OneInBag {
+                            gc: &gc,
+                            kwg: &kwg,
+                            arm_tables: &arm_tables,
+                            klv: &klv,
+                            sub: &mut egs,
+                            mg: &mut mg,
+                            memo: Default::default(),
+                            limits: &limits,
+                            exact: true,
+                            line,
+                        };
+                        let got = EndgameSolver::one_in_bag_minimax(
+                            &mut search,
+                            &board,
+                            &racks,
+                            1,
+                            bag_tile,
+                            1,
+                            1,
+                        );
+                        let got = got
+                            .map(|v| (v, search.exact))
+                            .map_err(|_| limits.stopped.get());
+                        (got, egs.take_table())
+                    };
+                    let (full, _) = value(None, None, None);
+                    let full = full.unwrap();
+                    let mut line = super::PassLine::default();
+                    let mut kept = None;
+                    for step in 1.. {
+                        assert!(step < 10000, "the steps never ended");
+                        let (got, table) = value(Some(&mut line), kept.take(), Some(5));
+                        kept = Some(table);
+                        match got {
+                            Ok(got) => {
+                                assert_eq!(got, full, "{racks:?} with {bag_tile} in the bag");
+                                resumed += (step > 1) as usize;
+                                break;
+                            }
+                            Err(stopped) => assert!(stopped, "only a limit stops it"),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(resumed > 0, "no search was resumed");
+    }
+
+    // a search with a tile in the bag resumed solve after solve, as a wasm32
+    // page steps one: each step a new solver, given the table and the progress
+    // kept, stopped once the table holds 30 positions more. Its depth never
+    // falls, from depth 1 on its answer changes only as the depth rises, and it
+    // ends with the answer of one unlimited solve
+    #[test]
+    #[inline]
+    fn a_peg_search_resumed_in_steps_ends_as_one_solve() {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_kwg_bytes()).unwrap();
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut stepped = 0;
+        // the committed model, and the clairvoyant one where exchanges are legal
+        for gc in [
+            game_config::make_english_game_config(),
+            game_config::make_exchange_test_game_config(),
+        ] {
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            unseen_tally[8] = 1; // H
+            unseen_tally[20] = 1; // T
+            for &x in &tiles {
+                for &y in &tiles {
+                    let mover_rack = [x, y];
+                    let full =
+                        EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables)
+                            .unwrap()
+                            .solve_peg_one_in_bag(
+                                0,
+                                &board,
+                                &mover_rack,
+                                &unseen_tally,
+                                equity::Equity::ZERO,
+                                &super::Limits::NONE,
+                            )
+                            .unwrap()
+                            .expect("both configs solve one in the bag");
+                    let mut progress = super::PegProgress::new(
+                        0,
+                        &board,
+                        &mover_rack,
+                        &unseen_tally,
+                        equity::Equity::ZERO,
+                    );
+                    let mut kept = None;
+                    let mut last: Option<super::PegResult> = None;
+                    for step in 1.. {
+                        assert!(step < 10000, "the steps never ended");
+                        let mut egs =
+                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables)
+                                .unwrap();
+                        if let Some(table) = kept.take() {
+                            assert!(egs.give_table(table).is_ok());
+                        }
+                        let limits = super::Limits {
+                            time: None,
+                            states: Some(egs.work_buffer.table.held + 30),
+                            memory: None,
+                        };
+                        let got = egs
+                            .resume_peg_one_in_bag(&mut progress, &limits)
+                            .unwrap()
+                            .expect("both configs solve one in the bag");
+                        // resumed with no room for a position more, it answers
+                        // as it did: a search begun again would answer from
+                        // depth 0
+                        if got.depth > 0 {
+                            let again = egs
+                                .resume_peg_one_in_bag(
+                                    &mut progress,
+                                    &super::Limits {
+                                        time: None,
+                                        states: Some(egs.work_buffer.table.held),
+                                        memory: None,
+                                    },
+                                )
+                                .unwrap()
+                                .expect("both configs solve one in the bag");
+                            assert_eq!(
+                                (again.depth, again.exact, &again.hypotheses),
+                                (got.depth, got.exact, &got.hypotheses),
+                                "step {step}"
+                            );
+                            assert!(same_peg_move(&again.best_move, &got.best_move));
+                        }
+                        kept = Some(egs.take_table());
+                        if let Some(last) = &last {
+                            assert!(
+                                got.depth >= last.depth,
+                                "step {step}: depth {} after {}",
+                                got.depth,
+                                last.depth
+                            );
+                            if got.depth == last.depth && got.depth > 0 {
+                                assert_eq!(got.hypotheses, last.hypotheses, "step {step}");
+                                assert!(same_peg_move(&got.best_move, &last.best_move));
+                            }
+                        }
+                        if got.exact {
+                            assert_eq!(got.hypotheses, full.hypotheses);
+                            assert_eq!(
+                                (got.win_pct, got.expected_margin),
+                                (full.win_pct, full.expected_margin)
+                            );
+                            assert!(same_peg_move(&got.best_move, &full.best_move));
+                            stepped += (step > 1) as usize;
+                            break;
+                        }
+                        last = Some(got);
+                    }
+                }
+            }
+        }
+        assert!(stepped > 0, "no search took more than one step");
+    }
+
     #[test]
     #[inline]
     fn the_endgames_of_a_search_with_a_tile_in_the_bag_share_the_solvers_table() {
@@ -6786,11 +7177,13 @@ mod tests {
                             .unwrap();
                             let clair = egs2
                                 .peg_clairvoyant_aggregate(
-                                    0,
-                                    board,
-                                    mrack,
-                                    &unseen_tally,
-                                    0.0,
+                                    &mut super::PegProgress::new(
+                                        0,
+                                        board,
+                                        mrack,
+                                        &unseen_tally,
+                                        equity::Equity::ZERO,
+                                    ),
                                     &super::BagLimits::new(&super::Limits::NONE, None, None),
                                 )
                                 .unwrap();
