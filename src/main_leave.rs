@@ -3577,6 +3577,40 @@ fn census_more_boards(boards: u64, least: u64, min_boards: u64, threads: u64) ->
     (want.min(boards as u128) as u64).max(threads)
 }
 
+// the order the threads take the boards from `from` up to `to` in, the emptiest
+// first: a board's tiles down rise with its number modulo the window's width
+// (span), and a board with fewer leaves a bigger pool, which costs more, so the
+// threads end together. starts[r] counts the boards taken before those of
+// remainder r
+struct BoardOrder {
+    from: u64,
+    span: u64,
+    starts: Vec<u64>,
+}
+
+impl BoardOrder {
+    fn new(from: u64, to: u64, span: u64) -> Self {
+        let mut starts = Vec::with_capacity(span as usize + 1);
+        let mut taken = 0;
+        for r in 0..span {
+            starts.push(taken);
+            let first = from + (r + span - from % span) % span;
+            if first < to {
+                taken += (to - 1 - first) / span + 1;
+            }
+        }
+        starts.push(taken);
+        Self { from, span, starts }
+    }
+
+    // the board taken k-th
+    fn board(&self, k: u64) -> u64 {
+        let r = self.starts.partition_point(|&s| s <= k) as u64 - 1;
+        let first = self.from + (r + self.span - self.from % self.span) % self.span;
+        first + (k - self.starts[r as usize]) * self.span
+    }
+}
+
 #[inline]
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
@@ -3606,6 +3640,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let pool_min = racks_tiles + 1;
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
+    // the boards' targets repeat with this period (target, below)
+    let board_span = if high_tiles <= low_tiles {
+        1
+    } else {
+        (high_tiles - low_tiles + 1) as u64
+    };
 
     // --continue: the generations given, after those of the census that wrote
     // the state, as if they had ended that census's own spec: its seed, its
@@ -4015,6 +4055,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut gen_idx = start_gen;
 
                 let mut num_boards = board_counts[gen_idx];
+                // where the boards being taken start: a generation's first, or
+                // the first a top-up adds
+                let mut batch_from = 0u64;
 
                 let mut prior_max_boards = 0usize;
                 loop {
@@ -4024,14 +4067,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         let leave_max = leave_max_lock.read().unwrap();
 
                         let null_leave = leave.iter().all(|&x| x == 0);
+                        let order = BoardOrder::new(batch_from, num_boards, board_span);
                         'boards: loop {
                             if failed.load(std::sync::atomic::Ordering::Relaxed) {
                                 break;
                             }
-                            let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if b >= num_boards {
+                            let i = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= num_boards {
                                 break;
                             }
+                            let b = order.board(i - batch_from);
                     let mut rng = GameRng::seed_from_u64(census_mix64(
                         seed.wrapping_add(census_mix64(b)),
                     ));
@@ -4176,6 +4221,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         if more_boards.load(std::sync::atomic::Ordering::Relaxed)
                             && !failed.load(std::sync::atomic::Ordering::Relaxed)
                         {
+                            batch_from = num_boards;
                             num_boards = last_boards.load(std::sync::atomic::Ordering::Relaxed);
                             continue;
                         }
@@ -4282,6 +4328,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             prior_max_boards = prior_max_boards.max(num_boards as usize);
                             gen_idx += 1;
                             num_boards = board_counts[gen_idx];
+                            batch_from = 0;
                             continue;
                         }
                     }
@@ -9601,6 +9648,26 @@ WCMP_P1_SCORE 402.000000
         assert_eq!(census_more_boards(2048, 0, 500, 16), 2048);
         // at least one board a thread
         assert_eq!(census_more_boards(100, 499, 500, 16), 16);
+    }
+
+    #[test]
+    #[inline]
+    fn board_order_takes_every_board_once_the_emptiest_first() {
+        for (from, to, span) in [
+            (0, 0, 1),
+            (0, 10, 1),
+            (0, 256, 72),
+            (8, 16, 5),
+            (16, 32, 7),
+            (3, 4, 9),
+            (100, 300, 72),
+        ] {
+            let order = BoardOrder::new(from, to, span);
+            let got = (0..to - from).map(|k| order.board(k)).collect::<Vec<_>>();
+            let mut want = (from..to).collect::<Vec<_>>();
+            want.sort_by_key(|&b| (b % span, b));
+            assert_eq!(got, want, "{from}..{to} span {span}");
+        }
     }
 
     #[test]
