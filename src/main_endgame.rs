@@ -327,13 +327,21 @@ impl Question {
 }
 
 // how each solve runs: on which arm, within which limits, whether it prints its
-// progress, and after which scoreless turns (the passes and the zeros, as the
-// game counts them)
+// progress, after which scoreless turns (the passes and the zeros, as the game
+// counts them), and under which model with two or more tiles in the bag
 struct Solving {
     lean: bool,
     limits: endgame::Limits,
     quiet: bool,
     scoreless: [u16; 2],
+    peg_model: endgame::PegModel,
+}
+
+// the models of a search with two or more tiles in the bag (endgame::PegModel)
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PegModelArg {
+    InfoSets,
+    RandomDraws,
 }
 
 #[inline(always)]
@@ -530,6 +538,16 @@ struct Cli {
                 --batch may give its own as a sixth field"
     )]
     zeros: u16,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "info-sets",
+        help = "with two or more tiles in the bag, what each player knows after the first move: \
+                info-sets, each player to move chooses blind over every split of the tiles they \
+                cannot see until the bag empties; random-draws, a fast approximation, both \
+                racks then known, each draw averaged over every set of tiles it may bring"
+    )]
+    peg_model: PegModelArg,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -568,6 +586,10 @@ fn main() -> error::Returns<()> {
         },
         quiet: cli.quiet,
         scoreless: [cli.passes, cli.zeros],
+        peg_model: match cli.peg_model {
+            PegModelArg::InfoSets => endgame::PegModel::InfoSets,
+            PegModelArg::RandomDraws => endgame::PegModel::RandomDraws,
+        },
     };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
         (Some(batch_path), Some(kwg_path), None, None) => {
@@ -1583,6 +1605,7 @@ fn solve_position<N: kwg::Node>(
             bag_size,
             score_diff: scaled_score_diff,
             exchanges: [0, 0],
+            model: solving.peg_model,
         })?;
         progress.set_threads(parallelism::available());
         let result = egs.resume_peg(&mut progress, &solving.limits)?;
@@ -1627,8 +1650,14 @@ fn solve_position<N: kwg::Node>(
         };
         writeln!(
             std::io::stdout(),
-            "peg: model = committed, then both racks known and each draw at random; \
-             best move = {}",
+            "peg: model = {}; best move = {}",
+            match solving.peg_model {
+                endgame::PegModel::InfoSets => "each move chosen blind until the bag empties",
+                endgame::PegModel::RandomDraws => {
+                    "random draws, a fast approximation (the first move blind, both racks then \
+                     known, each draw averaged over every set of tiles it may bring)"
+                }
+            },
             named(&result.best_move),
         )?;
         let deals = result
