@@ -3745,12 +3745,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let seed = seed_or_random(seed)?;
 
+    // each multiset's leave from klv0, a share of the lattice a thread
     let mut leave_cur = vec![0i32; lat.len()];
+    let share = lat.len().div_ceil(threads.max(1));
+    std::thread::scope(|s| {
+        for (part, slots) in leave_cur.chunks_mut(share).enumerate() {
+            let (lat, klv) = (&lat, &arc_klv0);
+            s.spawn(move || {
+                let mut tally = vec![0u8; num_letters];
+                for (idx, slot) in (part * share..).zip(slots) {
+                    lat.unrank_into(idx, &mut tally);
+                    *slot = klv.leave_value_from_tally(&tally);
+                }
+            });
+        }
+    });
     let mut tally_buf = vec![0u8; num_letters];
-    for (idx, slot) in leave_cur.iter_mut().enumerate() {
-        lat.unrank_into(idx, &mut tally_buf);
-        *slot = arc_klv0.leave_value_from_tally(&tally_buf);
-    }
 
     let (start_gen, census_run_epoch, resumed) = if let Some(path) = resume {
         let name = std::path::Path::new(&path)
