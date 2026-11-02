@@ -2948,8 +2948,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         } else {
             (*threads).max(1)
         };
-        if state.searched.len() < threads {
-            state.searched.resize_with(threads, Default::default);
+        if state.searched.shards.is_empty() {
+            state.searched = BagValued::new(threads);
         }
 
         while !state.done {
@@ -2971,7 +2971,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         klv: &klv,
                         sub: &mut *sub,
                         mg: &mut mg,
-                        valued: &mut state.searched[0],
+                        valued: &state.searched,
                         limits,
                         exact: true,
                     };
@@ -3017,10 +3017,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             });
             state.next = 0;
             state.pass_exact = true;
-            state
-                .searched
-                .iter_mut()
-                .for_each(|valued| *valued = Default::default());
+            state.searched.deepen();
             state.depth += 1;
         }
         let Some((best, depth)) = state.answer else {
@@ -3040,7 +3037,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // the next move and split not yet taken, so that a costly move's splits
     // spread over the threads. This thread works with sub (its listener and the
     // table lent to it); each other one works with a solver of its own. They
-    // run on one clock; each keeps what it valued below the moves
+    // run on one clock, sharing what they value below the moves
     // (state.searched). Whether a limit stopped the pass; the moves it valued
     // in every split then go first in the order, so a solve resuming the pass
     // goes on after them
@@ -3115,10 +3112,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
                 Ok((mine, false))
             };
-        let (first, others) = state.searched.split_first_mut().unwrap();
+        let valued = &state.searched;
         let shares = std::thread::scope(|s| {
-            let handles = (others.iter_mut().take(threads - 1))
-                .map(|valued| {
+            let handles = (1..threads)
+                .map(|_| {
                     let work = &work;
                     s.spawn(move || {
                         let mut own = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
@@ -3149,7 +3146,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     klv: &klv,
                     sub: &mut *sub,
                     mg,
-                    valued: first,
+                    valued,
                     limits,
                     exact: true,
                 };
@@ -3824,9 +3821,9 @@ fn peg_bag_value(
 
 // the search so far: the moves; the order its pass values them in, the next to
 // value, each one's latest value, and those the pass has valued; whether all
-// the pass's endgames were exact, and its depth; what the pass has valued below
-// the moves; the best move of the deepest pass that valued every move, with
-// that depth, and that pass's values; and whether that answer is final
+// the pass's endgames were exact, and its depth; what the search has valued
+// below the moves; the best move of the deepest pass that valued every move,
+// with that depth, and that pass's values; and whether that answer is final
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -3836,7 +3833,7 @@ struct PegBagState {
     reached: Vec<usize>,
     pass_exact: bool,
     depth: i8,
-    searched: Vec<BagValued>, // a thread's each
+    searched: BagValued,
     answer: Option<(usize, i8)>,
     answered: Vec<Option<PegBagValue>>,
     done: bool,
@@ -4269,13 +4266,55 @@ fn draws_of(bag: &[u8], n: usize) -> Vec<(Vec<u8>, u64)> {
     draws
 }
 
-// what a pass of the search with tiles in the bag has valued: each position's
-// value to its mover with the move that gets it, and each endgame's value to
-// its mover, by key
+// what the search with tiles in the bag has valued, one for all its threads:
+// shards by key, each behind a lock of its own (BagShard)
 #[derive(Default)]
 struct BagValued {
-    nodes: fash::MyHashMap<u64, (f64, movegen::Play)>,
-    endgames: fash::MyHashMap<u64, f64>,
+    shards: Box<[std::sync::Mutex<BagShard>]>,
+}
+
+// one shard of what the search has valued, by key: each position's value to its
+// mover, the move that gets it, and whether no endgame a depth cut short went
+// into it; each endgame's value to its mover, and whether exact; and the move a
+// shallower pass found best at each position not valued exactly, tried first
+#[derive(Default)]
+struct BagShard {
+    nodes: fash::MyHashMap<u64, (f64, movegen::Play, bool)>,
+    endgames: fash::MyHashMap<u64, (f64, bool)>,
+    tried_first: fash::MyHashMap<u64, movegen::Play>,
+}
+
+impl BagValued {
+    // nothing valued yet, in as many shards as threads search
+    fn new(threads: usize) -> Self {
+        Self {
+            shards: (0..threads.max(1)).map(|_| Default::default()).collect(),
+        }
+    }
+
+    // the shard that holds key, locked
+    #[inline(always)]
+    fn shard(&self, key: u64) -> std::sync::MutexGuard<'_, BagShard> {
+        self.shards[key as usize % self.shards.len()]
+            .lock()
+            .unwrap()
+    }
+
+    // for a deeper pass: the exact values kept, and the move found best at each
+    // other position, to be tried first there
+    fn deepen(&mut self) {
+        for shard in self.shards.iter_mut() {
+            let shard = shard.get_mut().unwrap();
+            for (key, (value, play, exact)) in std::mem::take(&mut shard.nodes) {
+                if exact {
+                    shard.nodes.insert(key, (value, play, exact));
+                } else {
+                    shard.tried_first.insert(key, play);
+                }
+            }
+            shard.endgames.retain(|_, &mut (_, exact)| exact);
+        }
+    }
 }
 
 // the search with tiles in the bag: both players know both racks, and a draw is
@@ -4290,28 +4329,37 @@ struct BagSearch<'s, 'a, N: kwg::Node, L: kwg::Node> {
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L>,
     mg: &'s mut movegen::KurniaMoveGenerator,
-    valued: &'s mut BagValued,
+    valued: &'s BagValued,
     limits: &'s BagLimits,
     exact: bool, // cleared by an endgame a limit cut short
 }
 
 impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // a position's value to its mover: the most any move gets them, a tie going
-    // to the move first in in_bag_moves's order. The placements go first,
-    // highest score first; once one has a value, a placement that empties the
-    // bag is only asked whether its endgame is worth little enough for it to be
-    // the best, and is valued only if so (endgame_below)
+    // to the move first in in_bag_moves's order. The move a shallower pass
+    // found best goes first, then the placements, highest score first; once one
+    // has a value, a placement that empties the bag is only asked whether its
+    // endgame is worth little enough for it to be the best, and is valued only
+    // if so (endgame_below)
     fn node(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
-        if let Some(&(value, _)) = self.valued.nodes.get(&key) {
+        let (found, first) = {
+            let shard = self.valued.shard(key);
+            let found = (shard.nodes.get(&key)).map(|&(value, _, exact)| (value, exact));
+            (found, shard.tried_first.get(&key).cloned())
+        };
+        if let Some((value, exact)) = found {
+            self.exact &= exact;
             return Ok(value);
         }
+        let was_exact = std::mem::replace(&mut self.exact, true);
         let mut moves = in_bag_moves(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
         let bag_len = pos.bag_len();
         let mut asked = (0..moves.len()).collect::<Vec<_>>();
         asked.sort_by_key(|&i| match &moves[i] {
-            movegen::Play::Place { score, .. } => (std::cmp::Reverse(*score), i),
-            _ => (std::cmp::Reverse(i32::MIN), i),
+            play if first.as_ref() == Some(play) => (false, std::cmp::Reverse(i32::MAX), i),
+            movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
+            _ => (true, std::cmp::Reverse(i32::MIN), i),
         });
         let mut best = (f64::NEG_INFINITY, usize::MAX);
         for i in asked {
@@ -4342,16 +4390,18 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                 best = (value, i);
             }
         }
-        self.valued
-            .nodes
-            .insert(key, (best.0, moves.swap_remove(best.1)));
+        let exact = self.exact;
+        self.exact = was_exact && exact;
+        (self.valued.shard(key).nodes).insert(key, (best.0, moves.swap_remove(best.1), exact));
         Ok(best.0)
     }
 
     // the value to its mover of a position whose bag is empty: its endgame
     fn endgame(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
-        if let Some(&value) = self.valued.endgames.get(&key) {
+        let found = self.valued.shard(key).endgames.get(&key).copied();
+        if let Some((value, exact)) = found {
+            self.exact &= exact;
             return Ok(value);
         }
         self.sub.init_after_scoreless_turns(
@@ -4360,10 +4410,10 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
             pos.passes as u16,
             pos.zeros as u16,
         );
-        let value = self
-            .sub
-            .solve_in_bag(pos.mover, self.limits, &mut self.exact)? as f64;
-        self.valued.endgames.insert(key, value);
+        let mut exact = true;
+        let value = self.sub.solve_in_bag(pos.mover, self.limits, &mut exact)? as f64;
+        self.exact &= exact;
+        (self.valued.shard(key).endgames).insert(key, (value, exact));
         Ok(value)
     }
 
@@ -4372,7 +4422,9 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // alone, which stops sooner than a search for the value
     fn endgame_below(&mut self, pos: &InBag, beta: f64) -> error::Returns<Option<f64>> {
         let key = pos.key();
-        if let Some(&value) = self.valued.endgames.get(&key) {
+        let found = self.valued.shard(key).endgames.get(&key).copied();
+        if let Some((value, exact)) = found {
+            self.exact &= exact;
             return Ok((value < beta).then_some(value));
         }
         self.sub.init_after_scoreless_turns(
@@ -4381,12 +4433,12 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
             pos.passes as u16,
             pos.zeros as u16,
         );
+        let mut exact = true;
         let value =
-            self.sub
-                .solve_in_bag_below(pos.mover, beta as f32, self.limits, &mut self.exact)?
-                as f64;
+            (self.sub).solve_in_bag_below(pos.mover, beta as f32, self.limits, &mut exact)? as f64;
+        self.exact &= exact;
         if value < beta {
-            self.valued.endgames.insert(key, value);
+            (self.valued.shard(key).endgames).insert(key, (value, exact));
             Ok(Some(value))
         } else {
             Ok(None)
@@ -4539,7 +4591,8 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // player making the move node found best
     fn node_win(&mut self, pos: &InBag, t: f64) -> error::Returns<f64> {
         self.node(pos)?;
-        let play = self.valued.nodes[&pos.key()].1.clone();
+        let key = pos.key();
+        let play = self.valued.shard(key).nodes[&key].1.clone();
         self.move_win(pos, &play, t)
     }
 }
