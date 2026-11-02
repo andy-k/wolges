@@ -900,6 +900,7 @@ fn scatter_words(
 pub struct ApportionBoard<'a> {
     pub sheet: &'a [i32],
     pub leave: &'a [i32],
+    pub leave_max: &'a [i32], // subset_max_transform of leave
     pub unseen: &'a [u8],
 }
 
@@ -931,6 +932,7 @@ pub fn apportion_fused(
     let ApportionBoard {
         sheet,
         leave,
+        leave_max,
         unseen,
     } = *board;
     let ApportionMode {
@@ -945,7 +947,7 @@ pub fn apportion_fused(
     if subset_max {
         subset_max_transform(lat, add, sheet, maxsheet);
     } else if scatter_active {
-        subset_max_transform(lat, add, leave, maxsheet);
+        maxsheet.copy_from_slice(leave_max);
         scatter_words(lat, sheet, leave, unseen, maxsheet);
     }
     let best_from_maxsheet = subset_max || scatter_active;
@@ -1777,72 +1779,79 @@ mod tests {
         // each way apportion_fused can go against apportion_table. The add
         // table is by index alone or by letter too. The pool holds every letter
         // or lacks one (whose superset pass is then skipped), and may hold a
-        // full rack of the last letter (each size's first multiset)
+        // full rack of the last letter (each size's first multiset). Plays
+        // score up to 20,000 or 1,000 against leaves of -4,000 to 4,000, so a
+        // rack's best is a play, or often an exchange
         let lat = MultisetLattice::new(4, 4).unwrap();
-        let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
-        let mut leave = vec![0i32; lat.len()];
-        for idx in 0..lat.len() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
-            if (h & 3) != 0 {
-                sheet[idx] = h.rem_euclid(20_000);
+        for top in [20_000, 1_000] {
+            let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
+            let mut leave = vec![0i32; lat.len()];
+            for idx in 0..lat.len() {
+                let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+                if (h & 3) != 0 {
+                    sheet[idx] = h.rem_euclid(top);
+                }
+                leave[idx] = h.rem_euclid(8_000) - 4_000;
             }
-            leave[idx] = h.rem_euclid(8_000) - 4_000;
-        }
-        let mut best = vec![UNPLAYABLE; lat.len()];
-        best_equity_table(&lat, &sheet, &leave, &mut best);
-        let tables = [
-            AddTable::new(&lat),
-            AddTable::new(&lat).with_letter_passes(3),
-        ];
-        let mut maxsheet = vec![0i32; lat.len()];
+            let mut best = vec![UNPLAYABLE; lat.len()];
+            best_equity_table(&lat, &sheet, &leave, &mut best);
+            let tables = [
+                AddTable::new(&lat),
+                AddTable::new(&lat).with_letter_passes(3),
+            ];
+            let mut leave_max = vec![0i32; lat.len()];
+            subset_max_transform(&lat, &tables[0], &leave, &mut leave_max);
+            let mut maxsheet = vec![0i32; lat.len()];
 
-        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
-            let mut num_a = vec![0f64; lat.len()];
-            let mut den_a = vec![0f64; lat.len()];
-            apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
-            for (by_letter, add) in tables.iter().enumerate() {
-                for scatter in [false, true] {
-                    for zeta in [false, true] {
-                        let lo = lat.full_rack_start();
-                        let mut num_b = vec![0f64; lo];
-                        let mut den_b = vec![0f64; lo];
-                        let mut ways_b = vec![0f64; lat.len() - lo];
-                        // what a board before leaves there, never read back
-                        maxsheet.fill(UNPLAYABLE);
-                        apportion_fused(
-                            &lat,
-                            add,
-                            &ApportionBoard {
-                                sheet: &sheet,
-                                leave: &leave,
-                                unseen: &unseen,
-                            },
-                            ApportionOut {
-                                num: &mut num_b,
-                                den: &mut den_b,
-                                ways: &mut ways_b,
-                            },
-                            &mut maxsheet,
-                            ApportionMode {
-                                zeta,
-                                null_leave: false,
-                                scatter,
-                            },
-                        );
-                        let case = (unseen, by_letter, zeta, scatter);
-                        for idx in 0..lo {
-                            assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
-                            assert_eq!(den_a[idx], den_b[idx], "den at {idx} {case:?}");
-                        }
-                        // a full rack: its deals, and its best for each
-                        for (idx, &ways) in (lo..).zip(&ways_b) {
-                            assert_eq!(den_a[idx], ways, "ways at {idx} {case:?}");
-                            let num = if ways == 0.0 {
-                                0.0
-                            } else {
-                                ways * maxsheet[idx] as f64
-                            };
-                            assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
+            for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
+                let mut num_a = vec![0f64; lat.len()];
+                let mut den_a = vec![0f64; lat.len()];
+                apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+                for (by_letter, add) in tables.iter().enumerate() {
+                    for scatter in [false, true] {
+                        for zeta in [false, true] {
+                            let lo = lat.full_rack_start();
+                            let mut num_b = vec![0f64; lo];
+                            let mut den_b = vec![0f64; lo];
+                            let mut ways_b = vec![0f64; lat.len() - lo];
+                            // what a board before leaves there, never read back
+                            maxsheet.fill(UNPLAYABLE);
+                            apportion_fused(
+                                &lat,
+                                add,
+                                &ApportionBoard {
+                                    sheet: &sheet,
+                                    leave: &leave,
+                                    leave_max: &leave_max,
+                                    unseen: &unseen,
+                                },
+                                ApportionOut {
+                                    num: &mut num_b,
+                                    den: &mut den_b,
+                                    ways: &mut ways_b,
+                                },
+                                &mut maxsheet,
+                                ApportionMode {
+                                    zeta,
+                                    null_leave: false,
+                                    scatter,
+                                },
+                            );
+                            let case = (top, unseen, by_letter, zeta, scatter);
+                            for idx in 0..lo {
+                                assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
+                                assert_eq!(den_a[idx], den_b[idx], "den at {idx} {case:?}");
+                            }
+                            // a full rack: its deals, and its best for each
+                            for (idx, &ways) in (lo..).zip(&ways_b) {
+                                assert_eq!(den_a[idx], ways, "ways at {idx} {case:?}");
+                                let num = if ways == 0.0 {
+                                    0.0
+                                } else {
+                                    ways * maxsheet[idx] as f64
+                                };
+                                assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
+                            }
                         }
                     }
                 }
@@ -1869,6 +1878,8 @@ mod tests {
             AddTable::new(&lat),
             AddTable::new(&lat).with_letter_passes(3),
         ];
+        let mut leave_max = vec![0i32; lat.len()];
+        subset_max_transform(&lat, &tables[0], &leave, &mut leave_max);
         let mut maxsheet = vec![0i32; lat.len()];
 
         for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
@@ -1890,6 +1901,7 @@ mod tests {
                             &ApportionBoard {
                                 sheet: &sheet,
                                 leave: &leave,
+                                leave_max: &leave_max,
                                 unseen: &unseen,
                             },
                             ApportionOut {
