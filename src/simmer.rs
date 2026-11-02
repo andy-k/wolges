@@ -90,6 +90,7 @@ pub struct Simmer<R = DefaultRng> {
     num_tiles_that_matter: usize,
     win_prob_weightage: f64,
     wants_win_prob: bool,
+    opponents_pass: bool, // every seat but the mover's passes in a rollout
 
     game_state: game_state::GameState,
     last_seen_leave_values: Box<[i32]>,
@@ -129,6 +130,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             num_tiles_that_matter: 0,
             win_prob_weightage: 0.0,
             wants_win_prob: false,
+            opponents_pass: false,
 
             game_state: game_state::GameState::new(game_config),
             last_seen_leave_values: vec![0i32; game_config.num_players() as usize]
@@ -169,7 +171,16 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         );
         clone.kept_leaves.clone_from(&self.kept_leaves);
         clone.kept_weight_sums.clone_from(&self.kept_weight_sums);
+        clone.opponents_pass = self.opponents_pass;
         clone
+    }
+
+    // whether every seat but the mover's passes on each of its turns in a
+    // rollout: a play valued as if the opponent could make nothing of what it
+    // leaves. Off unless set; prepare leaves it as it is.
+    #[inline(always)]
+    pub fn set_opponents_pass(&mut self, opponents_pass: bool) {
+        self.opponents_pass = opponents_pass;
     }
 
     #[inline(always)]
@@ -375,6 +386,10 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         {
             if ply == 0 {
                 next_play.clone_from(candidate_play);
+            } else if self.opponents_pass && self.game_state.turn != self.initial_game_state.turn {
+                next_play = movegen::Play::Exchange {
+                    tiles: [][..].into(),
+                };
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
                 next_play = self
                     .reply_at_ply_one::<LEAN, _, _>(
@@ -1364,6 +1379,59 @@ mod tests {
         }
         assert!(checked > 50, "{checked} checked");
         assert!(placed > 50, "{placed} plies placed tiles");
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_whose_opponents_pass_plays_only_the_movers_plies() {
+        // with the opponents passing, every ply of theirs is a pass; the
+        // mover's are found as before, and some of them place tiles
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let no_tables = anagrams::ArmTables::None;
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut field = movegen::KurniaMoveGenerator::new(&game_config);
+        let (mut theirs, mut ours_placed) = (0usize, 0usize);
+        for seed in 0..8u64 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(seed);
+            game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+            field.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 10,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            let mut simmer = Simmer::new(&game_config).unwrap();
+            simmer.prepare(&game_config, &game_state, 4, true, &[]);
+            simmer.set_opponents_pass(true);
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            for candidate in field.plays.iter().map(|m| &m.play) {
+                simmer
+                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .unwrap();
+                for (i, ply) in simmer.plies_played().iter().enumerate() {
+                    if i % 2 == 0 {
+                        assert_eq!((ply.score, ply.tiles), (0, 0), "seed {seed}");
+                        theirs += 1;
+                    } else if ply.tiles > 0 {
+                        ours_placed += 1;
+                    }
+                }
+            }
+        }
+        assert!(theirs > 50, "{theirs} of their plies");
+        assert!(ours_placed > 20, "{ours_placed} of ours placed tiles");
     }
 
     #[test]
