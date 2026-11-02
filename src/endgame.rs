@@ -9547,6 +9547,174 @@ mod tests {
         );
     }
 
+    // the value to its mover of a position with tiles in the bag found with
+    // nothing ruled out: every move valued (bag_reference_move), the most kept;
+    // a position whose bag is empty is the endgame's, each other one valued once
+    #[allow(clippy::too_many_arguments)]
+    fn bag_reference<N: kwg::Node, L: kwg::Node>(
+        gc: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        mg: &mut movegen::KurniaMoveGenerator,
+        own: &mut EndgameSolver<'_, N, L>,
+        known: &mut fash::MyHashMap<u64, f64>,
+        pos: &super::InBag,
+    ) -> f64 {
+        if pos.bag_len() == 0 {
+            let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+            own.init_after_scoreless_turns(&pos.board, racks, pos.passes as u16, pos.zeros as u16);
+            return own.solve(pos.mover).unwrap().raw() as f64;
+        }
+        let key = pos.key();
+        if let Some(&value) = known.get(&key) {
+            return value;
+        }
+        let mut value = f64::NEG_INFINITY;
+        for play in super::in_bag_moves(gc, kwg, arm_tables, klv, mg, pos) {
+            let of_play = bag_reference_move(gc, kwg, arm_tables, klv, mg, own, known, pos, &play);
+            value = value.max(of_play);
+        }
+        known.insert(key, value);
+        value
+    }
+
+    // a move's value to its mover, as bag_reference finds it: a placement's
+    // score less the next mover's value over each draw, weighed by the deals; a
+    // pass the game's end or less the next mover's value
+    #[allow(clippy::too_many_arguments)]
+    fn bag_reference_move<N: kwg::Node, L: kwg::Node>(
+        gc: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        mg: &mut movegen::KurniaMoveGenerator,
+        own: &mut EndgameSolver<'_, N, L>,
+        known: &mut fash::MyHashMap<u64, f64>,
+        pos: &super::InBag,
+        play: &movegen::Play,
+    ) -> f64 {
+        match play {
+            movegen::Play::Place { word, score, .. } => {
+                let placed = pos.placed(gc, play);
+                let n = (word.iter().filter(|&&tile| tile != 0).count()).min(pos.bag_len());
+                let (mut sum, mut total) = (0.0, 0u64);
+                for (drawn, ways) in super::draws_of(&pos.bag, n) {
+                    let mut next = placed.clone();
+                    next.draw(&drawn);
+                    next.next_turn();
+                    let theirs = bag_reference(gc, kwg, arm_tables, klv, mg, own, known, &next);
+                    sum += ways as f64 * theirs;
+                    total += ways;
+                }
+                *score as f64 - sum / total as f64
+            }
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                let mut next = pos.clone();
+                next.passes = pos.passes.saturating_add(1);
+                next.zeros = pos.zeros.saturating_add(1);
+                if super::scoreless_turns_end(gc, Some(&pos.board), next.passes, next.zeros) {
+                    return pos.racks_lost(gc);
+                }
+                next.next_turn();
+                -bag_reference(gc, kwg, arm_tables, klv, mg, own, known, &next)
+            }
+            movegen::Play::Exchange { .. } => unreachable!("too few in the bag to exchange"),
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_bag_search_values_each_move_as_a_search_that_rules_nothing_out() {
+        // every move's mean margin with two or three in the bag, against
+        // bag_reference's over the same splits: whatever the search rules out
+        // unvalued never changes a value. Passes and one-tile placements leave
+        // tiles in the bag to the next mover
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let (mut checked, mut leaving) = (0, 0);
+        for (unseen, bag_size) in [
+            (&[1u8, 2, 8][..], 2),
+            (&[1, 8, 20, 20], 2),
+            (&[2, 8, 20, 20], 3),
+            (&[1, 1, 2, 8, 20], 3),
+        ] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in unseen {
+                unseen_tally[tile as usize] += 1;
+            }
+            for &x in &tiles {
+                for &y in &tiles {
+                    let position = bag_position(&board, &[x, y], &unseen_tally, bag_size, e(1000));
+                    let result = egs
+                        .solve_peg(position.clone(), &super::Limits::NONE)
+                        .unwrap()
+                        .unwrap();
+                    assert!(result.exact);
+                    let progress = super::PegBagProgress::new(position.clone()).unwrap();
+                    let mut known = fash::MyHashMap::default();
+                    for (play, _, margin) in &result.moves {
+                        let (mut sum, mut total) = (0.0, 0u64);
+                        for (opp_rack, bag, ways) in &progress.splits {
+                            let pos = super::InBag {
+                                board: board.clone(),
+                                racks: [progress.position.mover_rack.clone(), opp_rack.clone()],
+                                bag: bag.clone(),
+                                mover: 0,
+                                passes: 0,
+                                zeros: 0,
+                                exchanges: [0, 0],
+                            };
+                            let value = bag_reference_move(
+                                &gc,
+                                &kwg,
+                                &arm_tables,
+                                &klv,
+                                &mut mg,
+                                &mut own,
+                                &mut known,
+                                &pos,
+                                play,
+                            );
+                            sum += *ways as f64 * (value + 1000.0);
+                            total += ways;
+                        }
+                        let want = sum / total as f64;
+                        let case = (unseen, bag_size, x, y);
+                        assert!(
+                            (margin.raw() as f64 - want).abs() <= 1.0,
+                            "{case:?}: {margin:?} against {want}"
+                        );
+                        if match play {
+                            movegen::Play::Place { word, .. } => {
+                                word.iter().filter(|&&tile| tile != 0).count() < bag_size
+                            }
+                            movegen::Play::Exchange { .. } => true,
+                        } {
+                            leaving += 1;
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 500 && leaving > 500,
+            "{checked} moves, {leaving} leaving the bag"
+        );
+    }
+
     #[test]
     #[inline]
     fn a_bag_search_exchanges_and_draws_at_random() {
