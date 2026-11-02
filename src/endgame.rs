@@ -2938,6 +2938,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 });
             }
             state.valued = state.moves.iter().map(|_| None).collect();
+            state.took = vec![std::time::Duration::ZERO; state.moves.len() * splits.len()];
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
@@ -3034,13 +3035,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     // a pass's moves from state.next on, valued on threads. Each thread takes
-    // the next move and split not yet taken, so that a costly move's splits
-    // spread over the threads. This thread works with sub (its listener and the
-    // table lent to it); each other one works with a solver of its own. They
-    // run on one clock, sharing what they value below the moves
-    // (state.searched). Whether a limit stopped the pass; the moves it valued
-    // in every split then go first in the order, so a solve resuming the pass
-    // goes on after them
+    // the next move and split not yet taken, the costliest by the pass before
+    // first: a costly move's splits spread over the threads, and none is begun
+    // as the others end. This thread works with sub (its listener and the table
+    // lent to it); each other one works with a solver of its own. They run on
+    // one clock, sharing what they value below the moves (state.searched).
+    // Whether a limit stopped the pass; the moves it valued in every split then
+    // go first in the order, so a solve resuming the pass goes on after them
     #[allow(clippy::too_many_arguments)]
     fn value_on_threads(
         sub: &mut Self,
@@ -3065,6 +3066,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let num_splits = splits.len();
         let tasks = rest * num_splits;
         let next = AtomicUsize::new(0);
+        // the tasks (each a move's place in the rest of the order and a split),
+        // the costliest by the pass before first, ties in the order
+        let mut taking = (0..tasks).collect::<Vec<_>>();
+        taking.sort_by_key(|&task| {
+            let i = state.order[base + task / num_splits];
+            std::cmp::Reverse(state.took[i * num_splits + task % num_splits])
+        });
         // each move's splits not yet valued, and the moves valued in every one
         let unvalued = (0..rest)
             .map(|_| AtomicUsize::new(num_splits))
@@ -3076,26 +3084,27 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let (order, moves) = (&state.order, &state.moves);
         // a thread's share: each move and split it valued (by its task, the
         // move's place in the rest of the order times the splits, plus the
-        // split's), with the value, the chance to win, and whether it was exact;
-        // and whether a limit stopped it
-        type Share = (Vec<(usize, f64, f64, bool)>, bool);
+        // split's), with the value, the chance to win, whether it was exact, and
+        // the time it took; and whether a limit stopped it
+        type Share = (Vec<(usize, f64, f64, bool, std::time::Duration)>, bool);
         let work =
             |search: &mut BagSearch<'_, '_, N, L>, limits: &BagLimits| -> error::Returns<Share> {
                 let mut mine = Vec::new();
                 while !stop.load(Relaxed) {
-                    let task = next.fetch_add(1, Relaxed);
-                    if task >= tasks {
+                    let Some(&task) = taking.get(next.fetch_add(1, Relaxed)) else {
                         break;
-                    }
+                    };
                     let (m, s) = (task / num_splits, task % num_splits);
                     limits
                         .may_stop
                         .set(deepens && (answered || moves_valued.load(Relaxed) > 0));
                     search.exact = true;
                     let play = &moves[order[base + m]];
+                    let began = limits.t0.elapsed();
                     match value_root_split(search, &splits[s], at, play, score_diff) {
                         Ok((value, win)) => {
-                            mine.push((task, value, win, search.exact));
+                            let took = limits.t0.elapsed().saturating_sub(began);
+                            mine.push((task, value, win, search.exact, took));
                             if unvalued[m].fetch_sub(1, Relaxed) == 1 {
                                 moves_valued.fetch_add(1, Relaxed);
                             }
@@ -3161,8 +3170,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         for share in shares {
             let (mine, stopped_here) = share?;
             stopped |= stopped_here;
-            for (task, value, win, exact) in mine {
+            for (task, value, win, exact, took) in mine {
                 found[task] = Some((value, win, exact));
+                let i = state.order[base + task / num_splits];
+                state.took[i * num_splits + task % num_splits] = took;
             }
         }
         let (mut taken, mut left) = (Vec::new(), Vec::new());
@@ -3820,7 +3831,8 @@ fn peg_bag_value(
 }
 
 // the search so far: the moves; the order its pass values them in, the next to
-// value, each one's latest value, and those the pass has valued; whether all
+// value, each one's latest value, the time each of its splits took on threads
+// in the latest pass to value it, and those the pass has valued; whether all
 // the pass's endgames were exact, and its depth; what the search has valued
 // below the moves; the best move of the deepest pass that valued every move,
 // with that depth, and that pass's values; and whether that answer is final
@@ -3830,6 +3842,7 @@ struct PegBagState {
     order: Vec<usize>,
     next: usize,
     valued: Vec<Option<PegBagValue>>,
+    took: Vec<std::time::Duration>,
     reached: Vec<usize>,
     pass_exact: bool,
     depth: i8,
