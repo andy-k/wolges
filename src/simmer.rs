@@ -212,7 +212,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 .max()
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
-        self.num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
+        self.num_tiles_that_matter = num_sim_plies.saturating_mul(game_config.rack_size() as usize);
         let mut num_unseen_tiles = self.initial_game_state.bag.len();
         let initial_turn = self.initial_game_state.turn as usize;
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
@@ -377,13 +377,28 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         };
         // once the bag is empty, keep playing past the horizon: with nothing
         // left to draw, the rollout plays out the endgame with the generator's
-        // endgame moves, up to a cap in case no run of scoreless turns ends the
-        // game
-        let num_plies_cap = self.num_sim_plies
-            + 2 * game_config.num_players() as usize * game_config.rack_size() as usize;
+        // endgame moves until the game ends. Once each seat the generator moves
+        // has had to pass in a row since tiles last moved, nothing can change;
+        // where passes can then never end the game under its rules, the rollout
+        // stops there whatever its horizon.
+        let seats_moving = if self.opponents_pass {
+            1
+        } else {
+            game_config.num_players() as usize
+        };
+        let mut forced_passes = 0;
         let mut ply = 0;
-        while ply <= self.num_sim_plies || (self.game_state.bag.is_empty() && ply <= num_plies_cap)
+        while (ply <= self.num_sim_plies || self.game_state.bag.is_empty())
+            && (forced_passes < seats_moving
+                || game_config.num_passes_to_end() != 0
+                || (game_config.num_zeros_to_end() != 0
+                    && (game_config.zeros_can_end_empty_board()
+                        || self.game_state.board_tiles.iter().any(|&tile| tile != 0))))
         {
+            // whether the generator picks this ply's move: not the candidate's,
+            // nor a pass the opponents make by choice
+            let generated = ply > 0
+                && !(self.opponents_pass && self.game_state.turn != self.initial_game_state.turn);
             if ply == 0 {
                 next_play.clone_from(candidate_play);
             } else if self.opponents_pass && self.game_state.turn != self.initial_game_state.turn {
@@ -445,6 +460,14 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             } else {
                 self.game_state.play(game_config, rng, &next_play)?;
             }
+            match &next_play {
+                movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                    if generated {
+                        forced_passes += 1;
+                    }
+                }
+                _ => forced_passes = 0,
+            }
             match self
                 .game_state
                 .check_game_ended(game_config, &mut self.final_scores)?
@@ -462,9 +485,9 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             self.game_state.next_turn();
             ply += 1;
         }
-        // if the cap is reached with the bag empty and the game not over, each
-        // player keeps their rack to the end and draws nothing, so value it as
-        // the generator values a rack it keeps, not by the leave table
+        // if the rollout stops before the game ends while the bag is empty,
+        // each player keeps their rack to the end with nothing to draw: value
+        // it as the generator values a rack it keeps, not by the leave table
         if self.game_state.bag.is_empty() {
             let alphabet = game_config.alphabet();
             for (value, player) in self
@@ -819,19 +842,17 @@ mod tests {
         assert_eq!(simmer.final_equity_spread().unwrap(), 55 * equity::SCALE);
     }
 
-    #[test]
-    #[inline]
-    fn a_rollout_plays_the_endgame_out_once_the_bag_is_empty() {
-        let game_config = game_config::make_english_game_config();
+    // the bag emptied onto the board: the mover holds A and B (4 points) and
+    // the opponent Q (10 points); every other tile, a blank as A among them, is
+    // on the board, so the generator, which counts the bag from the board,
+    // knows the bag is empty
+    fn a_bag_emptied_onto_the_board(
+        game_config: &game_config::GameConfig,
+    ) -> game_state::GameState {
         let alphabet = game_config.alphabet();
-        let mut game_state = game_state::GameState::new(&game_config);
-        // the mover holds A and B (4 points), the opponent Q (10 points)
+        let mut game_state = game_state::GameState::new(game_config);
         game_state.players[0].rack.extend_from_slice(&[1, 2]);
         game_state.players[1].rack.push(17);
-        assert_eq!(alphabet.rack_score(&game_state.players[0].rack), 4);
-        assert_eq!(alphabet.rack_score(&game_state.players[1].rack), 10);
-        // every other tile is on the board, a blank as A, so the bag is empty
-        // and the generator, which counts the bag from the board, knows it
         let mut tally = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile))
             .collect::<Vec<_>>();
@@ -848,6 +869,18 @@ mod tests {
             }
         }
         game_state.bag.set_from_iter(std::iter::empty());
+        game_state
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_plays_the_endgame_out_once_the_bag_is_empty() {
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        let game_state = a_bag_emptied_onto_the_board(&game_config);
+        // the mover holds A and B (4 points), the opponent Q (10 points)
+        assert_eq!(alphabet.rack_score(&game_state.players[0].rack), 4);
+        assert_eq!(alphabet.rack_score(&game_state.players[1].rack), 10);
 
         // with no words, every ply passes, past the two-ply horizon, until the
         // sixth scoreless turn in a row ends the game
@@ -870,6 +903,56 @@ mod tests {
         // a game that ends on scoreless turns takes each player's own tiles off
         // their score, so the mover is ahead by 6 points
         assert_eq!(simmer.final_equity_spread().unwrap(), 6 * equity::SCALE);
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_with_no_horizon_ends_where_the_game_does() {
+        // plies past any horizon, as many as there can be: with no words every
+        // ply passes. Under the english rules the sixth scoreless turn in a row
+        // ends the game. Under rules where passes never end a game, the rollout
+        // stops once each seat the generator moves has had to pass, whatever
+        // its horizon: two plies after the candidate whichever way the opponent
+        // passes. Each rack is valued as kept to the end with the game not
+        // over: our A and B against the opponent's Q.
+        let english = game_config::make_english_game_config();
+        let mut endless = english.clone();
+        let game_config::GameConfig::Static(rules) = &mut endless;
+        rules.num_passes_to_end = 0;
+        rules.num_zeros_to_end = 0;
+        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        for (game_config, plies, opponents_pass, ended, played, zero_turns, spread) in [
+            (&english, usize::MAX, false, true, 5, 6, 6),
+            (&english, usize::MAX, true, true, 5, 6, 6),
+            (&endless, usize::MAX, false, false, 2, 3, 12),
+            (&endless, usize::MAX, true, false, 2, 3, 12),
+            (&endless, 5, false, false, 2, 3, 12),
+            (&endless, 0, true, false, 2, 3, 12),
+        ] {
+            let case = (plies, opponents_pass, ended);
+            let game_state = a_bag_emptied_onto_the_board(game_config);
+            let arm_tables = anagrams::ArmTables::build(&kwg, game_config, false).unwrap();
+            let mut simmer = Simmer::new(game_config).unwrap();
+            simmer.reseed(5);
+            simmer.prepare(game_config, &game_state, plies, false, &[]);
+            simmer.set_opponents_pass(opponents_pass);
+            simmer.prepare_iteration();
+            let game_ended = simmer
+                .simulate(game_config, &kwg, &arm_tables, &klv, &pass)
+                .unwrap();
+            assert_eq!(game_ended, ended, "{case:?}");
+            assert_eq!(simmer.plies_played().len(), played, "{case:?}");
+            assert_eq!(simmer.game_state.zero_turns, zero_turns, "{case:?}");
+            assert_eq!(
+                simmer.final_equity_spread().unwrap(),
+                spread * equity::SCALE,
+                "{case:?}"
+            );
+        }
     }
 
     #[test]
