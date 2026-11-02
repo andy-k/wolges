@@ -683,6 +683,308 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
         .collect())
 }
 
+// the opponent's best reply to a move, over every rack they could hold: the
+// mean and the variance of its equity, in points, as the census sheet values a
+// reply (its score, with the opening's adjustment, and the leave it keeps; an
+// exchange only when the bag allows one, a pass only when nothing else is
+// legal), and the chance that their rack can play all its tiles
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reply {
+    pub mean: f64,
+    pub variance: f64,
+    pub bingo: f64,
+}
+
+// a reply's sums over the racks, each rack counted as many times as the pool
+// can deal it, in millipoints
+#[derive(Clone, Copy, Default)]
+struct ReplySums {
+    deals: u64,
+    equity: i128,
+    squares: i128,
+    bingos: u64,
+}
+
+impl ReplySums {
+    #[inline(always)]
+    fn add(&mut self, other: &Self) {
+        self.deals += other.deals;
+        self.equity += other.equity;
+        self.squares += other.squares;
+        self.bingos += other.bingos;
+    }
+
+    // the reply they sum to, over all deals of the pool
+    #[inline(always)]
+    fn reply(&self, deals: u64) -> Reply {
+        let scale = equity::SCALE as f64;
+        let n = deals as i128;
+        Reply {
+            mean: self.equity as f64 / deals as f64 / scale,
+            variance: (n * self.squares - self.equity * self.equity) as f64
+                / (deals as f64 * deals as f64)
+                / (scale * scale),
+            bingo: self.bingos as f64 / deals as f64,
+        }
+    }
+}
+
+// C(n, k), exactly: each step's product is the next binomial times its divisor
+#[inline(always)]
+fn binom(n: usize, k: usize) -> u64 {
+    if k > n {
+        return 0;
+    }
+    (0..k).fold(1u64, |c, i| c * (n - i) as u64 / (i + 1) as u64)
+}
+
+// the reply's sums over every full rack that holds the kept tiles (a tally) and
+// draws the rest from the pool less them, each rack's best reply as
+// best_equity_of gives it (its own leave, a pass, when it has no other); the
+// draws walked as weigh_racks walks them, on this many threads when they are
+// many
+#[inline]
+fn reply_sums(
+    lat: &census::MultisetLattice,
+    sheet: &[i32],
+    leave: &[i32],
+    pool: &[u8],
+    kept: &[u8],
+    threads: usize,
+) -> error::Returns<ReplySums> {
+    // a wasm build has no threads
+    let threads = if cfg!(target_family = "wasm") {
+        1
+    } else {
+        threads
+    };
+    let num_letters = lat.num_letters();
+    let avail = pool
+        .iter()
+        .zip(kept)
+        .map(|(&u, &k)| u - k)
+        .collect::<Vec<_>>();
+    let left = lat.rack_size() - kept.iter().map(|&c| c as usize).sum::<usize>();
+    let mut cap = vec![0usize; num_letters + 1];
+    for t in (0..num_letters).rev() {
+        cap[t] = cap[t + 1] + avail[t] as usize;
+    }
+    // the ways to draw so many of each letter from what is left of it
+    let ways = (avail.iter())
+        .map(|&u| (0..=left).map(|r| binom(u as usize, r)).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let add_rack = |drawn: &[u8], rack: &mut [u8], sums: &mut ReplySums| {
+        for (r, (&d, &k)) in rack.iter_mut().zip(drawn.iter().zip(kept)) {
+            *r = d + k;
+        }
+        let deals = (drawn.iter().zip(&ways))
+            .map(|(&d, ways)| ways[d as usize])
+            .product::<u64>();
+        let rank = lat.rank(rack) as usize;
+        let mut best = census::best_equity_of(lat, sheet, leave, rack);
+        if best < i32::MIN / 8 {
+            best = leave[rank];
+        }
+        sums.deals += deals;
+        sums.equity += deals as i128 * best as i128;
+        sums.squares += deals as i128 * (best as i128 * best as i128);
+        // only a play of every tile is entered for the whole rack, and it
+        // scores at least its bonus
+        if sheet[rank] > 0 {
+            sums.bingos += deals;
+        }
+    };
+    let mut sums = ReplySums::default();
+    if threads <= 1 || count_tallies_of_size(&avail, left) < WEIGH_ACROSS_THREADS_FROM {
+        let mut cur = vec![0u8; num_letters];
+        let mut rack = vec![0u8; num_letters];
+        each_tally_of_size(&avail, &cap, 0, left, &mut cur, &mut |drawn| {
+            add_rack(drawn, &mut rack, &mut sums)
+        });
+        return Ok(sums);
+    }
+    // the draws in chunks by the counts of their first k letters, as
+    // weigh_racks cuts them; the sums are exact, so the threads add theirs in
+    // any order
+    let mut k = 1;
+    let mut prefixes: Vec<(Vec<u8>, usize)> = Vec::new();
+    loop {
+        prefixes.clear();
+        let mut cur = vec![0u8; num_letters];
+        each_prefix_of_size(&avail, &cap, 0, k, left, &mut cur, &mut |prefix, left| {
+            prefixes.push((prefix.to_vec(), left));
+        });
+        if prefixes.len() >= threads * CHUNKS_A_THREAD || k >= num_letters {
+            break;
+        }
+        k += 1;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        let handles = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut cur = vec![0u8; num_letters];
+                    let mut rack = vec![0u8; num_letters];
+                    let mut mine = ReplySums::default();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((prefix, left)) = prefixes.get(i) else {
+                            break;
+                        };
+                        cur[..k].copy_from_slice(prefix);
+                        each_tally_of_size(&avail, &cap, k, *left, &mut cur, &mut |drawn| {
+                            add_rack(drawn, &mut rack, &mut mine)
+                        });
+                    }
+                    mine
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            match handle.join() {
+                Ok(theirs) => sums.add(&theirs),
+                Err(_) => return_error!("a thread weighing replies panicked".into()),
+            }
+        }
+        Ok(sums)
+    })
+}
+
+// the opponent's reply to a move, the board the one before it and the rack the
+// mover's then: the opponent holds a full rack of what the mover could not see,
+// and may exchange when the bag the mover draws from still holds enough after.
+// Their rack is any full rack of that pool, by its chance to be dealt; or,
+// given the leaves their last move kept as kept_leaves weighs them, one of
+// those, by its weight, drawn to a full rack from the rest of the pool by the
+// draw's chance, as a sim draws it. None when there is no bag to reply from:
+// the pool holds no more than a rack, or the mover's draw empties the bag (an
+// endgame, the solver's). The racks are weighed on this many threads.
+#[inline]
+pub fn reply_to<N: kwg::Node, L: kwg::Node>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    mover_rack: &[u8],
+    kept: &[(Vec<u8>, f64)],
+    play: &movegen::Play,
+    threads: usize,
+) -> error::Returns<Option<Reply>> {
+    let game_config = board_snapshot.game_config;
+    let num_letters = game_config.alphabet().len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let mut pool = game_config.tiles_off_board(board_snapshot.board_tiles)?;
+    game_config.take_rack(&mut pool, mover_rack)?;
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    if pool_size <= rack_size {
+        return Ok(None);
+    }
+    let bag = pool_size - rack_size;
+    let mut held = vec![0u8; num_letters];
+    for &tile in mover_rack {
+        held[tile as usize] += 1;
+    }
+    let mut used = vec![0u8; num_letters];
+    let mut board_tiles = board_snapshot.board_tiles.to_vec();
+    // the tiles the mover draws after it: as many as it places (an exchange
+    // leaves the bag as it was)
+    let drawn = match play {
+        movegen::Play::Exchange { tiles } => {
+            if !tiles.is_empty() && bag < game_config.exchange_tile_limit() as usize {
+                return_error!("the bag is too small to exchange".into());
+            }
+            for &tile in tiles.iter() {
+                *used.get_mut(tile as usize).ok_or("no such tile")? += 1;
+            }
+            0
+        }
+        movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            ..
+        } => {
+            let strider = game_config.board_layout().dim().lane(*down, *lane);
+            for (i, &tile) in (*idx..).zip(word.iter()) {
+                if tile != 0 {
+                    board_tiles[strider.at(i)] = tile;
+                    *used
+                        .get_mut(if tile & 0x80 != 0 { 0 } else { tile as usize })
+                        .ok_or("no such tile")? += 1;
+                }
+            }
+            used.iter().map(|&c| c as usize).sum()
+        }
+    };
+    if used.iter().zip(&held).any(|(&u, &h)| u > h) {
+        return_error!("the move uses tiles the mover does not hold".into());
+    }
+    if drawn >= bag {
+        return Ok(None);
+    }
+    let can_exchange = bag - drawn >= game_config.exchange_tile_limit() as usize;
+    infer_sheet_for(
+        move_generator,
+        &board_tiles,
+        SpellTables {
+            game_config,
+            kwg: board_snapshot.kwg,
+            klv: board_snapshot.klv,
+            lat: &tables.lat,
+        },
+        &pool,
+        can_exchange,
+        (&mut tables.movegen_rack, &mut tables.blank_deltas),
+        &mut tables.sheet,
+    );
+    let (lat, sheet, leave) = (&tables.lat, &tables.sheet[..], &tables.leave[..]);
+    // the reply over the full racks holding this tally, the rest drawn
+    let reply_holding = |tally: &[u8]| -> error::Returns<Reply> {
+        let n = tally.iter().map(|&c| c as usize).sum::<usize>();
+        let sums = reply_sums(lat, sheet, leave, &pool, tally, threads)?;
+        let deals = binom(pool_size - n, rack_size - n);
+        if sums.deals != deals {
+            return_error!(format!(
+                "the racks were dealt {} ways, not the pool's {deals}",
+                sums.deals
+            ));
+        }
+        Ok(sums.reply(deals))
+    };
+    if kept.is_empty() {
+        return Ok(Some(reply_holding(&vec![0u8; num_letters])?));
+    }
+    let mut tally = vec![0u8; num_letters];
+    let (mut weight, mut mean, mut square, mut bingo) = (0.0, 0.0, 0.0, 0.0);
+    for (tiles, w) in kept {
+        if !w.is_finite() || *w < 0.0 {
+            return_error!(format!("a kept leave weighs {w}"));
+        }
+        tally.iter_mut().for_each(|c| *c = 0);
+        for &tile in tiles {
+            *tally.get_mut(tile as usize).ok_or("no such tile")? += 1;
+        }
+        if tiles.len() > rack_size || tally.iter().zip(&pool).any(|(&k, &u)| k > u) {
+            return_error!("a kept leave is not in the pool".into());
+        }
+        let reply = reply_holding(&tally)?;
+        weight += w;
+        mean += w * reply.mean;
+        square += w * (reply.variance + reply.mean * reply.mean);
+        bingo += w * reply.bingo;
+    }
+    if weight <= 0.0 {
+        return_error!("the kept leaves weigh nothing".into());
+    }
+    let mean = mean / weight;
+    Ok(Some(Reply {
+        mean,
+        variance: square / weight - mean * mean,
+        bingo: bingo / weight,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,5 +1231,428 @@ mod tests {
             assert_eq!(weighed_on(3), one, "{which} on 3 threads");
             assert_eq!(weighed_on(7), one, "{which} on 7 threads");
         }
+    }
+
+    // racks dealt 1 way worth 10 points with a bingo, and 3 ways worth 30
+    // without: a mean of 25, a variance of 75, a bingo a quarter of the time
+    #[test]
+    #[inline]
+    fn the_sums_give_a_replys_mean_variance_and_bingo_share() {
+        let mut sums = ReplySums::default();
+        for (deals, value, bingo) in [(1u64, 10_000i128, true), (3, 30_000, false)] {
+            sums.add(&ReplySums {
+                deals,
+                equity: deals as i128 * value,
+                squares: deals as i128 * value * value,
+                bingos: if bingo { deals } else { 0 },
+            });
+        }
+        assert_eq!(
+            sums.reply(4),
+            Reply {
+                mean: 25.0,
+                variance: 75.0,
+                bingo: 0.25,
+            }
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn binom_counts_exactly() {
+        assert_eq!(binom(5, 2), 10);
+        assert_eq!(binom(0, 0), 1);
+        assert_eq!(binom(3, 5), 0);
+        assert_eq!(binom(100, 7), 16_007_560_800);
+    }
+
+    // every word of two or three tiles from A, E, and T, and one of ten that
+    // starts TEA, the one word that plays a whole rack
+    #[inline]
+    fn reply_kwg() -> kwg::Kwg<kwg::Node24> {
+        const LETTERS: [u8; 3] = [1, 5, 20];
+        let mut words = vec![[20u8, 5, 1, 1, 5, 20, 1, 5, 20, 1][..].into()];
+        for &a in &LETTERS {
+            for &b in &LETTERS {
+                words.push([a, b][..].into());
+                for &c in &LETTERS {
+                    words.push([a, b, c][..].into());
+                }
+            }
+        }
+        words.sort_unstable();
+        let bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap()
+    }
+
+    // a board holding every tile but the pool's and the mover's: TEA across row
+    // 11 from its first column, and the rest filling the rows from the top (a
+    // blank as A), too far from TEA for a move near it to touch
+    #[inline]
+    fn reply_board(game_config: &game_config::GameConfig, pool: &[u8], mover: &[u8]) -> Vec<u8> {
+        let alphabet = game_config.alphabet();
+        let mut rest = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        for (r, &p) in rest.iter_mut().zip(pool) {
+            *r -= p;
+        }
+        for &tile in mover {
+            rest[tile as usize] -= 1;
+        }
+        let mut board_tiles = vec![0u8; 15 * 15];
+        for (col, tile) in [20u8, 5, 1].into_iter().enumerate() {
+            board_tiles[11 * 15 + col] = tile;
+            rest[tile as usize] -= 1;
+        }
+        let mut square = 0;
+        for (tile, &count) in (0u8..).zip(&rest) {
+            for _ in 0..count {
+                board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+                square += 1;
+            }
+        }
+        assert!(square <= 6 * 15, "the rest reach row 6");
+        board_tiles
+    }
+
+    // every full rack the pool deals, as a tally, with what generating its
+    // moves on the board after the move finds: its best move's equity (a pass
+    // only when forced), and whether a move plays it whole
+    #[inline]
+    fn movegen_replies<N: kwg::Node, L: kwg::Node>(
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+    ) -> Vec<(Vec<u8>, i32, bool)> {
+        let rack_size = board_snapshot.game_config.rack_size() as usize;
+        let mut cap = vec![0usize; pool.len() + 1];
+        for t in (0..pool.len()).rev() {
+            cap[t] = cap[t + 1] + pool[t] as usize;
+        }
+        let mut move_generator = movegen::KurniaMoveGenerator::new(board_snapshot.game_config);
+        let mut replies = Vec::new();
+        let mut cur = vec![0u8; pool.len()];
+        each_tally_of_size(pool, &cap, 0, rack_size, &mut cur, &mut |tally| {
+            let rack = (0u8..)
+                .zip(tally)
+                .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
+                .collect::<Vec<_>>();
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot,
+                rack: &rack,
+                max_gen: 1 << 20,
+                num_exchanges_by_this_player: 0,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            let plays = &move_generator.plays;
+            let best = plays
+                .iter()
+                .map(|valued| valued.equity.raw())
+                .max()
+                .unwrap();
+            let bingo = plays.iter().any(|valued| {
+                matches!(&valued.play, movegen::Play::Place { word, .. }
+                    if word.iter().filter(|&&tile| tile != 0).count() == rack_size)
+            });
+            replies.push((tally.to_vec(), best, bingo));
+        });
+        replies
+    }
+
+    // those racks' reply, each counted as often as the pool deals it
+    #[inline]
+    fn reply_by_deals(pool: &[u8], replies: &[(Vec<u8>, i32, bool)]) -> Reply {
+        let mut sums = ReplySums::default();
+        for (tally, best, bingo) in replies {
+            let deals = (tally.iter().zip(pool))
+                .map(|(&r, &u)| binom(u as usize, r as usize))
+                .product::<u64>();
+            sums.deals += deals;
+            sums.equity += deals as i128 * *best as i128;
+            sums.squares += deals as i128 * (*best as i128 * *best as i128);
+            if *bingo {
+                sums.bingos += deals;
+            }
+        }
+        sums.reply(sums.deals)
+    }
+
+    // those racks' reply when the rack is a kept leave, by its weight, drawn to
+    // full from the rest of the pool: each rack weighed by every leave it
+    // holds, times the chance of drawing the rest
+    #[inline]
+    fn reply_by_kept(
+        pool: &[u8],
+        replies: &[(Vec<u8>, i32, bool)],
+        kept: &[(Vec<u8>, f64)],
+    ) -> Reply {
+        let rack_size = replies[0].0.iter().map(|&c| c as usize).sum::<usize>();
+        let pool_size = pool.iter().map(|&c| c as usize).sum::<usize>();
+        let (mut weight, mut equity, mut squares, mut bingos) = (0.0, 0.0, 0.0, 0.0);
+        for (tally, best, bingo) in replies {
+            let mut chance = 0.0;
+            for (tiles, w) in kept {
+                let mut leave = vec![0u8; pool.len()];
+                for &tile in tiles {
+                    leave[tile as usize] += 1;
+                }
+                if leave.iter().zip(tally).any(|(&l, &r)| l > r) {
+                    continue;
+                }
+                let draws = (0..pool.len())
+                    .map(|t| {
+                        binom(
+                            (pool[t] - leave[t]) as usize,
+                            (tally[t] - leave[t]) as usize,
+                        )
+                    })
+                    .product::<u64>();
+                chance += w * draws as f64
+                    / binom(pool_size - tiles.len(), rack_size - tiles.len()) as f64;
+            }
+            let value = *best as f64;
+            weight += chance;
+            equity += chance * value;
+            squares += chance * value * value;
+            if *bingo {
+                bingos += chance;
+            }
+        }
+        let scale = equity::SCALE as f64;
+        let mean = equity / weight;
+        Reply {
+            mean: mean / scale,
+            variance: (squares / weight - mean * mean) / (scale * scale),
+            bingo: bingos / weight,
+        }
+    }
+
+    // a reply within a rounding of another
+    #[inline]
+    fn about(a: &Reply, b: &Reply) -> bool {
+        let near = |x: f64, y: f64| (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0);
+        near(a.mean, b.mean) && near(a.variance, b.variance) && near(a.bingo, b.bingo)
+    }
+
+    // the reply to a move is what generating every rack's moves finds, the
+    // racks weighed by the ways the pool deals them, on any threads: with
+    // exchanges and a bingo in reach, after a placement, a pass, or an
+    // exchange; with no exchange left in the bag, before or only after the
+    // mover draws; and with racks that can only pass, one of them a leave the
+    // table values. None when the bag is empty after the mover draws, or the
+    // pool holds no more than a rack
+    #[test]
+    #[inline]
+    fn a_reply_is_every_racks_best_move_weighed_by_its_deals() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = reply_kwg();
+        let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(&[
+            (&[0], 25.0),
+            (&[1], 1.5),
+            (&[5], 2.0),
+            (&[10, 11, 17, 22, 23, 24, 25], -12.0),
+            (&[17], -7.0),
+            (&[19], 8.0),
+            (&[19, 19], 10.0),
+            (&[20], 0.5),
+            (&[26], 3.0),
+        ]))
+        .unwrap();
+        let mut tables = InferTables::new(&game_config, &klv).unwrap();
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let mover = [1u8, 5, 20, 18, 9, 14, 15];
+        let tally = |counts: &[(u8, u8)]| {
+            let mut tally = vec![0u8; game_config.alphabet().len() as usize];
+            for &(tile, count) in counts {
+                tally[tile as usize] = count;
+            }
+            tally
+        };
+        // 23 tiles: a bag of 16, exchanges left after any move
+        let big = tally(&[
+            (0, 1),
+            (1, 4),
+            (2, 2),
+            (3, 2),
+            (4, 2),
+            (5, 3),
+            (6, 1),
+            (17, 1),
+            (19, 2),
+            (20, 3),
+            (24, 1),
+            (26, 1),
+        ]);
+        // 14 tiles: a bag of 7, so an exchange only before the mover draws
+        let mid = tally(&[
+            (0, 1),
+            (1, 3),
+            (2, 1),
+            (5, 2),
+            (17, 1),
+            (19, 2),
+            (20, 2),
+            (24, 1),
+            (26, 1),
+        ]);
+        // 10 tiles: a bag of 3, no exchange
+        let small = tally(&[(0, 1), (1, 3), (5, 2), (19, 1), (20, 2), (26, 1)]);
+        // 9 tiles, one an A: a rack without it can only pass, and the leave of
+        // the seven that are neither the A nor the Z is valued
+        let dead = tally(&[
+            (1, 1),
+            (10, 1),
+            (11, 1),
+            (17, 1),
+            (22, 1),
+            (23, 1),
+            (24, 1),
+            (25, 1),
+            (26, 1),
+        ]);
+        // an A under TEA's T, making TA
+        let ta = movegen::Play::Place {
+            down: true,
+            lane: 0,
+            idx: 11,
+            word: [0, 1][..].into(),
+            score: 2,
+        };
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let exchange = movegen::Play::Exchange {
+            tiles: [18, 9][..].into(),
+        };
+        let reply_on = |tables: &mut InferTables,
+                        move_generator: &mut movegen::KurniaMoveGenerator,
+                        board_tiles: &[u8],
+                        kept: &[(Vec<u8>, f64)],
+                        play: &movegen::Play,
+                        threads: usize| {
+            reply_to(
+                tables,
+                move_generator,
+                &movegen::BoardSnapshot {
+                    board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                &mover,
+                kept,
+                play,
+                threads,
+            )
+        };
+        // what the opponent's last move kept: two tiles, one, none, or a whole
+        // rack, each with its weight; and for the dead pool, its A or JK
+        let kept_big = [
+            (vec![1, 5], 2.0),
+            (vec![20], 1.0),
+            (vec![], 0.5),
+            (vec![0, 1, 1, 5, 5, 20, 20], 0.25),
+        ];
+        let kept_dead = [(vec![1], 3.0), (vec![10, 11], 1.0)];
+        for (name, pool, play, bingo, kept) in [
+            ("big, TA", &big, &ta, true, &kept_big[..]),
+            ("big, a pass", &big, &pass, true, &kept_big),
+            ("big, an exchange", &big, &exchange, true, &kept_big),
+            ("mid, TA", &mid, &ta, true, &kept_big[1..3]),
+            ("mid, a pass", &mid, &pass, true, &kept_big[1..3]),
+            ("small, TA", &small, &ta, true, &kept_big[..3]),
+            ("dead, TA", &dead, &ta, false, &kept_dead),
+        ] {
+            let board_tiles = reply_board(&game_config, pool, &mover);
+            let mut after = board_tiles.clone();
+            if let movegen::Play::Place { .. } = play {
+                after[12 * 15] = 1;
+            }
+            let replies = movegen_replies(
+                &movegen::BoardSnapshot {
+                    board_tiles: &after,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                pool,
+            );
+            let want = reply_by_deals(pool, &replies);
+            assert_eq!(want.bingo > 0.0, bingo, "[{name}] a rack plays whole");
+            let want_kept = reply_by_kept(pool, &replies, kept);
+            for threads in [1, 4] {
+                let mut on = |kept| {
+                    reply_on(
+                        &mut tables,
+                        &mut move_generator,
+                        &board_tiles,
+                        kept,
+                        play,
+                        threads,
+                    )
+                    .unwrap()
+                    .unwrap()
+                };
+                assert_eq!(on(&[]), want, "[{name}] on {threads} threads");
+                let got = on(kept);
+                assert!(
+                    about(&got, &want_kept),
+                    "[{name}] kept, on {threads} threads: {got:?}, not {want_kept:?}"
+                );
+            }
+        }
+        // a kept leave the pool does not hold, or one weighing less than
+        // nothing, is refused; so are leaves weighing nothing at all
+        let board_tiles = reply_board(&game_config, &big, &mover);
+        for kept in [
+            &[(vec![18], 1.0)][..],
+            &[(vec![1], -1.0)],
+            &[(vec![1], f64::NAN)],
+            &[(vec![1], 0.0)],
+        ] {
+            assert!(
+                reply_on(&mut tables, &mut move_generator, &board_tiles, kept, &ta, 1).is_err(),
+                "{kept:?}"
+            );
+        }
+        // the mover's draw empties the bag: three placed, three in it
+        let tae = movegen::Play::Place {
+            down: true,
+            lane: 0,
+            idx: 11,
+            word: [0, 1, 5, 20][..].into(),
+            score: 0,
+        };
+        let board_tiles = reply_board(&game_config, &small, &mover);
+        assert_eq!(
+            reply_on(&mut tables, &mut move_generator, &board_tiles, &[], &tae, 1).unwrap(),
+            None
+        );
+        // the pool holds a rack, and no bag
+        let seven = tally(&[(1, 3), (5, 2), (20, 2)]);
+        let board_tiles = reply_board(&game_config, &seven, &mover);
+        assert_eq!(
+            reply_on(
+                &mut tables,
+                &mut move_generator,
+                &board_tiles,
+                &[],
+                &pass,
+                1
+            )
+            .unwrap(),
+            None
+        );
     }
 }
