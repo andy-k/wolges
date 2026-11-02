@@ -8,7 +8,7 @@ use std::io::Write;
 
 // how many nodes the search visits between looks at the clock and the memory,
 // for their limits
-const LIMIT_CADENCE: u64 = 1024;
+const LIMIT_CADENCE: u64 = 64;
 
 // splitmix64's increment: https://prng.di.unimi.it/splitmix64.c
 const SPLITMIX64_GAMMA: u64 = 0x9e3779b97f4a7c15;
