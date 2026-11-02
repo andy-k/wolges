@@ -3577,6 +3577,22 @@ fn census_more_boards(boards: u64, least: u64, min_boards: u64, threads: u64) ->
     (want.min(boards as u128) as u64).max(threads)
 }
 
+// the multisets of up to a rack the tiles can make at all, each letter at most
+// its freq: by size, the coefficients of a product of one polynomial a letter
+#[inline]
+fn census_possible_multisets(freqs: &[u8], rack_size: usize) -> usize {
+    let mut ways = vec![0usize; rack_size + 1];
+    ways[0] = 1;
+    for &freq in freqs {
+        for size in (1..=rack_size).rev() {
+            for k in 1..=(freq as usize).min(size) {
+                ways[size] += ways[size - k];
+            }
+        }
+    }
+    ways.iter().sum()
+}
+
 // the order the threads take the boards from `from` up to `to` in, the emptiest
 // first: a board's tiles down rise with its number modulo the window's width
 // (span), and a board with fewer leaves a bigger pool, which costs more, so the
@@ -3844,15 +3860,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let lat_len = lat.len();
 
-    let globally_possible_count = {
-        let mut tally = vec![0u8; num_letters];
-        (0..lat_len)
-            .filter(|&idx| {
-                lat.unrank_into(idx, &mut tally);
-                (0..num_letters).all(|t| tally[t] <= base_freqs[t])
-            })
-            .count()
-    };
+    let globally_possible_count = census_possible_multisets(&base_freqs, rack_size);
     let next_board = std::sync::atomic::AtomicU64::new(0);
     // --min-boards: the last generation's board count, which its top-up raises,
     // and whether the threads go on sampling
@@ -9648,6 +9656,31 @@ WCMP_P1_SCORE 402.000000
         assert_eq!(census_more_boards(2048, 0, 500, 16), 2048);
         // at least one board a thread
         assert_eq!(census_more_boards(100, 499, 500, 16), 16);
+    }
+
+    #[test]
+    #[inline]
+    fn census_counts_the_multisets_the_tiles_can_make() {
+        for (freqs, rack_size) in [
+            (vec![2u8, 0, 3, 7], 5),
+            (vec![1, 1, 1], 7),
+            (vec![9, 2, 2, 4, 12], 7),
+            (vec![0], 3),
+        ] {
+            let lat = census::MultisetLattice::new(freqs.len(), rack_size).unwrap();
+            let mut tally = vec![0u8; freqs.len()];
+            let held = (0..lat.len())
+                .filter(|&idx| {
+                    lat.unrank_into(idx, &mut tally);
+                    tally.iter().zip(&freqs).all(|(&c, &f)| c <= f)
+                })
+                .count();
+            assert_eq!(
+                census_possible_multisets(&freqs, rack_size),
+                held,
+                "{freqs:?}"
+            );
+        }
     }
 
     #[test]
