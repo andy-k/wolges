@@ -401,6 +401,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "gen [N]",
         "list the side to move's N best moves by equity, 10 if not given",
     ),
+    (
+        "reply [N]",
+        "list them with the opponent's best reply to each, over every rack they could hold, weighed as a sim weighs them: its mean, spread, and chance to bingo, and the move's equity less the mean",
+    ),
     ("log", "list the commands that built this session"),
     (
         "save FILE",
@@ -1293,6 +1297,14 @@ impl Session {
                 };
                 return self.best_moves(n);
             }
+            "reply" => {
+                let n = match args {
+                    [] => 10,
+                    [n] => n.parse::<usize>()?,
+                    _ => return Err("reply [N]".into()),
+                };
+                return self.best_replies(n);
+            }
             "log" => {
                 let mut out = std::io::stdout();
                 for line in &self.log {
@@ -1927,6 +1939,76 @@ impl Session {
                 valued.equity.as_f64(),
                 valued.play.fmt(board_snapshot),
             )?;
+        }
+        Ok(())
+    }
+
+    // the side to move's N best moves by equity, each with the opponent's best
+    // reply over every rack they could hold, weighed as a sim weighs them (by
+    // what the opponent's last move kept, when there is one): its mean, its
+    // spread, its chance to play a whole rack, and the move's equity less the
+    // mean
+    fn best_replies(&mut self, n: usize) -> error::Returns<()> {
+        if self.game.is_none() {
+            return Err("no game: new first".into());
+        }
+        let kept = self.kept_leaves()?;
+        let kwg = self.kwg()?;
+        let arm_tables = self.arm_tables()?;
+        let board_snapshot = &movegen::BoardSnapshot {
+            board_tiles: &self.state.board_tiles,
+            game_config: self.game_config,
+            kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: self.klv,
+        };
+        let rack = &self.state.current_player().rack;
+        self.move_generator
+            .gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot,
+                rack,
+                max_gen: n,
+                num_exchanges_by_this_player: self.state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+        let tables = match &mut self.infer_tables {
+            Some(tables) => tables,
+            tables @ None => tables.insert(infer::InferTables::new(self.game_config, self.klv)?),
+        };
+        let mut out = std::io::stdout();
+        for (i, valued) in self.move_generator.plays.iter().enumerate() {
+            let equity = valued.equity.as_f64();
+            let shown = valued.play.fmt(board_snapshot).to_string();
+            match infer::reply_to(
+                tables,
+                &mut self.infer_generator,
+                board_snapshot,
+                rack,
+                &kept,
+                &valued.play,
+                parallelism::available(),
+            )? {
+                Some(reply) => writeln!(
+                    out,
+                    "{:>3}. {:>8.3} {:<24} reply {:>7.2} sd {:>6.2} bingo {:>5.1}% net {:>+8.2}",
+                    i + 1,
+                    equity,
+                    shown,
+                    reply.mean,
+                    reply.variance.sqrt(),
+                    100.0 * reply.bingo,
+                    equity - reply.mean,
+                )?,
+                None => writeln!(
+                    out,
+                    "{:>3}. {:>8.3} {:<24} no bag to reply from",
+                    i + 1,
+                    equity,
+                    shown,
+                )?,
+            }
         }
         Ok(())
     }
@@ -5162,6 +5244,50 @@ mod tests {
         assert!(!session.public_view);
         assert_eq!(session.kept_leaves().unwrap(), mover);
         assert!(run(&mut session, "infer both").is_err());
+    }
+
+    // a move's reply is refused before a game; on a board holding every tile
+    // but 20, the side to move's seven of A, E, and T among them, it is listed
+    // by draw odds, then by what the opponent's last move (a pass) kept, as a
+    // sim draws their rack; a count that is not one is refused
+    #[test]
+    #[inline]
+    fn reply_lists_the_best_moves_each_with_its_reply() {
+        let mut session = session();
+        assert!(run(&mut session, "reply").is_err());
+        run(&mut session, "new 7").unwrap();
+        let game_config = session.game_config;
+        let alphabet = game_config.alphabet();
+        let mut tiles = Vec::new();
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                tiles.push(if tile == 0 { 0x81 } else { tile });
+            }
+        }
+        // the side to move's rack, the opponent's, and the bag's six
+        let off = [
+            1u8, 5, 20, 1, 5, 20, 1, 1, 5, 20, 19, 19, 26, 17, 24, 25, 2, 3, 4, 6,
+        ];
+        for held in off {
+            let at = tiles.iter().position(|&t| t == held).unwrap();
+            tiles.remove(at);
+        }
+        let mut state = game_state::GameState::new(game_config);
+        state.board_tiles[..tiles.len()].copy_from_slice(&tiles);
+        state.players[0].rack = off[..7].to_vec();
+        state.players[1].rack = off[7..14].to_vec();
+        state.bag.set_from_iter(off[14..].iter().copied());
+        session.state = state;
+        run(&mut session, "reply 1").unwrap();
+        session.board_before_last = Some((
+            session.state.board_tiles.to_vec(),
+            movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+        ));
+        run(&mut session, "reply 1").unwrap();
+        assert!(run(&mut session, "reply x").is_err());
+        assert!(run(&mut session, "reply 1 2").is_err());
     }
 
     #[test]
