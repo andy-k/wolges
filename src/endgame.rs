@@ -146,12 +146,27 @@ struct Entry {
 // each, a cache line's size (not aligned to one). An entry is two words: the
 // position's key, then, from the low bits up, the value's bits, the best move,
 // the depth, the bound (none for an empty entry), and the generation of the
-// solve that stored it or last read it
+// solve that stored it or last read it. While the table grows (grow), first the
+// bigger table, its room taken at once, is made empty a piece at a time; then,
+// once it is the table, the old buckets are moved into it a piece at a time and
+// as a key of theirs is read or stored (a moved bucket is left empty)
 struct Table {
     buckets: Vec<[u64; 8]>,
-    held: usize,     // entries holding a position
-    generation: u64, // the solve storing now
+    held: usize,         // entries holding a position, the old buckets' included
+    generation: u64,     // the solve storing now
+    next: Vec<[u64; 8]>, // the bigger table while it is made empty
+    target: usize,       // its buckets then
+    old: Vec<[u64; 8]>,  // the old buckets while they are moved
+    moved: usize,        // the old buckets below this one are moved
 }
+
+// the buckets (1 MiB) a table grows to at once; a bigger one grows a piece at
+// each store, so no store takes the time of a whole move, and a solve stops
+// within its time limit
+const GROW_AT_ONCE: usize = 1 << 14;
+// the buckets a store makes empty, or moves, while the table grows
+const EMPTY_PIECE: usize = 1 << 12;
+const MOVE_PIECE: usize = 1 << 10;
 
 impl Table {
     // a bucket to start with; the table grows as the search fills it
@@ -161,6 +176,10 @@ impl Table {
             buckets: vec![[0; 8]],
             held: 0,
             generation: 0,
+            next: Vec::new(),
+            target: 0,
+            old: Vec::new(),
+            moved: 0,
         }
     }
 
@@ -212,6 +231,7 @@ impl Table {
     // before
     #[inline(always)]
     fn probe(&mut self, key: u64) -> Option<Entry> {
+        self.touch(key);
         let generation = self.generation & 0x3f;
         let index = self.bucket(key);
         let bucket = &mut self.buckets[index];
@@ -228,6 +248,7 @@ impl Table {
     // whether it took an empty entry
     #[inline(always)]
     fn store(&mut self, key: u64, entry: Entry) -> bool {
+        self.touch(key);
         let word = self.word(entry);
         let generation = self.generation & 0x3f;
         let index = self.bucket(key);
@@ -260,31 +281,100 @@ impl Table {
         false
     }
 
-    // move the table to this many buckets, keeping every entry that fits; false,
-    // the table as it was, when the memory for them is refused (as a wasm32
-    // page's may be before any limit set here is reached)
+    // whether the table is growing
+    #[inline(always)]
+    fn growing(&self) -> bool {
+        self.target != 0 || !self.old.is_empty()
+    }
+
+    // the bytes of the buckets a growing table leaves: its own while the bigger
+    // table is made empty, then the old ones until they are moved; none when it
+    // is not growing
+    #[inline(always)]
+    fn leaving(&self) -> usize {
+        let buckets = if self.target != 0 {
+            self.buckets.capacity()
+        } else {
+            self.old.capacity()
+        };
+        buckets * std::mem::size_of::<[u64; 8]>()
+    }
+
+    // begin moving the table to this many buckets, keeping every entry that
+    // fits, a piece at each advance; false, the table as it was, when the
+    // memory for them is refused (as a wasm32 page's may be before any limit
+    // set here is reached)
     #[inline(never)]
-    fn resize(&mut self, buckets: usize) -> bool {
-        let mut new = Vec::new();
-        if new.try_reserve_exact(buckets).is_err() {
+    fn grow(&mut self, buckets: usize) -> bool {
+        let mut next = Vec::new();
+        if next.try_reserve_exact(buckets).is_err() {
             return false;
         }
-        new.resize(buckets, [0; 8]);
-        let old = std::mem::replace(&mut self.buckets, new);
-        self.held = 0;
-        for bucket in &old {
-            for slot in 0..4 {
-                let word = bucket[2 * slot + 1];
-                if (word >> 56) & 3 != 0 {
-                    self.put(bucket[2 * slot], word);
-                }
-            }
-        }
+        self.next = next;
+        self.target = buckets;
         true
     }
 
-    // place a stored word of a position not in the table, as a resize keeps it:
-    // in an empty entry, else in place of the shallowest if it is deeper
+    // the growing done to its end
+    #[inline(never)]
+    fn finish(&mut self) {
+        while self.growing() {
+            self.advance();
+        }
+    }
+
+    // a piece of the growing: empty buckets added to the bigger table, which
+    // then becomes the table; or old buckets moved into it, the old table freed
+    // once all are
+    #[inline(never)]
+    fn advance(&mut self) {
+        if self.target != 0 {
+            let len = (self.next.len() + EMPTY_PIECE).min(self.target);
+            self.next.resize(len, [0; 8]);
+            if len == self.target {
+                self.old = std::mem::replace(&mut self.buckets, std::mem::take(&mut self.next));
+                self.target = 0;
+                self.moved = 0;
+            }
+            return;
+        }
+        let end = (self.moved + MOVE_PIECE).min(self.old.len());
+        for index in self.moved..end {
+            self.move_bucket(index);
+        }
+        self.moved = end;
+        if end == self.old.len() {
+            self.old = Vec::new();
+        }
+    }
+
+    // a key's old bucket moved, while the table grows, before the key is read
+    // or stored, so a position is only ever in the table it moved to
+    #[inline(always)]
+    fn touch(&mut self, key: u64) {
+        if !self.old.is_empty() {
+            let index = ((key as u128 * self.old.len() as u128) >> 64) as usize;
+            if index >= self.moved {
+                self.move_bucket(index);
+            }
+        }
+    }
+
+    // an old bucket's entries put into the table, and the bucket left empty
+    #[inline(always)]
+    fn move_bucket(&mut self, index: usize) {
+        let bucket = std::mem::take(&mut self.old[index]);
+        for slot in 0..4 {
+            let word = bucket[2 * slot + 1];
+            if (word >> 56) & 3 != 0 {
+                self.held -= 1;
+                self.put(bucket[2 * slot], word);
+            }
+        }
+    }
+
+    // place a stored word of a position not in the table, as a growing keeps
+    // it: in an empty entry, else in place of the shallowest if it is deeper
     #[inline(always)]
     fn put(&mut self, key: u64, word: u64) {
         let index = self.bucket(key);
@@ -491,12 +581,17 @@ impl WorkBuffer {
 
     // store a value, growing the table once three quarters of it holds
     // positions: to twice its size, or as big as the memory limit allows while
-    // the old table is still held. Once the limit or the allocator refuses, the
-    // table keeps its size and stores replace other positions
+    // the old table is still held, at once while it is small, else a piece at
+    // each store. Once the limit or the allocator refuses, the table keeps its
+    // size and stores replace other positions
     #[inline(always)]
     fn store(&mut self, key: u64, entry: Entry) {
+        if self.table.growing() {
+            self.table.advance();
+        }
         if self.table.store(key, entry)
             && self.can_grow
+            && !self.table.growing()
             && self.table.held >= 3 * self.table.buckets.len()
         {
             let now = self.table.buckets.len();
@@ -506,8 +601,19 @@ impl WorkBuffer {
                     / std::mem::size_of::<[u64; 8]>();
                 buckets = buckets.min(room);
             }
-            self.can_grow = buckets > now && self.table.resize(buckets);
+            self.can_grow = buckets > now && self.table.grow(buckets);
+            if buckets <= GROW_AT_ONCE {
+                self.table.finish();
+            }
         }
+    }
+
+    // whether the memory limit has passed, the buckets a growing table leaves
+    // not counted
+    #[inline(always)]
+    fn memory_passed(&self) -> bool {
+        self.memory_limit
+            .is_some_and(|limit| limit.passed(self.table.leaving()))
     }
 }
 
@@ -538,9 +644,12 @@ pub struct MemoryLimit {
 }
 
 impl MemoryLimit {
+    // whether the program holds its bytes, not counting leaving: the buckets a
+    // growing table leaves, freed as the growing ends. The growing took its
+    // room with them held, so a solve stops as if the table had grown at once
     #[inline(always)]
-    fn passed(&self) -> bool {
-        (self.held)() >= self.bytes
+    fn passed(&self, leaving: usize) -> bool {
+        (self.held)().saturating_sub(leaving) >= self.bytes
     }
 }
 
@@ -619,12 +728,14 @@ impl BagLimits {
         self.time.is_some() || self.states.is_some()
     }
 
-    // whether any limit has passed, the table holding held positions
+    // whether any limit has passed, on the table the endgames share
     #[inline(always)]
-    fn passed(&self, held: usize) -> bool {
+    fn passed(&self, table: &Table) -> bool {
         self.time.is_some_and(|time| self.t0.elapsed() >= time)
-            || self.states.is_some_and(|states| held >= states)
-            || self.memory.is_some_and(|memory| memory.passed())
+            || self.states.is_some_and(|states| table.held >= states)
+            || self
+                .memory
+                .is_some_and(|memory| memory.passed(table.leaving()))
     }
 }
 
@@ -728,7 +839,7 @@ fn gen_raw_lanes<N: kwg::Node, L: kwg::Node>(
 // a solver's table kept apart from it (take_table), to be given back only to a
 // solver of the game_config, kwg, and arm_tables it was made with, by address
 pub struct KeptTable {
-    table: Table,
+    table: Box<Table>,
     made_with: [usize; 3],
 }
 
@@ -1246,7 +1357,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             || work_buffer
                 .state_limit
                 .is_some_and(|limit| work_buffer.table.held >= limit)
-            || work_buffer.memory_limit.is_some_and(|limit| limit.passed())
+            || work_buffer.memory_passed()
     }
 
     // search the position to solve to depth within alpha and beta
@@ -1542,7 +1653,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 || (work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
                     && (work_buffer.time_limit.is_some_and(|limit| {
                         work_buffer.t0.is_some_and(|t0| t0.elapsed() >= limit)
-                    }) || work_buffer.memory_limit.is_some_and(|limit| limit.passed())))
+                    }) || work_buffer.memory_passed()))
             {
                 work_buffer.cut_short = true;
                 return Err("a limit stopped the search".into());
@@ -1979,7 +2090,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         exact: &mut bool,
     ) -> error::Returns<f32> {
         let may_stop = limits.may_stop.get();
-        if may_stop && limits.passed(self.work_buffer.table.held) {
+        if may_stop && limits.passed(&self.work_buffer.table) {
             limits.stopped.set(true);
             return Err("a limit stopped the search".into());
         }
@@ -2033,7 +2144,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     #[inline(always)]
     pub fn take_table(&mut self) -> KeptTable {
         KeptTable {
-            table: std::mem::replace(&mut self.work_buffer.table, Table::new()),
+            table: Box::new(std::mem::replace(&mut self.work_buffer.table, Table::new())),
             made_with: self.made_with(),
         }
     }
@@ -2046,7 +2157,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         if kept.made_with != self.made_with() {
             return Err(kept);
         }
-        self.work_buffer.table = kept.table;
+        self.work_buffer.table = *kept.table;
         Ok(())
     }
 
@@ -4854,14 +4965,235 @@ mod tests {
         assert!(table.probe(1).is_none(), "the shallowest entry made room");
         assert!((2..=5).all(|key| table.probe(key).is_some()));
         // a table twice as big keeps every entry
-        assert!(table.resize(2));
+        assert!(table.grow(2));
+        table.finish();
         assert_eq!(table.held, 4);
         assert!((2..=5).all(|key| table.probe(key).is_some()));
         // more buckets than memory can hold are refused, and the table is as it
         // was, not the program stopped
-        assert!(!table.resize(usize::MAX));
+        assert!(!table.grow(usize::MAX));
+        assert!(!table.growing());
         assert_eq!((table.buckets.len(), table.held), (2, 4));
         assert!((2..=5).all(|key| table.probe(key).is_some()));
+    }
+
+    // a table grown a piece at a time, read and stored into as it grows, as a
+    // search does: each position is in it once, with what was last stored of
+    // it, and the old buckets are freed at the end
+    #[test]
+    #[inline]
+    fn a_table_growing_a_piece_at_a_time_keeps_each_position_once() {
+        let entry = |value: f32, depth: i8, bound: super::Bound| super::Entry {
+            value,
+            play: 7,
+            depth,
+            bound,
+        };
+        let key = |i: u64| {
+            let mut state = i;
+            splitmix64(&mut state)
+        };
+        let mut table = super::Table::new();
+        table.generation = 1;
+        assert!(table.grow(4 * super::MOVE_PIECE));
+        table.finish();
+        let positions = 8 * super::MOVE_PIECE as u64;
+        for i in 0..positions {
+            table.store(key(i), entry(i as f32, 5, super::Bound::Exact));
+        }
+        let held = table.held;
+        assert!(held > 7 * super::MOVE_PIECE, "few positions were dropped");
+        let kept = (0..positions)
+            .filter(|&i| table.probe(key(i)).is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(kept.len(), held);
+        // the bigger table is made empty over more than one store, then the old
+        // buckets move over more than one
+        assert!(table.grow(4 * super::EMPTY_PIECE));
+        table.advance();
+        assert!(table.growing() && table.old.is_empty());
+        while table.old.is_empty() {
+            table.advance();
+        }
+        // while they move: a stored position not yet moved keeps its deeper
+        // value, another is read where it is, and a new one is stored
+        let last = *kept.last().unwrap();
+        assert!(!table.store(key(last), entry(-1.0, 3, super::Bound::Lower)));
+        assert_eq!(table.probe(key(kept[0])).unwrap().value, kept[0] as f32);
+        assert!(table.store(key(positions), entry(-2.0, 1, super::Bound::Upper)));
+        table.advance();
+        assert!(table.growing(), "the old buckets moved in one store");
+        table.finish();
+        assert!(table.old.is_empty() && table.old.capacity() == 0);
+        assert_eq!(table.buckets.len(), 4 * super::EMPTY_PIECE);
+        assert_eq!(table.held, held + 1);
+        for &i in &kept {
+            assert_eq!(table.probe(key(i)).unwrap().value, i as f32);
+        }
+        assert_eq!(table.probe(key(positions)).unwrap().value, -2.0);
+        let mut keys = table
+            .buckets
+            .iter()
+            .flat_map(|bucket| {
+                (0..4)
+                    .filter(|&slot| (bucket[2 * slot + 1] >> 56) & 3 != 0)
+                    .map(|slot| bucket[2 * slot])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), held + 1);
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), held + 1, "a position is in the table twice");
+    }
+
+    // a search's stores grow its table at once while it is small, then a piece
+    // at each store, each growing done before the next begins, and every
+    // position the table holds can be read
+    #[test]
+    #[inline]
+    fn stores_grow_a_big_table_a_piece_at_a_time() {
+        let gc = game_config::make_english_game_config();
+        let mut work_buffer = super::WorkBuffer::new(&gc, None);
+        work_buffer.table.generation = 1;
+        let entry = super::Entry {
+            value: 0.0,
+            play: 7,
+            depth: 5,
+            bound: super::Bound::Exact,
+        };
+        let key = |i: u64| {
+            let mut state = i;
+            splitmix64(&mut state)
+        };
+        let (mut stores, mut growing, mut small) = (0, 0, 0);
+        while work_buffer.table.buckets.len() <= 2 * super::GROW_AT_ONCE && stores < 1 << 20 {
+            work_buffer.store(key(stores), entry);
+            stores += 1;
+            if work_buffer.table.growing() {
+                growing += 1;
+                small += (work_buffer.table.buckets.len() < super::GROW_AT_ONCE) as usize;
+            }
+        }
+        assert_eq!(work_buffer.table.buckets.len(), 4 * super::GROW_AT_ONCE);
+        assert_eq!(small, 0, "a small table grew a piece at a time");
+        // growing to twice GROW_AT_ONCE took the store that began it and one a
+        // piece after, and growing to four times it has just made its table
+        // empty, so no growing began again while one ran
+        let (empty, move_) = (super::EMPTY_PIECE, super::MOVE_PIECE);
+        let pieces = 2 * super::GROW_AT_ONCE / empty + super::GROW_AT_ONCE / move_;
+        assert_eq!(growing, pieces + 4 * super::GROW_AT_ONCE / empty + 1);
+        while work_buffer.table.growing() {
+            work_buffer.store(key(stores), entry);
+            stores += 1;
+        }
+        let held = work_buffer.table.held;
+        assert!(held >= 3 * 2 * super::GROW_AT_ONCE);
+        assert_eq!(
+            (0..stores)
+                .filter(|&i| work_buffer.table.probe(key(i)).is_some())
+                .count(),
+            held
+        );
+    }
+
+    // the memory held as a counting allocator counts it: every bucket the table
+    // holds, with the rest. The limit lets the table double to 4 GROW_AT_ONCE
+    // buckets, then grow to 6 of them, a growing that leaves no room. An
+    // allocation then stops no solve while the old buckets wait to be moved: a
+    // stopped solve stores nothing more, so the growing would never end. One
+    // passing what they free stops a solve both while the table grows and after
+    #[test]
+    #[inline]
+    fn the_buckets_a_growing_table_leaves_stop_no_solve() {
+        // a limit reads one count here, its bytes moved by what is held, as the
+        // count would move under a fixed limit
+        const READ: usize = usize::MAX / 2;
+        let size = std::mem::size_of::<[u64; 8]>();
+        let at_once = super::GROW_AT_ONCE;
+        let rest = at_once * size;
+        let bytes = rest + (4 + 6) * at_once * size + 1;
+        let limit = |held: usize| super::MemoryLimit {
+            bytes: bytes + READ - held,
+            held: || READ,
+        };
+        let counted = |table: &super::Table| {
+            (table.buckets.capacity() + table.next.capacity() + table.old.capacity()) * size
+        };
+        let entry = super::Entry {
+            value: 0.0,
+            play: 7,
+            depth: 5,
+            bound: super::Bound::Exact,
+        };
+        let key = |i: u64| {
+            let mut state = i;
+            splitmix64(&mut state)
+        };
+        // a store, its growing sized by what is held before it
+        let store = |work_buffer: &mut super::WorkBuffer, stores: &mut u64, rest: usize| {
+            work_buffer.memory_limit = Some(limit(counted(&work_buffer.table) + rest));
+            work_buffer.store(key(*stores), entry);
+            *stores += 1;
+        };
+        // whether a solve stops with this much held, as a bag search does
+        let stops = |work_buffer: &mut super::WorkBuffer, held: usize| {
+            let limit = limit(held);
+            work_buffer.memory_limit = Some(limit);
+            let bag_limits = super::BagLimits::new(
+                &super::Limits {
+                    time: None,
+                    states: None,
+                    memory: Some(limit),
+                },
+                None,
+                None,
+            );
+            let one = work_buffer.memory_passed();
+            assert_eq!(
+                one,
+                bag_limits.passed(&work_buffer.table),
+                "a solve and a bag search disagree"
+            );
+            one
+        };
+        let gc = game_config::make_english_game_config();
+        let mut work_buffer = super::WorkBuffer::new(&gc, None);
+        work_buffer.table.generation = 1;
+        let mut stores = 0;
+        while work_buffer.table.target != 6 * at_once {
+            assert!(stores < 1 << 22, "the table never grew to 6 GROW_AT_ONCE");
+            store(&mut work_buffer, &mut stores, rest);
+        }
+        assert_eq!(work_buffer.table.buckets.len(), 4 * at_once);
+        let held = counted(&work_buffer.table) + rest;
+        assert!(!limit(held).passed(0), "the growing passed the limit");
+        // a bucket's bytes more held: past the limit, counting all
+        let rest = rest + size;
+        assert!(limit(held + size).passed(0));
+        let mut growing = 0;
+        while work_buffer.table.growing() {
+            let held = counted(&work_buffer.table) + rest;
+            assert!(
+                !stops(&mut work_buffer, held),
+                "the old buckets stopped a solve"
+            );
+            let leaving = work_buffer.table.leaving();
+            assert!(
+                stops(&mut work_buffer, held + leaving),
+                "passing what leaves stopped no solve"
+            );
+            store(&mut work_buffer, &mut stores, rest);
+            growing += 1;
+        }
+        assert!(growing > 1, "the growing took one store");
+        assert_eq!(work_buffer.table.buckets.len(), 6 * at_once);
+        assert_eq!(work_buffer.table.leaving(), 0);
+        let held = counted(&work_buffer.table) + rest;
+        assert!(!stops(&mut work_buffer, held));
+        assert!(
+            stops(&mut work_buffer, held + 4 * at_once * size),
+            "the rest passing the limit stopped no solve"
+        );
     }
 
     #[test]
