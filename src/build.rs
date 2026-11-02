@@ -1335,6 +1335,7 @@ mod tests {
                 "hong_kong_english",
                 alphabet::make_hong_kong_english_alphabet(),
             ),
+            ("italian", alphabet::make_italian_alphabet()),
             ("norwegian", alphabet::make_norwegian_alphabet()),
             ("polish", alphabet::make_polish_alphabet()),
             ("slovene", alphabet::make_slovene_alphabet()),
