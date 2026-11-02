@@ -524,10 +524,13 @@ pub fn apportion_table(
     }
 }
 
-// add(idx, t) is the rank of multiset(idx) with one more t.
+// add(idx, t) is the rank of multiset(idx) with one more t, kept index by
+// index; by_letter keeps the same ranks letter by letter, for a pass of one
+// letter over the lattice, and is empty unless asked for (with_letter_passes)
 pub struct AddTable {
     num_letters: usize,
     add: Vec<u32>,
+    by_letter: Vec<u32>,
 }
 
 impl AddTable {
@@ -564,7 +567,33 @@ impl AddTable {
         Self {
             num_letters: n,
             add,
+            by_letter: Vec::new(),
         }
+    }
+
+    // the table with its ranks also kept letter by letter, on as many threads
+    // (a letter each at most), so that a pass of one letter reads its ranks in
+    // order where by index each would be a row apart
+    pub fn with_letter_passes(mut self, num_threads: usize) -> Self {
+        let n = self.num_letters;
+        let rows = self.add.len() / n;
+        let mut by_letter = vec![0u32; rows * n];
+        let per_thread = n.div_ceil(num_threads.max(1));
+        std::thread::scope(|s| {
+            let add = &self.add;
+            for (ci, letters) in by_letter.chunks_mut((per_thread * rows).max(1)).enumerate() {
+                s.spawn(move || {
+                    for (j, letter) in letters.chunks_exact_mut(rows).enumerate() {
+                        let t = ci * per_thread + j;
+                        for (idx, slot) in letter.iter_mut().enumerate() {
+                            *slot = add[idx * n + t];
+                        }
+                    }
+                });
+            }
+        });
+        self.by_letter = by_letter;
+        self
     }
 
     #[inline(always)]
@@ -574,6 +603,14 @@ impl AddTable {
         // < add.len().
         unsafe { *self.add.get_unchecked(idx * self.num_letters + t) as usize }
     }
+
+    // add(idx, t) for every idx below the full racks, in order of idx, when the
+    // table was made with_letter_passes
+    #[inline(always)]
+    pub fn letter(&self, t: usize) -> Option<&[u32]> {
+        let rows = self.add.len() / self.num_letters;
+        (!self.by_letter.is_empty()).then(|| &self.by_letter[t * rows..(t + 1) * rows])
+    }
 }
 
 #[inline]
@@ -581,18 +618,31 @@ pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], 
     let n = lat.num_letters();
     let lo = lat.full_rack_start();
     dst.copy_from_slice(src);
+    // a superset's value at least its subset's
+    #[inline(always)]
+    fn lift(dst: &mut [i32], idx: usize, sp: usize) {
+        // SAFETY: idx ranges 0..full_rack_start() (< lat.len()), so idx < dst.len(); dst
+        // is the lat.len() destination buffer.
+        let v = unsafe { *dst.get_unchecked(idx) };
+        // SAFETY: sp = add.add(idx, t) is the rank of multiset(idx) plus one tile t
+        // (idx < full_rack_start(), t < num_letters), a lattice index < lat.len()
+        // = dst.len().
+        let cur = unsafe { dst.get_unchecked_mut(sp) };
+        if v > *cur {
+            *cur = v;
+        }
+    }
     for t in 0..n {
-        for idx in 0..lo {
-            let sp = add.add(idx, t);
-            // SAFETY: idx ranges 0..full_rack_start() (< lat.len()), so idx < dst.len(); dst
-            // is the lat.len() destination buffer.
-            let v = unsafe { *dst.get_unchecked(idx) };
-            // SAFETY: sp = add.add(idx, t) is the rank of multiset(idx) plus one tile t
-            // (idx < full_rack_start(), t < num_letters), a lattice index < lat.len()
-            // = dst.len().
-            let cur = unsafe { dst.get_unchecked_mut(sp) };
-            if v > *cur {
-                *cur = v;
+        match add.letter(t) {
+            Some(to) => {
+                for (idx, &sp) in to[..lo].iter().enumerate() {
+                    lift(dst, idx, sp as usize);
+                }
+            }
+            None => {
+                for idx in 0..lo {
+                    lift(dst, idx, add.add(idx, t));
+                }
             }
         }
     }
@@ -844,21 +894,41 @@ pub fn apportion_fused(
             }
         }
 
+        // each multiset's sums over its supersets, a letter at a time. A letter
+        // the pool lacks is in no rack drawn from it: its pass would add
+        // nothing, so it is skipped
         #[inline]
         fn fold_zeta(&mut self, lo: usize) {
+            let add = self.add;
             for t in 0..self.n {
-                for idx in (0..lo).rev() {
-                    let sp = self.add.add(idx, t);
-                    // SAFETY: sp = add.add(idx, t) with idx in 0..lo and t < num_letters is a
-                    // lattice index < lat.len(); num and den are lat.len()-sized.
-                    let (sn, sd) =
-                        unsafe { (*self.num.get_unchecked(sp), *self.den.get_unchecked(sp)) };
-                    // SAFETY: idx ranges 0..lo (< lat.len()); num and den are lat.len()-sized.
-                    unsafe {
-                        *self.num.get_unchecked_mut(idx) += sn;
-                        *self.den.get_unchecked_mut(idx) += sd;
+                if self.unseen[t] == 0 {
+                    continue;
+                }
+                match add.letter(t) {
+                    Some(to) => {
+                        for (idx, &sp) in to[..lo].iter().enumerate().rev() {
+                            self.fold_one(idx, sp as usize);
+                        }
+                    }
+                    None => {
+                        for idx in (0..lo).rev() {
+                            self.fold_one(idx, add.add(idx, t));
+                        }
                     }
                 }
+            }
+        }
+
+        // a multiset's sums gain those of its superset sp
+        #[inline(always)]
+        fn fold_one(&mut self, idx: usize, sp: usize) {
+            // SAFETY: sp = add.add(idx, t) with idx in 0..lo and t < num_letters is a
+            // lattice index < lat.len(); num and den are lat.len()-sized.
+            let (sn, sd) = unsafe { (*self.num.get_unchecked(sp), *self.den.get_unchecked(sp)) };
+            // SAFETY: idx ranges 0..lo (< lat.len()); num and den are lat.len()-sized.
+            unsafe {
+                *self.num.get_unchecked_mut(idx) += sn;
+                *self.den.get_unchecked_mut(idx) += sd;
             }
         }
     }
@@ -1528,8 +1598,10 @@ mod tests {
     #[test]
     #[inline]
     fn apportion_fused_matches_split() {
+        // each way apportion_fused can go against apportion_table. The add
+        // table is by index alone or by letter too. The pool holds every letter
+        // or lacks one (whose superset pass is then skipped)
         let lat = MultisetLattice::new(4, 4).unwrap();
-        let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
@@ -1541,44 +1613,46 @@ mod tests {
         }
         let mut best = vec![UNPLAYABLE; lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
-        let mut num_a = vec![0f64; lat.len()];
-        let mut den_a = vec![0f64; lat.len()];
-        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
-        let add = AddTable::new(&lat);
+        let tables = [
+            AddTable::new(&lat),
+            AddTable::new(&lat).with_letter_passes(3),
+        ];
         let mut maxsheet = vec![0i32; lat.len()];
 
-        for scatter in [false, true] {
-            for zeta in [false, true] {
-                let mut num_b = vec![0f64; lat.len()];
-                let mut den_b = vec![0f64; lat.len()];
-                apportion_fused(
-                    &lat,
-                    &add,
-                    &ApportionBoard {
-                        sheet: &sheet,
-                        leave: &leave,
-                        unseen: &unseen,
-                    },
-                    ApportionOut {
-                        num: &mut num_b,
-                        den: &mut den_b,
-                    },
-                    &mut maxsheet,
-                    ApportionMode {
-                        zeta,
-                        null_leave: false,
-                        scatter,
-                    },
-                );
-                for idx in 0..lat.len() {
-                    assert_eq!(
-                        num_a[idx], num_b[idx],
-                        "num at {idx} (zeta={zeta}, scatter={scatter})"
-                    );
-                    assert_eq!(
-                        den_a[idx], den_b[idx],
-                        "den at {idx} (zeta={zeta}, scatter={scatter})"
-                    );
+        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1]] {
+            let mut num_a = vec![0f64; lat.len()];
+            let mut den_a = vec![0f64; lat.len()];
+            apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+            for (by_letter, add) in tables.iter().enumerate() {
+                for scatter in [false, true] {
+                    for zeta in [false, true] {
+                        let mut num_b = vec![0f64; lat.len()];
+                        let mut den_b = vec![0f64; lat.len()];
+                        apportion_fused(
+                            &lat,
+                            add,
+                            &ApportionBoard {
+                                sheet: &sheet,
+                                leave: &leave,
+                                unseen: &unseen,
+                            },
+                            ApportionOut {
+                                num: &mut num_b,
+                                den: &mut den_b,
+                            },
+                            &mut maxsheet,
+                            ApportionMode {
+                                zeta,
+                                null_leave: false,
+                                scatter,
+                            },
+                        );
+                        let case = (unseen, by_letter, zeta, scatter);
+                        for idx in 0..lat.len() {
+                            assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
+                            assert_eq!(den_a[idx], den_b[idx], "den at {idx} {case:?}");
+                        }
+                    }
                 }
             }
         }
@@ -1587,8 +1661,8 @@ mod tests {
     #[test]
     #[inline]
     fn apportion_fused_null_leave_matches() {
+        // as apportion_fused_matches_split, with every leave worth nothing
         let lat = MultisetLattice::new(4, 4).unwrap();
-        let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
         let leave = vec![0i32; lat.len()]; // null klv -> all zero
         for (idx, slot) in sheet.iter_mut().enumerate() {
@@ -1599,44 +1673,46 @@ mod tests {
         }
         let mut best = vec![UNPLAYABLE; lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
-        let mut num_a = vec![0f64; lat.len()];
-        let mut den_a = vec![0f64; lat.len()];
-        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
-        let add = AddTable::new(&lat);
+        let tables = [
+            AddTable::new(&lat),
+            AddTable::new(&lat).with_letter_passes(3),
+        ];
         let mut maxsheet = vec![0i32; lat.len()];
 
-        for null_leave in [false, true] {
-            for zeta in [false, true] {
-                let mut num_b = vec![0f64; lat.len()];
-                let mut den_b = vec![0f64; lat.len()];
-                apportion_fused(
-                    &lat,
-                    &add,
-                    &ApportionBoard {
-                        sheet: &sheet,
-                        leave: &leave,
-                        unseen: &unseen,
-                    },
-                    ApportionOut {
-                        num: &mut num_b,
-                        den: &mut den_b,
-                    },
-                    &mut maxsheet,
-                    ApportionMode {
-                        zeta,
-                        null_leave,
-                        scatter: false,
-                    },
-                );
-                for idx in 0..lat.len() {
-                    assert_eq!(
-                        num_a[idx], num_b[idx],
-                        "num at {idx} (zeta={zeta}, null_leave={null_leave})"
-                    );
-                    assert_eq!(
-                        den_a[idx], den_b[idx],
-                        "den at {idx} (zeta={zeta}, null_leave={null_leave})"
-                    );
+        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1]] {
+            let mut num_a = vec![0f64; lat.len()];
+            let mut den_a = vec![0f64; lat.len()];
+            apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+            for (by_letter, add) in tables.iter().enumerate() {
+                for null_leave in [false, true] {
+                    for zeta in [false, true] {
+                        let mut num_b = vec![0f64; lat.len()];
+                        let mut den_b = vec![0f64; lat.len()];
+                        apportion_fused(
+                            &lat,
+                            add,
+                            &ApportionBoard {
+                                sheet: &sheet,
+                                leave: &leave,
+                                unseen: &unseen,
+                            },
+                            ApportionOut {
+                                num: &mut num_b,
+                                den: &mut den_b,
+                            },
+                            &mut maxsheet,
+                            ApportionMode {
+                                zeta,
+                                null_leave,
+                                scatter: false,
+                            },
+                        );
+                        let case = (unseen, by_letter, zeta, null_leave);
+                        for idx in 0..lat.len() {
+                            assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
+                            assert_eq!(den_a[idx], den_b[idx], "den at {idx} {case:?}");
+                        }
+                    }
                 }
             }
         }
