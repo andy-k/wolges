@@ -4246,9 +4246,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
 
                     if multigen {
+                        let mut leads = false;
                         if barrier.wait().is_leader()
                             && !failed.load(std::sync::atomic::Ordering::Relaxed)
                         {
+                            leads = true;
 
                             {
                                 let mut g = shared.lock().unwrap();
@@ -4297,50 +4299,53 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                             }
 
-                            {
-                                let g = shared.lock().unwrap();
-                                let lv = leave_lock.read().unwrap();
-                                let desired =
-                                    format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
-                                let p = claim_output_path(&desired).unwrap_or(desired);
-                                match write_census_klv2(
-                                    &lat,
-                                    &|i| lv[i] as f64,
-                                    0.0,
-                                    &|i| g.4[i],
-                                    true, // resume snapshots stay full
-                                    &p,
-                                ) {
-                                    Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
-     "census: persisted gen {} -> {p} ({nk} leaves)",
-                                        gen_idx + 1).ok(); },
-                                    Err(e) => { writeln!(boxed_stdout_or_stderr(),
-     "census: gen {} klv2 persist failed: {e}",
-                                        gen_idx + 1).ok(); },
-                                }
-                                let q = census_means_path(&p);
-                                let bytes =
-                                    census_means_bytes(&lat, &g.4, &leave_exact.lock().unwrap());
-                                match std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create_new(true)
-                                    .open(&q)
-                                    .and_then(|mut f| f.write_all(&bytes))
-                                {
-                                    Ok(()) => { writeln!(boxed_stdout_or_stderr(),
-     "census: persisted gen {} means -> {q}",
-                                        gen_idx + 1).ok(); },
-                                    Err(e) => { writeln!(boxed_stdout_or_stderr(),
-     "census: gen {} means persist failed: {e}",
-                                        gen_idx + 1).ok(); },
-                                }
-                            }
-
                             for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
                                 *slot.lock().unwrap() = None;
                             }
                         }
                         barrier.wait();
+                        // the leader writes the snapshot of the leaves it set once
+                        // the others are on to the next generation: nothing it reads
+                        // changes before that one ends, which waits for the leader
+                        if leads {
+                            let ever = shared.lock().unwrap().4.clone();
+                            let lv = leave_lock.read().unwrap();
+                            let desired =
+                                format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
+                            let p = claim_output_path(&desired).unwrap_or(desired);
+                            match write_census_klv2(
+                                &lat,
+                                &|i| lv[i] as f64,
+                                0.0,
+                                &|i| ever[i],
+                                true, // resume snapshots stay full
+                                &p,
+                            ) {
+                                Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
+ "census: persisted gen {} -> {p} ({nk} leaves)",
+                                    gen_idx + 1).ok(); },
+                                Err(e) => { writeln!(boxed_stdout_or_stderr(),
+ "census: gen {} klv2 persist failed: {e}",
+                                    gen_idx + 1).ok(); },
+                            }
+                            let q = census_means_path(&p);
+                            let bytes =
+                                census_means_bytes(&lat, &ever, &leave_exact.lock().unwrap());
+                            match std::fs::OpenOptions::new()
+                                .write(true)
+                                .create_new(true)
+                                .open(&q)
+                                .and_then(|mut f| f.write_all(&bytes))
+                            {
+                                Ok(()) => { writeln!(boxed_stdout_or_stderr(),
+ "census: persisted gen {} means -> {q}",
+                                    gen_idx + 1).ok(); },
+                                Err(e) => { writeln!(boxed_stdout_or_stderr(),
+ "census: gen {} means persist failed: {e}",
+                                    gen_idx + 1).ok(); },
+                            }
+                        }
+
                         if gen_idx + 1 < gens && !failed.load(std::sync::atomic::Ordering::Relaxed) {
 
                             prior_max_boards = prior_max_boards.max(num_boards as usize);
