@@ -1637,7 +1637,7 @@ fn solve_position<N: kwg::Node>(
             };
             writeln!(
                 std::io::stdout(),
-                "  bag={} (x{}): opp rack [{}] -> game margin {} ({})",
+                "  bag={} (x{}): opp rack [{}] -> game margin {:>4} ({})",
                 alphabet.of_rack(bag_tile).unwrap_or("?"),
                 weight,
                 alphabet.fmt_rack(&opp),

@@ -7757,9 +7757,9 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             grid[best_i]
         )?;
     }
-    writeln!(std::io::stdout(), "  fuzz       nats a move")?;
+    writeln!(std::io::stdout(), "        fuzz nats a move")?;
     for (fuzz, ll) in grid.iter().zip(&lls).step_by(25) {
-        writeln!(std::io::stdout(), "  {fuzz:<10.3} {:.4}", ll / n as f64)?;
+        writeln!(std::io::stdout(), "  {fuzz:>10.3} {:.4}", ll / n as f64)?;
     }
     Ok(())
 }
@@ -8315,7 +8315,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
         writeln!(
             std::io::stdout(),
-            "  {name:<34} {:>+.3}    {:.2}%",
+            "  {name:<34} {:>+.3}    {:>6.2}%",
             (agree as f64 - disagree as f64) / (agree + disagree).max(1) as f64,
             100.0 * picks as f64 / n as f64,
         )?;

@@ -438,14 +438,22 @@ impl GameStatePrinter<'_> {
         for (i, player) in self.game_state.players.iter().enumerate() {
             write!(
                 f,
-                "Player {}: {} {}",
+                "Player {}: {:>4} {}",
                 i + 1,
                 equity::descale_score(player.score),
                 self.game_config.alphabet().fmt_rack(&player.rack)
             )?;
             if let Some(game_timers) = self.optional_game_timers {
                 let clock_ms = game_timers.get_timer_as_at(now, i);
-                write!(f, " {}", MsPrinter { ms: clock_ms })?;
+                // the clocks right-aligned in a column past a full rack
+                write!(
+                    f,
+                    "{:width$} {:>10}",
+                    "",
+                    MsPrinter { ms: clock_ms },
+                    width =
+                        (self.game_config.rack_size() as usize).saturating_sub(player.rack.len()),
+                )?;
                 let adjustment = self.game_config.time_adjustment(clock_ms);
                 if adjustment != 0 {
                     write!(f, " ({adjustment})")?;
@@ -558,6 +566,39 @@ mod tests {
         assert_eq!(
             format!("{:>width$}", board_printer, width = text.len() + 3),
             format!("   {text}"),
+        );
+    }
+
+    // the players' scores and clocks print right-aligned in columns, whatever
+    // their digits and the racks' lengths
+    #[test]
+    #[inline]
+    fn the_players_scores_and_clocks_line_up() {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        game_state.players[0].score = equity::scale_score(5);
+        game_state.players[0].rack = vec![1, 5, 9, 14, 18, 19, 20];
+        game_state.players[1].score = equity::scale_score(412);
+        game_state.players[1].rack = vec![5, 5];
+        let mut game_timers = game_timers::GameTimers::new(2);
+        game_timers.clocks_ms[0] = 1_234_567;
+        game_timers.clocks_ms[1] = -61_001;
+        let text = GameStatePrinter {
+            game_config: &game_config,
+            game_state: &game_state,
+            optional_game_timers: Some(&game_timers),
+        }
+        .to_string();
+        let rows = text
+            .lines()
+            .filter(|line| line.starts_with("Player "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            [
+                "Player 1:    5 AEINRST  20:34.567 (turn)",
+                "Player 2:  412 EE      -01:01.001 (-20)",
+            ]
         );
     }
 }

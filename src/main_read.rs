@@ -956,7 +956,7 @@ fn do_wg_nodes(
         }
         let arc_index = reader.arc_index(kwg_bytes, p);
         if arc_index != 0 {
-            write!(ret, " {arc_index}")?;
+            write!(ret, " {arc_index:kwg_len_width$}")?;
         }
         if reader.is_end(kwg_bytes, p) {
             ret.push_str(" ends");

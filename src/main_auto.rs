@@ -271,7 +271,7 @@ fn do_it(
         for play in plays.iter() {
             writeln!(
                 std::io::stdout(),
-                "{} {}",
+                "{:>8} {}",
                 play.equity,
                 play.play.fmt(board_snapshot)
             )?;
@@ -428,7 +428,7 @@ fn do_it(
                 for play in plays.iter() {
                     writeln!(
                         std::io::stdout(),
-                        "{} {}",
+                        "{:>8} {}",
                         play.equity,
                         play.play.fmt(board_snapshot)
                     )?;
