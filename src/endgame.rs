@@ -3038,10 +3038,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // the next move and split not yet taken, the costliest by the pass before
     // first: a costly move's splits spread over the threads, and none is begun
     // as the others end. This thread works with sub (its listener and the table
-    // lent to it); each other one works with a solver of its own. They run on
-    // one clock, sharing what they value below the moves (state.searched).
-    // Whether a limit stopped the pass; the moves it valued in every split then
-    // go first in the order, so a solve resuming the pass goes on after them
+    // lent to it); each other one works with a solver of its own, given the
+    // table it left the pass before (state.tables). They run on one clock,
+    // sharing what they value below the moves (state.searched). Whether a limit
+    // stopped the pass; the moves it valued in every split then go first in the
+    // order, so a solve resuming the pass goes on after them
     #[allow(clippy::too_many_arguments)]
     fn value_on_threads(
         sub: &mut Self,
@@ -3122,27 +3123,40 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 Ok((mine, false))
             };
         let valued = &state.searched;
-        let shares = std::thread::scope(|s| {
-            let handles = (1..threads)
-                .map(|_| {
+        // each other thread's table as the pass before left it
+        let mut kept = std::mem::take(&mut state.tables);
+        kept.resize_with(threads - 1, || None);
+        let (shares, kept) = std::thread::scope(|s| {
+            let handles = (kept.into_iter())
+                .map(|table| {
                     let work = &work;
                     s.spawn(move || {
-                        let mut own = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
-                        let mut mg = movegen::KurniaMoveGenerator::new(gc);
-                        let klv = klv::Klv::<L>::empty()?;
-                        let limits = BagLimits::on_the_clock(on_one_clock);
-                        let mut search = BagSearch {
-                            gc,
-                            kwg,
-                            arm_tables,
-                            klv: &klv,
-                            sub: &mut own,
-                            mg: &mut mg,
-                            valued,
-                            limits: &limits,
-                            exact: true,
+                        let mut own = match EndgameSolver::<N, L>::new(gc, kwg, arm_tables) {
+                            Ok(own) => own,
+                            Err(e) => return (Err(e), table),
                         };
-                        work(&mut search, &limits)
+                        if let Some(table) = table {
+                            // made by a solver of this game and lexicon, so
+                            // taken
+                            let _ = own.give_table(table);
+                        }
+                        let mut mg = movegen::KurniaMoveGenerator::new(gc);
+                        let share = klv::Klv::<L>::empty().and_then(|klv| {
+                            let limits = BagLimits::on_the_clock(on_one_clock);
+                            let mut search = BagSearch {
+                                gc,
+                                kwg,
+                                arm_tables,
+                                klv: &klv,
+                                sub: &mut own,
+                                mg: &mut mg,
+                                valued,
+                                limits: &limits,
+                                exact: true,
+                            };
+                            work(&mut search, &limits)
+                        });
+                        (share, Some(own.take_table()))
                     })
                 })
                 .collect::<Vec<_>>();
@@ -3161,10 +3175,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 };
                 work(&mut search, limits)
             });
-            let mut shares = vec![mine];
-            shares.extend(handles.into_iter().map(|handle| handle.join().unwrap()));
-            shares
+            let (mut shares, mut kept) = (vec![mine], Vec::new());
+            for handle in handles {
+                let (share, table) = handle.join().unwrap();
+                shares.push(share);
+                kept.push(table);
+            }
+            (shares, kept)
         });
+        state.tables = kept;
         let mut stopped = false;
         let mut found = vec![None; tasks];
         for share in shares {
@@ -3834,8 +3853,9 @@ fn peg_bag_value(
 // value, each one's latest value, the time each of its splits took on threads
 // in the latest pass to value it, and those the pass has valued; whether all
 // the pass's endgames were exact, and its depth; what the search has valued
-// below the moves; the best move of the deepest pass that valued every move,
-// with that depth, and that pass's values; and whether that answer is final
+// below the moves, and the table each thread but the calling one left; the best
+// move of the deepest pass that valued every move, with that depth, and that
+// pass's values; and whether that answer is final
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -3847,6 +3867,7 @@ struct PegBagState {
     pass_exact: bool,
     depth: i8,
     searched: BagValued,
+    tables: Vec<Option<KeptTable>>,
     answer: Option<(usize, i8)>,
     answered: Vec<Option<PegBagValue>>,
     done: bool,
