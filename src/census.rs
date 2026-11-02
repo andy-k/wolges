@@ -788,9 +788,14 @@ pub struct ApportionBoard<'a> {
     pub unseen: &'a [u8],
 }
 
+// where a board's apportioning goes: each multiset's sums of its full racks'
+// bests and deals, below the full racks (num, den: full_rack_start() long);
+// each full rack's deals (ways: the rest of the lattice long), its best then in
+// maxsheet, so a full rack's mean is its best
 pub struct ApportionOut<'a> {
     pub num: &'a mut [f64],
     pub den: &'a mut [f64],
+    pub ways: &'a mut [f64],
 }
 
 pub struct ApportionMode {
@@ -845,9 +850,11 @@ pub fn apportion_fused(
         leave: &'a [i32],
         num: &'a mut [f64],
         den: &'a mut [f64],
+        ways: &'a mut [f64],
+        lo: usize,
         zeta: bool,
         best_from_maxsheet: bool,
-        maxsheet: &'a [i32],
+        maxsheet: &'a mut [i32],
         nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
@@ -880,11 +887,10 @@ pub fn apportion_fused(
 
         fn apportion_rec(&mut self, i: usize, s_idx: usize, w: f64, we: f64) {
             if i == 0 {
-                // SAFETY: s_idx is the rank of a subrack S of a full rack, built up from 0 via
-                // the add table, so < lat.len(); num and den are lat.len()-sized.
-                unsafe {
-                    *self.num.get_unchecked_mut(s_idx) += we;
-                    *self.den.get_unchecked_mut(s_idx) += w;
+                // the full rack itself keeps its share as its deals (ways)
+                if s_idx < self.lo {
+                    self.num[s_idx] += we;
+                    self.den[s_idx] += w;
                 }
                 return;
             }
@@ -907,20 +913,14 @@ pub fn apportion_fused(
                 } else {
                     let mut b = UNPLAYABLE;
                     self.rec_max(m, 0, 0, &mut b);
+                    self.maxsheet[idx] = b;
                     b
                 };
-
-                let best_f = best as f64;
-                if self.zeta {
-                    // seed the superset-sum source on the full-rack index `idx`.
-                    // SAFETY: idx is the full-rack lattice index built up from 0 via the add
-                    // table, so < lat.len(); num and den are lat.len()-sized.
-                    unsafe {
-                        *self.num.get_unchecked_mut(idx) = w * best_f;
-                        *self.den.get_unchecked_mut(idx) = w;
-                    }
-                } else {
-                    self.apportion_rec(m, 0, w, w * best_f);
+                // the full rack's deals beside its best, as the sums below it
+                // read it (fold_full)
+                self.ways[idx - self.lo] = w;
+                if !self.zeta {
+                    self.apportion_rec(m, 0, w, w * best as f64);
                 }
                 return;
             }
@@ -942,24 +942,31 @@ pub fn apportion_fused(
             }
         }
 
-        // each multiset's sums over its supersets, a letter at a time. A letter
-        // the pool lacks is in no rack drawn from it: its pass would add
-        // nothing, so it is skipped
+        // each multiset's sums over its supersets, a letter at a time: those
+        // one tile short of a full rack (short on) from the full racks' deals
+        // and bests, the rest from the sums. A letter the pool lacks is in no
+        // rack drawn from it: its pass would add nothing, so it is skipped
         #[inline]
-        fn fold_zeta(&mut self, lo: usize) {
-            let add = self.add;
+        fn fold_zeta(&mut self, short: usize) {
+            let (add, lo) = (self.add, self.lo);
             for t in 0..self.n {
                 if self.unseen[t] == 0 {
                     continue;
                 }
                 match add.letter(t) {
                     Some(to) => {
-                        for (idx, &sp) in to[..lo].iter().enumerate().rev() {
+                        for (idx, &sp) in (short..lo).zip(&to[short..lo]).rev() {
+                            self.fold_full(idx, sp as usize);
+                        }
+                        for (idx, &sp) in to[..short].iter().enumerate().rev() {
                             self.fold_one(idx, sp as usize);
                         }
                     }
                     None => {
-                        for idx in (0..lo).rev() {
+                        for idx in (short..lo).rev() {
+                            self.fold_full(idx, add.add(idx, t));
+                        }
+                        for idx in (0..short).rev() {
                             self.fold_one(idx, add.add(idx, t));
                         }
                     }
@@ -967,17 +974,21 @@ pub fn apportion_fused(
             }
         }
 
-        // a multiset's sums gain those of its superset sp
+        // a multiset's sums gain those of its superset sp, a full rack: its
+        // best for each of its deals
+        #[inline(always)]
+        fn fold_full(&mut self, idx: usize, sp: usize) {
+            let w = self.ways[sp - self.lo];
+            self.num[idx] += w * self.maxsheet[sp] as f64;
+            self.den[idx] += w;
+        }
+
+        // a multiset's sums gain those of its superset sp, short of a full rack
         #[inline(always)]
         fn fold_one(&mut self, idx: usize, sp: usize) {
-            // SAFETY: sp = add.add(idx, t) with idx in 0..lo and t < num_letters is a
-            // lattice index < lat.len(); num and den are lat.len()-sized.
-            let (sn, sd) = unsafe { (*self.num.get_unchecked(sp), *self.den.get_unchecked(sp)) };
-            // SAFETY: idx ranges 0..lo (< lat.len()); num and den are lat.len()-sized.
-            unsafe {
-                *self.num.get_unchecked_mut(idx) += sn;
-                *self.den.get_unchecked_mut(idx) += sd;
-            }
+            let (sn, sd) = (self.num[sp], self.den[sp]);
+            self.num[idx] += sn;
+            self.den[idx] += sd;
         }
     }
     let mut nz = [(0usize, 0u8); MAX_LETTERS];
@@ -990,6 +1001,8 @@ pub fn apportion_fused(
         leave,
         num: out.num,
         den: out.den,
+        ways: out.ways,
+        lo: lat.full_rack_start(),
         zeta,
         best_from_maxsheet,
         maxsheet,
@@ -997,7 +1010,7 @@ pub fn apportion_fused(
     };
     ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
     if zeta {
-        ctx.fold_zeta(lat.full_rack_start());
+        ctx.fold_zeta(lat.size_start(rack_size.saturating_sub(1)));
     }
 }
 
@@ -1648,7 +1661,8 @@ mod tests {
     fn apportion_fused_matches_split() {
         // each way apportion_fused can go against apportion_table. The add
         // table is by index alone or by letter too. The pool holds every letter
-        // or lacks one (whose superset pass is then skipped)
+        // or lacks one (whose superset pass is then skipped), and may hold a
+        // full rack of the last letter (each size's first multiset)
         let lat = MultisetLattice::new(4, 4).unwrap();
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
         let mut leave = vec![0i32; lat.len()];
@@ -1667,15 +1681,19 @@ mod tests {
         ];
         let mut maxsheet = vec![0i32; lat.len()];
 
-        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1]] {
+        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
             let mut num_a = vec![0f64; lat.len()];
             let mut den_a = vec![0f64; lat.len()];
             apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
             for (by_letter, add) in tables.iter().enumerate() {
                 for scatter in [false, true] {
                     for zeta in [false, true] {
-                        let mut num_b = vec![0f64; lat.len()];
-                        let mut den_b = vec![0f64; lat.len()];
+                        let lo = lat.full_rack_start();
+                        let mut num_b = vec![0f64; lo];
+                        let mut den_b = vec![0f64; lo];
+                        let mut ways_b = vec![0f64; lat.len() - lo];
+                        // what a board before leaves there, never read back
+                        maxsheet.fill(UNPLAYABLE);
                         apportion_fused(
                             &lat,
                             add,
@@ -1687,6 +1705,7 @@ mod tests {
                             ApportionOut {
                                 num: &mut num_b,
                                 den: &mut den_b,
+                                ways: &mut ways_b,
                             },
                             &mut maxsheet,
                             ApportionMode {
@@ -1696,9 +1715,19 @@ mod tests {
                             },
                         );
                         let case = (unseen, by_letter, zeta, scatter);
-                        for idx in 0..lat.len() {
+                        for idx in 0..lo {
                             assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
                             assert_eq!(den_a[idx], den_b[idx], "den at {idx} {case:?}");
+                        }
+                        // a full rack: its deals, and its best for each
+                        for (idx, &ways) in (lo..).zip(&ways_b) {
+                            assert_eq!(den_a[idx], ways, "ways at {idx} {case:?}");
+                            let num = if ways == 0.0 {
+                                0.0
+                            } else {
+                                ways * maxsheet[idx] as f64
+                            };
+                            assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
                         }
                     }
                 }
@@ -1727,15 +1756,19 @@ mod tests {
         ];
         let mut maxsheet = vec![0i32; lat.len()];
 
-        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1]] {
+        for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
             let mut num_a = vec![0f64; lat.len()];
             let mut den_a = vec![0f64; lat.len()];
             apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
             for (by_letter, add) in tables.iter().enumerate() {
                 for null_leave in [false, true] {
                     for zeta in [false, true] {
-                        let mut num_b = vec![0f64; lat.len()];
-                        let mut den_b = vec![0f64; lat.len()];
+                        let lo = lat.full_rack_start();
+                        let mut num_b = vec![0f64; lo];
+                        let mut den_b = vec![0f64; lo];
+                        let mut ways_b = vec![0f64; lat.len() - lo];
+                        // what a board before leaves there, never read back
+                        maxsheet.fill(UNPLAYABLE);
                         apportion_fused(
                             &lat,
                             add,
@@ -1747,6 +1780,7 @@ mod tests {
                             ApportionOut {
                                 num: &mut num_b,
                                 den: &mut den_b,
+                                ways: &mut ways_b,
                             },
                             &mut maxsheet,
                             ApportionMode {
@@ -1756,9 +1790,19 @@ mod tests {
                             },
                         );
                         let case = (unseen, by_letter, zeta, null_leave);
-                        for idx in 0..lat.len() {
+                        for idx in 0..lo {
                             assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
                             assert_eq!(den_a[idx], den_b[idx], "den at {idx} {case:?}");
+                        }
+                        // a full rack: its deals, and its best for each
+                        for (idx, &ways) in (lo..).zip(&ways_b) {
+                            assert_eq!(den_a[idx], ways, "ways at {idx} {case:?}");
+                            let num = if ways == 0.0 {
+                                0.0
+                            } else {
+                                ways * maxsheet[idx] as f64
+                            };
+                            assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
                         }
                     }
                 }
