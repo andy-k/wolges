@@ -713,6 +713,9 @@ fn scatter_words(
         c0: &'a [usize],
         letters: &'a [u8],
         from: &'a [u8],
+        k_two: &'a [(usize, usize)],
+        two: &'a [(usize, usize)],
+        c0_two: &'a [usize],
         best: &'a mut [i32],
     }
     impl Ctx<'_> {
@@ -732,6 +735,8 @@ fn scatter_words(
                         self.offer(k, r + self.p_tail[t + 1]);
                     } else if c + 1 == remaining {
                         self.last_one(t + 1, k, r);
+                    } else if c + 2 == remaining {
+                        self.last_two(t + 1, k, r);
                     } else {
                         self.rec_k(t + 1, remaining - c, k, r);
                     }
@@ -754,6 +759,24 @@ fn scatter_words(
             }
         }
 
+        // K two tiles short from letter t on: each letter u from t on that the
+        // pool still holds takes one of them, the rest of K then one short, or
+        // both when the pool holds two
+        #[inline(always)]
+        fn last_two(&mut self, t: usize, k_idx: usize, r_idx: usize) {
+            let (letters, k_two, two) = (self.letters, self.k_two, self.two);
+            let base = r_idx.wrapping_sub(self.c0_two[t]);
+            for &u in &letters[self.from[t] as usize..] {
+                let u = u as usize;
+                let (k_once, k_twice) = k_two[u];
+                let (r_once, r_twice) = two[u];
+                self.last_one(u + 1, k_idx + k_once, base.wrapping_add(r_once));
+                if self.avail[u] >= 2 {
+                    self.offer(k_idx + k_twice, base.wrapping_add(r_twice));
+                }
+            }
+        }
+
         // the rack P + K at r is worth at least P's play with K kept
         #[inline(always)]
         fn offer(&mut self, k_idx: usize, r: usize) {
@@ -770,6 +793,11 @@ fn scatter_words(
     let mut p_rest = [0usize; MAX_LETTERS + 1];
     let mut p_tail = [0usize; MAX_LETTERS + 1];
     let k_one = (0..n).map(|u| steps.of(u, 1, 1)).collect::<Vec<_>>();
+    let k_two = (0..n)
+        .map(|u| (steps.of(u, 2, 1), steps.of(u, 2, 2)))
+        .collect::<Vec<_>>();
+    let mut two = [(0usize, 0usize); MAX_LETTERS];
+    let mut c0_two = [0usize; MAX_LETTERS + 1];
     let mut one = [0usize; MAX_LETTERS];
     let mut c0 = [0usize; MAX_LETTERS + 1];
     let mut letters = [0u8; MAX_LETTERS];
@@ -815,6 +843,27 @@ fn scatter_words(
             from[n] = held as u8;
             c0[n] = taken_none;
         }
+        // for K two tiles short (last_two): what R's rank gains by one or two
+        // of each letter the pool still holds
+        if krem > 1 {
+            let mut taken_none = 0;
+            for t in 0..n {
+                c0_two[t] = taken_none;
+                let (rem_r, pt) = (p_rest[t] + 2, p_tally[t] as usize);
+                if avail[t] > 0 {
+                    two[t] = (
+                        taken_none + steps.of(t, rem_r, pt + 1),
+                        if avail[t] > 1 {
+                            taken_none + steps.of(t, rem_r, pt + 2) + p_tail[t + 1]
+                        } else {
+                            0
+                        },
+                    );
+                }
+                taken_none += steps.of(t, rem_r, pt);
+            }
+            c0_two[n] = taken_none;
+        }
         let mut ctx = Ctx {
             sp_val,
             n,
@@ -830,6 +879,9 @@ fn scatter_words(
             c0: &c0,
             letters: &letters[..held],
             from: &from,
+            k_two: &k_two,
+            two: &two,
+            c0_two: &c0_two,
             best: &mut *best,
         };
         let r_idx = lat.size_start(rack_size);
@@ -837,6 +889,8 @@ fn scatter_words(
             ctx.offer(lat.size_start(0), r_idx + p_tail[0]);
         } else if krem == 1 {
             ctx.last_one(0, lat.size_start(1), r_idx);
+        } else if krem == 2 {
+            ctx.last_two(0, lat.size_start(2), r_idx);
         } else {
             ctx.rec_k(0, krem, lat.size_start(krem), r_idx);
         }
