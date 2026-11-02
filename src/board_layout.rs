@@ -74,7 +74,7 @@ fn del() -> Premium {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StaticBoardLayout {
     premiums: Box<[Premium]>,
     dim: matrix::Dim,
@@ -86,6 +86,7 @@ pub struct StaticBoardLayout {
     is_symmetric: bool,
 }
 
+#[derive(Clone)]
 pub enum BoardLayout {
     Static(StaticBoardLayout),
 }
