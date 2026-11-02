@@ -6277,7 +6277,7 @@ mod tests {
     ];
 
     #[inline]
-    fn sweep_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+    fn sweep_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
         let mut words = Vec::<bites::Bites>::with_capacity(SWEEP_WORDS.len());
@@ -6287,20 +6287,22 @@ mod tests {
         }
         words.sort_unstable();
         words.dedup();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &words,
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap()
     }
 
     #[inline]
-    fn sweep_kwg_covering(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+    fn sweep_kwg_covering(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
         let dim = gc.board_layout().dim();
         let longest = dim.rows.max(dim.cols) as u8;
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
@@ -6337,14 +6339,16 @@ mod tests {
         words.push(spanning[..].into());
         words.sort_unstable();
         words.dedup();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &words,
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap()
     }
@@ -6353,7 +6357,7 @@ mod tests {
     fn sweep_output() -> String {
         let gc = game_config::make_english_game_config();
         let kwg = sweep_kwg(&gc);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
         let cases: &[(&str, &str, usize)] = &[
@@ -6444,7 +6448,7 @@ mod tests {
         let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, gc)
             .unwrap()
             .unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         for max_gen in [1usize, 5, 100_000] {
             for fen in boards {
@@ -6549,7 +6553,7 @@ mod tests {
     #[inline]
     #[test]
     fn stopping_at_the_last_candidate_finds_the_same_plays() {
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let fifteen = [
             "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
             "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
@@ -6636,7 +6640,7 @@ mod tests {
         let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, &gc)
             .unwrap()
             .unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
         let three = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15";
@@ -6732,7 +6736,7 @@ mod tests {
     }
 
     #[inline]
-    fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+    fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
         let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
@@ -6741,20 +6745,22 @@ mod tests {
             words.push(word_buf[..].into());
         }
         words.sort_unstable();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &words,
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap()
     }
 
     #[inline]
-    fn test_kad(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::Node22> {
+    fn test_kad(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::Node24> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
         let mut words = Vec::<bites::Bites>::with_capacity(test_words.len());
@@ -6765,14 +6771,16 @@ mod tests {
         }
         words.sort_unstable();
         words.dedup();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::DawgOnly,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &words,
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap()
     }
@@ -6795,7 +6803,7 @@ mod tests {
     fn placements(fen: &str, rack: &str) -> Vec<String> {
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
         let board_snapshot = BoardSnapshot {
@@ -6829,7 +6837,7 @@ mod tests {
     fn valued_plays(fen: &str, rack: &str, max_gen: usize) -> Vec<String> {
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
         let board_snapshot = BoardSnapshot {
@@ -6879,7 +6887,7 @@ mod tests {
     // jumbled graph's by its alphagram): a bit each, and bit 0 when there is a
     // run of tiles to make a word with; 0 when there is none
     fn hooks_by_hand(
-        kwg: &kwg::Kwg<kwg::Node22>,
+        kwg: &kwg::Kwg<kwg::Node24>,
         jumbled: bool,
         alphabet_len: u8,
         before: &[u8],
@@ -6935,20 +6943,22 @@ mod tests {
                         word_buf[..].into()
                     })
                     .collect::<Vec<bites::Bites>>();
-                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-                    &build::build(
+                kwg::kbwg_from_bytes_alloc(
+                    build::build(
                         build::BuildContent::DawgOnly,
                         build::BuildLayout::Wolges,
                         build::BuildOrder::Sorted,
                         &build::make_alphagrams(&words),
                     )
-                    .unwrap(),
+                    .unwrap()
+                    .to_vec(),
+                    false,
                 )
                 .unwrap()
             } else {
                 sweep_kwg(&gc)
             };
-            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
             let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
             let dim = gc.board_layout().dim();
             let alphabet_len = gc.alphabet().len();
@@ -7016,17 +7026,19 @@ mod tests {
             .iter()
             .map(|w| (*w).into())
             .collect::<Vec<bites::Bites>>();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::DawgOnly,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &build::make_alphagrams(&words),
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let dim = gc.board_layout().dim();
         let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         let board_snapshot = BoardSnapshot {
@@ -7084,8 +7096,8 @@ mod tests {
                 &words,
             )
             .unwrap();
-            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
-            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+            let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
             let mut board_tiles = vec![0u8; gc.board_layout().dim().rows as usize * 15];
             reader.set_word("HEAT", &mut word_buf).unwrap();
             for (i, &tile) in word_buf.iter().enumerate() {
@@ -7159,8 +7171,8 @@ mod tests {
             &words,
         )
         .unwrap();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_snapshot = BoardSnapshot {
             board_tiles: &[],
             game_config: &gc,
@@ -7464,7 +7476,7 @@ mod tests {
     fn jumbled_placements_once(fen: &str, rack: &str, is_census: bool) -> Vec<String> {
         let gc = game_config::make_jumbled_english_game_config();
         let kwg = test_kad(&gc, TEST_WORDS);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
         let board_snapshot = BoardSnapshot {
@@ -7530,7 +7542,7 @@ mod tests {
             let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
                 .unwrap()
                 .unwrap();
-            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
             let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
             for fen in boards {
                 let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
@@ -7718,17 +7730,19 @@ mod tests {
         }
         machine_words.sort_unstable();
         machine_words.dedup();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::DawgOnly,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &build::make_alphagrams(&machine_words),
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let dim = gc.board_layout().dim();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         for &(row, col, tile) in tiles {
@@ -7999,7 +8013,7 @@ mod tests {
     fn a_generation_after_remaining_words_matches_a_fresh_one() {
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let seat = fen_parser
             .parse("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15")
@@ -8053,7 +8067,7 @@ mod tests {
     fn a_generation_after_an_empty_board_matches_a_fresh_one() {
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let empty = fen_parser
             .parse("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15")
@@ -8145,7 +8159,7 @@ mod tests {
     #[inline]
     fn place_plays(
         move_generator: &mut KurniaMoveGenerator,
-        board_snapshot: &BoardSnapshot<'_, kwg::Node22, kwg::Node22>,
+        board_snapshot: &BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
         rack: &[u8],
         transposed: bool,
     ) -> Vec<(bool, i8, i8, Vec<u8>, i32)> {
@@ -8191,7 +8205,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(held.fit(&gc) && held.fit(&transposed_gc));
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let area = (rows as isize * cols as isize) as usize;
         let mut walked = Vec::new();
@@ -8318,7 +8332,7 @@ mod tests {
             10,
         ));
         let kwg = test_kwg(&gc);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; (rows as isize * cols as isize) as usize];
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         board_tiles[gc.board_layout().dim().at_row_col(0, 9)] = rack[0];

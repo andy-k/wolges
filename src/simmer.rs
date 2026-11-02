@@ -619,9 +619,9 @@ mod tests {
         let mut deal_rng = DefaultRng::seed_from_u64(3);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(99);
         simmer.prepare(&game_config, &game_state, 0, false, &[]);
@@ -798,9 +798,9 @@ mod tests {
 
         // with no words, every ply passes, past the two-ply horizon, until the
         // sixth scoreless turn in a row ends the game
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(5);
         simmer.prepare(&game_config, &game_state, 2, false, &[]);
@@ -1005,7 +1005,7 @@ mod tests {
 
     // every word of two or three tiles over the letters given
     #[inline]
-    fn kwg_of(letters: &[u8]) -> kwg::Kwg<kwg::Node22> {
+    fn kwg_of(letters: &[u8]) -> kwg::Kwg<kwg::Node24> {
         let mut words = Vec::new();
         for &a in letters {
             for &b in letters {
@@ -1023,7 +1023,7 @@ mod tests {
             &words,
         )
         .unwrap();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
+        kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap()
     }
 
     // the move a whole generation keeps for the side to move
@@ -1031,9 +1031,9 @@ mod tests {
     fn whole_reply(
         generator: &mut movegen::KurniaMoveGenerator,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<kwg::Node22>,
+        kwg: &kwg::Kwg<kwg::Node24>,
         arm_tables: &anagrams::ArmTables,
-        klv: &klv::Klv<kwg::Node22>,
+        klv: &klv::Klv<kwg::Node24>,
         game_state: &game_state::GameState,
     ) -> movegen::ValuedMove {
         generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -1064,7 +1064,7 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut whole = movegen::KurniaMoveGenerator::new(&game_config);
         let mut field = movegen::KurniaMoveGenerator::new(&game_config);
         let (mut checked, mut reused, mut from_lanes) = (0usize, 0usize, 0usize);
@@ -1183,7 +1183,7 @@ mod tests {
         let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
         let no_tables = anagrams::ArmTables::None;
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut whole = movegen::KurniaMoveGenerator::new(&game_config);
         let mut field = movegen::KurniaMoveGenerator::new(&game_config);
         let mut checked = 0usize;
@@ -1265,7 +1265,7 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
         let no_tables = anagrams::ArmTables::None;
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut field = movegen::KurniaMoveGenerator::new(&game_config);
         let (mut checked, mut placed) = (0usize, 0usize);
         for seed in 0..8u64 {

@@ -1993,8 +1993,8 @@ mod tests {
         rack: &[u8],
         field: FieldShape,
     ) -> Vec<movegen::ValuedMove> {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg_bytes).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv_bytes.to_vec()).unwrap();
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles,
             game_config,
@@ -2318,8 +2318,8 @@ mod tests {
     #[inline]
     fn blocks_however_split_give_the_sequential_numbers() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_lexicon()).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
@@ -2436,8 +2436,8 @@ mod tests {
     #[inline]
     fn a_decision_planned_for_its_rollouts_spends_no_more_and_ends_with_one() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_lexicon()).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
@@ -2579,8 +2579,8 @@ mod tests {
         // the opponent opened AT across the center; the side to move, holding
         // what it was dealt, picks with that move given
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_lexicon()).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
@@ -2956,8 +2956,8 @@ mod tests {
     #[inline]
     fn out_in_two_values_each_choice_on_footprints() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&at_lexicon(false)).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(at_lexicon(false).to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -2990,8 +2990,8 @@ mod tests {
     #[inline]
     fn out_in_two_raises_a_choice_whose_move_opens_its_out() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&at_lexicon(true)).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(at_lexicon(true).to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 14, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -3117,8 +3117,8 @@ mod tests {
     #[inline]
     fn out_in_two_blocks_an_out_and_keeps_a_move_that_wins() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&at_lexicon(false)).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(at_lexicon(false).to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -3171,17 +3171,19 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let dim = game_config.board_layout().dim();
         let words: Vec<bites::Bites> = vec![[1u8, 20][..].into()]; // AT alone
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &words,
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         board_tiles[dim.at_row_col(7, 7)] = 1; // A
         let board_snapshot = movegen::BoardSnapshot {
@@ -3225,8 +3227,8 @@ mod tests {
     #[inline]
     fn out_in_two_sees_an_out_its_move_opens() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&at_lexicon(true)).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(at_lexicon(true).to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -3266,8 +3268,8 @@ mod tests {
     #[inline]
     fn deft_plays_out_in_two_when_going_out_would_lose() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&at_lexicon(false)).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(at_lexicon(false).to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -3285,7 +3287,7 @@ mod tests {
             let game_state = at_endgame(&game_config, lead);
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-            let mut deft = MovePicker::<kwg::Node22, kwg::Node22>::Deft(DEFAULT_DEFT_WINDOW);
+            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(DEFAULT_DEFT_WINDOW);
             deft.pick_a_move(
                 &mut filtered_movegen,
                 &mut move_generator,
@@ -3305,8 +3307,8 @@ mod tests {
     #[inline]
     fn deft_leaves_one_in_the_bag_when_a_move_near_its_best_can() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&at_lexicon(false)).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(at_lexicon(false).to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -3323,7 +3325,7 @@ mod tests {
             game_state.bag.set_from_iter(std::iter::repeat_n(5u8, bag));
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-            let mut deft = MovePicker::<kwg::Node22, kwg::Node22>::Deft(0);
+            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(0);
             deft.pick_a_move(
                 &mut filtered_movegen,
                 &mut move_generator,
@@ -3350,7 +3352,7 @@ mod tests {
     ];
 
     #[inline]
-    fn end_words_kwg(game_config: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+    fn end_words_kwg(game_config: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
         let reader = alphabet::AlphabetReader::new_for_words(game_config.alphabet());
         let mut word_buf = Vec::new();
         let mut words = Vec::<bites::Bites>::new();
@@ -3359,14 +3361,16 @@ mod tests {
             words.push(word_buf[..].into());
         }
         words.sort_unstable();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
-            &build::build(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
                 &words,
             )
-            .unwrap(),
+            .unwrap()
+            .to_vec(),
+            false,
         )
         .unwrap()
     }
@@ -3401,7 +3405,7 @@ mod tests {
     fn deft_takes_a_winning_out_over_a_richer_move_that_also_wins() {
         let game_config = game_config::make_english_game_config();
         let kwg = end_words_kwg(&game_config);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser =
             display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
         let board_tiles = fen_parser
@@ -3456,7 +3460,7 @@ mod tests {
     fn deft_plays_out_in_two_over_the_play_at_fewest() {
         let game_config = game_config::make_english_game_config();
         let kwg = end_words_kwg(&game_config);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut fen_parser =
             display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
         let board_tiles = fen_parser
@@ -3511,8 +3515,8 @@ mod tests {
     #[inline]
     fn deft_weighs_more_moves_near_the_end_of_the_bag() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_lexicon()).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -3555,7 +3559,7 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let kwg = end_words_kwg(&game_config);
         let mut word_buf = Vec::new();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
         let mut fen_parser =
             display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());

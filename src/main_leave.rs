@@ -9781,7 +9781,7 @@ WCMP_P1_SCORE 402.000000
             &words,
         )
         .unwrap();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
         let mut tally = [0u8; 27];
         let mut found = |key: &[u8]| {
             let mut found = Vec::new();
@@ -9993,8 +9993,8 @@ WCMP_P1_SCORE 402.000000
     #[inline]
     fn parse_infer_play_reads_a_move_whole_or_refuses_it() {
         let game_config = game_config::make_english_game_config();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES).unwrap();
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg::EMPTY_KWG_BYTES.to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let dim = game_config.board_layout().dim();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         // QI across row 8 from column H
@@ -10199,7 +10199,7 @@ WCMP_P1_SCORE 402.000000
     #[test]
     #[inline]
     fn a_seat_hands_over_to_its_end_picker_once_the_bag_is_empty() {
-        type Picker<'a> = move_picker::MovePicker<'a, kwg::Node22, kwg::Node22>;
+        type Picker<'a> = move_picker::MovePicker<'a, kwg::Node24, kwg::Node24>;
         let mut own: Picker = move_picker::MovePicker::Hasty;
         let mut end = Some(end_picker(EndPicker::Deft, 7));
         assert!(matches!(

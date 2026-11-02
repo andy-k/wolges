@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[inline]
-    fn graph_of(words: &[Vec<u8>]) -> kwg::Kwg<kwg::Node22> {
+    fn graph_of(words: &[Vec<u8>]) -> kwg::Kwg<kwg::Node24> {
         let mut words = words.to_vec();
         words.sort_unstable();
         let words = words
@@ -816,7 +816,7 @@ mod tests {
             &words,
         )
         .unwrap();
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
+        kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap()
     }
 
     #[inline(always)]
@@ -1022,7 +1022,7 @@ mod tests {
             &words,
         )
         .unwrap();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
         for lean in [false, true] {
             assert!(ArmTables::build(&kwg, &gc, lean).is_ok());
         }
@@ -1032,7 +1032,7 @@ mod tests {
         let mut looping = bytes.to_vec();
         let node = kwg::read_le_u32(&looping, at);
         looping[at..at + 4].copy_from_slice(&((node & !0x3fffff) | dawg_root as u32).to_le_bytes());
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&looping).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(looping.to_vec(), false).unwrap();
         for lean in [false, true] {
             assert!(ArmTables::build(&kwg, &gc, lean).is_err());
         }
@@ -1053,7 +1053,7 @@ mod tests {
             &words,
         )
         .unwrap();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
         let anagrams = ArmTables::build(&kwg, &gc, false).unwrap().bytes();
         let lean = ArmTables::build(&kwg, &gc, true).unwrap().bytes();
         // the anagrams hold every word's letters beside its keys, the lean arm

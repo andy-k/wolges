@@ -338,7 +338,7 @@ mod tests {
     #[test]
     #[inline]
     fn a_macondo_export_refuses_what_its_format_cannot_hold() {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES).unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg::EMPTY_KWG_BYTES.to_vec(), false).unwrap();
         let english = alphabet::make_english_alphabet();
         assert!(to_macondo(&kwg, &english, "CSW24", MacondoFormat::Dawg).is_ok());
         assert!(to_macondo(&kwg, &english, &"X".repeat(256), MacondoFormat::Dawg).is_err());
