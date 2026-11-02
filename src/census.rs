@@ -9,6 +9,7 @@ pub struct MultisetLattice {
     rack_size: usize,
     pascal: crate::prob::Pascal,
     size_offset: Vec<u64>,
+    steps: RankSteps,
 }
 
 impl MultisetLattice {
@@ -27,17 +28,24 @@ impl MultisetLattice {
         for (s, slot) in size_offset.iter_mut().enumerate() {
             *slot = pascal.binom(s + num_letters - 1, num_letters);
         }
+        let steps = RankSteps::new(&pascal, num_letters, rack_size);
         Ok(Self {
             num_letters,
             rack_size,
             pascal,
             size_offset,
+            steps,
         })
     }
 
     #[inline(always)]
     fn c(&self, n: usize, k: usize) -> u64 {
         self.pascal.binom(n, k)
+    }
+
+    #[inline(always)]
+    fn steps(&self) -> &RankSteps {
+        &self.steps
     }
 
     #[inline(always)]
@@ -658,16 +666,15 @@ struct RankSteps {
 }
 
 impl RankSteps {
-    fn new(lat: &MultisetLattice) -> Self {
-        let n = lat.num_letters();
-        let span = lat.rack_size() + 1;
+    fn new(pascal: &crate::prob::Pascal, n: usize, rack_size: usize) -> Self {
+        let span = rack_size + 1;
         let mut steps = vec![0usize; n * span * span];
         for t in 0..n - 1 {
             let parts = n - 1 - t;
             for rem in 0..span {
                 let mut within = 0usize;
                 for ct in 1..=rem {
-                    within += lat.c((rem - (ct - 1)) + parts - 1, parts - 1) as usize;
+                    within += pascal.binom((rem - (ct - 1)) + parts - 1, parts - 1) as usize;
                     steps[(t * span + rem) * span + ct] = within;
                 }
             }
@@ -692,7 +699,7 @@ fn scatter_words(
 ) {
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
-    let steps = RankSteps::new(lat);
+    let steps = lat.steps();
 
     // a rack R is a played P with a kept K. The walk picks K a letter at a time
     // and ranks K and R as it goes. At a letter, R's count is P's plus K's, and
@@ -867,7 +874,7 @@ fn scatter_words(
         let mut ctx = Ctx {
             sp_val,
             n,
-            steps: &steps,
+            steps,
             p_tally: &p_tally,
             p_rest: &p_rest,
             p_tail: &p_tail,
@@ -1335,7 +1342,6 @@ pub fn record_blank_variants(
     if n > rack_size {
         return;
     }
-    let num_letters = lat.num_letters();
 
     placed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
@@ -1360,39 +1366,40 @@ pub fn record_blank_variants(
         return;
     }
     let leftover = num_blanks_eff - total_forced;
-    let mut tally = [0u8; MAX_LETTERS];
 
+    // the runs taken from the last letter back: a letter adds to the rank by
+    // how many real tiles there are from it on, which the runs after it fix
     struct Ctx<'a> {
         runs: &'a [(u8, u8, u8, u8)],
-        num_runs: usize,
         placed: &'a [(u8, i32)],
-        tally: &'a mut [u8],
-        lat: &'a MultisetLattice,
+        steps: &'a RankSteps,
+        size: usize,
+        size_start: usize,
         sheet: &'a mut [i32],
         real_score: i32,
     }
     impl Ctx<'_> {
-        fn rec(&mut self, ri: usize, leftover: usize, blanks_total: usize, drop_acc: i32) {
-            if ri == self.num_runs {
-                let size = self.placed.len();
-                let items = (blanks_total > 0)
-                    .then_some((0u8, blanks_total as u8))
-                    .into_iter()
-                    .chain(self.runs.iter().take(self.num_runs).filter_map(|r| {
-                        let real = self.tally[r.0 as usize];
-                        (real > 0).then_some((r.0, real))
-                    }));
-                let key = self.lat.rank_sparse_iter(size, items);
-                if key != !0 {
-                    let slot = &mut self.sheet[key as usize];
-                    let val = self.real_score - drop_acc;
-                    if val > *slot {
-                        *slot = val;
-                    }
+        // runs[..ri] still to choose, with the blanks chosen so far, the real
+        // tiles from runs[ri] on, and what their letters add to the rank
+        fn rec(
+            &mut self,
+            ri: usize,
+            leftover: usize,
+            blanks_total: usize,
+            real_after: usize,
+            rank: usize,
+            drop_acc: i32,
+        ) {
+            if ri == 0 {
+                let key = self.size_start + self.steps.of(0, self.size, blanks_total) + rank;
+                let slot = &mut self.sheet[key];
+                let val = self.real_score - drop_acc;
+                if val > *slot {
+                    *slot = val;
                 }
                 return;
             }
-            let (letter, start, count, forced) = self.runs[ri];
+            let (letter, start, count, forced) = self.runs[ri - 1];
             let (letter, start, count, forced) = (
                 letter as usize,
                 start as usize,
@@ -1410,28 +1417,30 @@ pub fn record_blank_variants(
                     drop_run += self.placed[start + forced + extra - 1].1;
                 }
                 let b = forced + extra;
-                self.tally[letter] = (count - b) as u8;
+                let real = count - b;
+                let from_here = real_after + real;
                 self.rec(
-                    ri + 1,
+                    ri - 1,
                     leftover - extra,
                     blanks_total + b,
+                    from_here,
+                    rank + self.steps.of(letter, from_here, real),
                     drop_acc + drop_run,
                 );
             }
-            self.tally[letter] = 0;
         }
     }
 
     Ctx {
-        runs: &runs,
-        num_runs,
+        runs: &runs[..num_runs],
         placed,
-        tally: &mut tally[..num_letters],
-        lat,
+        steps: lat.steps(),
+        size: n,
+        size_start: lat.size_start(n),
         sheet,
         real_score,
     }
-    .rec(0, leftover, 0, 0);
+    .rec(num_runs, leftover, 0, 0, 0, 0);
 }
 
 #[cfg(test)]
@@ -1935,6 +1944,95 @@ mod tests {
                 }
             }
         }
+    }
+
+    // record_blank_variants as plainly as it can be put: each count of blanks a
+    // letter's placed tiles can take, its cheapest tiles blanked first, the
+    // whole tally ranked
+    fn record_blank_variants_by_rank(
+        lat: &MultisetLattice,
+        sheet: &mut [i32],
+        real_score: i32,
+        placed: &[(u8, i32)],
+        unseen: &[u8],
+        num_blanks_eff: usize,
+    ) {
+        let rack_size = lat.rack_size();
+        if placed.is_empty() || placed.len() > rack_size {
+            return;
+        }
+        let mut sorted = placed.to_vec();
+        sorted.sort_unstable();
+        let runs = sorted
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(|run| {
+                let real = (unseen[run[0].0 as usize] as usize).min(rack_size);
+                (run[0].0, run.len().saturating_sub(real), run)
+            })
+            .collect::<Vec<_>>();
+        let mut blanks = vec![0usize; runs.len()];
+        loop {
+            if (0..runs.len()).all(|i| blanks[i] >= runs[i].1)
+                && blanks.iter().sum::<usize>() <= num_blanks_eff
+            {
+                let mut tally = vec![0u8; lat.num_letters()];
+                tally[0] = blanks.iter().sum::<usize>() as u8;
+                let mut val = real_score;
+                for (i, &(letter, _, run)) in runs.iter().enumerate() {
+                    tally[letter as usize] = (run.len() - blanks[i]) as u8;
+                    val -= run[..blanks[i]].iter().map(|e| e.1).sum::<i32>();
+                }
+                let slot = &mut sheet[lat.rank(&tally) as usize];
+                *slot = (*slot).max(val);
+            }
+            // the next count of blanks, as an odometer over the runs
+            let mut i = 0;
+            while i < runs.len() && blanks[i] == runs[i].2.len() {
+                blanks[i] = 0;
+                i += 1;
+            }
+            if i == runs.len() {
+                return;
+            }
+            blanks[i] += 1;
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn record_blank_variants_matches_ranking_each_tally() {
+        use rand::prelude::*;
+        let lat = MultisetLattice::new(6, 7).unwrap();
+        let mut fast = vec![0i32; lat.len()];
+        let mut plain = vec![0i32; lat.len()];
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
+        for _ in 0..3000 {
+            let unseen = (0..6).map(|_| rng.random_range(0..5u8)).collect::<Vec<_>>();
+            let num_blanks_eff = rng.random_range(0..4usize);
+            let real_score = rng.random_range(0..200i32);
+            let mut placed = (0..rng.random_range(1..=7usize))
+                .map(|_| (rng.random_range(1..=5u8), rng.random_range(0..30i32)))
+                .collect::<Vec<_>>();
+            record_blank_variants_by_rank(
+                &lat,
+                &mut plain,
+                real_score,
+                &placed,
+                &unseen,
+                num_blanks_eff,
+            );
+            record_blank_variants(
+                &lat,
+                &mut fast,
+                real_score,
+                &mut placed,
+                &unseen,
+                num_blanks_eff,
+            );
+        }
+        let valued = plain.iter().filter(|&&v| v != 0).count();
+        assert!(valued > lat.len() / 2, "{valued} of {}", lat.len());
+        assert_eq!(fast, plain);
     }
 
     #[test]
