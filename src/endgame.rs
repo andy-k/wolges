@@ -2862,7 +2862,7 @@ pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f32, equity::Equi
 #[cfg(test)]
 mod tests {
     use super::{EndgameSolver, PegMove, splitmix64};
-    use crate::{alphabet, anagrams, bites, build, equity, game_config, klv, kwg, movegen};
+    use crate::{alphabet, anagrams, bites, build, equity, fash, game_config, klv, kwg, movegen};
 
     #[inline]
     fn tiny_word_list() -> Vec<bites::Bites> {
@@ -4049,6 +4049,123 @@ mod tests {
                 }
             }
             assert!(total > 0, "{rules}: no position solved");
+        }
+    }
+
+    // a late board: TA across row 3 from column 6, and, from row 8 on, every
+    // other tile but the racks' (a blank as an A), which no play can touch,
+    // their runs too long to be words; so the tiles unseen are the racks'
+    fn late_board(gc: &game_config::GameConfig, racks: [&[u8]; 2]) -> Vec<u8> {
+        let alphabet = gc.alphabet();
+        let cols = gc.board_layout().dim().cols as usize;
+        let rows = gc.board_layout().dim().rows as usize;
+        let mut left = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        let mut board = vec![0u8; rows * cols];
+        for (col, tile) in [(6, 20u8), (7, 1)] {
+            board[3 * cols + col] = tile;
+            left[tile as usize] -= 1;
+        }
+        for &tile in racks.iter().copied().flatten() {
+            left[tile as usize] -= 1;
+        }
+        let mut squares = board[8 * cols..].iter_mut();
+        for (tile, &count) in left.iter().enumerate() {
+            for _ in 0..count {
+                *squares.next().unwrap() = if tile == 0 { 0x81 } else { tile as u8 };
+            }
+        }
+        board
+    }
+
+    // the endgame command solves on a graph of the words the board can still
+    // take, whatever the racks: on it the solver answers as on the whole graph,
+    // under classic rules and under jumbled ones, whose words lie on the board
+    // with their tiles in any order (so BATH through TA, from B and H)
+    #[test]
+    #[inline]
+    fn a_graph_pruned_to_the_words_the_board_can_take_solves_as_the_whole() {
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        // a graph of these words, of alphagrams under jumbled rules
+        let graph = |jumbled: bool, words: &[bites::Bites]| {
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+                &build::build(
+                    if jumbled {
+                        build::BuildContent::DawgOnly
+                    } else {
+                        build::BuildContent::Gaddawg
+                    },
+                    build::BuildLayout::Wolges,
+                    build::BuildOrder::Sorted,
+                    words,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        for (rules, gc, jumbled) in [
+            ("classic", game_config::make_english_game_config(), false),
+            (
+                "jumbled",
+                game_config::make_jumbled_english_game_config(),
+                true,
+            ),
+        ] {
+            let words = tiny_word_list();
+            let words = if jumbled {
+                build::make_alphagrams(&words).into_vec()
+            } else {
+                words
+            };
+            let whole = graph(jumbled, &words);
+            let mut pruned_away = 0;
+            // a blank, A B H S T, each rack sorted
+            for racks in [
+                [&[2u8, 8][..], &[1, 1, 19]],
+                [&[1, 2], &[8, 19]],
+                [&[8, 19], &[1, 2]],
+                [&[2, 8, 19], &[1, 1]],
+                [&[0, 8], &[1, 2]],
+                [&[8, 20], &[1, 2, 19]],
+            ] {
+                let board = late_board(&gc, racks);
+                let mut found = fash::MyHashSet::<bites::Bites>::default();
+                movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                    &movegen::BoardSnapshot {
+                        board_tiles: &board,
+                        game_config: &gc,
+                        kwg: &whole,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    },
+                    |word: &[u8]| {
+                        found.insert(word.into());
+                    },
+                );
+                let mut found = found.into_iter().collect::<Vec<_>>();
+                found.sort_unstable();
+                let found = if jumbled {
+                    build::make_alphagrams(&found).into_vec()
+                } else {
+                    found
+                };
+                if found.len() < words.len() {
+                    pruned_away += 1;
+                }
+                let pruned = graph(jumbled, &found);
+                let solve = |kwg: &kwg::Kwg<kwg::Node22>| {
+                    let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
+                    let mut egs =
+                        EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, kwg, &arm_tables)
+                            .unwrap();
+                    egs.init(&board, racks);
+                    egs.solve(0).unwrap()
+                };
+                assert_eq!(solve(&pruned), solve(&whole), "[{rules} {racks:?}]");
+            }
+            assert!(pruned_away > 0, "{rules}: no graph lost a word");
         }
     }
 
