@@ -5168,7 +5168,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     }
     let by = |column: fn(&Studied) -> f64| {
         let mut order = words.iter().collect::<Vec<_>>();
-        order.sort_by(|a, b| {
+        order.sort_unstable_by(|a, b| {
             column(b)
                 .total_cmp(&column(a))
                 .then_with(|| a.word.cmp(&b.word))
@@ -5191,7 +5191,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             racks.push((key[..].into(), studied.rack_loss));
         }
     }
-    racks.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    racks.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     // the lists, a size at a time: rack loss, count, word loss, and move loss
     let mut lists = Vec::<(usize, &str, fash::MyHashSet<bites::Bites>)>::new();
     let mut tally = vec![0u8; alphabet.len() as usize];
@@ -9883,7 +9883,7 @@ WCMP_P1_SCORE 402.000000
         each_tally_of_size(&avail, &cap, 0, 2, &mut cur, &mut |tally| {
             seen.push(tally.to_vec())
         });
-        seen.sort();
+        seen.sort_unstable();
         assert_eq!(
             seen,
             vec![vec![0, 1, 1], vec![1, 0, 1], vec![1, 1, 0], vec![2, 0, 0]]
@@ -9926,7 +9926,7 @@ WCMP_P1_SCORE 402.000000
             1,
             &mut |rank, ln_prior, gap, _| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
         );
-        got.sort_by(|a, b| a.0.cmp(&b.0));
+        got.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         got
     }
 

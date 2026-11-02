@@ -6935,8 +6935,8 @@ mod tests {
         let mut reordered = plays_from(build::BuildOrder::Reordered);
         assert!(sorted.len() > 100, "the test needs plays to compare");
         assert_eq!(sorted.len(), reordered.len());
-        sorted.sort_by_key(sort_key);
-        reordered.sort_by_key(sort_key);
+        sorted.sort_unstable_by_key(sort_key);
+        reordered.sort_unstable_by_key(sort_key);
         assert!(
             sorted
                 .iter()
