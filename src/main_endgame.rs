@@ -382,6 +382,11 @@ fn run_batch<N: kwg::Node>(
                 "line {line_index}: bad player {player_str:?}: the player to move is 0 or 1"
             ));
         }
+        if rack0.is_empty() || rack1.is_empty() {
+            wolges::return_error!(format!(
+                "line {line_index}: a rack is empty, so the game is over"
+            ));
+        }
         // the scoreless turns before the position: the line's own, else the
         // run's
         let mut scoreless = solving.scoreless;
@@ -1498,6 +1503,9 @@ fn solve_position<N: kwg::Node>(
             "not endgame yet as there are {} unseen tiles",
             oppo_rack.len(),
         ));
+    }
+    if oppo_rack.is_empty() {
+        wolges::return_error!("the opponent holds no tiles, so the game is over".into());
     }
 
     // perform word prune.
