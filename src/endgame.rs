@@ -789,6 +789,37 @@ impl BagLimits {
         self.time.is_some() || self.states.is_some()
     }
 
+    // what another thread of the same search needs to keep to its limits
+    #[inline(always)]
+    fn on_one_clock(&self) -> OnOneClock {
+        OnOneClock {
+            time: self.time,
+            states: self.states,
+            memory: self.memory,
+            t0: self.t0,
+            depth: self.depth.get(),
+        }
+    }
+
+    // the limits of another thread of a search: the same limits on the same
+    // clock, at the same pass, with no listener
+    #[inline(always)]
+    fn on_the_clock(clock: OnOneClock) -> Self {
+        Self {
+            time: clock.time,
+            states: clock.states,
+            memory: clock.memory,
+            t0: clock.t0,
+            dur_movegen: Default::default(),
+            endgames: Default::default(),
+            nodes: Default::default(),
+            progress: std::cell::Cell::new(None),
+            depth: std::cell::Cell::new(clock.depth),
+            may_stop: std::cell::Cell::new(false),
+            stopped: std::cell::Cell::new(false),
+        }
+    }
+
     // whether any limit has passed, on the table the endgames share
     #[inline(always)]
     fn passed(&self, table: &Table) -> bool {
@@ -798,6 +829,18 @@ impl BagLimits {
                 .memory
                 .is_some_and(|memory| memory.passed(table.leaving()))
     }
+}
+
+// the limits, the clock they run on, and the pass's depth, as a search with
+// tiles in the bag hands them to each thread it runs on (BagLimits holds them
+// in cells, which one thread alone may use)
+#[derive(Clone, Copy)]
+struct OnOneClock {
+    time: Option<std::time::Duration>,
+    states: Option<usize>,
+    memory: Option<MemoryLimit>,
+    t0: Started,
+    depth: i8,
 }
 
 // the solver counts millipoints in f32, which holds whole ones exactly; an
@@ -2764,7 +2807,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         &mut self,
         position: PegBagPosition,
         limits: &Limits,
-    ) -> error::Returns<Result<PegBagResult, PegUnsupported>> {
+    ) -> error::Returns<Result<PegBagResult, PegUnsupported>>
+    where
+        N: Sync,
+    {
         self.resume_peg(&mut PegBagProgress::new(position)?, limits)
     }
 
@@ -2775,7 +2821,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         &mut self,
         progress: &mut PegBagProgress,
         limits: &Limits,
-    ) -> error::Returns<Result<PegBagResult, PegUnsupported>> {
+    ) -> error::Returns<Result<PegBagResult, PegUnsupported>>
+    where
+        N: Sync,
+    {
         let gc = self.game_config;
         if exchanges_without_forced_end(gc, progress.position.bag_size) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
@@ -2810,7 +2859,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         progress: &mut PegBagProgress,
         scoreless: [u8; 2],
         limits: &BagLimits,
-    ) -> error::Returns<PegBagResult> {
+    ) -> error::Returns<PegBagResult>
+    where
+        N: Sync,
+    {
         let gc = sub.game_config;
         let kwg = sub.kwg;
         let arm_tables = sub.arm_tables;
@@ -2820,6 +2872,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let PegBagProgress {
             position,
             splits,
+            threads,
             state,
         } = progress;
         let mover = position.mover;
@@ -2858,64 +2911,55 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             state.depth = if deepens { 1 } else { COMPLETE };
         }
         let score_diff = position.score_diff.raw() as f64;
+        // a wasm build has no threads
+        let threads = if cfg!(target_family = "wasm") {
+            1
+        } else {
+            (*threads).max(1)
+        };
+        if state.searched.len() < threads {
+            state.searched.resize_with(threads, Default::default);
+        }
 
         while !state.done {
             limits.depth.set(state.depth);
-            let mut stopped = false;
-            while let Some(&i) = state.order.get(state.next) {
-                limits
-                    .may_stop
-                    .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
-                let mut search = BagSearch {
-                    gc,
-                    kwg,
-                    arm_tables,
-                    klv: &klv,
-                    sub: &mut *sub,
-                    mg: &mut mg,
-                    valued: &mut state.searched,
-                    limits,
-                    exact: true,
-                };
-                // the move's value and chance to win over the splits, each from
-                // the mover's lead before it
-                let mut value_move = || -> error::Returns<PegBagValue> {
-                    let play = &state.moves[i];
-                    let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
-                    let mut hyps = Vec::with_capacity(splits.len());
-                    for (opp_rack, bag, ways) in splits.iter() {
-                        let pos = at(opp_rack, bag);
-                        let value = search.move_value(&pos, play)? + score_diff;
-                        win += *ways as f64 * search.move_win(&pos, play, -score_diff)?;
-                        marg += *ways as f64 * value;
-                        total += ways;
-                        let bag_tiles = (0u8..)
-                            .zip(bag.iter())
-                            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
-                            .collect();
-                        hyps.push((bag_tiles, *ways, equity::Equity::new(value.round() as i32)));
+            let stopped = if threads > 1 {
+                Self::value_on_threads(
+                    sub, &mut mg, state, splits, &at, score_diff, limits, threads,
+                )?
+            } else {
+                let mut stopped = false;
+                while let Some(&i) = state.order.get(state.next) {
+                    limits
+                        .may_stop
+                        .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
+                    let mut search = BagSearch {
+                        gc,
+                        kwg,
+                        arm_tables,
+                        klv: &klv,
+                        sub: &mut *sub,
+                        mg: &mut mg,
+                        valued: &mut state.searched[0],
+                        limits,
+                        exact: true,
+                    };
+                    match value_root_move(&mut search, splits, &at, &state.moves[i], score_diff) {
+                        Ok(value) => {
+                            state.pass_exact &= value.exact;
+                            state.valued[i] = Some(value);
+                            state.reached.push(i);
+                            state.next += 1;
+                        }
+                        Err(_) if limits.stopped.get() => {
+                            stopped = true;
+                            break;
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Ok(PegBagValue {
-                        win: win / total as f64,
-                        marg: marg / total as f64,
-                        hyps,
-                        exact: search.exact,
-                    })
-                };
-                match value_move() {
-                    Ok(value) => {
-                        state.pass_exact &= value.exact;
-                        state.valued[i] = Some(value);
-                        state.reached.push(i);
-                        state.next += 1;
-                    }
-                    Err(_) if limits.stopped.get() => {
-                        stopped = true;
-                        break;
-                    }
-                    Err(e) => return Err(e),
                 }
-            }
+                stopped
+            };
             if stopped {
                 if state.answer.is_none() {
                     // no pass valued every move: the best of those valued
@@ -2942,7 +2986,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             });
             state.next = 0;
             state.pass_exact = true;
-            state.searched = Default::default();
+            state
+                .searched
+                .iter_mut()
+                .for_each(|valued| *valued = Default::default());
             state.depth += 1;
         }
         let Some((best, depth)) = state.answer else {
@@ -2956,6 +3003,161 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             depth,
             exact,
         ))
+    }
+
+    // a pass's moves from state.next on, valued on threads. Each thread takes
+    // the next move and split not yet taken, so that a costly move's splits
+    // spread over the threads. This thread works with sub (its listener and the
+    // table lent to it); each other one works with a solver of its own. They
+    // run on one clock; each keeps what it valued below the moves
+    // (state.searched). Whether a limit stopped the pass; the moves it valued
+    // in every split then go first in the order, so a solve resuming the pass
+    // goes on after them
+    #[allow(clippy::too_many_arguments)]
+    fn value_on_threads(
+        sub: &mut Self,
+        mg: &mut movegen::KurniaMoveGenerator,
+        state: &mut PegBagState,
+        splits: &[(Vec<u8>, Vec<u8>, u64)],
+        at: &(impl Fn(&[u8], &[u8]) -> InBag + Sync),
+        score_diff: f64,
+        limits: &BagLimits,
+        threads: usize,
+    ) -> error::Returns<bool>
+    where
+        N: Sync,
+    {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        let gc = sub.game_config;
+        let kwg = sub.kwg;
+        let arm_tables = sub.arm_tables;
+        let deepens = limits.deepens();
+        let base = state.next;
+        let rest = state.order.len() - base;
+        let num_splits = splits.len();
+        let tasks = rest * num_splits;
+        let next = AtomicUsize::new(0);
+        // each move's splits not yet valued, and the moves valued in every one
+        let unvalued = (0..rest)
+            .map(|_| AtomicUsize::new(num_splits))
+            .collect::<Vec<_>>();
+        let moves_valued = AtomicUsize::new(state.reached.len());
+        let stop = AtomicBool::new(false);
+        let answered = state.answer.is_some();
+        let on_one_clock = limits.on_one_clock();
+        let (order, moves) = (&state.order, &state.moves);
+        // a thread's share: each move and split it valued (by its task, the
+        // move's place in the rest of the order times the splits, plus the
+        // split's), with the value, the chance to win, and whether it was exact;
+        // and whether a limit stopped it
+        type Share = (Vec<(usize, f64, f64, bool)>, bool);
+        let work =
+            |search: &mut BagSearch<'_, '_, N, L>, limits: &BagLimits| -> error::Returns<Share> {
+                let mut mine = Vec::new();
+                while !stop.load(Relaxed) {
+                    let task = next.fetch_add(1, Relaxed);
+                    if task >= tasks {
+                        break;
+                    }
+                    let (m, s) = (task / num_splits, task % num_splits);
+                    limits
+                        .may_stop
+                        .set(deepens && (answered || moves_valued.load(Relaxed) > 0));
+                    search.exact = true;
+                    let play = &moves[order[base + m]];
+                    match value_root_split(search, &splits[s], at, play, score_diff) {
+                        Ok((value, win)) => {
+                            mine.push((task, value, win, search.exact));
+                            if unvalued[m].fetch_sub(1, Relaxed) == 1 {
+                                moves_valued.fetch_add(1, Relaxed);
+                            }
+                        }
+                        Err(_) if limits.stopped.get() => {
+                            stop.store(true, Relaxed);
+                            return Ok((mine, true));
+                        }
+                        Err(e) => {
+                            stop.store(true, Relaxed);
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok((mine, false))
+            };
+        let (first, others) = state.searched.split_first_mut().unwrap();
+        let shares = std::thread::scope(|s| {
+            let handles = (others.iter_mut().take(threads - 1))
+                .map(|valued| {
+                    let work = &work;
+                    s.spawn(move || {
+                        let mut own = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
+                        let mut mg = movegen::KurniaMoveGenerator::new(gc);
+                        let klv = klv::Klv::<L>::empty()?;
+                        let limits = BagLimits::on_the_clock(on_one_clock);
+                        let mut search = BagSearch {
+                            gc,
+                            kwg,
+                            arm_tables,
+                            klv: &klv,
+                            sub: &mut own,
+                            mg: &mut mg,
+                            valued,
+                            limits: &limits,
+                            exact: true,
+                        };
+                        work(&mut search, &limits)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let klv = klv::Klv::<L>::empty();
+            let mine = klv.and_then(|klv| {
+                let mut search = BagSearch {
+                    gc,
+                    kwg,
+                    arm_tables,
+                    klv: &klv,
+                    sub: &mut *sub,
+                    mg,
+                    valued: first,
+                    limits,
+                    exact: true,
+                };
+                work(&mut search, limits)
+            });
+            let mut shares = vec![mine];
+            shares.extend(handles.into_iter().map(|handle| handle.join().unwrap()));
+            shares
+        });
+        let mut stopped = false;
+        let mut found = vec![None; tasks];
+        for share in shares {
+            let (mine, stopped_here) = share?;
+            stopped |= stopped_here;
+            for (task, value, win, exact) in mine {
+                found[task] = Some((value, win, exact));
+            }
+        }
+        let (mut taken, mut left) = (Vec::new(), Vec::new());
+        for (m, per_split) in found.chunks(num_splits.max(1)).enumerate() {
+            let i = state.order[base + m];
+            if per_split.iter().all(Option::is_some) {
+                let per_split = per_split.iter().map(|found| found.unwrap());
+                let exact = per_split.clone().all(|(_, _, exact)| exact);
+                let per_split = per_split.map(|(value, win, _)| (value, win));
+                let value = peg_bag_value(splits, per_split, exact);
+                state.pass_exact &= value.exact;
+                state.valued[i] = Some(value);
+                state.reached.push(i);
+                taken.push(i);
+            } else {
+                left.push(i);
+            }
+        }
+        state.order.truncate(base);
+        state.next += taken.len();
+        state.order.extend(taken);
+        state.order.extend(left);
+        Ok(stopped)
     }
 
     // the clairvoyant model's search: each tile's value, the mover knowing it.
@@ -3477,10 +3679,11 @@ pub struct PegBagPosition {
 // a search with tiles in the bag that goes on across solves (as one with a tile
 // in the bag does, PegProgress): its position, each split of the tiles the
 // mover cannot see (the opponent's rack, the bag's counts, the deals giving
-// it), and how far it has got
+// it), the threads it runs on, and how far it has got
 pub struct PegBagProgress {
     position: PegBagPosition,
     splits: Vec<(Vec<u8>, Vec<u8>, u64)>,
+    threads: usize,
     state: PegBagState,
 }
 
@@ -3515,8 +3718,76 @@ impl PegBagProgress {
         Ok(Self {
             position,
             splits,
+            threads: 1,
             state: Default::default(),
         })
+    }
+
+    // value the moves on this many threads from the next solve on (one unless
+    // set; a wasm build runs one whatever is set)
+    #[inline]
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
+    }
+}
+
+// a move's value with tiles in the bag over the splits, and its chance to win,
+// each from the mover's lead before it
+fn value_root_move<N: kwg::Node, L: kwg::Node>(
+    search: &mut BagSearch<'_, '_, N, L>,
+    splits: &[(Vec<u8>, Vec<u8>, u64)],
+    at: &impl Fn(&[u8], &[u8]) -> InBag,
+    play: &movegen::Play,
+    score_diff: f64,
+) -> error::Returns<PegBagValue> {
+    let mut per_split = Vec::with_capacity(splits.len());
+    for split in splits {
+        per_split.push(value_root_split(search, split, at, play, score_diff)?);
+    }
+    Ok(peg_bag_value(splits, per_split.into_iter(), search.exact))
+}
+
+// a move's value with tiles in the bag in one split, and its chance to win
+// there, from the mover's lead before it
+#[inline(always)]
+fn value_root_split<N: kwg::Node, L: kwg::Node>(
+    search: &mut BagSearch<'_, '_, N, L>,
+    (opp_rack, bag, _): &(Vec<u8>, Vec<u8>, u64),
+    at: &impl Fn(&[u8], &[u8]) -> InBag,
+    play: &movegen::Play,
+    score_diff: f64,
+) -> error::Returns<(f64, f64)> {
+    let pos = at(opp_rack, bag);
+    let value = search.move_value(&pos, play)? + score_diff;
+    let win = search.move_win(&pos, play, -score_diff)?;
+    Ok((value, win))
+}
+
+// a move's value from its value and chance to win in each split (in the splits'
+// order), weighed by the deals that give them, and whether every endgame
+// valuing it was exact
+fn peg_bag_value(
+    splits: &[(Vec<u8>, Vec<u8>, u64)],
+    per_split: impl Iterator<Item = (f64, f64)>,
+    exact: bool,
+) -> PegBagValue {
+    let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
+    let mut hyps = Vec::with_capacity(splits.len());
+    for ((_, bag, ways), (value, chance)) in splits.iter().zip(per_split) {
+        win += *ways as f64 * chance;
+        marg += *ways as f64 * value;
+        total += ways;
+        let bag_tiles = (0u8..)
+            .zip(bag.iter())
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
+            .collect();
+        hyps.push((bag_tiles, *ways, equity::Equity::new(value.round() as i32)));
+    }
+    PegBagValue {
+        win: win / total as f64,
+        marg: marg / total as f64,
+        hyps,
+        exact,
     }
 }
 
@@ -3534,7 +3805,7 @@ struct PegBagState {
     reached: Vec<usize>,
     pass_exact: bool,
     depth: i8,
-    searched: BagValued,
+    searched: Vec<BagValued>, // a thread's each
     answer: Option<(usize, i8)>,
     answered: Vec<Option<PegBagValue>>,
     done: bool,
@@ -9297,19 +9568,36 @@ mod tests {
                         .unwrap()
                         .unwrap();
                     assert!(deep.exact && same(&deep, &full), "{unseen:?} {x} {y}");
-                    for limits in [&one_state, &no_time] {
+                    // on one thread and on three, each with its own share of
+                    // the moves: the same answers
+                    for threads in [1, 3] {
                         let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
-                        let stopped = egs.resume_peg(&mut progress, limits).unwrap().unwrap();
-                        if stopped.exact {
-                            assert!(same(&stopped, &full), "{unseen:?} {x} {y}");
-                        } else {
-                            cut += 1;
-                        }
-                        let resumed = egs
+                        progress.set_threads(threads);
+                        let on_threads = egs
                             .resume_peg(&mut progress, &super::Limits::NONE)
                             .unwrap()
                             .unwrap();
-                        assert!(resumed.exact && same(&resumed, &full), "{unseen:?} {x} {y}");
+                        assert!(on_threads.exact && same(&on_threads, &full));
+                        assert!(on_threads.moves.len() == full.moves.len());
+                        for limits in [&one_state, &no_time] {
+                            let mut progress =
+                                super::PegBagProgress::new(position.clone()).unwrap();
+                            progress.set_threads(threads);
+                            let stopped = egs.resume_peg(&mut progress, limits).unwrap().unwrap();
+                            if stopped.exact {
+                                assert!(same(&stopped, &full), "{unseen:?} {x} {y} {threads}");
+                            } else {
+                                cut += 1;
+                            }
+                            let resumed = egs
+                                .resume_peg(&mut progress, &super::Limits::NONE)
+                                .unwrap()
+                                .unwrap();
+                            assert!(
+                                resumed.exact && same(&resumed, &full),
+                                "{unseen:?} {x} {y} {threads}"
+                            );
+                        }
                     }
                     checked += 1;
                 }
