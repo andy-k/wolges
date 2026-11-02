@@ -4374,7 +4374,8 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // found best goes first, then the placements, highest score first; once one
     // has a value, a placement that empties the bag is only asked whether its
     // endgame is worth little enough for it to be the best, and is valued only
-    // if so (endgame_below)
+    // if so (endgame_below); a pass or another placement is valued only if a
+    // bound leaves it room to be the best (cannot_beat)
     fn node(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
         let (found, first) = {
@@ -4416,6 +4417,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                     self.endgame_below(&next, most + 1.0)?
                         .map(|theirs| *score as f64 - theirs)
                 }
+                play if best.1 != usize::MAX && self.cannot_beat(pos, play, best, i)? => None,
                 play => Some(self.move_value(pos, play)?),
             };
             if let Some(value) = value
@@ -4428,6 +4430,98 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         self.exact = was_exact && exact;
         (self.valued.shard(key).nodes).insert(key, (best.0, moves.swap_remove(best.1), exact));
         Ok(best.0)
+    }
+
+    // whether a pass or a placement that leaves tiles in the bag cannot be the
+    // best at pos, without valuing it: it gets its mover at most what it scores
+    // less the least the next mover gets after each draw (least), worth less
+    // than the best so far, or no more with the best coming first. An exchange,
+    // or a pass that ends the game, is never ruled out this way
+    fn cannot_beat(
+        &mut self,
+        pos: &InBag,
+        play: &movegen::Play,
+        best: (f64, usize),
+        i: usize,
+    ) -> error::Returns<bool> {
+        let most = match play {
+            movegen::Play::Place { word, score, .. } => {
+                let placed = pos.placed(self.gc, play);
+                let n = word.iter().filter(|&&tile| tile != 0).count();
+                let (mut sum, mut total) = (0.0, 0u64);
+                for (drawn, ways) in draws_of(&pos.bag, n.min(pos.bag_len())) {
+                    let mut next = placed.clone();
+                    next.draw(&drawn);
+                    next.next_turn();
+                    let Some(least) = self.least(&next)? else {
+                        return Ok(false);
+                    };
+                    sum += ways as f64 * least;
+                    total += ways;
+                }
+                *score as f64 - sum / total as f64
+            }
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                let mut next = pos.clone();
+                next.passes = pos.passes.saturating_add(1);
+                next.zeros = pos.zeros.saturating_add(1);
+                if scoreless_turns_end(self.gc, Some(&pos.board), next.passes, next.zeros) {
+                    return Ok(false);
+                }
+                next.next_turn();
+                let Some(least) = self.least(&next)? else {
+                    return Ok(false);
+                };
+                -least
+            }
+            movegen::Play::Exchange { .. } => return Ok(false),
+        };
+        Ok(most < best.0 || (most == best.0 && i > best.1))
+    }
+
+    // at least what the mover at pos, with tiles in the bag, gets: its value
+    // once known, else what one placement that empties the bag gets them (the
+    // move a shallower pass found best there, if it is one, else the
+    // highest-scoring); none without such a placement
+    fn least(&mut self, pos: &InBag) -> error::Returns<Option<f64>> {
+        let key = pos.key();
+        let (found, first) = {
+            let shard = self.valued.shard(key);
+            let found = (shard.nodes.get(&key)).map(|&(value, _, exact)| (value, exact));
+            (found, shard.tried_first.get(&key).cloned())
+        };
+        if let Some((value, exact)) = found {
+            self.exact &= exact;
+            return Ok(Some(value));
+        }
+        let bag_len = pos.bag_len();
+        let empties = |play: &movegen::Play| {
+            matches!(play, movegen::Play::Place { word, .. }
+                if word.iter().filter(|&&tile| tile != 0).count() >= bag_len)
+        };
+        let play = match first {
+            Some(play) if empties(&play) => play,
+            _ => {
+                let moves =
+                    in_bag_moves(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
+                let Some(play) =
+                    (moves.into_iter().filter(empties)).max_by_key(|play| match play {
+                        movegen::Play::Place { score, .. } => *score,
+                        movegen::Play::Exchange { .. } => i32::MIN,
+                    })
+                else {
+                    return Ok(None);
+                };
+                play
+            }
+        };
+        let movegen::Play::Place { score, .. } = play else {
+            unreachable!("a placement empties the bag");
+        };
+        let mut next = pos.placed(self.gc, &play);
+        next.draw(&pos.bag.clone());
+        next.next_turn();
+        Ok(Some(score as f64 - self.endgame(&next)?))
     }
 
     // the value to its mover of a position whose bag is empty: its endgame
