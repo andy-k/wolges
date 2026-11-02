@@ -48,15 +48,12 @@ impl Equity {
 }
 
 // as the float it stood for prints itself: {} prints a whole number with no
-// decimals and a fraction with the few it needs, a precision that many
+// decimals and a fraction with the few it needs, a precision that many; a width
+// pads it as it pads a number, on the left unless told otherwise
 impl std::fmt::Display for Equity {
     #[inline(always)]
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let v = self.0 as f64 / SCALE as f64;
-        match fmt.precision() {
-            Some(precision) => write!(fmt, "{v:.precision$}"),
-            None => write!(fmt, "{v}"),
-        }
+        std::fmt::Display::fmt(&self.as_f64(), fmt)
     }
 }
 
@@ -87,6 +84,17 @@ mod tests {
                 format!("{}", e(millipoints)),
                 format!("{}", e(millipoints).as_f64())
             );
+            let v = e(millipoints).as_f64();
+            assert_eq!(format!("{:8}", e(millipoints)), format!("{v:8}"));
+            assert_eq!(format!("{:>8.3}", e(millipoints)), format!("{v:>8.3}"));
+            assert_eq!(format!("{:<8}", e(millipoints)), format!("{v:<8}"));
+            assert_eq!(format!("{:^9.1}", e(millipoints)), format!("{v:^9.1}"));
+            assert_eq!(format!("{:+}", e(millipoints)), format!("{v:+}"));
+            assert_eq!(format!("{:08.2}", e(millipoints)), format!("{v:08.2}"));
         }
+        // a width pads an equity on the left, as it pads a number
+        assert_eq!(format!("{:8}", e(32000)), "      32");
+        assert_eq!(format!("{:8.3}", e(-87250)), " -87.250");
+        assert_eq!(format!("{:<8}|", e(-500)), "-0.5    |");
     }
 }
