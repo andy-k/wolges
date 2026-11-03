@@ -5,7 +5,7 @@
 // move falls short of that rack's best play, valued the way the census sheet
 // values a board
 
-use super::{census, equity, error, fash, game_config, klv, kwg, movegen, play_scorer};
+use super::{census, equity, error, game_config, klv, kwg, movegen, play_scorer};
 
 // how far, in points of equity, a sim takes the opponent's last move to fall
 // short of their best when it weighs the racks that could have made it
@@ -543,6 +543,36 @@ pub fn weigh_by_fuzz(racks: &[(u32, f64, i32)], fuzz: f64) -> Vec<(f64, f64, u32
         .collect()
 }
 
+// each leave the racks (the leave each kept, its gap, and the log of its chance
+// to be dealt) kept, in the lattice's order, with the sum of their weights as
+// weigh_by_fuzz gives them, added in the order the racks come; a rack of weight
+// 0 (fuzz 0 keeps only the racks closest to their best) adds nothing. The racks'
+// own list holds the work: each weighed in place, sorted by leave (stably, so a
+// leave's racks keep their order), and each leave's run summed into its first
+#[inline]
+fn weights_by_leave(racks: Vec<(u32, i32, f64)>, fuzz: f64) -> Vec<(u32, f64)> {
+    let g0 = racks
+        .iter()
+        .map(|&(_, gap, _)| gap.max(0))
+        .min()
+        .unwrap_or(0);
+    let mut weighed = (racks.into_iter())
+        .filter_map(|(kept, gap, ln_prior)| {
+            let weight = ln_prior.exp() * fuzz_ln_weight(gap, g0, fuzz).exp();
+            (weight > 0.0).then_some((kept, weight))
+        })
+        .collect::<Vec<_>>();
+    weighed.sort_by_key(|&(kept, _)| kept);
+    weighed.dedup_by(|later, first| {
+        let same = later.0 == first.0;
+        if same {
+            first.1 += later.1;
+        }
+        same
+    });
+    weighed
+}
+
 // the multiset lattice and its leave table, built by one inference and reused
 // by the next, and the scratch space an inference works in
 pub struct InferTables {
@@ -761,8 +791,9 @@ pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
         Some(n) => MoveTiles::Exchanged(n),
         None => MoveTiles::Placed(&placed),
     };
+    // each rack as the walk finds it: the leave it kept, its gap, and the log of
+    // its chance to be dealt
     let mut racks = Vec::new();
-    let mut kepts = Vec::new();
     weigh_racks(
         &InferSheet {
             lat: &tables.lat,
@@ -774,28 +805,13 @@ pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
         tiles,
         move_value,
         threads,
-        &mut |rank, ln_prior, gap, kept| {
-            racks.push((rank, ln_prior, gap));
-            kepts.push(kept);
-        },
+        &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
     );
-
-    // sum the weights by the leave each rack kept
-    let mut by_leave = fash::MyHashMap::<u32, f64>::default();
-    for ((weight, _, _, _), &leave_rank) in weigh_by_fuzz(&racks, fuzz).into_iter().zip(&kepts) {
-        // at fuzz 0, every rack but the closest to its best weighs nothing
-        if weight <= 0.0 {
-            continue;
-        }
-        *by_leave.entry(leave_rank).or_insert(0.0) += weight;
-    }
-    // sorted into the lattice's order (the map has none)
-    let mut ranked = by_leave.into_iter().collect::<Vec<_>>();
-    ranked.sort_unstable_by_key(|&(rank, _)| rank);
-    let mut leaves = PackedLeaves::with_capacity(ranked.len(), ranked.len() * rack_size);
+    let weighed = weights_by_leave(racks, fuzz);
+    let mut leaves = PackedLeaves::with_capacity(weighed.len(), weighed.len() * rack_size);
     let mut kept = vec![0u8; num_letters];
     let mut tiles = Vec::with_capacity(rack_size);
-    for (rank, weight) in ranked {
+    for (rank, weight) in weighed {
         tables.lat.unrank_into(rank as usize, &mut kept);
         tiles.clear();
         tiles.extend(
@@ -1437,6 +1453,33 @@ mod tests {
                 bingo: 0.25,
             }
         );
+    }
+
+    // a leave's weight is its racks' weights added in the order the racks come:
+    // here each leave's first rack weighs 1 and its next three a little over
+    // half of 1's last place each, so that in that order each lifts the sum by a
+    // place, where the small ones first would lift it by two in all; a rack of
+    // weight 0 (at fuzz 0, past the smallest gap) adds no leave, a gap below 0
+    // counts as 0, and the leaves come in the lattice's order
+    #[test]
+    #[inline]
+    fn a_leaves_weight_adds_its_racks_weights_in_the_order_they_come() {
+        let small = (0.75 * f64::EPSILON).ln();
+        let mut racks = Vec::new();
+        for round in 0..4 {
+            for leave in (0..32u32).rev() {
+                racks.push((leave, 0, if round == 0 { 0.0 } else { small }));
+            }
+        }
+        racks.push((40, 5, 0.0));
+        racks.push((50, -3, 0.0));
+        let s = small.exp();
+        let want = ((1.0 + s) + s) + s;
+        assert_ne!(want, ((s + s) + s) + 1.0);
+        let got = weights_by_leave(racks, 0.0);
+        let mut expected = (0..32u32).map(|leave| (leave, want)).collect::<Vec<_>>();
+        expected.push((50, 1.0));
+        assert_eq!(got, expected);
     }
 
     // a pass keeps the whole rack, and at a fuzz too large for any gap to count
