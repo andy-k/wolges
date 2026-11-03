@@ -1060,12 +1060,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    // the scoreless turns before the position to solve, as its search starts
+    // the scoreless turns before the position to solve, as its search starts:
+    // where the game's last turn was a pass (its passes above none), the
+    // mover's pass answers it, else the counts
     #[inline(always)]
     fn entering(&self) -> Scoreless {
-        Scoreless::Counted {
-            passes: self.scoreless[0],
-            zeros: self.scoreless[1],
+        if self.scoreless[0] > 0 {
+            Scoreless::Answering
+        } else {
+            Scoreless::Counted {
+                passes: self.scoreless[0],
+                zeros: self.scoreless[1],
+            }
         }
     }
 
@@ -2462,6 +2468,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             exact: true,
             line: None,
         };
+        // where the game's last turn was a pass, the mover's pass answers it
         let [passes, zeros] = self.scoreless;
         let value = if one_in_bag_exchange_solvable(gc) {
             Self::one_in_bag_minimax_ex(
@@ -2472,7 +2479,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 bag_tile,
                 passes,
                 zeros,
-                false,
+                passes > 0,
             )
         } else {
             Self::one_in_bag_minimax(
@@ -2483,7 +2490,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 bag_tile,
                 passes,
                 zeros,
-                false,
+                passes > 0,
             )
         };
         *exact &= search.exact;
@@ -2950,7 +2957,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 mover,
                 passes: scoreless[0],
                 zeros: scoreless[1],
-                answering: false,
+                answering: scoreless[0] > 0, // the game's last turn a pass
                 exchanges: position.exchanges,
             }
         };
@@ -3401,9 +3408,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let alphabet = gc.alphabet();
         let opp = mover ^ 1;
         let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
+        // a pass answering the game's last turn, if that was a pass, ends it
         let pass_passes = scoreless[0].saturating_add(1);
         let pass_zeros = scoreless[1].saturating_add(1);
-        let pass_ends_the_game = scoreless_turns_end(gc, None, pass_passes, pass_zeros);
+        let pass_ends_the_game =
+            scoreless[0] > 0 || scoreless_turns_end(gc, None, pass_passes, pass_zeros);
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
         let deepens = limits.deepens();
@@ -5356,7 +5365,12 @@ mod tests {
 
     // the value of the position for the mover, by a plain search with no table:
     // passes and zeros are the scoreless turns so far, ending the game at the
-    // config's counts
+    // config's counts, and answering whether the game's last turn before the
+    // search was a pass, which a pass here answers and so ends the game. The
+    // search counts its own passes to the end, which values every position as
+    // ending a pass answering a pass does: the position is as it was two plies
+    // back
+    #[allow(clippy::too_many_arguments)]
     fn reference<N: kwg::Node, L: kwg::Node>(
         fixed: &mut Reference<'_, N, L>,
         board: &[u8],
@@ -5364,6 +5378,7 @@ mod tests {
         mover: usize,
         passes: u8,
         zeros: u8,
+        answering: bool,
     ) -> f32 {
         let key = (
             0u8,
@@ -5374,7 +5389,7 @@ mod tests {
             0u8,
             passes,
             zeros,
-            false,
+            answering,
         );
         if let Some(&value) = fixed.memo.get(&key) {
             return value;
@@ -5420,7 +5435,7 @@ mod tests {
                     let mut nb = board.to_vec();
                     let mut nr = racks.clone();
                     apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
-                    *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0)
+                    *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false)
                 };
                 if val > best {
                     best = val;
@@ -5430,12 +5445,13 @@ mod tests {
 
         let pass_passes = passes.saturating_add(1);
         let pass_zeros = zeros.saturating_add(1);
-        let pass_val = if super::scoreless_turns_end(fixed.gc, Some(board), pass_passes, pass_zeros)
+        let pass_val = if answering
+            || super::scoreless_turns_end(fixed.gc, Some(board), pass_passes, pass_zeros)
         {
             (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
                 as f32
         } else {
-            -reference(fixed, board, racks, opp, pass_passes, pass_zeros)
+            -reference(fixed, board, racks, opp, pass_passes, pass_zeros, false)
         };
         if pass_val > best {
             best = pass_val;
@@ -5510,7 +5526,7 @@ mod tests {
                 apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
 
-                let val = *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0);
+                let val = *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false);
                 if val > best {
                     best = val;
                 }
@@ -5607,7 +5623,7 @@ mod tests {
                 let mut nr = racks.clone();
                 apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
-                let val = *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0);
+                let val = *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false);
                 if val > best {
                     best = val;
                 }
@@ -6404,6 +6420,7 @@ mod tests {
                     0,
                     passes,
                     zeros,
+                    passes > 0, // the game's last turn a pass
                 );
                 for (lean, arm_tables) in &arms {
                     total += 1;
@@ -6493,6 +6510,7 @@ mod tests {
                     0,
                     0,
                     0,
+                    false,
                 );
                 for (lean, arm_tables) in &arms {
                     total += 1;
@@ -8848,12 +8866,24 @@ mod tests {
     #[test]
     #[inline]
     fn after_a_phony_taken_back_an_opponent_who_can_only_pass_does_not_end_the_game() {
-        // the phony counted as a pass (one pass, one zero); B alone plays
+        // the phony counted a zero alone (no pass, one zero); B alone plays
         // nothing, AT plays out for 4 and twice the B: the line is the pass,
         // then AT, and the game goes on past the pass
-        let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 1, 1);
+        let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 0, 1);
         assert_eq!(value, equity::Equity::new(-10_000));
         assert_eq!(line, vec![vec![], vec![1, 20]]);
+    }
+
+    #[test]
+    #[inline]
+    fn after_a_pass_an_opponent_who_can_only_pass_ends_the_game() {
+        // the game's last turn a pass (one pass, one zero), whether a pass or a
+        // phony taken back where the config counts it as one: B, playing
+        // nothing, passes, which answers it and ends the game, each losing
+        // their rack (the A and the T are 2, the B 3)
+        let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 1, 1);
+        assert_eq!(value, equity::Equity::new(-1_000));
+        assert_eq!(line, vec![Vec::<u8>::new()]);
     }
 
     #[test]
@@ -8866,8 +8896,9 @@ mod tests {
         let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 5, 5);
         assert_eq!(value, equity::Equity::new(-1_000));
         assert_eq!(line, vec![Vec::<u8>::new()]);
-        // with four, B's pass leaves AT to be played out: as after the phony
-        let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 4, 4);
+        // with four, the last of them no pass, B's pass leaves AT to be played
+        // out: as after the phony
+        let (value, line) = line_after_scoreless_turns([&[1, 20], &[2]], 1, 0, 4);
         assert_eq!(value, equity::Equity::new(-10_000));
         assert_eq!(line, vec![vec![], vec![1, 20]]);
     }
@@ -9529,7 +9560,7 @@ mod tests {
                 bag,
                 passes,
                 zeros,
-                false,
+                passes > 0, // the game's last turn a pass
             );
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -9593,11 +9624,17 @@ mod tests {
         assert_eq!(result.hypotheses, vec![(1, 2, e(4000)), (8, 1, e(1000))]);
         assert_eq!(result.win_pct, 1.0);
         assert_eq!(result.expected_margin, e(3000));
-        // with four, the other side answers the pass with AH when it holds it,
-        // and ends the game by passing when it holds the two A
-        let result = solve(4, 4);
+        // with four, the last of them no pass, the other side answers the pass
+        // with AH when it holds it, and ends the game by passing when it holds
+        // the two A
+        let result = solve(0, 4);
         assert!(result.hypotheses[0].2 < e(-1000), "{:?}", result.hypotheses);
         assert_eq!(result.hypotheses[1], (8, 1, e(1000)));
+        // with four, the last of them a pass, the mover's pass answers it and
+        // ends the game at once, as with five
+        let result = solve(1, 4);
+        assert_eq!(result.hypotheses, vec![(1, 2, e(4000)), (8, 1, e(1000))]);
+        assert_eq!(result.expected_margin, e(3000));
     }
 
     #[test]
@@ -9605,7 +9642,8 @@ mod tests {
     fn differential_one_in_bag_exchange() {
         // under the exchange test config, whose second pass ends the game, and
         // under it with passes ending the game only as scoreless turns, where a
-        // pass answering a pass ends it before the config's counts do
+        // pass answering a pass ends it before the config's counts do; from no
+        // scoreless turns, and from a pass as the game's last turn
         let exchange_test = game_config::make_exchange_test_game_config();
         let mut zeros_only = exchange_test.clone();
         let game_config::GameConfig::Static(rules) = &mut zeros_only;
@@ -9629,38 +9667,45 @@ mod tests {
             for (name, pos) in positions {
                 for &t in &bag_tiles {
                     for mover in 0u8..2 {
-                        let refv = reference_one_in_bag_ex(
-                            &mut Reference {
-                                gc: &gc,
-                                kwg: &kwg,
-                                klv: &klv,
-                                mg: &mut mg,
-                                memo: Default::default(),
-                            },
-                            &pos.board,
-                            &pos.racks,
-                            mover as usize,
-                            t,
-                            0,
-                            0,
-                            false,
-                        );
-                        for (lean, arm_tables) in &arms {
-                            total += 1;
-                            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                                &gc, &kwg, arm_tables,
-                            )
-                            .unwrap();
-                            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                            let solvev = egs.solve_one_in_bag(mover, t).unwrap();
-                            if solvev != super::to_equity(refv) {
-                                disagreements += 1;
-                                println!(
-                                    "DISAGREE [{name}] passes_to_end={} lean={lean} mover={mover} bag={t}: ref={refv} solve={}\n   {}",
-                                    gc.num_passes_to_end(),
-                                    solvev.raw(),
-                                    describe(&gc, &pos)
+                        for (passes, zeros) in [(0u8, 0u8), (1, 1)] {
+                            let refv = reference_one_in_bag_ex(
+                                &mut Reference {
+                                    gc: &gc,
+                                    kwg: &kwg,
+                                    klv: &klv,
+                                    mg: &mut mg,
+                                    memo: Default::default(),
+                                },
+                                &pos.board,
+                                &pos.racks,
+                                mover as usize,
+                                t,
+                                passes,
+                                zeros,
+                                passes > 0, // the game's last turn a pass
+                            );
+                            for (lean, arm_tables) in &arms {
+                                total += 1;
+                                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
+                                    &gc, &kwg, arm_tables,
+                                )
+                                .unwrap();
+                                egs.init_after_scoreless_turns(
+                                    &pos.board,
+                                    [&pos.racks[0][..], &pos.racks[1][..]],
+                                    passes as u16,
+                                    zeros as u16,
                                 );
+                                let solvev = egs.solve_one_in_bag(mover, t).unwrap();
+                                if solvev != super::to_equity(refv) {
+                                    disagreements += 1;
+                                    println!(
+                                        "DISAGREE [{name}] passes_to_end={} lean={lean} mover={mover} bag={t} scoreless={passes},{zeros}: ref={refv} solve={}\n   {}",
+                                        gc.num_passes_to_end(),
+                                        solvev.raw(),
+                                        describe(&gc, &pos)
+                                    );
+                                }
                             }
                         }
                     }
@@ -9847,6 +9892,7 @@ mod tests {
                                     opp,
                                     0,
                                     0,
+                                    false,
                                 )
                         }
                         _ => {
@@ -10328,6 +10374,74 @@ mod tests {
                 assert_eq!(result.expected_margin == e(-8000), ends);
             }
         }
+    }
+
+    // where the game's last turn was a pass, the mover's pass answers it and
+    // ends the game in each search: the mover's Q, which no word takes, can only
+    // pass, and the game's end loses it against the other's rack. With no pass
+    // last, the other moves next instead
+    #[test]
+    #[inline]
+    fn a_pass_answering_the_games_last_pass_ends_it() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let (q, a, h, t) = (17u8, 1u8, 8u8, 20u8);
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [a, h, t] {
+            unseen_tally[tile as usize] += 1;
+        }
+        for (passes, ends) in [(1u16, true), (0, false)] {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            // the bag empty, then holding the H: the Q (10 points) against the
+            // other's A (1)
+            egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], passes, 1);
+            let empty = egs.solve(0).unwrap();
+            egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], passes, 1);
+            let one = egs.solve_one_in_bag(0, h).unwrap();
+            assert_eq!((empty == e(-9000), one == e(-9000)), (ends, ends));
+            // two in the bag, the other holding one of the A, H, and T (1, 4,
+            // and 1)
+            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+                egs.set_scoreless_turns(passes, 1);
+                let mut position = bag_position(&board, &[q], &unseen_tally, 2, e(0));
+                position.model = model;
+                let result = egs
+                    .solve_peg(position, &super::Limits::NONE)
+                    .unwrap()
+                    .unwrap();
+                assert!(result.exact);
+                assert_eq!(result.expected_margin == e(-8000), ends);
+            }
+        }
+        // a game said to have had more passes in a row than the config lets
+        // happen, as a caller playing other rules may say, solves all the same,
+        // the mover's pass ending it at once: four passes end the game here,
+        // five are said
+        let mut four_passes = gc.clone();
+        let game_config::GameConfig::Static(rules) = &mut four_passes;
+        rules.num_passes_to_end = 4;
+        let arm_tables = anagrams::ArmTables::build(&kwg, &four_passes, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&four_passes, &kwg, &arm_tables)
+                .unwrap();
+        egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], 5, 5);
+        assert_eq!(egs.solve(0).unwrap(), e(-9000));
+        egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], 5, 5);
+        assert_eq!(egs.solve_one_in_bag(0, h).unwrap(), e(-9000));
+        egs.set_scoreless_turns(5, 5);
+        let result = egs
+            .solve_peg(
+                bag_position(&board, &[q], &unseen_tally, 2, e(0)),
+                &super::Limits::NONE,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.expected_margin, e(-8000));
     }
 
     // with one tile exchanged at a time and passes ending the game only as six
