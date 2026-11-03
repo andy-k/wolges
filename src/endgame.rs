@@ -697,6 +697,7 @@ struct BagLimits {
     t0: Started,
     dur_movegen: std::cell::Cell<std::time::Duration>,
     endgames: std::cell::Cell<u64>,
+    nodes: std::cell::Cell<u64>, // the nodes its endgames searched
     progress: std::cell::Cell<Option<ProgressFn>>,
     depth: std::cell::Cell<i8>, // the pass's depth, or the end for a search of one pass
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
@@ -714,6 +715,7 @@ impl BagLimits {
             t0: Started::now(clock),
             dur_movegen: Default::default(),
             endgames: Default::default(),
+            nodes: Default::default(),
             progress: std::cell::Cell::new(progress),
             depth: std::cell::Cell::new(COMPLETE),
             may_stop: std::cell::Cell::new(false),
@@ -1399,6 +1401,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         } else {
             self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
         }
+    }
+
+    // the nodes the last solve searched, every one its listener heard of
+    #[inline(always)]
+    pub fn searched(&self) -> u64 {
+        self.work_buffer.searched
     }
 
     // send every later solve's progress to the given listener, at every node
@@ -2138,6 +2146,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let work_buffer = &mut self.work_buffer;
         limits.dur_movegen.set(work_buffer.dur_movegen);
         limits.endgames.set(limits.endgames.get() + 1);
+        limits.nodes.set(limits.nodes.get() + work_buffer.searched);
         limits.progress.set(work_buffer.progress.take());
         work_buffer.in_bag = None;
         work_buffer.depth_cap = COMPLETE;
@@ -2608,6 +2617,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.peg_committed_no_exchange(progress, &limits)
         };
         self.work_buffer.progress = limits.progress.take();
+        progress.endgames += limits.endgames.get();
+        progress.nodes += limits.nodes.get();
         Ok(Ok(result?))
     }
 
@@ -2999,6 +3010,8 @@ pub struct PegProgress {
     score_diff: equity::Equity,
     committed: PegCommitted,
     clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
+    endgames: u64,                  // the endgames its solves searched
+    nodes: u64,                     // their nodes
 }
 
 impl PegProgress {
@@ -3020,7 +3033,23 @@ impl PegProgress {
             score_diff,
             committed: Default::default(),
             clairvoyant: None,
+            endgames: 0,
+            nodes: 0,
         }
+    }
+
+    // the endgames every solve of the search has searched, and their nodes
+    #[inline(always)]
+    pub fn searched(&self) -> (u64, u64) {
+        (self.endgames, self.nodes)
+    }
+
+    // the committed model's pass under way: the moves it has valued, of all it
+    // values; none before the search began, nor in the clairvoyant model
+    #[inline(always)]
+    pub fn moves(&self) -> Option<(usize, usize)> {
+        let committed = &self.committed;
+        (!committed.order.is_empty()).then_some((committed.next, committed.order.len()))
     }
 }
 
@@ -5980,6 +6009,116 @@ mod tests {
             }
         }
         assert!(stepped > 0, "no search took more than one step");
+    }
+
+    // a solve counts its nodes, every one its listener heard of
+    #[test]
+    #[inline]
+    fn a_solve_counts_its_nodes() {
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let gc = game_config::make_english_game_config();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let heard = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let counter = heard.clone();
+        egs.report_progress(move |p: &super::Progress| {
+            if p.value.is_none() {
+                counter.set(counter.get() + 1);
+            }
+            Ok(())
+        });
+        egs.init(&board, [&[1, 2, 8], &[1, 20]]); // A B H, A T
+        egs.solve(0).unwrap();
+        assert!(egs.searched() > 1, "{} nodes", egs.searched());
+        assert_eq!(egs.searched(), heard.get());
+        // a solve begun again counts its own nodes
+        heard.set(0);
+        egs.init(&board, [&[1, 2, 8], &[1, 20]]);
+        egs.solve(0).unwrap();
+        assert_eq!(egs.searched(), heard.get());
+    }
+
+    // a search with a tile in the bag counts, over every step, the endgames it
+    // searched and their nodes, each node one its listener heard of; the
+    // committed model also says how far its pass under way has got, and that it
+    // valued every move once its answer is exact
+    #[test]
+    #[inline]
+    fn a_peg_search_counts_its_endgames_and_nodes_over_its_steps() {
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        for (gc, committed) in [
+            (game_config::make_english_game_config(), true),
+            (game_config::make_exchange_test_game_config(), false),
+        ] {
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            unseen_tally[8] = 1; // H
+            unseen_tally[20] = 1; // T
+            let mut progress = super::PegProgress::new(
+                0,
+                &board,
+                &[1, 2], // A B
+                &unseen_tally,
+                equity::Equity::ZERO,
+            );
+            assert_eq!(progress.searched(), (0, 0));
+            assert!(progress.moves().is_none());
+            let heard = std::rc::Rc::new(std::cell::Cell::new(0u64));
+            let mut kept = None;
+            let mut partway = false;
+            for step in 1.. {
+                assert!(step < 10000, "the steps never ended");
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                if let Some(table) = kept.take() {
+                    assert!(egs.give_table(table).is_ok());
+                }
+                let counter = heard.clone();
+                egs.report_progress(move |p: &super::Progress| {
+                    if p.value.is_none() {
+                        counter.set(counter.get() + 1);
+                    }
+                    Ok(())
+                });
+                let (endgames_before, _) = progress.searched();
+                let limits = super::Limits {
+                    time: None,
+                    states: Some(egs.work_buffer.table.held + 30),
+                    memory: None,
+                };
+                let got = egs
+                    .resume_peg_one_in_bag(&mut progress, &limits)
+                    .unwrap()
+                    .expect("both configs solve one in the bag");
+                kept = Some(egs.take_table());
+                let (endgames, nodes) = progress.searched();
+                assert!(
+                    endgames > endgames_before,
+                    "step {step}: no endgame searched"
+                );
+                assert_eq!(nodes, heard.get(), "step {step}");
+                match progress.moves() {
+                    Some((valued, of)) => {
+                        assert!(committed, "step {step}: the clairvoyant model has moves");
+                        assert!(valued <= of && of > 0, "step {step}: {valued} of {of}");
+                        if got.exact {
+                            assert_eq!(valued, of, "step {step}");
+                        }
+                        partway |= valued < of;
+                    }
+                    None => assert!(!committed, "step {step}: the committed model has none"),
+                }
+                if got.exact {
+                    assert_eq!(partway, committed, "a step stopped partway through a pass");
+                    break;
+                }
+            }
+        }
     }
 
     #[test]
