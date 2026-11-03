@@ -8257,6 +8257,65 @@ mod tests {
         }
     }
 
+    // a generator kept from board to board, reading the anagram tables,
+    // generates what a fresh one does on each
+    #[test]
+    #[inline]
+    fn a_kept_generator_with_the_tables_matches_a_fresh_one() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let boards = [
+            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15",
+            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+        ]
+        .map(|fen| fen_parser.parse(fen).unwrap().to_vec());
+        let racks = ["?EINRST", "AEINRST", "CARTONS", "??TANS"];
+        let plays = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8], rack: &str| {
+            let board_snapshot = BoardSnapshot {
+                board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: Some(&held),
+                rack_lengths: None,
+                klv: &klv,
+            };
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(gc.alphabet(), rack),
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            move_generator
+                .plays
+                .iter()
+                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .collect::<Vec<_>>()
+        };
+        let mut kept = KurniaMoveGenerator::new(&gc);
+        for (i, board_tiles) in boards.iter().enumerate() {
+            for rack in [racks[i % racks.len()], racks[(i + 1) % racks.len()]] {
+                assert_eq!(
+                    plays(&mut kept, board_tiles, rack),
+                    plays(&mut KurniaMoveGenerator::new(&gc), board_tiles, rack),
+                    "board {i}, rack {rack}"
+                );
+            }
+        }
+    }
+
     // a generator cloned from one that has generated, or made it by clone_from
     // after a board of its own, generates what its source does on the source's
     // board: the tables kept between generations go with it
