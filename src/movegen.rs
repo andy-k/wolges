@@ -454,8 +454,11 @@ struct WorkingBuffer {
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
     span_memo: SpanMemo,
-    anchor_left_bounds: Vec<i32>, // per lean placement, two blocks by left edge
-    bounds_at: usize,             // the popped lean placement's block, or usize::MAX
+    span_prefix: Box<[SpanPrefix]>, // r*(c+1), then c*(r+1): each lane's sums
+    span_lanes: Box<[SpanLane]>,    // rows + cols, across lanes first
+    span_turn: u32,                 // the generation's, for span_lanes
+    anchor_left_bounds: Vec<i32>,   // per lean placement, two blocks by left edge
+    bounds_at: usize,               // the popped lean placement's block, or usize::MAX
     used_letters_tally: Vec<u8>,
     jumbled: JumbledMultisets,                  // jumbled mode only
     used_tile_scores_shadowl: ShadowScores,     // for shadow_play_left, premultiplied by SCALE
@@ -530,6 +533,9 @@ impl Clone for WorkingBuffer {
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
             span_memo: self.span_memo.clone(),
+            span_prefix: self.span_prefix.clone(),
+            span_lanes: self.span_lanes.clone(),
+            span_turn: self.span_turn,
             anchor_left_bounds: self.anchor_left_bounds.clone(),
             bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
@@ -614,6 +620,9 @@ impl Clone for WorkingBuffer {
         self.placement_order.clone_from(&source.placement_order);
         self.placement_scratch.clone_from(&source.placement_scratch);
         self.span_memo.clone_from(&source.span_memo);
+        self.span_prefix.clone_from(&source.span_prefix);
+        self.span_lanes.clone_from(&source.span_lanes);
+        self.span_turn = source.span_turn;
         self.anchor_left_bounds
             .clone_from(&source.anchor_left_bounds);
         self.bounds_at = source.bounds_at;
@@ -727,6 +736,15 @@ impl WorkingBuffer {
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
             span_memo: SpanMemo::new(),
+            span_prefix: vec![
+                SpanPrefix::new();
+                dim.rows as usize * (dim.cols as usize + 1)
+                    + dim.cols as usize * (dim.rows as usize + 1)
+            ]
+            .into_boxed_slice(),
+            span_lanes: vec![SpanLane::new(); dim.rows as usize + dim.cols as usize]
+                .into_boxed_slice(),
+            span_turn: 0,
             anchor_left_bounds: Vec::new(),
             bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
@@ -791,6 +809,12 @@ impl WorkingBuffer {
         self.anagrams_fit_config = board_snapshot
             .anagrams
             .is_some_and(|anagrams| anagrams.fit(board_snapshot.game_config));
+        // a new generation: each lane's span sums are filled again when read
+        self.span_turn = self.span_turn.wrapping_add(1);
+        if self.span_turn == 0 {
+            self.span_lanes.fill(SpanLane::new());
+            self.span_turn = 1;
+        }
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
         self.exchange_buffer
@@ -1045,6 +1069,80 @@ impl WorkingBuffer {
                 }
             }
         }
+    }
+
+    // a lane's span sums, filled once a generation, when a span of it is read:
+    // where they start in span_prefix, and the lane's index in span_lanes
+    #[inline(always)]
+    fn fill_span_lane(
+        &mut self,
+        board_tiles: &[u8],
+        dim: &matrix::Dim,
+        layout: &alphagram::KeyLayout,
+        down: bool,
+        lane: i8,
+    ) -> (usize, usize) {
+        let rows = dim.rows as usize;
+        let cols = dim.cols as usize;
+        let lane = lane as usize;
+        let (lane_at, len, start, at) = if down {
+            (
+                rows + lane,
+                rows,
+                lane * rows,
+                rows * (cols + 1) + lane * (rows + 1),
+            )
+        } else {
+            (lane, cols, lane * cols, lane * (cols + 1))
+        };
+        if self.span_lanes[lane_at].turn == self.span_turn {
+            return (at, lane_at);
+        }
+        let (board_strip, cross_sets, face_values, perpendicular_scores, word_multipliers) = if down
+        {
+            (
+                &self.transposed_board_tiles[start..start + len],
+                &self.cross_set_for_down_plays[start..start + len],
+                &self.face_value_scores_for_down_plays[start..start + len],
+                &self.perpendicular_scores_for_down_plays[start..start + len],
+                &self.remaining_word_multipliers_for_down_plays[start..start + len],
+            )
+        } else {
+            (
+                &board_tiles[start..start + len],
+                &self.cross_set_for_across_plays[start..start + len],
+                &self.face_value_scores_for_across_plays[start..start + len],
+                &self.perpendicular_scores_for_across_plays[start..start + len],
+                &self.remaining_word_multipliers_for_across_plays[start..start + len],
+            )
+        };
+        let out = &mut self.span_prefix[at..at + len + 1];
+        let mut sum = SpanPrefix::new();
+        let mut empty = 0u128;
+        let mut multiplied = 0u128;
+        out[0] = sum;
+        for j in 0..len {
+            let b = board_strip[j];
+            if b != 0 {
+                sum.face += face_values[j];
+                sum.key += layout.place_value(b & 0x7f);
+            } else {
+                let bits = cross_sets[j].bits;
+                sum.free += (bits == 0) as u8;
+                sum.dead += (bits == 1) as u8;
+                sum.played += 1;
+                sum.perp += perpendicular_scores[j];
+                empty |= 1u128 << j;
+                multiplied |= ((word_multipliers[j] != 1) as u128) << j;
+            }
+            out[j + 1] = sum;
+        }
+        self.span_lanes[lane_at] = SpanLane {
+            turn: self.span_turn,
+            empty,
+            multiplied,
+        };
+        (at, lane_at)
     }
 
     // call this before passing a different kwg.
@@ -2155,6 +2253,8 @@ struct GenPlaceMovesParams<
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
     span_memo: &'a mut SpanMemo,
+    span_prefix: &'a [SpanPrefix], // the lane's, for gen_classic_place_moves only
+    span_lane: SpanLane,
 }
 
 #[inline(always)]
@@ -2901,6 +3001,53 @@ impl SpanMemo {
     }
 }
 
+// a lane's running sums for gen_classic_place_moves's spans, an entry before
+// each square and one after the last: what add_square adds over the squares
+// before it, so a span's are two entries' difference
+#[derive(Clone, Copy)]
+struct SpanPrefix {
+    key: u128,
+    face: i32,
+    perp: i32,
+    played: u8,
+    free: u8,
+    dead: u8,
+}
+
+impl SpanPrefix {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            key: 0,
+            face: 0,
+            perp: 0,
+            played: 0,
+            free: 0,
+            dead: 0,
+        }
+    }
+}
+
+// a lane's sums as filled: the generation they are for, its empty squares, and
+// its empty squares whose word multiplier is not 1, a bit each
+#[derive(Clone, Copy)]
+struct SpanLane {
+    turn: u32,
+    empty: u128,
+    multiplied: u128,
+}
+
+impl SpanLane {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            turn: 0,
+            empty: 0,
+            multiplied: 0,
+        }
+    }
+}
+
 #[inline]
 fn build_subracks(
     multi_leaves: &klv::MultiLeaves,
@@ -3212,6 +3359,8 @@ fn gen_classic_place_moves<
         blank_ok: u64,
     }
 
+    // the walk span_prefix stands in for, kept to check it in debug builds
+    #[cfg(debug_assertions)]
     #[inline(always)]
     fn add_square(
         e: &mut Extent,
@@ -3265,18 +3414,66 @@ fn gen_classic_place_moves<
         word_multiplier: 1,
         bound: 0,
     };
-    let mut e = Extent {
-        playthrough_key: 0,
-        base_main: 0,
-        base_perp: 0,
-        word_multiplier: 1,
-        num_played: 0,
-        free_squares: 0,
-        dead_squares: 0,
-        blank_ok: 0,
+    if rightmost - leftmost < 2 {
+        return;
+    }
+    // the span's sums: two entries' difference in its lane's, as fill_span_lane
+    // fills them; its word multiplier, the product over the squares that keep
+    // one; and blank_ok, which only a subrack with a blank reads, found only
+    // for a rack with a blank
+    let lo = env.params.span_prefix[leftmost as usize];
+    let hi = env.params.span_prefix[rightmost as usize];
+    let span_bits = (u128::MAX >> (128 - rightmost as u32)) & (u128::MAX << leftmost as u32);
+    let mut word_multiplier = 1i32;
+    let mut multiplied = env.params.span_lane.multiplied & span_bits;
+    while multiplied != 0 {
+        let idx = multiplied.trailing_zeros() as usize;
+        multiplied &= multiplied - 1;
+        word_multiplier *= env.params.remaining_word_multipliers_strip[idx] as i32;
+    }
+    let mut blank_ok = 0u64;
+    if env.params.rack_tally[0] != 0 {
+        let mut empty = env.params.span_lane.empty & span_bits;
+        while empty != 0 {
+            let idx = empty.trailing_zeros() as usize;
+            empty &= empty - 1;
+            let bits = env.params.cross_set_strip[idx].bits;
+            blank_ok |= if bits == 0 { letters } else { bits & letters };
+        }
+    }
+    let e = Extent {
+        playthrough_key: hi.key - lo.key,
+        base_main: hi.face - lo.face,
+        base_perp: hi.perp - lo.perp,
+        word_multiplier,
+        num_played: hi.played - lo.played,
+        free_squares: hi.free - lo.free,
+        dead_squares: hi.dead - lo.dead,
+        blank_ok,
     };
-    for idx in leftmost..rightmost {
-        add_square(&mut e, idx as usize, letters, env.layout, env.params);
+    #[cfg(debug_assertions)]
+    {
+        let mut walked = Extent {
+            playthrough_key: 0,
+            base_main: 0,
+            base_perp: 0,
+            word_multiplier: 1,
+            num_played: 0,
+            free_squares: 0,
+            dead_squares: 0,
+            blank_ok: 0,
+        };
+        for idx in leftmost..rightmost {
+            add_square(&mut walked, idx as usize, letters, env.layout, env.params);
+        }
+        debug_assert_eq!(walked.playthrough_key, e.playthrough_key);
+        debug_assert_eq!(walked.base_main, e.base_main);
+        debug_assert_eq!(walked.base_perp, e.base_perp);
+        debug_assert_eq!(walked.word_multiplier, e.word_multiplier);
+        debug_assert_eq!(walked.num_played, e.num_played);
+        debug_assert_eq!(walked.free_squares, e.free_squares);
+        debug_assert_eq!(walked.dead_squares, e.dead_squares);
+        debug_assert!(env.params.rack_tally[0] == 0 || walked.blank_ok == e.blank_ok);
     }
     debug_assert!(leftmost == 0 || env.params.board_strip[leftmost as usize - 1] == 0);
     debug_assert!(
@@ -4059,6 +4256,8 @@ fn gen_place_moves_at_lean<
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
             span_memo: &mut working_buffer.span_memo,
+            span_prefix: &[],
+            span_lane: SpanLane::new(),
         },
         !placement.down,
         left_bounds,
@@ -4096,6 +4295,20 @@ fn gen_place_moves_at<
     } else {
         strip_range_start = (placement.lane as isize * dim.cols as isize) as usize;
         strip_range_start + dim.cols as usize
+    };
+    let strip_len = strip_range_end - strip_range_start;
+    let span_sums = match (
+        board_snapshot.game_config.game_rules(),
+        board_snapshot.anagrams,
+    ) {
+        (game_config::GameRules::Classic, Some(held)) => Some(working_buffer.fill_span_lane(
+            board_snapshot.board_tiles,
+            dim,
+            held.layout(),
+            placement.down,
+            placement.lane,
+        )),
+        _ => None,
     };
     gen_place_moves(
         &mut GenPlaceMovesParams {
@@ -4192,6 +4405,14 @@ fn gen_place_moves_at<
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
             span_memo: &mut working_buffer.span_memo,
+            span_prefix: match span_sums {
+                Some((at, _)) => &working_buffer.span_prefix[at..at + strip_len + 1],
+                None => &[],
+            },
+            span_lane: match span_sums {
+                Some((_, lane_at)) => working_buffer.span_lanes[lane_at],
+                None => SpanLane::new(),
+            },
         },
         !placement.down,
     );
