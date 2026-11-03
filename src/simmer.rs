@@ -105,6 +105,7 @@ pub struct Simmer<R = DefaultRng> {
     last_seen_leave_values: Box<[i32]>,
     final_scores: Box<[i32]>,
     plies_played: Vec<PlyPlayed>, // the last rollout's, after its candidate
+    reply_equity: Option<equity::Equity>, // the last rollout's ply-1 reply, as reply_to values it
 
     move_generator: movegen::KurniaMoveGenerator,
     rack_tally: Box<[u8]>,
@@ -145,6 +146,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 .into_boxed_slice(),
             final_scores: vec![0; game_config.num_players() as usize].into_boxed_slice(),
             plies_played: Vec::new(),
+            reply_equity: None,
 
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
@@ -411,6 +413,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
         self.plies_played.clear();
+        self.reply_equity = None;
         // a rollout that needs randomness snapshots the rng into a local copy, so the
         // shared state stays put for the next candidate.
         let mut rollout_rng: Option<R> = None;
@@ -448,15 +451,15 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                     tiles: [][..].into(),
                 };
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
-                next_play = self
-                    .reply_at_ply_one::<LEAN, _, _>(
-                        game_config,
-                        kwg,
-                        arm_tables,
-                        klv,
-                        candidate_play,
-                    )
-                    .play;
+                let reply = self.reply_at_ply_one::<LEAN, _, _>(
+                    game_config,
+                    kwg,
+                    arm_tables,
+                    klv,
+                    candidate_play,
+                );
+                self.reply_equity = Some(reply.equity);
+                next_play = reply.play;
             } else {
                 let params = &movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
@@ -649,6 +652,15 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
     #[inline(always)]
     pub fn plies_played(&self) -> &[PlyPlayed] {
         &self.plies_played
+    }
+
+    // the equity of the opponent's reply at ply 1 in the last rollout, as the
+    // generator valued it: the best move of the rack it was dealt, which
+    // infer::reply_to weighs over every rack. None when the rollout had no such
+    // reply: the opponents passing, or the bag empty after the candidate.
+    #[inline(always)]
+    pub fn reply_equity(&self) -> Option<equity::Equity> {
+        self.reply_equity
     }
 
     #[inline(always)]
@@ -1723,6 +1735,70 @@ mod tests {
         }
         assert!(theirs > 50, "{theirs} of their plies");
         assert!(ours_placed > 20, "{ours_placed} of ours placed tiles");
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_keeps_the_equity_of_its_reply_at_ply_one() {
+        // with no leave values, the reply a rollout played at ply 1, on a board
+        // its candidate placed tiles on, is worth its score; a rollout whose
+        // opponents pass has no such reply, and keeps none from the one before
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let no_tables = anagrams::ArmTables::None;
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut field = movegen::KurniaMoveGenerator::new(&game_config);
+        let (mut checked, mut scored) = (0usize, 0usize);
+        for seed in 0..8u64 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(seed);
+            game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+            field.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 20,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            let mut simmer = Simmer::new(&game_config).unwrap();
+            simmer.prepare(&game_config, &game_state, 3, true, &[]);
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            for candidate in field.plays.iter().map(|m| &m.play) {
+                if !matches!(candidate, movegen::Play::Place { .. }) {
+                    continue;
+                }
+                simmer.set_opponents_pass(false);
+                simmer
+                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .unwrap();
+                let reply = simmer.plies_played()[0];
+                assert_eq!(
+                    simmer.reply_equity().map(|equity| equity.raw()),
+                    Some(reply.score),
+                    "seed {seed}"
+                );
+                if reply.score > 0 {
+                    scored += 1;
+                }
+                simmer.set_opponents_pass(true);
+                simmer
+                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .unwrap();
+                assert!(simmer.reply_equity().is_none(), "seed {seed}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 50, "{checked} checked");
+        assert!(scored > 50, "{scored} replies scored");
     }
 
     #[test]
