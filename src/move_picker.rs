@@ -225,6 +225,18 @@ pub fn paired_z(budget: u64) -> f64 {
     -normal_quantile(0.05 / looks)
 }
 
+// the one-sided z at a sim's iterations so far of the stitched boundary of
+// Howard, Ramdas, McAuliffe, and Sekhon, "Time-uniform, nonparametric,
+// nonasymptotic confidence sequences", Ann. Statist. 49(2) 2021, eq. (2) (its
+// two-sided 10.4 / alpha made one-sided, 5.2 / alpha): it holds at every look
+// at once, so however long a sim with no iteration budget runs, the chance it
+// ever retires its best candidate behind a given other one is at most alpha.
+// Iterations at least 1, alpha above 0 and below 1
+#[inline]
+pub fn stitched_z(iterations: u64, alpha: f64) -> f64 {
+    1.7 * ((2.0 * iterations as f64).ln().ln() + 0.72 * (5.2 / alpha).ln()).sqrt()
+}
+
 // a candidate's objective minus the leader's on each iteration both were rolled
 // out. Each list holds a candidate's objectives from its first iteration on,
 // NaN where it sat one out.
@@ -1952,6 +1964,27 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
 mod tests {
     use super::*;
     use crate::{alphabet, bites, build, display};
+
+    #[test]
+    #[inline]
+    fn stitched_z_reads_as_its_formula_and_grows_slowly() {
+        // values of 1.7 sqrt(ln ln 2n + 0.72 ln(5.2 / alpha)) worked out apart
+        // from this code
+        for (iterations, alpha, z) in [
+            (16, 0.05, 3.6408929961462624),
+            (1000, 0.05, 3.940271585734935),
+            (87057, 0.05, 4.106291666114815),
+            (1000, 0.01, 4.344497505758632),
+        ] {
+            assert!(
+                (stitched_z(iterations, alpha) - z).abs() < 1e-12,
+                "{iterations} {alpha}"
+            );
+        }
+        // more looks and a smaller alpha each ask for more
+        assert!(stitched_z(2000, 0.05) > stitched_z(1000, 0.05));
+        assert!(stitched_z(1000, 0.01) > stitched_z(1000, 0.05));
+    }
 
     #[inline]
     fn tiny_lexicon() -> Vec<u8> {
