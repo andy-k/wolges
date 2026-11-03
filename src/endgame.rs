@@ -2922,6 +2922,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 mover,
                 passes: scoreless[0],
                 zeros: scoreless[1],
+                answering: false,
                 exchanges: position.exchanges,
             }
         };
@@ -3852,6 +3853,19 @@ fn value_root_split<N: kwg::Node, L: kwg::Node>(
         let (win, margin) = search.info_split(&info, play, opp_rack, bag)?;
         return Ok((margin + score_diff, win));
     }
+    // the root's pass, not ending the game, is counted: a pass answering it
+    // does not end the line, which keeps the pass's own value, where ending it
+    // there would let the other end a game the rules go on with
+    if matches!(play, movegen::Play::Exchange { tiles } if tiles.is_empty())
+        && !pos.a_pass_ends(search.gc)
+    {
+        let mut next = pos.passed();
+        next.answering = false;
+        next.next_turn();
+        let value = -search.node(&next)? + score_diff;
+        let win = 1.0 - search.node_win(&next, score_diff)?;
+        return Ok((value, win));
+    }
     let value = search.move_value(&pos, play)? + score_diff;
     let win = search.move_win(&pos, play, -score_diff)?;
     Ok((value, win))
@@ -4123,8 +4137,8 @@ fn each_split(pool: &[u8], n: usize, f: &mut impl FnMut(&[u8], &[u8], u64)) {
 
 // a position with tiles in the bag as a search with the racks known walks it:
 // the board, each rack (sorted), the bag's counts, the player to move, the
-// scoreless turns before it (the passes and the zeros), and each player's
-// exchanges so far
+// scoreless turns before it (the passes, the zeros, and whether the line's move
+// before was a pass), and each player's exchanges so far
 #[derive(Clone)]
 struct InBag {
     board: Vec<u8>,
@@ -4133,6 +4147,7 @@ struct InBag {
     mover: u8,
     passes: u8,
     zeros: u8,
+    answering: bool, // the line's move before was a pass
     exchanges: [i16; 2],
 }
 
@@ -4165,12 +4180,39 @@ impl InBag {
             zeros: self.zeros,
         }
         .key();
+        if self.answering {
+            key ^= Scoreless::Answering.key();
+        }
         for (player, &made) in self.exchanges.iter().enumerate() {
             if made != 0 {
                 key ^= zobrist(EXCHANGES_MADE | ((player as u64) << 16) | made as u16 as u64);
             }
         }
         key
+    }
+
+    // whether a pass here ends the line: answering a pass the line made, or
+    // bringing the scoreless turns to the config's count
+    #[inline(always)]
+    fn a_pass_ends(&self, gc: &game_config::GameConfig) -> bool {
+        self.answering
+            || scoreless_turns_end(
+                gc,
+                Some(&self.board),
+                self.passes.saturating_add(1),
+                self.zeros.saturating_add(1),
+            )
+    }
+
+    // the position after the mover passes, the turn not yet passed on; a pass
+    // there answers this one
+    #[inline(always)]
+    fn passed(&self) -> Self {
+        let mut next = self.clone();
+        next.passes = self.passes.saturating_add(1);
+        next.zeros = self.zeros.saturating_add(1);
+        next.answering = true;
+        next
     }
 
     // how many tiles the bag holds
@@ -4204,6 +4246,7 @@ impl InBag {
         }
         next.passes = 0;
         next.zeros = 0;
+        next.answering = false;
         next
     }
 
@@ -4352,6 +4395,7 @@ impl InfoSet {
             mover: self.mover,
             passes: self.passes,
             zeros: self.zeros,
+            answering: false,
             exchanges: self.exchanges,
         }
     }
@@ -4650,12 +4694,10 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                 *score as f64 - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
-                let mut next = pos.clone();
-                next.passes = pos.passes.saturating_add(1);
-                next.zeros = pos.zeros.saturating_add(1);
-                if scoreless_turns_end(self.gc, Some(&pos.board), next.passes, next.zeros) {
+                if pos.a_pass_ends(self.gc) {
                     return Ok(false);
                 }
+                let mut next = pos.passed();
                 next.next_turn();
                 let Some(least) = self.least(&next)? else {
                     return Ok(false);
@@ -4791,14 +4833,17 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                 Ok(*score as f64 - sum / total as f64)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
-                // the game's end where the pass brings the scoreless turns to
-                // the config's count, else the next mover's value
-                let mut next = pos.clone();
-                next.passes = pos.passes.saturating_add(1);
-                next.zeros = pos.zeros.saturating_add(1);
-                if scoreless_turns_end(self.gc, Some(&pos.board), next.passes, next.zeros) {
+                // the game's end where the pass answers a pass the line made or
+                // brings the scoreless turns to the config's count, else the
+                // next mover's value. A pass answering a pass ends the line as
+                // an empty bag's endgame ends it: the position is as it was two
+                // plies back, which leaves every position's value as it is,
+                // though not that of the pass the line answers (the root's own
+                // is counted, value_root_split)
+                if pos.a_pass_ends(self.gc) {
                     return Ok(pos.racks_lost(self.gc));
                 }
+                let mut next = pos.passed();
                 next.next_turn();
                 Ok(-self.node(&next)?)
             }
@@ -4822,6 +4867,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                     next.put_back(&put);
                     next.passes = 0;
                     next.zeros = zeros;
+                    next.answering = false;
                     next.exchanges[pos.mover as usize] += 1;
                     let value = if scoreless_turns_end(self.gc, Some(&pos.board), 0, zeros) {
                         next.racks_lost(self.gc)
@@ -4862,12 +4908,10 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                 Ok(sum / total as f64)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
-                let mut next = pos.clone();
-                next.passes = pos.passes.saturating_add(1);
-                next.zeros = pos.zeros.saturating_add(1);
-                if scoreless_turns_end(self.gc, Some(&pos.board), next.passes, next.zeros) {
+                if pos.a_pass_ends(self.gc) {
                     return Ok(beats(pos.racks_lost(self.gc), t));
                 }
+                let mut next = pos.passed();
                 next.next_turn();
                 Ok(1.0 - self.node_win(&next, -t)?)
             }
@@ -4888,6 +4932,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
                     next.put_back(&put);
                     next.passes = 0;
                     next.zeros = zeros;
+                    next.answering = false;
                     next.exchanges[pos.mover as usize] += 1;
                     let win = if scoreless_turns_end(self.gc, Some(&pos.board), 0, zeros) {
                         beats(next.racks_lost(self.gc), t)
@@ -9984,13 +10029,69 @@ mod tests {
         assert_eq!(checked, 2 * 4 * 16 * 3);
     }
 
+    // inside the random-draws search a pass answering a pass the line made ends
+    // the line, as an empty bag's endgame ends it, whatever the scoreless
+    // turns' counts: with no words, a pass inside it values one position (the
+    // other's, whose pass ends the game) where counting the six scoreless turns
+    // would value five, and the value is the game's end either way
+    #[test]
+    #[inline]
+    fn a_pass_answering_a_pass_inside_a_bag_search_ends_the_line() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut sub =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let valued = super::BagValued::new(1);
+        let limits = super::BagLimits::new(&super::Limits::NONE, None, None);
+        let mut search = super::BagSearch {
+            gc: &gc,
+            kwg: &kwg,
+            arm_tables: &arm_tables,
+            klv: &klv,
+            sub: &mut sub,
+            mg: &mut mg,
+            valued: &valued,
+            limits: &limits,
+            model: super::PegModel::RandomDraws,
+            exact: true,
+        };
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut bag = vec![0u8; gc.alphabet().len() as usize];
+        bag[1] = 1; // A
+        bag[8] = 1; // H
+        let pos = super::InBag {
+            board,
+            racks: [vec![2], vec![20]], // B, T
+            bag,
+            mover: 0,
+            passes: 0,
+            zeros: 0,
+            answering: false,
+            exchanges: [0, 0],
+        };
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        // the game's end: the mover's B (3 points) against the other's T (1)
+        assert_eq!(search.move_value(&pos, &pass).unwrap(), -2000.0);
+        let positions = (valued.shards.iter())
+            .map(|shard| shard.lock().unwrap().nodes.len())
+            .sum::<usize>();
+        assert_eq!(positions, 1);
+    }
+
     #[test]
     #[inline]
     fn a_bag_search_where_nobody_can_place_passes_to_the_end() {
-        // no words: every move is a pass, the sixth scoreless turn ends the game,
-        // and each player loses their rack. The mover's B (3 points) against the
-        // opponent's one tile: A or T (1) loses by 2, H (4) wins by 1, each
-        // split weighed by the deals that give it
+        // no words: every move is a pass, and each player loses their rack when
+        // the game ends (the search's line at the pass that answers one inside
+        // it, the game at the sixth scoreless turn, both its end alike). The
+        // mover's B (3 points) against the opponent's one tile: A or T (1) loses
+        // by 2, H (4) wins by 1, each split weighed by the deals that give it
         let gc = game_config::make_english_game_config();
         let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
@@ -10304,6 +10405,7 @@ mod tests {
                                 mover: 0,
                                 passes: 0,
                                 zeros: 0,
+                                answering: false,
                                 exchanges: [0, 0],
                             };
                             let value = bag_reference_move(
@@ -10526,6 +10628,7 @@ mod tests {
                                 mover: 0,
                                 passes: 0,
                                 zeros: 0,
+                                answering: false,
                                 exchanges: [0, 0],
                             };
                             let info = super::InfoSet::of(&pos, lead.raw());
