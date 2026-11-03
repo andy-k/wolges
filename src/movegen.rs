@@ -40,6 +40,19 @@ struct CrossSet {
     score: i32,
 }
 
+// the letters a play may put on a square, a bit each: a tile's own letter, else
+// those its cross set allows, every letter when nothing crosses it
+#[inline(always)]
+fn allowed_letters(tile: u8, cross_bits: u64) -> u64 {
+    if tile != 0 {
+        1u64 << (tile & 0x7f)
+    } else if cross_bits == 0 {
+        !0
+    } else {
+        cross_bits
+    }
+}
+
 #[derive(Clone)]
 struct CachedCrossSet {
     p_left: i32,
@@ -410,6 +423,8 @@ struct WorkingBuffer {
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
     perpendicular_scores_for_down_plays: Box<[i32]>,   // c*r
+    allowed_for_across_plays: Box<[u64]>,              // r*c (allowed_letters)
+    allowed_for_down_plays: Box<[u64]>,                // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
@@ -484,6 +499,8 @@ impl Clone for WorkingBuffer {
                 .perpendicular_scores_for_across_plays
                 .clone(),
             perpendicular_scores_for_down_plays: self.perpendicular_scores_for_down_plays.clone(),
+            allowed_for_across_plays: self.allowed_for_across_plays.clone(),
+            allowed_for_down_plays: self.allowed_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
             num_tiles_in_bag: self.num_tiles_in_bag,
@@ -561,6 +578,10 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.perpendicular_scores_for_across_plays);
         self.perpendicular_scores_for_down_plays
             .clone_from(&source.perpendicular_scores_for_down_plays);
+        self.allowed_for_across_plays
+            .clone_from(&source.allowed_for_across_plays);
+        self.allowed_for_down_plays
+            .clone_from(&source.allowed_for_down_plays);
         self.transposed_board_tiles
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
@@ -674,6 +695,8 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             perpendicular_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             perpendicular_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
+            allowed_for_across_plays: vec![0u64; rows_times_cols].into_boxed_slice(),
+            allowed_for_down_plays: vec![0u64; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
@@ -979,6 +1002,8 @@ impl WorkingBuffer {
                     self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_across_plays[idx] =
                         cross_set.score * effective_pwm as i32;
+                    self.allowed_for_across_plays[idx] =
+                        allowed_letters(board_snapshot.board_tiles[idx], cross_set.bits);
                 }
             }
         }
@@ -1006,6 +1031,8 @@ impl WorkingBuffer {
                     self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_down_plays[idx] =
                         cross_set.score * effective_pwm as i32;
+                    self.allowed_for_down_plays[idx] =
+                        allowed_letters(self.transposed_board_tiles[idx], cross_set.bits);
                 }
             }
         }
@@ -2093,6 +2120,7 @@ struct GenPlaceMovesParams<
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
+    allowed_strip: &'a [u64],
     cross_set_buffer_strip: &'a [CrossSetComputation], // cached GADDAG state per position
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -3024,25 +3052,20 @@ fn gen_classic_place_moves<
     ) {
         let len = (env.right - env.left) as u8;
         let board_strip = env.params.board_strip;
-        let cross_set_strip = env.params.cross_set_strip;
         let tile_multipliers = env.params.remaining_tile_multipliers_strip;
         let perpendicular_word_multipliers = env.params.perpendicular_word_multipliers_strip;
         let left = env.left as usize;
+        let allowed = &env.params.allowed_strip[left..left + len as usize];
         debug_assert_eq!(found.len, len);
         'word: for word in found.iter() {
-            for (i, &c) in word.iter().enumerate() {
-                let pos = left + i;
-                let b = board_strip[pos];
-                if b != 0 {
-                    if c != b & 0x7f {
-                        continue 'word;
-                    }
-                    continue;
-                }
-                let bits = cross_set_strip[pos].bits;
-                if bits != 0 && bits & (1u64 << c) == 0 {
-                    continue 'word;
-                }
+            // each letter's test against what its square allows is and-ed in,
+            // so a word takes one branch, not one a letter
+            let mut fits = 1u64;
+            for (&a, &c) in allowed.iter().zip(word) {
+                fits &= a >> c;
+            }
+            if fits & 1 == 0 {
+                continue;
             }
             let mut main_score = env.base_main;
             let mut perpendicular_cumulative_score = env.base_perp;
@@ -3950,6 +3973,11 @@ fn gen_place_moves_at_lean<
             } else {
                 &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
+            allowed_strip: if placement.down {
+                &working_buffer.allowed_for_down_plays[strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.allowed_for_across_plays[strip_range_start..strip_range_end]
+            },
             cross_set_buffer_strip: if placement.down {
                 &working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end]
@@ -4072,6 +4100,11 @@ fn gen_place_moves_at<
                 &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
             } else {
                 &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
+            },
+            allowed_strip: if placement.down {
+                &working_buffer.allowed_for_down_plays[strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.allowed_for_across_plays[strip_range_start..strip_range_end]
             },
             cross_set_buffer_strip: if placement.down {
                 &working_buffer.cross_set_buffer_for_across_plays
