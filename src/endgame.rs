@@ -434,6 +434,43 @@ fn rack_places(rack: &[u8], word: &[u8], last: bool) -> u32 {
     places
 }
 
+// each tile's slots in a sorted rack, as rack_places finds them by binary
+// search: its first, and the one past its last (a tile the rack lacks has the
+// slot it would go in for both), found once for every move of a rack
+struct RackSlots {
+    first: [u8; 128],
+    end: [u8; 128],
+}
+
+impl RackSlots {
+    #[inline(always)]
+    fn of(rack: &[u8]) -> Self {
+        let (mut first, mut end) = ([0u8; 128], [0u8; 128]);
+        let mut at = 0;
+        for tile in 0..128u8 {
+            first[tile as usize] = at as u8;
+            while at < rack.len() && rack[at] <= tile {
+                at += 1;
+            }
+            end[tile as usize] = at as u8;
+        }
+        Self { first, end }
+    }
+
+    // rack_places of the rack these slots are of
+    #[inline(always)]
+    fn places(&self, word: &[u8], last: bool) -> u32 {
+        let mut places = 0u32;
+        for &tile in word.iter().filter(|&&t| t != 0) {
+            let held = held_tile(tile) as usize;
+            let (first, end) = (self.first[held] as u32, self.end[held] as u32);
+            let taken = (places as u64 & ((1u64 << (end - first)) - 1) << first).count_ones();
+            places |= 1 << if last { end - 1 - taken } else { first + taken };
+        }
+        places
+    }
+}
+
 // a move's sort key: valuation (best first), then direction, lane, and first
 // square as movegen::cmp_play has them, then the move's place in the list
 #[inline(always)]
@@ -1169,6 +1206,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             work_buffer.dur_movegen += t1.elapsed();
         }
         let rack = &work_buffer.racks[player_idx as usize];
+        let slots = keeps.then(|| RackSlots::of(rack));
         let out_bonus = 2 * work_buffer.rack_scores[player_idx as usize ^ 1];
         let (above, here) = work_buffer.lists.split_at_mut(ply);
         let list = &mut here[0];
@@ -1189,11 +1227,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
                 list.push(Candidate {
                     play: play.clone(),
-                    uses: if keeps {
-                        rack_places(rack, word, false)
-                    } else {
-                        0
-                    },
+                    uses: (slots.as_ref()).map_or(0, |slots| slots.places(word, false)),
                     index: NO_PLAY,
                     valuation: valuation as f32,
                     plays_out,
@@ -6009,6 +6043,51 @@ mod tests {
             }
         }
         assert!(stepped > 0, "no search took more than one step");
+    }
+
+    // a rack's slots, found once, give each word the places rack_places gives
+    // it, by first slots and by last: racks of one to seven tiles (many alike),
+    // each word some of their tiles in any order, a blank as any letter, with
+    // squares played through between them
+    #[test]
+    #[inline]
+    fn a_racks_slots_place_as_rack_places_does() {
+        let mut state = 1u64;
+        let mut checked = 0;
+        for _ in 0..2000 {
+            let len = 1 + (splitmix64(&mut state) % 7) as usize;
+            let mut rack = (0..len)
+                .map(|_| (splitmix64(&mut state) % 6) as u8)
+                .collect::<Vec<_>>();
+            rack.sort_unstable();
+            let slots = super::RackSlots::of(&rack);
+            let mut tiles = rack.clone();
+            for i in (1..tiles.len()).rev() {
+                let j = (splitmix64(&mut state) % (i as u64 + 1)) as usize;
+                tiles.swap(i, j);
+            }
+            let take = 1 + (splitmix64(&mut state) % tiles.len() as u64) as usize;
+            let mut word = Vec::new();
+            for &tile in &tiles[..take] {
+                if splitmix64(&mut state).is_multiple_of(3) {
+                    word.push(0);
+                }
+                word.push(if tile == 0 {
+                    0x80 | (1 + (splitmix64(&mut state) % 26) as u8)
+                } else {
+                    tile
+                });
+            }
+            for last in [false, true] {
+                assert_eq!(
+                    slots.places(&word, last),
+                    super::rack_places(&rack, &word, last),
+                    "{rack:?} {word:?} {last}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 4000);
     }
 
     // a solve counts its nodes, every one its listener heard of
