@@ -416,6 +416,7 @@ struct Candidate {
     index: u16,     // its place in the sorted list, NO_PLAY past what fits
     valuation: f32, // a play out's whole value, else its score
     plays_out: bool,
+    placed: u8, // the tiles it places
 }
 
 // the sorted rack's slots a placement plays, as bits: of each tile's slots, the
@@ -1094,21 +1095,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut best = work_buffer.rack_scores[player_idx as usize ^ 1]
             - work_buffer.rack_scores[player_idx as usize];
         for candidate in &work_buffer.lists[ply] {
-            if let movegen::Play::Place {
-                down,
-                lane,
-                word,
-                score,
-                ..
-            } = &candidate.play
+            // a move placing one tile, whose word alone is read for it
+            if candidate.placed == 1
+                && let movegen::Play::Place {
+                    down,
+                    lane,
+                    word,
+                    score,
+                    ..
+                } = &candidate.play
                 && (if *down { cols } else { rows }) >> lane & 1 == 0
+                && let Some(&tile) = word.iter().find(|&&t| t != 0)
+                && held_tile(tile) == left
             {
-                let mut placed = word.iter().filter(|&&t| t != 0);
-                if let (Some(&tile), None) = (placed.next(), placed.next())
-                    && held_tile(tile) == left
-                {
-                    best = best.max(score + out_bonus);
-                }
+                best = best.max(score + out_bonus);
             }
         }
         if best as f32 > need {
@@ -1230,6 +1230,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     index: NO_PLAY,
                     valuation: valuation as f32,
                     plays_out,
+                    placed: placed as u8,
                 });
             }
         };
@@ -3946,6 +3947,7 @@ mod tests {
                             index: super::NO_PLAY,
                             valuation: candidate.valuation,
                             plays_out: candidate.plays_out,
+                            placed: candidate.placed,
                         })
                         .collect::<Vec<_>>();
                     again.rotate_left(turn);
