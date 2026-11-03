@@ -8215,6 +8215,66 @@ mod tests {
         }
     }
 
+    // a generator cloned from one that has generated, or made it by clone_from
+    // after a board of its own, generates what its source does on the source's
+    // board: the tables kept between generations go with it
+    #[test]
+    #[inline]
+    fn a_cloned_generator_generates_as_its_source_does() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let three = fen_parser
+            .parse("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15")
+            .unwrap()
+            .to_vec();
+        let dead = fen_parser
+            .parse("15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15")
+            .unwrap()
+            .to_vec();
+        let rack = parse_test_rack(gc.alphabet(), "?EINRST");
+        for anagrams in [None, Some(&held)] {
+            let plays = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8]| {
+                let board_snapshot = BoardSnapshot {
+                    board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams,
+                    rack_lengths: anagrams.is_none().then_some(&rack_lengths),
+                    klv: &klv,
+                };
+                move_generator.gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &rack,
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                });
+                move_generator
+                    .plays
+                    .iter()
+                    .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                    .collect::<Vec<_>>()
+            };
+            let mut source = KurniaMoveGenerator::new(&gc);
+            let want = plays(&mut source, &three);
+            assert!(want.len() > 100, "too few plays to tell anything apart");
+            assert_eq!(plays(&mut source.clone(), &three), want);
+            let mut copied = KurniaMoveGenerator::new(&gc);
+            assert_ne!(plays(&mut copied, &dead), want);
+            copied.clone_from(&source);
+            assert_eq!(plays(&mut copied, &three), want);
+        }
+    }
+
     #[inline]
     fn uneven_premium(row: i8, col: i8) -> board_layout::Premium {
         let (row, col) = (row as i32, col as i32);
