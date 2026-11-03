@@ -419,6 +419,18 @@ struct Candidate {
     placed: u8, // the tiles it places
 }
 
+// a ply's moves on the lanes only the move two plies up changed, found by the
+// replies so far to one node's list (of, that list's serial): every reply that
+// leaves such a lane alone finds the same moves there, the mover's rack being
+// the same, so later ones copy them
+#[derive(Default)]
+struct Siblings {
+    of: u64,
+    rows: u128,
+    cols: u128,
+    moves: Vec<(movegen::Play, u8)>, // each with the tiles it places
+}
+
 // the sorted rack's slots a placement plays, as bits: of each tile's slots, the
 // first ones, or with last the last ones. Two moves, one by first slots and one
 // by last, fit the rack together when their bits do not overlap
@@ -557,6 +569,9 @@ struct WorkBuffer {
     zones: Vec<(u128, u128)>, // the rows and columns each ply's move can change
     spent: Vec<u32>,       // the rack places (last slots) of each ply's move
     keeps: Vec<bool>,      // whether each ply's list has rack places (uses)
+    generated: u64,        // the lists generated, each list's serial
+    serials: Vec<u64>,     // the serial of each ply's list
+    siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
     table: Table,
     can_grow: bool, // the memory limit has not yet refused the table more room this solve
     max_depth: i8,  // this pass's depth, for progress
@@ -595,6 +610,9 @@ impl WorkBuffer {
             zones: Vec::new(),
             spent: Vec::new(),
             keeps: Vec::new(),
+            generated: 0,
+            serials: Vec::new(),
+            siblings: Vec::new(),
             table: Table::new(),
             can_grow: true,
             max_depth: 0,
@@ -1158,8 +1176,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // unsorted, into its orders. Below the first two plies, only the zones of
     // the previous two moves are generated afresh, and the mover's moves on
     // other lanes are copied from the list of their previous turn if the rack
-    // still has those tiles. With keeps, the moves record rack places for reuse
-    // two plies down
+    // still has those tiles; of the lanes only the move two plies up changed,
+    // those an earlier reply to the same list found are copied from it. With
+    // keeps, the moves record rack places for reuse two plies down
     #[inline]
     fn generate(&mut self, ply: usize, player_idx: u8, keeps: bool) {
         let work_buffer = &mut self.work_buffer;
@@ -1169,7 +1188,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             work_buffer.zones.resize(ply + 1, (0, 0));
             work_buffer.spent.resize(ply + 1, 0);
             work_buffer.keeps.resize(ply + 1, false);
+            work_buffer.serials.resize(ply + 1, 0);
+            work_buffer.siblings.resize_with(ply + 1, Siblings::default);
         }
+        work_buffer.generated += 1;
+        work_buffer.serials[ply] = work_buffer.generated;
         let kept_from = ply >= 2 && work_buffer.keeps[ply - 2];
         work_buffer.keeps[ply] = keeps;
         let (rows, cols) = if kept_from {
@@ -1184,25 +1207,48 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         } else {
             0
         };
-        // timed only while something listens
-        let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
-        gen_raw_lanes(
-            &mut work_buffer.movegen,
-            work_buffer.run_letter_bits.as_deref(),
-            &movegen::BoardSnapshot {
-                board_tiles: &work_buffer.board_tiles,
-                game_config: self.game_config,
-                kwg: self.kwg,
-                anagrams: self.arm_tables.anagrams(),
-                rack_lengths: self.arm_tables.rack_lengths(),
-                klv: &self.klv,
-            },
-            &work_buffer.racks[player_idx as usize],
-            rows,
-            cols,
-        );
-        if let Some(t1) = t1 {
-            work_buffer.dur_movegen += t1.elapsed();
+        // the lanes only the move two plies up changed, and of those, the ones
+        // an earlier reply to the same list found
+        let (only_rows, only_cols, copy_rows, copy_cols) = if kept_from {
+            let (rows, cols) = work_buffer.zones[ply - 2];
+            let (replied_rows, replied_cols) = work_buffer.zones[ply - 1];
+            let (only_rows, only_cols) = (rows & !replied_rows, cols & !replied_cols);
+            let parent = work_buffer.serials[ply - 1];
+            let siblings = &mut work_buffer.siblings[ply];
+            if siblings.of != parent {
+                siblings.of = parent;
+                siblings.rows = 0;
+                siblings.cols = 0;
+                siblings.moves.clear();
+            }
+            let (copy_rows, copy_cols) = (only_rows & siblings.rows, only_cols & siblings.cols);
+            (only_rows, only_cols, copy_rows, copy_cols)
+        } else {
+            (0, 0, 0, 0)
+        };
+        let (walk_rows, walk_cols) = (rows & !copy_rows, cols & !copy_cols);
+        let walks = walk_rows != 0 || walk_cols != 0;
+        if walks {
+            // timed only while something listens
+            let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
+            gen_raw_lanes(
+                &mut work_buffer.movegen,
+                work_buffer.run_letter_bits.as_deref(),
+                &movegen::BoardSnapshot {
+                    board_tiles: &work_buffer.board_tiles,
+                    game_config: self.game_config,
+                    kwg: self.kwg,
+                    anagrams: self.arm_tables.anagrams(),
+                    rack_lengths: self.arm_tables.rack_lengths(),
+                    klv: &self.klv,
+                },
+                &work_buffer.racks[player_idx as usize],
+                walk_rows,
+                walk_cols,
+            );
+            if let Some(t1) = t1 {
+                work_buffer.dur_movegen += t1.elapsed();
+            }
         }
         let rack = &work_buffer.racks[player_idx as usize];
         let slots = keeps.then(|| RackSlots::of(rack));
@@ -1210,6 +1256,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let (above, here) = work_buffer.lists.split_at_mut(ply);
         let list = &mut here[0];
         let ordered = &mut work_buffer.orders[ply];
+        let siblings = &mut work_buffer.siblings[ply];
         list.clear();
         ordered.clear();
         let mut push = |play: &movegen::Play, uses: u32, placed: usize| {
@@ -1234,20 +1281,50 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 });
             }
         };
-        for valued in work_buffer.movegen.plays.iter() {
-            if let movegen::Play::Place { word, .. } = &valued.play {
-                // a move's rack places are a bit a tile it places, so with them
-                // its tiles are counted without a second pass
-                match &slots {
-                    Some(slots) => {
-                        let uses = slots.places(word, false);
-                        debug_assert_eq!(
-                            uses.count_ones() as usize,
-                            word.iter().filter(|&&t| t != 0).count()
-                        );
-                        push(&valued.play, uses, uses.count_ones() as usize);
+        // the lanes walked that only the move two plies up changed are kept for
+        // the later replies to the same list
+        let (keep_rows, keep_cols) = (only_rows & !copy_rows, only_cols & !copy_cols);
+        if walks {
+            for valued in work_buffer.movegen.plays.iter() {
+                if let movegen::Play::Place {
+                    down, lane, word, ..
+                } = &valued.play
+                {
+                    // a move's rack places are a bit a tile it places, so with
+                    // them its tiles are counted without a second pass
+                    let placed = match &slots {
+                        Some(slots) => {
+                            let uses = slots.places(word, false);
+                            debug_assert_eq!(
+                                uses.count_ones() as usize,
+                                word.iter().filter(|&&t| t != 0).count()
+                            );
+                            push(&valued.play, uses, uses.count_ones() as usize);
+                            uses.count_ones() as u8
+                        }
+                        None => {
+                            let placed = word.iter().filter(|&&t| t != 0).count();
+                            push(&valued.play, 0, placed);
+                            placed as u8
+                        }
+                    };
+                    if (if *down { keep_cols } else { keep_rows }) >> lane & 1 != 0 {
+                        siblings.moves.push((valued.play.clone(), placed));
                     }
-                    None => push(&valued.play, 0, word.iter().filter(|&&t| t != 0).count()),
+                }
+            }
+        }
+        siblings.rows |= keep_rows;
+        siblings.cols |= keep_cols;
+        if copy_rows != 0 || copy_cols != 0 {
+            for (play, placed) in &siblings.moves {
+                if let movegen::Play::Place {
+                    down, lane, word, ..
+                } = play
+                    && (if *down { copy_cols } else { copy_rows }) >> lane & 1 != 0
+                {
+                    let uses = (slots.as_ref()).map_or(0, |slots| slots.places(word, false));
+                    push(play, uses, *placed as usize);
                 }
             }
         }
@@ -4004,13 +4081,15 @@ mod tests {
     fn reused_lists_equal_a_full_generation() {
         // after each move and reply (a pass among them), the list built from
         // two plies up equals a full generation, in order, on both arms; some
-        // moves are reused and some dropped for missing tiles
+        // moves are reused and some dropped for missing tiles, and some lanes
+        // are copied from an earlier reply's list
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let mut checked = 0usize;
         let mut taken = 0usize;
         let mut left = 0usize;
+        let mut copied = 0usize;
         let off = |play: &movegen::Play, rows: u128, cols: u128| match play {
             movegen::Play::Place { down, lane, .. } => {
                 (if *down { cols } else { rows }) >> lane & 1 == 0
@@ -4064,6 +4143,16 @@ mod tests {
                             if let Some(play) = &reply {
                                 egs.place(mover ^ 1, play);
                             }
+                            // the lanes an earlier reply's list holds
+                            if let Some(siblings) = egs.work_buffer.siblings.get(2)
+                                && siblings.of == egs.work_buffer.serials[1]
+                            {
+                                let (rows, cols) = egs.work_buffer.zones[0];
+                                let (replied_rows, replied_cols) = egs.work_buffer.zones[1];
+                                copied += ((rows & !replied_rows & siblings.rows).count_ones()
+                                    + (cols & !replied_cols & siblings.cols).count_ones())
+                                    as usize;
+                            }
                             egs.generate(2, mover, false);
                             order_ply(&mut egs, 2, super::NO_PLAY);
                             afresh.init(
@@ -4102,9 +4191,9 @@ mod tests {
         }
         println!(
             "reused from two plies up: {checked} lists, {taken} moves kept, {left} dropped for \
-             missing tiles"
+             missing tiles, {copied} lanes copied from an earlier reply's"
         );
-        assert!(checked > 0 && taken > 0 && left > 0);
+        assert!(checked > 0 && taken > 0 && left > 0 && copied > 0);
     }
 
     #[test]
