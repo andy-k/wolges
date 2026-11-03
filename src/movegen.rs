@@ -3267,27 +3267,77 @@ fn gen_classic_place_moves<
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
     let len = (rightmost - leftmost) as u8;
-    let kept = env.params.span_memo.find(e.playthrough_key, len);
-    let (from, upto) = match kept {
-        Ok((from, upto)) => (from as usize, upto as usize),
-        Err(_) => (
-            env.params.subracks_by_played[e.num_played as usize] as usize,
-            env.params.subracks_by_played[e.num_played as usize + 1] as usize,
-        ),
-    };
-    let kept_from = env.params.span_memo.visits.len() as u32;
-    for i in from..upto {
-        let (si, kept_at) = match kept {
-            Ok(_) => {
+    match env.params.span_memo.find(e.playthrough_key, len) {
+        Ok((from, upto)) => {
+            for i in from as usize..upto as usize {
                 let (si, at) = env.params.span_memo.visits[i];
-                (si as usize, Some(at))
+                if !visit(&mut env, &e, len, si as usize, Some(at)) {
+                    break;
+                }
             }
-            Err(_) => (i, None),
-        };
+        }
+        Err(at) => {
+            let from = env.params.subracks_by_played[e.num_played as usize] as usize;
+            let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
+            let kept_from = env.params.span_memo.visits.len() as u32;
+            // the key filter is probed for the subracks above the threshold a
+            // mask's width at a time, without a branch each (a probe's branch
+            // went either way and was mispredicted), then the ones it may hold
+            // and those with a blank are visited in order
+            let width = u64::BITS as usize;
+            let mut base = from;
+            'runs: while base < upto {
+                let end = (base + width).min(upto);
+                let mut may = 0u64;
+                let mut cut = end;
+                for i in base..end {
+                    let subrack = &env.params.subracks[i];
+                    if env.params.score_bound.saturating_add(subrack.leave_value)
+                        < env.params.threshold
+                    {
+                        cut = i;
+                        break;
+                    }
+                    let held = (subrack.blanks != 0)
+                        | env
+                            .source
+                            .may_hold(alphagram::Fitted(e.playthrough_key + subrack.key));
+                    may |= (held as u64) << (i - base);
+                }
+                while may != 0 {
+                    let si = base + may.trailing_zeros() as usize;
+                    may &= may - 1;
+                    if !visit(&mut env, &e, len, si, None) {
+                        break 'runs;
+                    }
+                }
+                if cut < end {
+                    break;
+                }
+                base = end;
+            }
+            env.params
+                .span_memo
+                .keep(at, e.playthrough_key, len, kept_from);
+        }
+    }
+
+    // a subrack on the span, false once its bound is below the threshold (a
+    // size's subracks fall in leave, so none after it can be); kept_at is the
+    // memo's (the group, or 0 for a subrack with a blank), None on the first
+    // visit, whose key the filter has passed
+    #[inline(always)]
+    fn visit<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        e: &Extent,
+        len: u8,
+        si: usize,
+        kept_at: Option<u32>,
+    ) -> bool {
         let subrack = env.params.subracks[si];
         env.bound = env.params.score_bound.saturating_add(subrack.leave_value);
         if env.bound < env.params.threshold {
-            break;
+            return false;
         }
         let key = e.playthrough_key + subrack.key;
         let source = env.source;
@@ -3295,23 +3345,17 @@ fn gen_classic_place_moves<
             let at = match kept_at {
                 Some(at) => at,
                 None => {
-                    let Some(at) = source.group_at(alphagram::Fitted(key), len) else {
-                        continue;
+                    let Some(at) = source.group_at_held(alphagram::Fitted(key), len) else {
+                        return true;
                     };
                     env.params.span_memo.visits.push((si as u32, at));
                     at
                 }
             };
-            fit_words::<false, _, _, _>(
-                &mut env,
-                source.words_of(len, at),
-                subrack.leave_idx,
-                0,
-                0,
-            );
-            continue;
+            fit_words::<false, _, _, _>(env, source.words_of(len, at), subrack.leave_idx, 0, 0);
+            return true;
         }
-        if kept.is_err() {
+        if kept_at.is_none() {
             env.params.span_memo.visits.push((si as u32, 0));
         }
         if subrack.blanks >= 2 {
@@ -3331,20 +3375,16 @@ fn gen_classic_place_moves<
                         return;
                     }
                     let found = source.words_at(at);
-                    fit_words_apart(&mut env, found, subrack.leave_idx, tile, l1);
+                    fit_words_apart(env, found, subrack.leave_idx, tile, l1);
                 });
             }
-            continue;
+            return true;
         }
         source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
             let found = source.words_at(at);
-            fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
+            fit_words_apart(env, found, subrack.leave_idx, tile, 0);
         });
-    }
-    if let Err(at) = kept {
-        env.params
-            .span_memo
-            .keep(at, e.playthrough_key, len, kept_from);
+        true
     }
 }
 
