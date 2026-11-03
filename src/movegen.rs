@@ -2153,6 +2153,11 @@ fn leave_value_of<L: kwg::Node>(
 trait RunLetters: Copy {
     // whether the run from node p on may hold a tile in candidates
     fn may_hold(self, p: i32, candidates: u64) -> bool;
+
+    // the run's tiles from node p on, a bit each, when known; a walk then goes
+    // straight to a tile's node, the count of the run's tiles below it past p,
+    // which needs each run's tiles ascending (kwg::Kwg::runs_ascend)
+    fn from(self, p: i32) -> Option<u64>;
 }
 
 // nothing, so every run may
@@ -2161,6 +2166,11 @@ impl RunLetters for () {
     fn may_hold(self, _p: i32, _candidates: u64) -> bool {
         true
     }
+
+    #[inline(always)]
+    fn from(self, _p: i32) -> Option<u64> {
+        None
+    }
 }
 
 // by node, the tiles from it to the end of its run (kwg::Kwg::compute_letter_bits)
@@ -2168,6 +2178,11 @@ impl RunLetters for &[u64] {
     #[inline(always)]
     fn may_hold(self, p: i32, candidates: u64) -> bool {
         self[p as usize] & candidates != 0
+    }
+
+    #[inline(always)]
+    fn from(self, p: i32) -> Option<u64> {
+        Some(self[p as usize])
     }
 }
 
@@ -2376,12 +2391,11 @@ fn gen_classic_place_moves_lean<
                     }
                 }
             });
-            loop {
-                let node = env.params.board_snapshot.kwg[p];
-                let tile = node.tile();
-                let bit = 1u64 << tile;
-                if candidates & bit != 0 {
-                    candidates ^= bit;
+            // a candidate tile played at node p of the run
+            macro_rules! visit {
+                ($p:expr, $node:expr, $tile:expr) => {{
+                    let (p, node, tile) = ($p, $node, $tile);
+                    let bit = 1u64 << tile;
                     env.params.board_snapshot.kwg.prefetch(node.arc_index());
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
@@ -2434,15 +2448,40 @@ fn gen_classic_place_moves_lean<
                         );
                         env.params.rack_tally[0] += 1;
                     }
-                    if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates))
-                    {
-                        break;
+                }};
+            }
+            match env.runs.from(p) {
+                // the run's tiles known: each candidate's node is the count of
+                // the run's tiles below it past p, and the others are never read
+                Some(run) => {
+                    let mut hits = run & candidates;
+                    while hits != 0 {
+                        let tile = hits.trailing_zeros() as u8;
+                        hits &= hits - 1;
+                        let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
+                        let node = env.params.board_snapshot.kwg[at];
+                        debug_assert_eq!(node.tile(), tile);
+                        visit!(at, node, tile);
                     }
                 }
-                if node.is_end() {
-                    break;
-                }
-                p += 1;
+                None => loop {
+                    let node = env.params.board_snapshot.kwg[p];
+                    let tile = node.tile();
+                    let bit = 1u64 << tile;
+                    if candidates & bit != 0 {
+                        candidates ^= bit;
+                        visit!(p, node, tile);
+                        if candidates == 0
+                            || (!node.is_end() && !env.runs.may_hold(p + 1, candidates))
+                        {
+                            break;
+                        }
+                    }
+                    if node.is_end() {
+                        break;
+                    }
+                    p += 1;
+                },
             }
             env.num_played -= 1;
         }
@@ -2599,12 +2638,12 @@ fn gen_classic_place_moves_lean<
                 }
             }
         });
-        loop {
-            let node = env.params.board_snapshot.kwg[p];
-            let tile = node.tile();
-            let bit = 1u64 << tile;
-            if candidates & bit != 0 {
-                candidates ^= bit;
+        // a candidate tile played at node p of the run, or the turn to the
+        // right at its tile 0
+        macro_rules! visit {
+            ($p:expr, $node:expr, $tile:expr) => {{
+                let (p, node, tile) = ($p, $node, $tile);
+                let bit = 1u64 << tile;
                 if tile == 0 {
                     env.num_played -= 1;
                     env.idx_left = idx + 1;
@@ -2670,6 +2709,30 @@ fn gen_classic_place_moves_lean<
                         env.params.rack_tally[0] += 1;
                     }
                 }
+            }};
+        }
+        // the run's tiles known: each candidate's node is the count of the
+        // run's tiles below it past p, and the others are never read
+        if let Some(run) = env.runs.from(p) {
+            let mut hits = run & candidates;
+            while hits != 0 {
+                let tile = hits.trailing_zeros() as u8;
+                hits &= hits - 1;
+                let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
+                let node = env.params.board_snapshot.kwg[at];
+                debug_assert_eq!(node.tile(), tile);
+                visit!(at, node, tile);
+            }
+            env.num_played -= 1;
+            return;
+        }
+        loop {
+            let node = env.params.board_snapshot.kwg[p];
+            let tile = node.tile();
+            let bit = 1u64 << tile;
+            if candidates & bit != 0 {
+                candidates ^= bit;
+                visit!(p, node, tile);
                 if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates)) {
                     break;
                 }
