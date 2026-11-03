@@ -80,13 +80,13 @@ pub struct PlyPlayed {
     pub tiles: u8,
 }
 
-// the leaves a seat may have kept: each one, and the weights so far, so that a
-// weighted draw is a binary search
+// the leaves a seat may have kept, packed with their weights and shared (as an
+// inference's are by every sim given them), so that a weighted draw is a binary
+// search
 #[derive(Clone)]
 struct KeptLeaves {
     seat: u8,
-    leaves: Vec<Vec<u8>>,
-    weight_sums: Vec<f64>,
+    leaves: std::sync::Arc<infer::PackedLeaves>,
 }
 
 // Simmer can only be reused for the same game_config and kwg.
@@ -188,22 +188,28 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
     // any other seat's after it
     #[inline]
     pub fn set_kept_leaves(&mut self, seat: u8, kept_leaves: &[(Vec<u8>, f64)]) {
-        self.kept.retain(|kept| kept.seat != seat);
-        let mut kept = KeptLeaves {
-            seat,
-            leaves: Vec::new(),
-            weight_sums: Vec::new(),
-        };
-        let mut total = 0.0;
+        let mut leaves = infer::PackedLeaves::new();
         for (leave, weight) in kept_leaves {
             if *weight > 0.0 {
-                total += weight;
-                kept.leaves.push(leave.clone());
-                kept.weight_sums.push(total);
+                // an infinite weight would leave no total to draw against
+                (leaves.push(leave, *weight)).expect("a kept leave's weight is finite");
             }
         }
-        if !kept.leaves.is_empty() {
-            self.kept.push(kept);
+        self.set_packed_kept_leaves(seat, std::sync::Arc::new(leaves));
+    }
+
+    // as set_kept_leaves, the leaves packed and shared with whatever else holds
+    // them (a list of millions, as an inference's may be, is not copied); a
+    // leave of weight 0 is never dealt
+    #[inline]
+    pub fn set_packed_kept_leaves(
+        &mut self,
+        seat: u8,
+        leaves: std::sync::Arc<infer::PackedLeaves>,
+    ) {
+        self.kept.retain(|kept| kept.seat != seat);
+        if leaves.total() > 0.0 {
+            self.kept.push(KeptLeaves { seat, leaves });
             self.kept.sort_by_key(|kept| kept.seat);
         }
     }
@@ -305,19 +311,13 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         // out of a shuffled bag would change the odds of what the rest deals
         for kept in &self.kept {
             let seat = kept.seat as usize;
-            let Some(&total) = kept.weight_sums.last() else {
-                continue;
-            };
             if seat == initial_turn || seat >= self.final_scores.len() {
                 continue;
             }
-            let at = self.rng.random_range(0.0..total);
-            let pick = (kept.weight_sums)
-                .partition_point(|&weight| weight <= at)
-                .min(kept.weight_sums.len() - 1);
+            let at = self.rng.random_range(0.0..kept.leaves.total());
             let rack_len = self.final_scores[seat] as usize;
             let game_state = &mut self.initial_game_state;
-            for &tile in kept.leaves[pick].iter().take(rack_len) {
+            for &tile in kept.leaves.pick(at).iter().take(rack_len) {
                 if game_state.bag.remove_tile(tile).is_some() {
                     game_state.players[seat].rack.push(tile);
                 }
@@ -1179,6 +1179,55 @@ mod tests {
         // a new prepare forgets them
         simmer.prepare(&game_config, &game_state, 4, false, &[]);
         assert!(simmer.kept.is_empty());
+    }
+
+    // leaves set packed and shared deal as the same leaves set as a list do,
+    // the simmer holding the packed ones without a copy; one of weight 0 among
+    // them changes no draw
+    #[test]
+    #[inline]
+    fn packed_kept_leaves_deal_as_a_list_of_them_does() {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = DefaultRng::seed_from_u64(11);
+        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut deal_rng);
+        let opponent = 1 - game_state.turn;
+        let rack = game_state.players[opponent as usize].rack.clone();
+        let listed = [
+            (rack[..3].to_vec(), 2.0),
+            (rack[3..5].to_vec(), 0.0),
+            (rack[..1].to_vec(), 1.0),
+            (rack[1..6].to_vec(), 0.5),
+        ];
+        let mut packed = infer::PackedLeaves::new();
+        for (leave, weight) in &listed {
+            packed.push(leave, *weight).unwrap();
+        }
+        let packed = std::sync::Arc::new(packed);
+        let mut from_list = Simmer::new(&game_config).unwrap();
+        from_list.prepare(&game_config, &game_state, 4, false, &listed);
+        let mut from_packed = Simmer::new(&game_config).unwrap();
+        from_packed.prepare(&game_config, &game_state, 4, false, &[]);
+        from_packed.set_packed_kept_leaves(opponent, packed.clone());
+        assert_eq!(std::sync::Arc::strong_count(&packed), 2);
+        let pristine = from_list.prepared_state().clone();
+        for seed in 0..200 {
+            for simmer in [&mut from_list, &mut from_packed] {
+                simmer.restore_prepared(&pristine);
+                simmer.reseed(seed);
+                simmer.prepare_iteration();
+            }
+            assert_eq!(
+                from_packed.initial_game_state.players[opponent as usize].rack,
+                from_list.initial_game_state.players[opponent as usize].rack,
+                "{seed}"
+            );
+        }
+        // leaves of no weight at all leave the seat dealt from the bag alone
+        let mut weightless = infer::PackedLeaves::new();
+        weightless.push(&rack[..2], 0.0).unwrap();
+        from_packed.set_packed_kept_leaves(opponent, std::sync::Arc::new(weightless));
+        assert!(from_packed.kept.is_empty());
     }
 
     #[test]
