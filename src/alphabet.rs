@@ -363,6 +363,14 @@ pub fn make_super_german_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_german.txt")
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Italian
+// J K W X Y are not letters of the standard Italian alphabet: they have no
+// tiles, and a blank stands for one in a borrowed word
+#[inline(never)]
+pub fn make_italian_alphabet() -> Alphabet {
+    new_static_alphabet_from_file!("alphabets/italian.txt")
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Norwegian
 // https://en.wikipedia.org/wiki/Norwegian_orthography
 // https://unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
@@ -416,6 +424,7 @@ pub const ALPHABETS: &[(&str, MakeAlphabet)] = &[
     ("german", make_german_alphabet),
     ("hex", make_hex_alphabet),
     ("hong-kong-english", make_hong_kong_english_alphabet),
+    ("italian", make_italian_alphabet),
     ("norwegian", make_norwegian_alphabet),
     ("polish", make_polish_alphabet),
     ("slovene", make_slovene_alphabet),
@@ -720,6 +729,28 @@ mod tests {
             assert_eq!(alphabet.num_tiles(), make().num_tiles(), "{name}");
         }
         assert!(make_alphabet_by_name("klingon").is_none());
+    }
+
+    // the Italian set: 120 tiles, two of them blanks, and all 26 letters, of
+    // which J K W X Y have no tiles yet read in a word as any letter does
+    #[test]
+    #[inline]
+    fn the_italian_set_has_no_j_k_w_x_y_tiles() {
+        let alphabet = make_italian_alphabet();
+        assert_eq!(
+            (alphabet.len(), alphabet.num_tiles(), alphabet.freq(0)),
+            (27, 120, 2)
+        );
+        let mut word = Vec::new();
+        AlphabetReader::new_for_words(&alphabet)
+            .set_word("JKWXY", &mut word)
+            .unwrap();
+        assert_eq!(word.len(), 5);
+        assert!(word.iter().all(|&tile| alphabet.freq(tile) == 0));
+        let without = (1..alphabet.len())
+            .filter(|&tile| alphabet.freq(tile) == 0)
+            .count();
+        assert_eq!(without, 5);
     }
 
     #[test]
