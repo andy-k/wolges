@@ -115,6 +115,20 @@ fn rack_step(player: u8, tile: u8, count: usize) -> u64 {
     }
 }
 
+// the key of a player's rack, in any order: each tile's count
+#[inline(always)]
+fn rack_key(player: u8, rack: &[u8]) -> u64 {
+    let mut key = 0;
+    for (i, &tile) in rack.iter().enumerate() {
+        key ^= rack_step(
+            player,
+            tile,
+            rack[..i].iter().filter(|&&t| t == tile).count(),
+        );
+    }
+    key
+}
+
 // the rack tile behind a tile on the board: a blank for a blank
 #[inline(always)]
 fn held_tile(tile: u8) -> u8 {
@@ -661,9 +675,7 @@ impl WorkBuffer {
             let now = self.table.buckets.len();
             let mut buckets = now.saturating_mul(2);
             if let Some(limit) = self.memory_limit {
-                let room = limit.bytes.saturating_sub((limit.held)()).saturating_sub(1)
-                    / std::mem::size_of::<[u64; 8]>();
-                buckets = buckets.min(room);
+                buckets = buckets.min(limit.room() / std::mem::size_of::<[u64; 8]>());
             }
             self.can_grow = buckets > now && self.table.grow(buckets);
             if buckets <= GROW_AT_ONCE {
@@ -714,6 +726,12 @@ impl MemoryLimit {
     #[inline(always)]
     fn passed(&self, leaving: usize) -> bool {
         (self.held)().saturating_sub(leaving) >= self.bytes
+    }
+
+    // the bytes the program may take on and still hold fewer than its bytes
+    #[inline(always)]
+    fn room(&self) -> usize {
+        self.bytes.saturating_sub((self.held)()).saturating_sub(1)
     }
 }
 
@@ -2463,7 +2481,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             klv: &klv,
             sub: &mut sub,
             mg: &mut mg,
-            memo: fash::MyHashMap::default(),
+            memo: BagTable::default(),
             limits,
             exact: true,
             line: None,
@@ -2678,20 +2696,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         zeros: u8,
         answering: bool,
     ) -> error::Returns<f32> {
-        let mut rack0 = racks[0].clone();
-        let mut rack1 = racks[1].clone();
-        rack0.sort_unstable();
-        rack1.sort_unstable();
-        let key = BagExchangeKey {
-            mover,
-            bag_tile,
-            passes,
-            zeros,
-            answering,
-            rack0,
-            rack1,
-        };
-        if let Some(&v) = search.memo.get(&key) {
+        let mut key = zobrist(BAG_KEYS | ((bag_tile as u64) << 8) | 1);
+        for (player, rack) in (0u8..).zip(racks) {
+            key ^= rack_key(player, rack);
+        }
+        if mover != 0 {
+            key ^= zobrist(SECOND_TO_MOVE);
+        }
+        key ^= Scoreless::Counted { passes, zeros }.key();
+        if answering {
+            key ^= Scoreless::Answering.key();
+        }
+        if let Some(&v) = search.memo.get(key) {
             return Ok(v);
         }
 
@@ -2811,7 +2827,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        search.memo.insert(key, best);
+        search.memo.keep(key, best, search.limits.memory, |_| 0);
         Ok(best)
     }
 
@@ -3516,7 +3532,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             klv: &klv,
                             sub: &mut *sub,
                             mg: &mut mg,
-                            memo: fash::MyHashMap::default(),
+                            memo: BagTable::default(),
                             limits,
                             exact: true,
                             line: Some(&mut *line),
@@ -4061,7 +4077,7 @@ struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L>,
     mg: &'s mut movegen::KurniaMoveGenerator,
-    memo: fash::MyHashMap<BagExchangeKey, f32>,
+    memo: BagTable<f32>,
     limits: &'s BagLimits,
     exact: bool, // cleared by an endgame a limit cut short
     line: Option<&'s mut PassLine>,
@@ -4076,17 +4092,6 @@ struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
 struct PassLine {
     valued: fash::MyHashMap<[u8; 5], (f32, bool)>,
     partway: fash::MyHashMap<[u8; 5], (usize, f32, bool)>,
-}
-
-#[derive(Eq, Hash, PartialEq)]
-struct BagExchangeKey {
-    mover: u8,
-    bag_tile: u8,
-    passes: u8,
-    zeros: u8,
-    answering: bool,
-    rack0: Vec<u8>,
-    rack1: Vec<u8>,
 }
 
 // a position with a tile in the bag as the peg model searches it: the mover,
@@ -4213,10 +4218,7 @@ impl InBag {
             }
         }
         for (player, rack) in (0u8..).zip(self.racks.iter()) {
-            for (i, &tile) in rack.iter().enumerate() {
-                let count = rack[..i].iter().rev().take_while(|&&t| t == tile).count();
-                key ^= rack_step(player, tile, count);
-            }
+            key ^= rack_key(player, rack);
         }
         for (tile, &count) in self.bag.iter().enumerate() {
             if count != 0 {
@@ -4390,14 +4392,7 @@ impl InfoSet {
                 key ^= square_key(square, tile);
             }
         }
-        for (i, &tile) in self.rack.iter().enumerate() {
-            let count = self.rack[..i]
-                .iter()
-                .rev()
-                .take_while(|&&t| t == tile)
-                .count();
-            key ^= rack_step(self.mover, tile, count);
-        }
+        key ^= rack_key(self.mover, &self.rack);
         if self.mover != 0 {
             key ^= zobrist(SECOND_TO_MOVE);
         }
@@ -4583,19 +4578,173 @@ struct BagValued {
     shards: Box<[std::sync::Mutex<BagShard>]>,
 }
 
-// one shard of what the search has valued, by key: each position's value to its
-// mover, the move that gets it, and whether no endgame a depth cut short went
-// into it; each endgame's value to its mover, and whether exact; the move a
-// shallower pass found best at each position not valued exactly, tried first;
-// and as much for what a player knows (InfoSet): their chance to win with their
-// mean margin, the move, whether exact, and the move to try first
+// one shard of what the search has valued, by key, each kind in a table of its
+// own: each position's value to its mover (BagEntry); each endgame's value to
+// its mover, and whether exact, or none where a shallower pass found it not
+// exact; and as much as a position's for what a player knows (InfoSet), whose
+// value is their chance to win with their mean margin
 #[derive(Default)]
 struct BagShard {
-    nodes: fash::MyHashMap<u64, (f64, movegen::Play, bool)>,
-    endgames: fash::MyHashMap<u64, (f64, bool)>,
-    tried_first: fash::MyHashMap<u64, movegen::Play>,
-    infos: fash::MyHashMap<u64, (f64, f64, movegen::Play, bool)>,
-    info_first: fash::MyHashMap<u64, movegen::Play>,
+    nodes: BagTable<BagEntry<f64>>,
+    endgames: BagTable<Option<(f64, bool)>>,
+    infos: BagTable<BagEntry<(f64, f64)>>,
+}
+
+// what the search with tiles in the bag keeps for a position, or for what a
+// player knows: its value, the move that gets it, and whether no endgame a
+// depth cut short went into it; or, from a shallower pass, the move found best
+// there alone, to be tried first
+enum BagEntry<V> {
+    Valued(V, movegen::Play, bool),
+    First(movegen::Play),
+}
+
+impl<V> BagEntry<V> {
+    // what a full table gives up first: a move to try first, then a value not
+    // exact, then an exact one
+    #[inline(always)]
+    fn worth(&self) -> u8 {
+        match self {
+            BagEntry::First(_) => 0,
+            BagEntry::Valued(_, _, exact) => 1 + *exact as u8,
+        }
+    }
+
+    // for a deeper pass: an exact value as it is, any other's move to be tried
+    // first
+    #[inline(always)]
+    fn deepened(self) -> Self {
+        match self {
+            BagEntry::Valued(_, play, false) => BagEntry::First(play),
+            entry => entry,
+        }
+    }
+}
+
+// what a search with tiles in the bag keeps of one kind, by key: in one row of
+// entries, a key's first place by multiply-shift, its later ones each the next
+// in turn, the first empty entry ending them (linear probing). Before three
+// quarters of the entries would hold, it grows at once to twice as many, while
+// the program stays within its memory limit with the old ones still held, so
+// nothing is lost while it can grow. Refused, it keeps its size: a key not in
+// it takes the place of the first entry worth least on its way, and is not kept
+// when its first place is empty
+struct BagTable<T> {
+    entries: Vec<Option<(u64, T)>>,
+    held: usize, // the entries holding a key
+}
+
+impl<T> Default for BagTable<T> {
+    // four entries to start with
+    fn default() -> Self {
+        Self {
+            entries: (0..4).map(|_| None).collect(),
+            held: 0,
+        }
+    }
+}
+
+impl<T> BagTable<T> {
+    // a key's first place
+    #[inline(always)]
+    fn first(&self, key: u64) -> usize {
+        ((key as u128 * self.entries.len() as u128) >> 64) as usize
+    }
+
+    // the place after at, the first after the last
+    #[inline(always)]
+    fn after(&self, at: usize) -> usize {
+        if at + 1 == self.entries.len() {
+            0
+        } else {
+            at + 1
+        }
+    }
+
+    // what the table keeps for a key
+    #[inline(always)]
+    fn get(&self, key: u64) -> Option<&T> {
+        let mut at = self.first(key);
+        loop {
+            match &self.entries[at] {
+                Some((kept, value)) if *kept == key => return Some(value),
+                Some(_) => at = self.after(at),
+                None => return None,
+            }
+        }
+    }
+
+    // keep a value for a key, the table grown first, as the memory limit
+    // allows, once three quarters of it would hold; worth ranks what a full
+    // table gives up
+    #[inline(always)]
+    fn keep(&mut self, key: u64, value: T, memory: Option<MemoryLimit>, worth: impl Fn(&T) -> u8) {
+        if 4 * (self.held + 1) > 3 * self.entries.len() {
+            self.grow(memory);
+        }
+        let full = 4 * (self.held + 1) > 3 * self.entries.len();
+        let mut at = self.first(key);
+        let mut least = None;
+        loop {
+            match &self.entries[at] {
+                Some((kept, _)) if *kept == key => break,
+                Some((_, kept)) => {
+                    let kept = worth(kept);
+                    if full && least.is_none_or(|(so_far, _)| kept < so_far) {
+                        least = Some((kept, at));
+                    }
+                    at = self.after(at);
+                }
+                None if !full => {
+                    self.held += 1;
+                    break;
+                }
+                None => match least {
+                    Some((_, place)) => {
+                        at = place;
+                        break;
+                    }
+                    None => return,
+                },
+            }
+        }
+        self.entries[at] = Some((key, value));
+    }
+
+    // the table grown to twice its entries, each kept put in the first empty
+    // one of its places; as it was when the memory limit or the allocator
+    // refuses the room
+    #[inline(never)]
+    fn grow(&mut self, memory: Option<MemoryLimit>) {
+        let len = 2 * self.entries.len();
+        let bytes = len * std::mem::size_of::<Option<(u64, T)>>();
+        let mut entries = Vec::new();
+        if memory.is_some_and(|memory| bytes > memory.room())
+            || entries.try_reserve_exact(len).is_err()
+        {
+            return;
+        }
+        entries.resize_with(len, || None);
+        for (key, value) in std::mem::replace(&mut self.entries, entries)
+            .into_iter()
+            .flatten()
+        {
+            let mut at = self.first(key);
+            while self.entries[at].is_some() {
+                at = self.after(at);
+            }
+            self.entries[at] = Some((key, value));
+        }
+    }
+
+    // each value kept passed through f
+    fn each_kept(&mut self, mut f: impl FnMut(T) -> T) {
+        for entry in self.entries.iter_mut() {
+            if let Some((key, value)) = entry.take() {
+                *entry = Some((key, f(value)));
+            }
+        }
+    }
 }
 
 impl BagValued {
@@ -4619,21 +4768,9 @@ impl BagValued {
     fn deepen(&mut self) {
         for shard in self.shards.iter_mut() {
             let shard = shard.get_mut().unwrap();
-            for (key, (value, play, exact)) in std::mem::take(&mut shard.nodes) {
-                if exact {
-                    shard.nodes.insert(key, (value, play, exact));
-                } else {
-                    shard.tried_first.insert(key, play);
-                }
-            }
-            for (key, (win, margin, play, exact)) in std::mem::take(&mut shard.infos) {
-                if exact {
-                    shard.infos.insert(key, (win, margin, play, exact));
-                } else {
-                    shard.info_first.insert(key, play);
-                }
-            }
-            shard.endgames.retain(|_, &mut (_, exact)| exact);
+            shard.nodes.each_kept(BagEntry::deepened);
+            shard.infos.each_kept(BagEntry::deepened);
+            (shard.endgames).each_kept(|endgame| endgame.filter(|&(_, exact)| exact));
         }
     }
 }
@@ -4667,15 +4804,40 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // bound leaves it room to be the best (cannot_beat)
     fn node(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
-        let (found, first) = {
-            let shard = self.valued.shard(key);
-            let found = (shard.nodes.get(&key)).map(|&(value, _, exact)| (value, exact));
-            (found, shard.tried_first.get(&key).cloned())
+        let first = match self.valued.shard(key).nodes.get(key) {
+            Some(&BagEntry::Valued(value, _, exact)) => {
+                self.exact &= exact;
+                return Ok(value);
+            }
+            Some(BagEntry::First(play)) => Some(play.clone()),
+            None => None,
         };
-        if let Some((value, exact)) = found {
-            self.exact &= exact;
-            return Ok(value);
-        }
+        Ok(self.node_searched(pos, key, first)?.0)
+    }
+
+    // the move node finds best at a position: the one kept with its value, or,
+    // when another entry has taken its place, searched for again
+    fn node_play(&mut self, pos: &InBag) -> error::Returns<movegen::Play> {
+        let key = pos.key();
+        let first = match self.valued.shard(key).nodes.get(key) {
+            Some(BagEntry::Valued(_, play, exact)) => {
+                self.exact &= *exact;
+                return Ok(play.clone());
+            }
+            Some(BagEntry::First(play)) => Some(play.clone()),
+            None => None,
+        };
+        Ok(self.node_searched(pos, key, first)?.1)
+    }
+
+    // a position's value to its mover and the move that gets it, searched as
+    // node describes, first the move a shallower pass found best, and kept
+    fn node_searched(
+        &mut self,
+        pos: &InBag,
+        key: u64,
+        first: Option<movegen::Play>,
+    ) -> error::Returns<(f64, movegen::Play)> {
         let was_exact = std::mem::replace(&mut self.exact, true);
         let mut moves = in_bag_moves(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
         let bag_len = pos.bag_len();
@@ -4717,8 +4879,10 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         }
         let exact = self.exact;
         self.exact = was_exact && exact;
-        (self.valued.shard(key).nodes).insert(key, (best.0, moves.swap_remove(best.1), exact));
-        Ok(best.0)
+        let play = moves.swap_remove(best.1);
+        let entry = BagEntry::Valued(best.0, play.clone(), exact);
+        (self.valued.shard(key).nodes).keep(key, entry, self.limits.memory, BagEntry::worth);
+        Ok((best.0, play))
     }
 
     // whether a pass or a placement that leaves tiles in the bag cannot be the
@@ -4772,15 +4936,14 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // highest-scoring); none without such a placement
     fn least(&mut self, pos: &InBag) -> error::Returns<Option<f64>> {
         let key = pos.key();
-        let (found, first) = {
-            let shard = self.valued.shard(key);
-            let found = (shard.nodes.get(&key)).map(|&(value, _, exact)| (value, exact));
-            (found, shard.tried_first.get(&key).cloned())
+        let first = match self.valued.shard(key).nodes.get(key) {
+            Some(&BagEntry::Valued(value, _, exact)) => {
+                self.exact &= exact;
+                return Ok(Some(value));
+            }
+            Some(BagEntry::First(play)) => Some(play.clone()),
+            None => None,
         };
-        if let Some((value, exact)) = found {
-            self.exact &= exact;
-            return Ok(Some(value));
-        }
         let bag_len = pos.bag_len();
         let empties = |play: &movegen::Play| {
             matches!(play, movegen::Play::Place { word, .. }
@@ -4814,7 +4977,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // the value to its mover of a position whose bag is empty: its endgame
     fn endgame(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
-        let found = self.valued.shard(key).endgames.get(&key).copied();
+        let found = self.valued.shard(key).endgames.get(key).copied().flatten();
         if let Some((value, exact)) = found {
             self.exact &= exact;
             return Ok(value);
@@ -4828,8 +4991,18 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         let mut exact = true;
         let value = self.sub.solve_in_bag(pos.mover, self.limits, &mut exact)? as f64;
         self.exact &= exact;
-        (self.valued.shard(key).endgames).insert(key, (value, exact));
+        self.keep_endgame(key, value, exact);
         Ok(value)
+    }
+
+    // an endgame's value kept, and whether exact: what a full table gives up
+    // first is one a shallower pass found not exact, then one not exact
+    #[inline(always)]
+    fn keep_endgame(&self, key: u64, value: f64, exact: bool) {
+        let memory = self.limits.memory;
+        (self.valued.shard(key).endgames).keep(key, Some((value, exact)), memory, |endgame| {
+            endgame.map_or(0, |(_, exact)| 1 + exact as u8)
+        });
     }
 
     // the endgame's value to its mover when it is below beta (a whole number of
@@ -4837,7 +5010,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // alone, which stops sooner than a search for the value
     fn endgame_below(&mut self, pos: &InBag, beta: f64) -> error::Returns<Option<f64>> {
         let key = pos.key();
-        let found = self.valued.shard(key).endgames.get(&key).copied();
+        let found = self.valued.shard(key).endgames.get(key).copied().flatten();
         if let Some((value, exact)) = found {
             self.exact &= exact;
             return Ok((value < beta).then_some(value));
@@ -4853,7 +5026,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
             (self.sub).solve_in_bag_below(pos.mover, beta as f32, self.limits, &mut exact)? as f64;
         self.exact &= exact;
         if value < beta {
-            (self.valued.shard(key).endgames).insert(key, (value, exact));
+            self.keep_endgame(key, value, exact);
             Ok(Some(value))
         } else {
             Ok(None)
@@ -5006,9 +5179,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // the chance a position leaves its mover's final spread above t, each
     // player making the move node found best
     fn node_win(&mut self, pos: &InBag, t: f64) -> error::Returns<f64> {
-        self.node(pos)?;
-        let key = pos.key();
-        let play = self.valued.shard(key).nodes[&key].1.clone();
+        let play = self.node_play(pos)?;
         self.move_win(pos, &play, t)
     }
 
@@ -5023,16 +5194,14 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // chance's search left unfound solved whole
     fn info_value(&mut self, info: &InfoSet) -> error::Returns<(f64, f64)> {
         let key = info.key();
-        let (found, first) = {
-            let shard = self.valued.shard(key);
-            let found =
-                (shard.infos.get(&key)).map(|&(win, margin, _, exact)| (win, margin, exact));
-            (found, shard.info_first.get(&key).cloned())
+        let first = match self.valued.shard(key).infos.get(key) {
+            Some(&BagEntry::Valued(value, _, exact)) => {
+                self.exact &= exact;
+                return Ok(value);
+            }
+            Some(BagEntry::First(play)) => Some(play.clone()),
+            None => None,
         };
-        if let Some((win, margin, exact)) = found {
-            self.exact &= exact;
-            return Ok((win, margin));
-        }
         let was_exact = std::mem::replace(&mut self.exact, true);
         let made = info.exchanges[info.mover as usize];
         let (gc, kwg, arm_tables, klv) = (self.gc, self.kwg, self.arm_tables, self.klv);
@@ -5086,8 +5255,8 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         }
         let exact = self.exact;
         self.exact = was_exact && exact;
-        let play = moves.swap_remove(best.2);
-        (self.valued.shard(key).infos).insert(key, (best.0, best.1, play, exact));
+        let entry = BagEntry::Valued((best.0, best.1), moves.swap_remove(best.2), exact);
+        (self.valued.shard(key).infos).keep(key, entry, self.limits.memory, BagEntry::worth);
         Ok((best.0, best.1))
     }
 
@@ -10325,9 +10494,238 @@ mod tests {
         // the game's end: the mover's B (3 points) against the other's T (1)
         assert_eq!(search.move_value(&pos, &pass).unwrap(), -2000.0);
         let positions = (valued.shards.iter())
-            .map(|shard| shard.lock().unwrap().nodes.len())
+            .map(|shard| shard.lock().unwrap().nodes.held)
             .sum::<usize>();
         assert_eq!(positions, 1);
+    }
+
+    // a bag table keeps all it is given while it can grow, growing before three
+    // quarters of it would hold; refused room by the memory limit, a key not in
+    // it takes the place of the first entry worth least on its way there, a
+    // key's own entry takes its new value, and a key whose first place is empty
+    // is not kept
+    #[test]
+    #[inline]
+    fn a_bag_table_keeps_all_while_it_grows_then_gives_up_the_least_worth() {
+        fn none_held() -> usize {
+            0
+        }
+        let worth = |&(_, worth): &(u64, u8)| worth;
+        let mut table = super::BagTable::default();
+        for i in 0..1000 {
+            table.keep(super::zobrist(i), (i, (i % 3) as u8), None, worth);
+        }
+        assert!(table.held == 1000 && 4 * table.held <= 3 * table.entries.len());
+        for i in 0..1000 {
+            assert_eq!(table.get(super::zobrist(i)), Some(&(i, (i % 3) as u8)));
+        }
+        assert_eq!(table.get(super::zobrist(1000)), None);
+        // eight entries' bytes and one more: room to grow to eight
+        let eight = 8 * std::mem::size_of::<Option<(u64, (u64, u8))>>();
+        let memory = Some(super::MemoryLimit {
+            bytes: eight + 1,
+            held: none_held,
+        });
+        let mut table = super::BagTable::default();
+        for key in 1..=6 {
+            table.keep(key, (key, 0), memory, worth);
+        }
+        assert!(table.entries.len() == 8 && table.held == 6);
+        // eight entries' bytes alone: the program would hold all of them, so no
+        // room to grow, and three hold at most. A key's first place is its top
+        // two bits
+        let memory = Some(super::MemoryLimit {
+            bytes: eight,
+            held: none_held,
+        });
+        let mut table = super::BagTable::default();
+        for (key, its_worth) in [(1, 2), (2, 0), (3, 1), (4, 2)] {
+            table.keep(key, (key, its_worth), memory, worth);
+        }
+        assert!(table.entries.len() == 4 && table.held == 3);
+        assert_eq!(table.get(2), None);
+        for key in [1, 3, 4] {
+            assert!(table.get(key).is_some_and(|&(kept, _)| kept == key));
+        }
+        table.keep(3, (5, 0), memory, worth);
+        assert!(table.held == 3 && table.get(3) == Some(&(5, 0)));
+        let last = 3 << 62 | 1;
+        table.keep(last, (last, 2), memory, worth);
+        assert!(table.held == 3 && table.get(last).is_none());
+    }
+
+    // a search with tiles in the bag whose tables the memory limit holds to a
+    // few entries, so that they give up what they kept to keep more, answers as
+    // one with no limit does, under either model and on one thread or three; so
+    // does the search with one tile in the bag and exchanges. Past the limit
+    // from the start, no table grows
+    #[test]
+    #[inline]
+    fn a_bag_search_holding_a_few_entries_answers_as_one_with_no_limit() {
+        fn none_held() -> usize {
+            0
+        }
+        fn all_held() -> usize {
+            usize::MAX
+        }
+        // the bytes each table may grow to, and the solver's too
+        const BYTES: usize = 512;
+        fn within<T>(table: &super::BagTable<T>) -> bool {
+            table.entries.len() * std::mem::size_of::<Option<(u64, T)>>() < BYTES
+        }
+        let small = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: BYTES,
+                held: none_held,
+            }),
+        };
+        let past = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: BYTES,
+                held: all_held,
+            }),
+        };
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let (mut gave_up, mut checked) = (0, 0);
+        for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+            for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
+                let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+                for &tile in unseen {
+                    unseen_tally[tile as usize] += 1;
+                }
+                for &x in &tiles {
+                    for &y in &tiles {
+                        let mut position = bag_position(
+                            &board,
+                            &[x, y],
+                            &unseen_tally,
+                            bag_size,
+                            equity::Equity::ZERO,
+                        );
+                        position.model = model;
+                        let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                        let full = egs.resume_peg(&mut progress, &super::Limits::NONE);
+                        let full = full.unwrap().unwrap();
+                        let kept = |progress: &super::PegBagProgress| {
+                            (progress.state.searched.shards.iter())
+                                .map(|shard| {
+                                    let shard = shard.lock().unwrap();
+                                    shard.nodes.held + shard.infos.held
+                                })
+                                .sum::<usize>()
+                        };
+                        let kept_full = kept(&progress);
+                        for threads in [1, 3] {
+                            let mut progress =
+                                super::PegBagProgress::new(position.clone()).unwrap();
+                            progress.set_threads(threads);
+                            let held = egs.resume_peg(&mut progress, &small).unwrap().unwrap();
+                            assert!(
+                                held.exact
+                                    && held.best_move == full.best_move
+                                    && held.win_pct == full.win_pct
+                                    && held.expected_margin == full.expected_margin
+                                    && held.hypotheses == full.hypotheses,
+                                "{unseen:?} {x} {y} {threads}"
+                            );
+                            for shard in progress.state.searched.shards.iter() {
+                                let shard = shard.lock().unwrap();
+                                assert!(within(&shard.nodes) && within(&shard.infos));
+                                assert!(within(&shard.endgames));
+                            }
+                            if kept(&progress) < kept_full {
+                                gave_up += 1;
+                            }
+                            let mut progress =
+                                super::PegBagProgress::new(position.clone()).unwrap();
+                            progress.set_threads(threads);
+                            egs.resume_peg(&mut progress, &past).unwrap().unwrap();
+                            for shard in progress.state.searched.shards.iter() {
+                                let shard = shard.lock().unwrap();
+                                assert!(shard.nodes.entries.len() == 4);
+                                assert!(shard.infos.entries.len() == 4);
+                                assert!(shard.endgames.entries.len() == 4);
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 64);
+        assert!(gave_up > 0, "no table gave up what it kept");
+        // the search with one tile in the bag and exchanges, its memo held to
+        // its first four entries, against one with no limit
+        let four = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: 4 * std::mem::size_of::<Option<(u64, f32)>>() + 1,
+                held: none_held,
+            }),
+        };
+        let gc = game_config::make_exchange_test_game_config();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut sub =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let (mut gave_up, mut checked) = (0, 0);
+        let positions = (embedded_positions().into_iter())
+            .filter(|(_, pos)| pos.racks[0].len() <= 2 && pos.racks[1].len() <= 2);
+        for (name, pos) in positions {
+            for bag_tile in [1u8, 0] {
+                for mover in 0u8..2 {
+                    let mut kept = [0; 2];
+                    let mut values = [0.0; 2];
+                    for (i, limits) in [&super::Limits::NONE, &four].into_iter().enumerate() {
+                        let limits = super::BagLimits::new(limits, None, None);
+                        let mut search = super::OneInBag {
+                            gc: &gc,
+                            kwg: &kwg,
+                            arm_tables: &arm_tables,
+                            klv: &klv,
+                            sub: &mut sub,
+                            mg: &mut mg,
+                            memo: Default::default(),
+                            limits: &limits,
+                            exact: true,
+                            line: None,
+                        };
+                        values[i] = EndgameSolver::one_in_bag_minimax_ex(
+                            &mut search,
+                            &pos.board,
+                            &pos.racks,
+                            mover,
+                            bag_tile,
+                            0,
+                            0,
+                            false,
+                        )
+                        .unwrap();
+                        assert!(search.exact && (i == 0 || search.memo.entries.len() == 4));
+                        kept[i] = search.memo.held;
+                    }
+                    assert_eq!(values[0], values[1], "{name} {bag_tile} {mover}");
+                    if kept[1] < kept[0] {
+                        gave_up += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0 && gave_up > 0, "{gave_up} of {checked}");
     }
 
     // where the config ends the game at one pass, the first pass ends it in each
