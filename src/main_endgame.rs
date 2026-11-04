@@ -1359,6 +1359,28 @@ fn build_pruned_kwg(
     }
 }
 
+// what a search with tiles in the bag answered from when it was not exact, by
+// the pass it is of
+fn say_where_a_limit_stopped(depth: i8) -> std::io::Result<()> {
+    match depth {
+        0 => writeln!(
+            std::io::stdout(),
+            "a limit stopped the solve in its first pass: the answer is the best of the moves \
+             it valued"
+        ),
+        i8::MAX => writeln!(
+            std::io::stdout(),
+            "a limit cut an endgame inside the solve short: its value is the deepest depth \
+             that finished"
+        ),
+        depth => writeln!(
+            std::io::stdout(),
+            "a limit stopped the solve: the answer is that of depth {depth}, the deepest every \
+             endgame inside it was searched to"
+        ),
+    }
+}
+
 // the solver generates every move raw, which reads no anagram table, so the
 // default arm builds none; the lean arm adds the rack lengths' prune
 #[inline]
@@ -1497,13 +1519,9 @@ fn solve_position<N: kwg::Node>(
         .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
         .collect::<Box<_>>();
     let rack_size = game_config.rack_size() as usize;
+    // the unseen tiles past a full rack for the opponent are in the bag
+    let bag_size = oppo_rack.len().saturating_sub(rack_size);
 
-    if oppo_rack.len() > rack_size + 1 {
-        wolges::return_error!(format!(
-            "not endgame yet as there are {} unseen tiles",
-            oppo_rack.len(),
-        ));
-    }
     if oppo_rack.is_empty() {
         wolges::return_error!("the opponent holds no tiles, so the game is over".into());
     }
@@ -1554,7 +1572,110 @@ fn solve_position<N: kwg::Node>(
             Ok(())
         }));
     }
-    if oppo_rack.len() == rack_size + 1 {
+    if bag_size > 1 {
+        let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
+        egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
+        let result = egs.solve_peg(
+            endgame::PegBagPosition {
+                mover: 0,
+                board: board_tiles.to_vec(),
+                mover_rack: question.rack.to_vec(),
+                unseen_tally: available_tally.to_vec(),
+                bag_size,
+                score_diff: scaled_score_diff,
+                exchanges: [0, 0],
+            },
+            &solving.limits,
+        )?;
+        let result = match result {
+            Ok(result) => result,
+            Err(unsupported) => {
+                writeln!(std::io::stdout(), "peg: {unsupported}")?;
+                return Ok(());
+            }
+        };
+        // a move as the lines below name it
+        let named = |play: &movegen::Play| match play {
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
+            movegen::Play::Exchange { tiles } => {
+                format!("exchange {}", alphabet.fmt_rack(tiles))
+            }
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => {
+                let coord = if *down {
+                    format!("{}{}", display::column(*lane), idx + 1)
+                } else {
+                    format!("{}{}", lane + 1, display::column(*idx))
+                };
+                let mut word_str = String::new();
+                for &t in word.iter() {
+                    if t == 0 {
+                        word_str.push('.');
+                    } else {
+                        word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
+                    }
+                }
+                format!(
+                    "{coord} {word_str} (scores {})",
+                    equity::Equity::new(*score)
+                )
+            }
+        };
+        writeln!(
+            std::io::stdout(),
+            "peg: model = committed, then both racks known and each draw at random; \
+             best move = {}",
+            named(&result.best_move),
+        )?;
+        let deals = result
+            .hypotheses
+            .iter()
+            .map(|&(_, ways, _)| ways)
+            .sum::<u64>();
+        writeln!(
+            std::io::stdout(),
+            "peg: {bag_size} tiles in the bag, {} distinct splits over {deals} deals of {} \
+             unseen tiles (current score {score_diff:+})",
+            result.hypotheses.len(),
+            oppo_rack.len(),
+        )?;
+        for (bag, ways, value) in &result.hypotheses {
+            let mut opp = Vec::new();
+            for (u, &c) in available_tally.iter().enumerate() {
+                let in_bag = bag.iter().filter(|&&t| t as usize == u).count() as u8;
+                opp.extend(std::iter::repeat_n(u as u8, (c - in_bag) as usize));
+            }
+            writeln!(
+                std::io::stdout(),
+                "  bag={} (x{ways}): opp rack [{}] -> mean game margin {value:>4}",
+                alphabet.fmt_rack(bag),
+                alphabet.fmt_rack(&opp),
+            )?;
+        }
+        writeln!(
+            std::io::stdout(),
+            "peg: win% {:.4}, expected game margin {}",
+            result.win_pct * 100.0,
+            result.expected_margin,
+        )?;
+        writeln!(std::io::stdout(), "peg: each move valued, best first:")?;
+        for (play, win, margin) in &result.moves {
+            writeln!(
+                std::io::stdout(),
+                "  {}: win% {:.4}, expected game margin {margin}",
+                named(play),
+                win * 100.0,
+            )?;
+        }
+        if !result.exact {
+            say_where_a_limit_stopped(result.depth)?;
+        }
+    } else if bag_size == 1 {
         let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
         egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
         let result = egs.solve_peg_one_in_bag(
@@ -1652,23 +1773,7 @@ fn solve_position<N: kwg::Node>(
             result.expected_margin,
         )?;
         if !result.exact {
-            match result.depth {
-                0 => writeln!(
-                    std::io::stdout(),
-                    "a limit stopped the solve in its first pass: the answer is the best of \
-                     the moves it valued"
-                )?,
-                i8::MAX => writeln!(
-                    std::io::stdout(),
-                    "a limit cut an endgame inside the solve short: its value is the deepest \
-                     depth that finished"
-                )?,
-                depth => writeln!(
-                    std::io::stdout(),
-                    "a limit stopped the solve: the answer is that of depth {depth}, the deepest \
-                     every endgame inside it was searched to"
-                )?,
-            }
+            say_where_a_limit_stopped(result.depth)?;
         }
     } else {
         egs.init_after_scoreless_turns(
