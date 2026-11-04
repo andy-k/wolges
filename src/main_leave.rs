@@ -3662,7 +3662,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let add_table = {
         let t = std::time::Instant::now();
-        let at = census::AddTable::new_with_threads(&lat, threads);
+        let at = census::AddTable::new_with_threads(&lat, threads).with_letter_passes(threads);
         writeln!(
             boxed_stdout_or_stderr(),
             "census: add-table {} rows x {num_letters} letters built in {:?}",
