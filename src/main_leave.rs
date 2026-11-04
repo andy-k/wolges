@@ -3849,8 +3849,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut blank_deltas = Vec::<(u8, i32)>::new();
 
-                let mut contrib = vec![census::UNPLAYABLE; lat_len];
-
                 let mut num_board = vec![0f64; lat_len];
                 let mut den_board = vec![0f64; lat_len];
 
@@ -3949,6 +3947,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             scatter,
                         },
                     );
+                    // each multiset's mean on this board, in the buffer
+                    // apportion_fused is done with
+                    let contrib = &mut maxsheet;
                     for (idx, slot) in contrib.iter_mut().enumerate() {
                         *slot = if den_board[idx] > 0.0 {
                             (num_board[idx] / den_board[idx]).round() as i32
