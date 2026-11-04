@@ -3,11 +3,13 @@
 use super::{alphabet, board_layout, equity, error, klv, kwg, text};
 use std::str::FromStr;
 
+#[derive(Clone)]
 pub enum GameRules {
     Classic,
     Jumbled,
 }
 
+#[derive(Clone)]
 pub struct StaticGameConfig {
     pub game_rules: GameRules,
     pub alphabet: alphabet::Alphabet,
@@ -24,6 +26,7 @@ pub struct StaticGameConfig {
     pub exchange_tile_limit: i16, // >= 1
 }
 
+#[derive(Clone)]
 pub enum GameConfig {
     Static(StaticGameConfig),
 }
@@ -130,6 +133,18 @@ impl GameConfig {
             GameConfig::Static(x) => &x.game_rules,
         }
     }
+
+    // the same game under the jumbled rules; it copies the alphabet and board
+    // rather than building them again
+    #[inline]
+    pub fn jumbled(&self) -> Self {
+        match self {
+            GameConfig::Static(x) => GameConfig::Static(StaticGameConfig {
+                game_rules: GameRules::Jumbled,
+                ..x.clone()
+            }),
+        }
+    }
 }
 
 #[inline]
@@ -162,21 +177,7 @@ pub fn make_catalan_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_catalan_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_catalan_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_catalan_game_config().jumbled()
 }
 
 #[inline]
@@ -200,21 +201,7 @@ pub fn make_super_catalan_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_super_catalan_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_super_catalan_alphabet(),
-        board_layout: board_layout::make_super_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_super_catalan_game_config().jumbled()
 }
 
 #[inline]
@@ -238,21 +225,7 @@ pub fn make_dutch_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_dutch_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_dutch_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_dutch_game_config().jumbled()
 }
 
 #[inline]
@@ -336,21 +309,7 @@ pub fn make_board_test_game_config(board_layout: board_layout::BoardLayout) -> G
 
 #[inline]
 pub fn make_jumbled_english_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_english_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_english_game_config().jumbled()
 }
 
 #[cfg(test)]
@@ -394,21 +353,7 @@ pub fn make_punctured_english_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_punctured_english_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_english_alphabet(),
-        board_layout: board_layout::make_punctured_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_punctured_english_game_config().jumbled()
 }
 
 #[inline]
@@ -451,21 +396,7 @@ pub fn make_super_english_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_super_english_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_super_english_alphabet(),
-        board_layout: board_layout::make_super_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_super_english_game_config().jumbled()
 }
 
 #[inline]
@@ -489,21 +420,7 @@ pub fn make_french_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_french_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_french_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_french_game_config().jumbled()
 }
 
 #[inline]
@@ -527,21 +444,7 @@ pub fn make_german_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_german_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_german_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 4,
-        challenges_are_passes: false,
-        num_zeros_to_end: 0,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_german_game_config().jumbled()
 }
 
 #[inline]
@@ -565,21 +468,7 @@ pub fn make_super_german_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_super_german_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_super_german_alphabet(),
-        board_layout: board_layout::make_super_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 4,
-        challenges_are_passes: false,
-        num_zeros_to_end: 0,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_super_german_game_config().jumbled()
 }
 
 #[inline]
@@ -603,21 +492,7 @@ pub fn make_norwegian_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_norwegian_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_norwegian_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_norwegian_game_config().jumbled()
 }
 
 // http://www.pfs.org.pl/regulaminy.php
@@ -643,21 +518,7 @@ pub fn make_polish_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_polish_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_polish_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 4,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: false,
-        exchanges_allowed_per_player: 3,
-        exchange_tile_limit: 7,
-    })
+    make_polish_game_config().jumbled()
 }
 
 #[inline]
@@ -681,21 +542,7 @@ pub fn make_slovene_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_slovene_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_slovene_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_slovene_game_config().jumbled()
 }
 
 // https://fisescrabble.org/reglamentos/modalidad-clasica/
@@ -720,21 +567,7 @@ pub fn make_spanish_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_spanish_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_spanish_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 4,
-        challenges_are_passes: true,
-        num_zeros_to_end: 12,
-        zeros_can_end_empty_board: false,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 1,
-    })
+    make_spanish_game_config().jumbled()
 }
 
 #[inline]
@@ -758,21 +591,7 @@ pub fn make_swedish_game_config() -> GameConfig {
 
 #[inline]
 pub fn make_jumbled_swedish_game_config() -> GameConfig {
-    GameConfig::Static(StaticGameConfig {
-        game_rules: GameRules::Jumbled,
-        alphabet: alphabet::make_swedish_alphabet(),
-        board_layout: board_layout::make_standard_board_layout(),
-        rack_size: 7,
-        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
-        num_players: 2,
-        num_passes_to_end: 0,
-        challenges_are_passes: false,
-        num_zeros_to_end: 6,
-        zeros_can_end_empty_board: true,
-        exchanges_are_zeros: true,
-        exchanges_allowed_per_player: i16::MAX,
-        exchange_tile_limit: 7,
-    })
+    make_swedish_game_config().jumbled()
 }
 
 pub type MakeGameConfig = fn() -> GameConfig;
@@ -1370,6 +1189,29 @@ mod tests {
                 GameConfig::new_static_from_text(&text.replace('\n', ending), &no_files).unwrap();
             assert!(same_game_config(&read, &gc), "{ending:?}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_jumbled_game_is_its_classic_one_under_the_jumbled_rules() {
+        let mut classic = 0;
+        for (name, make) in GAME_CONFIGS {
+            let gc = make();
+            if !matches!(gc.game_rules(), GameRules::Classic) {
+                continue;
+            }
+            classic += 1;
+            let board = if name.starts_with("super-") {
+                "super"
+            } else {
+                "standard"
+            };
+            let text = preset_text_of(name, board, &gc).replace("rules classic", "rules jumbled");
+            let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
+            assert!(same_game_config(&gc.jumbled(), &read), "{name}");
+            assert!(!same_game_config(&gc.jumbled(), &gc), "{name}");
+        }
+        assert!(classic > 0);
     }
 
     #[test]

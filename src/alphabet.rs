@@ -4,6 +4,7 @@ use super::{bites, bites_str, display, equity, error, text};
 
 use std::str::FromStr;
 
+#[derive(Clone)]
 struct Tile {
     label: bites_str::BitesStr,
     blank_label: bites_str::BitesStr,
@@ -15,6 +16,7 @@ struct Tile {
     alias_blank_labels: Vec<bites_str::BitesStr>,
 }
 
+#[derive(Clone)]
 pub struct StaticAlphabet {
     tiles: Vec<Tile>,
     widest_label_len: usize, // in codepoints for now (graphemes is too complex)
@@ -24,6 +26,7 @@ pub struct StaticAlphabet {
     tiles_by_descending_scores: Box<[u8]>,
 }
 
+#[derive(Clone)]
 pub enum Alphabet {
     Static(StaticAlphabet),
 }
