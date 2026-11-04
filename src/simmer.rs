@@ -237,6 +237,19 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 .map(|(_, player)| player.score)
                 .max()
                 .unwrap_or(0);
+        self.wants_win_prob = report_win_prob;
+        self.set_num_sim_plies(game_config, num_sim_plies);
+    }
+
+    // the plies each rollout plays past its candidate from the next one on
+    // (past them it plays on while the bag is empty), with the weight of the
+    // chance to win, which reads them; a prepared sim's own otherwise
+    #[inline(always)]
+    pub fn set_num_sim_plies(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        num_sim_plies: usize,
+    ) {
         self.num_sim_plies = num_sim_plies;
         self.num_tiles_that_matter = num_sim_plies.saturating_mul(game_config.rack_size() as usize);
         let mut num_unseen_tiles = self.initial_game_state.bag.len();
@@ -259,7 +272,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         } else {
             W_NO_OUT
         };
-        self.wants_win_prob = self.win_prob_weightage != 0.0 || report_win_prob;
+        self.wants_win_prob |= self.win_prob_weightage != 0.0;
     }
 
     #[inline(always)]
@@ -1548,6 +1561,66 @@ mod tests {
         }
         assert!(checked > 50, "{checked} checked");
         assert!(placed > 50, "{placed} plies placed tiles");
+    }
+
+    #[test]
+    #[inline]
+    fn a_sim_given_its_plies_after_it_was_prepared_rolls_out_as_one_prepared_so() {
+        // prepared for two plies and then set to four, a sim rolls out each
+        // candidate on each seed as one prepared for four does, and weighs the
+        // chance to win alike
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let no_tables = anagrams::ArmTables::None;
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut field = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut checked = 0;
+        for seed in 0..4u64 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(seed);
+            game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+            field.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 5,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            let mut set = Simmer::new(&game_config).unwrap();
+            set.prepare(&game_config, &game_state, 2, false, &[]);
+            set.set_num_sim_plies(&game_config, 4);
+            let mut made = Simmer::new(&game_config).unwrap();
+            made.prepare(&game_config, &game_state, 4, false, &[]);
+            assert_eq!(set.win_prob_weightage, made.win_prob_weightage);
+            for candidate in field.plays.iter().map(|m| &m.play) {
+                let mut rolled = Vec::new();
+                for simmer in [&mut set, &mut made] {
+                    simmer.reseed(seed);
+                    simmer.prepare_iteration();
+                    simmer
+                        .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                        .unwrap();
+                    let plies = (simmer.plies_played().iter())
+                        .map(|ply| (ply.score, ply.tiles))
+                        .collect::<Vec<_>>();
+                    rolled.push((plies, simmer.final_equity_spread().unwrap()));
+                }
+                assert_eq!(rolled[0], rolled[1], "seed {seed}");
+                // a rollout of four plies, two of which a sim of two never plays
+                if rolled[0].0.len() == 4 {
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 4, "{checked} rollouts of four plies");
     }
 
     #[test]
