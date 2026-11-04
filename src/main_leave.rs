@@ -3788,6 +3788,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let leave_exact = std::sync::Mutex::new(
         resumed_exact.unwrap_or_else(|| leave_cur.iter().map(|&v| v as f64).collect()),
     );
+    // each multiset's best leave among its subsets, where every board that
+    // scatters starts: the same for a generation's boards, so worked out once a
+    // generation
+    let leave_max_lock = std::sync::RwLock::new(if scatter {
+        let mut leave_max = vec![0i32; lat.len()];
+        census::subset_max_transform(&lat, &add_table, &leave_cur, &mut leave_max);
+        leave_max
+    } else {
+        Vec::new()
+    });
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
     let num_threads = threads.max(1).min(max_boards as usize);
@@ -3864,6 +3874,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
                                        game_state: &game_state::GameState,
                                        leave: &[i32],
+                                       leave_max: &[i32],
                                        null_leave: bool,
                                        log_first: bool,
                                        cache_slot: Option<&SheetCacheSlot>,
@@ -3937,6 +3948,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         &census::ApportionBoard {
                             sheet: &sheet,
                             leave,
+                            leave_max,
                             unseen: &unseen_tally,
                         },
                         census::ApportionOut {
@@ -4009,6 +4021,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     {
                         let leave = leave_lock.read().unwrap();
+                        let leave_max = leave_max_lock.read().unwrap();
 
                         let null_leave = leave.iter().all(|&x| x == 0);
                         'boards: loop {
@@ -4111,6 +4124,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         &mut move_generator,
                         &game_state,
                         &leave,
+                        &leave_max,
                         null_leave,
                         !quiet && b == 0,
 
@@ -4185,6 +4199,14 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         exact[idx] = sum[idx] as f64 / cnt[idx] as f64 - base;
                                         lv[idx] = exact[idx].round() as i32;
                                     }
+                                }
+                                if scatter && gen_idx + 1 < gens {
+                                    census::subset_max_transform(
+                                        &lat,
+                                        &add_table,
+                                        &lv,
+                                        &mut leave_max_lock.write().unwrap(),
+                                    );
                                 }
                                 if !quiet {
                                     writeln!(boxed_stdout_or_stderr(),
