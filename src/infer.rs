@@ -574,6 +574,104 @@ impl InferTables {
     }
 }
 
+// leaves with their weights, packed for lists of millions, with no allocation
+// for each leave: every leave's tiles one after another, where each one ends,
+// the weights in the same order, and their running sums, which a weighted draw
+// searches. No weight is below 0, past f64's finite range, or not a number
+#[derive(Default)]
+pub struct PackedLeaves {
+    tiles: Vec<u8>,
+    ends: Vec<u32>,
+    weights: Vec<f64>,
+    sums: Vec<f64>,
+}
+
+impl PackedLeaves {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // room for this many leaves of these many tiles in all
+    #[inline]
+    pub fn with_capacity(leaves: usize, tiles: usize) -> Self {
+        Self {
+            tiles: Vec::with_capacity(tiles),
+            ends: Vec::with_capacity(leaves),
+            weights: Vec::with_capacity(leaves),
+            sums: Vec::with_capacity(leaves),
+        }
+    }
+
+    // a leave and its weight after the others; refused for a weight below 0,
+    // not finite, or not a number, or past u32's count of tiles in all
+    #[inline]
+    pub fn push(&mut self, tiles: &[u8], weight: f64) -> error::Returns<()> {
+        if !(weight >= 0.0 && weight.is_finite()) {
+            return_error!("a leave's weight must be finite and 0 or more".into());
+        }
+        let end = u32::try_from(self.tiles.len() + tiles.len())
+            .map_err(|_| "more tiles than a packed list of leaves can count")?;
+        let sum = self.total() + weight;
+        self.tiles.extend_from_slice(tiles);
+        self.ends.push(end);
+        self.weights.push(weight);
+        self.sums.push(sum);
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
+    }
+
+    // the leave at i, in the order pushed
+    #[inline(always)]
+    pub fn leave(&self, i: usize) -> &[u8] {
+        let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
+        &self.tiles[start..self.ends[i] as usize]
+    }
+
+    #[inline(always)]
+    pub fn weight(&self, i: usize) -> f64 {
+        self.weights[i]
+    }
+
+    // the weights made to sum to 1, each divided by their sum taken in order,
+    // and their running sums with them; none changed while they sum to 0
+    #[inline]
+    pub fn normalize(&mut self) {
+        let total = self.weights.iter().sum::<f64>();
+        if total > 0.0 {
+            let mut sum = 0.0;
+            for (weight, running) in self.weights.iter_mut().zip(&mut self.sums) {
+                *weight /= total;
+                sum += *weight;
+                *running = sum;
+            }
+        }
+    }
+
+    // the weights' sum, as the running sums end
+    #[inline(always)]
+    pub fn total(&self) -> f64 {
+        self.sums.last().copied().unwrap_or(0.0)
+    }
+
+    // the leave a weighted draw at this point (from 0 up to the total) picks:
+    // the first whose running sum passes it, so never a leave of weight 0
+    #[inline]
+    pub fn pick(&self, at: f64) -> &[u8] {
+        let sums = &self.sums;
+        self.leave(sums.partition_point(|&sum| sum <= at).min(sums.len() - 1))
+    }
+}
+
 // the leaves the mover could have kept, inferred from their move, each with its
 // weight (not normalized). The board is the one before the move, and the pool
 // is what the watcher could not see then: the tiles not on that board, less the
@@ -593,6 +691,31 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+    let leaves = kept_leaves_packed(
+        tables,
+        move_generator,
+        board_snapshot,
+        watcher_rack,
+        play,
+        fuzz,
+        threads,
+    )?;
+    Ok((0..leaves.len())
+        .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
+        .collect())
+}
+
+// kept_leaves's leaves, packed, in the same order
+#[inline]
+pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    watcher_rack: &[u8],
+    play: &movegen::Play,
+    fuzz: f64,
+    threads: usize,
+) -> error::Returns<PackedLeaves> {
     let game_config = board_snapshot.game_config;
     let board_tiles = board_snapshot.board_tiles;
     let num_letters = game_config.alphabet().len() as usize;
@@ -602,7 +725,7 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     game_config.take_rack(&mut pool, watcher_rack)?;
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     if pool_size <= rack_size {
-        return Ok(Vec::new());
+        return Ok(PackedLeaves::new());
     }
     let bag = pool_size - rack_size;
     let mut placed = vec![0u8; num_letters];
@@ -613,11 +736,11 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     // a move placing as many tiles as the bag holds draws it empty (an exchange
     // leaves the bag as it was)
     if exchanged.is_none() && placed.iter().map(|&c| c as usize).sum::<usize>() >= bag {
-        return Ok(Vec::new());
+        return Ok(PackedLeaves::new());
     }
     let can_exchange = bag >= game_config.exchange_tile_limit() as usize;
     if exchanged.is_some() && !can_exchange {
-        return Ok(Vec::new());
+        return Ok(PackedLeaves::new());
     }
     let ln_binom = LnBinom::new(pool_size);
     infer_sheet_for(
@@ -669,18 +792,20 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     // sorted into the lattice's order (the map has none)
     let mut ranked = by_leave.into_iter().collect::<Vec<_>>();
     ranked.sort_unstable_by_key(|&(rank, _)| rank);
+    let mut leaves = PackedLeaves::with_capacity(ranked.len(), ranked.len() * rack_size);
     let mut kept = vec![0u8; num_letters];
-    Ok(ranked
-        .into_iter()
-        .map(|(rank, weight)| {
-            tables.lat.unrank_into(rank as usize, &mut kept);
-            let tiles = (0u8..)
+    let mut tiles = Vec::with_capacity(rack_size);
+    for (rank, weight) in ranked {
+        tables.lat.unrank_into(rank as usize, &mut kept);
+        tiles.clear();
+        tiles.extend(
+            (0u8..)
                 .zip(&kept)
-                .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
-                .collect();
-            (tiles, weight)
-        })
-        .collect())
+                .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
+        );
+        leaves.push(&tiles, weight)?;
+    }
+    Ok(leaves)
 }
 
 // the opponent's best reply to a move, over every rack they could hold: the
@@ -1312,6 +1437,101 @@ mod tests {
                 bingo: 0.25,
             }
         );
+    }
+
+    // a pass keeps the whole rack, and at a fuzz too large for any gap to count
+    // each rack weighs its chance to be dealt: every rack of the 20 unseen
+    // tiles, each weighing the ways it is dealt over all the deals
+    #[test]
+    #[inline]
+    fn a_pass_at_a_vast_fuzz_weighs_each_rack_by_its_deals() {
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let leaves = leaves_after(79, &pass, 1e300);
+        // the pool: every tile but the board's first 79 and the watcher's Z
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        let mut pool = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile) as usize)
+            .collect::<Vec<_>>();
+        let mut on_board = 79;
+        for count in pool.iter_mut() {
+            let taken = (*count).min(on_board);
+            *count -= taken;
+            on_board -= taken;
+        }
+        pool[26] -= 1;
+        assert_eq!(pool.iter().sum::<usize>(), 20);
+        let deals = binom(20, 7) as f64;
+        let mut ways_in_all = 0;
+        for (leave, weight) in &leaves {
+            assert_eq!(leave.len(), 7);
+            let mut tally = vec![0usize; pool.len()];
+            for &tile in leave {
+                tally[tile as usize] += 1;
+            }
+            let ways = (pool.iter().zip(&tally))
+                .map(|(&u, &r)| binom(u, r))
+                .product::<u64>();
+            ways_in_all += ways;
+            let want = ways as f64 / deals;
+            assert!(
+                (weight - want).abs() <= want * 1e-12,
+                "{leave:?}: {weight} against {want}"
+            );
+        }
+        assert_eq!(ways_in_all, binom(20, 7));
+    }
+
+    // packed leaves keep each leave and weight in the order pushed (the empty
+    // leave, the blank, more tiles than a rack, any tile byte at all), refuse a
+    // weight below 0, infinite, or not a number, and draw the first leave whose
+    // running sum passes the draw, never one of weight 0
+    #[test]
+    #[inline]
+    fn packed_leaves_keep_their_order_and_draw_by_weight() {
+        let pushed: [(&[u8], f64); 4] = [
+            (&[], 1.5),
+            (&[0, 0, 5], 0.0),
+            (&[63, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 2.0),
+            (&[u8::MAX], 0.5),
+        ];
+        let mut packed = PackedLeaves::new();
+        assert!(packed.is_empty());
+        for (tiles, weight) in pushed {
+            packed.push(tiles, weight).unwrap();
+        }
+        assert_eq!(packed.len(), 4);
+        for (i, (tiles, weight)) in pushed.iter().enumerate() {
+            assert_eq!(packed.leave(i), *tiles);
+            assert_eq!(packed.weight(i), *weight);
+        }
+        // running sums 1.5, 1.5, 3.5, 4
+        assert_eq!(packed.total(), 4.0);
+        for (at, i) in [
+            (0.0, 0),
+            (1.499, 0),
+            (1.5, 2),
+            (3.499, 2),
+            (3.5, 3),
+            (3.999, 3),
+        ] {
+            assert_eq!(packed.pick(at), pushed[i].0, "{at}");
+        }
+        for wrong in [-1.0, f64::INFINITY, f64::NAN] {
+            assert!(packed.push(&[1], wrong).is_err(), "{wrong}");
+        }
+        assert_eq!(packed.len(), 4);
+        // made to sum to 1: running sums 0.375, 0.375, 0.875, 1
+        packed.normalize();
+        assert_eq!(packed.weight(2), 0.5);
+        assert_eq!(packed.total(), 1.0);
+        assert_eq!(packed.pick(0.375), pushed[2].0);
+        // a push after normalizing runs on from the normalized sum
+        packed.push(&[2], 1.0).unwrap();
+        assert_eq!(packed.total(), 2.0);
+        assert_eq!(packed.pick(1.5), [2]);
     }
 
     #[test]
