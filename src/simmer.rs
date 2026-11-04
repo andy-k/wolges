@@ -689,6 +689,39 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         Ok(this_equity)
     }
 
+    // final_equity_spread in its two parts, against the same opponent: the
+    // mover's score less that opponent's, and the value of the leave the mover
+    // last kept less theirs; the two sum to final_equity_spread
+    #[inline(always)]
+    pub fn final_spread_and_leaves(&self) -> error::Returns<(i32, i32)> {
+        let mover = self.initial_game_state.turn as usize;
+        let mut best_opponent: Option<(i32, usize)> = None;
+        for (i, player) in self.game_state.players.iter().enumerate() {
+            if i != mover {
+                let opponent_equity = player
+                    .score
+                    .checked_add(self.last_seen_leave_values[i])
+                    .ok_or("score overflow")?;
+                if best_opponent.is_none_or(|(best, _)| opponent_equity > best) {
+                    best_opponent = Some((opponent_equity, i));
+                }
+            }
+        }
+        let score = self.game_state.players[mover].score;
+        let leave = self.last_seen_leave_values[mover];
+        Ok(match best_opponent {
+            Some((_, opponent)) => (
+                score
+                    .checked_sub(self.game_state.players[opponent].score)
+                    .ok_or("score overflow")?,
+                leave
+                    .checked_sub(self.last_seen_leave_values[opponent])
+                    .ok_or("score overflow")?,
+            ),
+            None => (score, leave),
+        })
+    }
+
     #[inline(always)]
     pub fn compute_win_prob(
         &self,
@@ -894,6 +927,22 @@ mod tests {
         simmer.last_seen_leave_values[turn] = 5 * equity::SCALE;
         simmer.last_seen_leave_values[1 - turn] = 0;
         assert_eq!(simmer.final_equity_spread().unwrap(), 55 * equity::SCALE);
+    }
+
+    #[test]
+    #[inline]
+    fn final_spread_and_leaves_sum_to_final_equity_spread() {
+        let (mut simmer, _, _, _) = prepared_simmer();
+        let turn = simmer.initial_game_state.turn as usize;
+        simmer.game_state.players[turn].score = 300 * equity::SCALE;
+        simmer.game_state.players[1 - turn].score = 250 * equity::SCALE;
+        simmer.last_seen_leave_values[turn] = 5 * equity::SCALE;
+        simmer.last_seen_leave_values[1 - turn] = 12 * equity::SCALE;
+        assert_eq!(
+            simmer.final_spread_and_leaves().unwrap(),
+            (50 * equity::SCALE, -7 * equity::SCALE)
+        );
+        assert_eq!(simmer.final_equity_spread().unwrap(), 43 * equity::SCALE);
     }
 
     // the bag emptied onto the board: the mover holds A and B (4 points) and
