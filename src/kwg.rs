@@ -315,6 +315,16 @@ impl<N: Node> Kwg<N> {
         self.0.iter().all(|node| node.tile() < alphabet_len)
     }
 
+    // whether every run's tiles ascend, each above the one before, as the
+    // graphs built here do: then a tile's node in a run is found by counting
+    // the run's tiles below it
+    #[inline(always)]
+    pub fn runs_ascend(&self) -> bool {
+        self.0
+            .windows(2)
+            .all(|pair| pair[0].is_end() || pair[0].tile() < pair[1].tile())
+    }
+
     #[inline(always)]
     pub fn compute_letter_bits(&self) -> LetterBits {
         let len = self.0.len();
@@ -699,6 +709,27 @@ mod tests {
         assert_eq!(kwg.0.len(), 2);
         assert_eq!(kwg.seek(0, 1), -1);
         assert_eq!(kwg.seek(1, 1), -1);
+    }
+
+    // a built graph's runs ascend, and so does the one-node empty graph; with
+    // the first two nodes of one run swapped (each keeping its arc), they do
+    // not
+    #[test]
+    #[inline]
+    fn a_built_graph_runs_ascend_and_a_swapped_run_does_not() {
+        let gc = game_config::make_english_game_config();
+        let kwg = graph_of(&gc, &["SEAT", "TEA", "EATS", "ETAS"]);
+        assert!(kwg.runs_ascend());
+        let empty = Kwg::<Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
+        assert!(empty.runs_ascend());
+        let at = (0..kwg.0.len() - 1).find(|&i| !kwg.0[i].is_end()).unwrap();
+        let (a, b) = (kwg.0[at], kwg.0[at + 1]);
+        let mut nodes = kwg.0.to_vec();
+        nodes[at] =
+            Node22::new(Node22::pack(b.tile(), b.accepts(), a.is_end(), b.arc_index()).unwrap());
+        nodes[at + 1] =
+            Node22::new(Node22::pack(a.tile(), a.accepts(), b.is_end(), a.arc_index()).unwrap());
+        assert!(!Kwg(nodes.into_boxed_slice()).runs_ascend());
     }
 
     #[test]

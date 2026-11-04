@@ -908,10 +908,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             return Err("cannot solve non-2-player endgames".into());
         }
         // the run letters, unless the tables are the lean arm's (rack lengths),
-        // which reads no more than the word graph
-        let run_letter_bits = arm_tables
-            .rack_lengths()
-            .is_none()
+        // which reads no more than the word graph, and only for a graph whose
+        // runs ascend, as a walk with them goes straight to a tile's node
+        let run_letter_bits = (arm_tables.rack_lengths().is_none() && kwg.runs_ascend())
             .then(|| kwg.compute_letter_bits().letter_bits);
         Ok(Self {
             game_config,
@@ -4566,6 +4565,75 @@ mod tests {
                 assert_eq!(solve(&pruned), solve(&whole), "[{rules} {racks:?}]");
             }
             assert!(pruned_away > 0, "{rules}: no graph lost a word");
+        }
+    }
+
+    // a graph with runs turned round (each node keeping its arc; only runs no
+    // arc enters past their first node, as the builder shares a run's tail, so
+    // the same words) has runs that do not ascend; the solver walks it without
+    // the run letters' jumps and answers as on the graph as built
+    #[test]
+    #[inline]
+    fn a_graph_whose_runs_descend_solves_as_the_one_built() {
+        use kwg::Node;
+        let gc = game_config::make_english_game_config();
+        let built = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &tiny_word_list(),
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        assert!(built.runs_ascend());
+        let mut entered = vec![false; built.0.len()];
+        for node in built.0.iter() {
+            entered[node.arc_index() as usize] = true;
+        }
+        let mut nodes = built.0.to_vec();
+        let mut start = 0;
+        let mut turned = 0;
+        for end in 0..nodes.len() {
+            if built.0[end].is_end() {
+                if end > start && !entered[start + 1..=end].contains(&true) {
+                    for (k, node) in built.0[start..=end].iter().rev().enumerate() {
+                        let at = start + k;
+                        nodes[at] = kwg::Node24::new(
+                            kwg::Node24::pack(
+                                node.tile(),
+                                node.accepts(),
+                                at == end,
+                                node.arc_index(),
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    turned += 1;
+                }
+                start = end + 1;
+            }
+        }
+        assert!(turned > 0, "no run could be turned round");
+        let descending = kwg::Kwg(nodes.into_boxed_slice());
+        assert!(!descending.runs_ascend());
+        for racks in [
+            [&[2u8, 8][..], &[1, 1, 19]],
+            [&[1, 2], &[8, 19]],
+            [&[0, 8], &[1, 2]],
+        ] {
+            let board = late_board(&gc, racks);
+            let solve = |kwg: &kwg::Kwg<kwg::Node24>| {
+                let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, kwg, &arm_tables).unwrap();
+                egs.init(&board, racks);
+                egs.solve(0).unwrap()
+            };
+            assert_eq!(solve(&descending), solve(&built), "{racks:?}");
         }
     }
 
