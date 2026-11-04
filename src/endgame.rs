@@ -592,6 +592,7 @@ struct WorkBuffer {
     cut_short: bool,    // a limit stopped this pass
     progress: Option<ProgressFn>,
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
+    in_bag_moves: Option<(usize, usize)>, // and its root's moves valued, of all
     at_root: bool,       // the next node searched is the root of a pass
     pass_best: u16,      // the root's best move in the last finished root search
     root_best: u16,      // the root's best move in the deepest finished pass
@@ -633,6 +634,7 @@ impl WorkBuffer {
             cut_short: false,
             progress: None,
             in_bag: None,
+            in_bag_moves: None,
             at_root: false,
             pass_best: NO_PLAY,
             root_best: NO_PLAY,
@@ -760,6 +762,7 @@ struct BagLimits {
     dur_movegen: std::cell::Cell<std::time::Duration>,
     endgames: std::cell::Cell<u64>,
     nodes: std::cell::Cell<u64>, // the nodes its endgames searched
+    moves: std::cell::Cell<Option<(usize, usize)>>, // the root's moves the pass valued, of all
     progress: std::cell::Cell<Option<ProgressFn>>,
     depth: std::cell::Cell<i8>, // the pass's depth, or the end for a search of one pass
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
@@ -778,6 +781,7 @@ impl BagLimits {
             dur_movegen: Default::default(),
             endgames: Default::default(),
             nodes: Default::default(),
+            moves: Default::default(),
             progress: std::cell::Cell::new(progress),
             depth: std::cell::Cell::new(COMPLETE),
             may_stop: std::cell::Cell::new(false),
@@ -816,6 +820,7 @@ impl BagLimits {
             dur_movegen: Default::default(),
             endgames: Default::default(),
             nodes: Default::default(),
+            moves: Default::default(),
             progress: std::cell::Cell::new(None),
             depth: std::cell::Cell::new(clock.depth),
             may_stop: std::cell::Cell::new(false),
@@ -868,6 +873,7 @@ pub struct Solved {
 // alone. The listener keeps the time, on its own clock
 pub struct Progress {
     pub endgames: Option<u64>, // with a tile in the bag, the endgames searched so far
+    pub moves: Option<(usize, usize)>, // and the root's moves its pass has valued, of all
     pub depth: i8,
     pub value: Option<equity::Equity>, // the depth's value, once it has finished
     pub movegen: std::time::Duration,
@@ -901,6 +907,9 @@ impl std::fmt::Display for ProgressLine<'_> {
         match p.value {
             Some(value) => write!(f, "depth {} is {}", p.depth, value)?,
             None => write!(f, "depth {}", p.depth)?,
+        }
+        if let Some((valued, of)) = p.moves {
+            write!(f, ", {valued} of {of} moves valued")?;
         }
         write!(
             f,
@@ -2275,6 +2284,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         match work_buffer.progress.as_mut() {
             Some(progress_fn) => progress_fn(&Progress {
                 endgames: work_buffer.in_bag,
+                moves: work_buffer.in_bag_moves,
                 depth: work_buffer.max_depth,
                 value,
                 movegen: work_buffer.dur_movegen,
@@ -2337,6 +2347,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         work_buffer.t0 = Some(limits.t0);
         work_buffer.dur_movegen = limits.dur_movegen.get();
         work_buffer.in_bag = Some(limits.endgames.get());
+        work_buffer.in_bag_moves = limits.moves.get();
         work_buffer.progress = limits.progress.take();
         work_buffer.depth_cap = limits.depth.get();
         let solved = self.run_id_loop_below(
@@ -2356,6 +2367,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         limits.nodes.set(limits.nodes.get() + work_buffer.searched);
         limits.progress.set(work_buffer.progress.take());
         work_buffer.in_bag = None;
+        work_buffer.in_bag_moves = None;
         work_buffer.depth_cap = COMPLETE;
         let solved = solved?;
         if may_stop && !solved.exact && solved.depth < limits.depth.get() {
@@ -2974,6 +2986,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             } else {
                 let mut stopped = false;
                 while let Some(&i) = state.order.get(state.next) {
+                    limits.moves.set(Some((state.next, state.order.len())));
                     limits
                         .may_stop
                         .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
@@ -3110,6 +3123,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         break;
                     };
                     let (m, s) = (task / num_splits, task % num_splits);
+                    limits
+                        .moves
+                        .set(Some((moves_valued.load(Relaxed), order.len())));
                     limits
                         .may_stop
                         .set(deepens && (answered || moves_valued.load(Relaxed) > 0));
@@ -3522,6 +3538,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             limits.depth.set(state.depth);
             let mut stopped = false;
             while let Some(&i) = state.order.get(state.next) {
+                limits.moves.set(Some((state.next, state.order.len())));
                 limits
                     .may_stop
                     .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
@@ -10027,6 +10044,99 @@ mod tests {
             }
         }
         assert_eq!(checked, 2 * 4 * 16 * 3);
+    }
+
+    // a search with tiles in the bag tells its listener, at every node inside
+    // it, how many of its root's moves the pass under way has valued, of all,
+    // and its line says so: never fewer than it told before, under either
+    // model, on one thread or on two; and with one tile in the bag, as the
+    // committed model searches it
+    #[test]
+    #[inline]
+    fn a_bag_search_tells_its_listener_how_many_moves_it_has_valued() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for &tile in &[1u8, 2, 8] {
+            unseen_tally[tile as usize] += 1; // A B H
+        }
+        // a solver whose listener keeps each report's moves and line
+        let listened = || {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = heard.clone();
+            egs.report_progress(move |p: &super::Progress| {
+                let line = p.after(std::time::Duration::ZERO).to_string();
+                seen.borrow_mut().push((p.moves, line));
+                Ok(())
+            });
+            (egs, heard)
+        };
+        // every report's moves, each never fewer than the one before, and the
+        // last report's count of moves valued
+        let checked = |heard: &[(Option<(usize, usize)>, String)], all: usize| {
+            let mut last = 0;
+            for (moves, line) in heard {
+                let (valued, of) = moves.expect("a report inside the search says its moves");
+                assert_eq!(of, all);
+                assert!(
+                    valued >= last && valued < of,
+                    "{valued} of {of} after {last}"
+                );
+                assert!(
+                    line.contains(&format!(", {valued} of {of} moves valued")),
+                    "{line}"
+                );
+                last = valued;
+            }
+            last
+        };
+        for (name, model, threads) in [
+            ("random draws", super::PegModel::RandomDraws, 1),
+            ("info sets", super::PegModel::InfoSets, 1),
+            ("random draws", super::PegModel::RandomDraws, 2),
+        ] {
+            let (mut egs, heard) = listened();
+            let mut position =
+                bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
+            position.model = model;
+            let mut progress = super::PegBagProgress::new(position).unwrap();
+            progress.set_threads(threads);
+            let result = egs
+                .resume_peg(&mut progress, &super::Limits::NONE)
+                .unwrap()
+                .unwrap();
+            let last = checked(&heard.borrow(), result.moves.len());
+            // on two threads the other may value every move left before the
+            // listening one reports again, so one thread's count alone must
+            // have risen past none
+            assert!(
+                threads > 1 || last > 0,
+                "{name}, {threads} threads: the last at {last}"
+            );
+        }
+        // one tile in the bag: the committed model's moves are the pass and the
+        // places
+        let (mut egs, heard) = listened();
+        unseen_tally[2] = 0; // A H, one of them in the bag
+        let result = egs
+            .solve_peg_one_in_bag(
+                0,
+                &board,
+                &[1, 2],
+                &unseen_tally,
+                equity::Equity::ZERO,
+                &super::Limits::NONE,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(result.exact);
+        let all = heard.borrow()[0].0.unwrap().1;
+        assert!(checked(&heard.borrow(), all) > 0);
     }
 
     // inside the random-draws search a pass answering a pass the line made ends
