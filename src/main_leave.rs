@@ -3849,8 +3849,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut blank_deltas = Vec::<(u8, i32)>::new();
 
-                let mut num_board = vec![0f64; lat_len];
-                let mut den_board = vec![0f64; lat_len];
+                let lo = lat.full_rack_start();
+                let mut num_board = vec![0f64; lo];
+                let mut den_board = vec![0f64; lo];
+                let mut ways_board = vec![0f64; lat_len - lo];
 
                 let mut maxsheet = vec![0i32; lat_len];
 
@@ -3926,6 +3928,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     let ts = std::time::Instant::now();
                     num_board.iter_mut().for_each(|x| *x = 0.0);
                     den_board.iter_mut().for_each(|x| *x = 0.0);
+                    ways_board.iter_mut().for_each(|x| *x = 0.0);
 
                     let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
                     census::apportion_fused(
@@ -3939,6 +3942,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         census::ApportionOut {
                             num: &mut num_board,
                             den: &mut den_board,
+                            ways: &mut ways_board,
                         },
                         &mut maxsheet,
                         census::ApportionMode {
@@ -3948,14 +3952,21 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         },
                     );
                     // each multiset's mean on this board, in the buffer
-                    // apportion_fused is done with
+                    // apportion_fused is done with: a full rack drawn keeps its
+                    // best there, which is its mean
                     let contrib = &mut maxsheet;
-                    for (idx, slot) in contrib.iter_mut().enumerate() {
+                    let (below, full) = contrib.split_at_mut(lo);
+                    for (idx, slot) in below.iter_mut().enumerate() {
                         *slot = if den_board[idx] > 0.0 {
                             (num_board[idx] / den_board[idx]).round() as i32
                         } else {
                             census::UNPLAYABLE
                         };
+                    }
+                    for (slot, &ways) in full.iter_mut().zip(&ways_board) {
+                        if ways == 0.0 {
+                            *slot = census::UNPLAYABLE;
+                        }
                     }
                     if log_first {
                         writeln!(boxed_stdout_or_stderr(),
