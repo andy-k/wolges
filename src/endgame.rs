@@ -1212,13 +1212,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let ordered = &mut work_buffer.orders[ply];
         list.clear();
         ordered.clear();
-        let mut push = |play: &movegen::Play, placed: usize| {
+        let mut push = |play: &movegen::Play, uses: u32, placed: usize| {
             if let movegen::Play::Place {
                 down,
                 lane,
                 idx,
-                word,
                 score,
+                ..
             } = play
             {
                 let plays_out = placed == rack.len();
@@ -1226,7 +1226,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
                 list.push(Candidate {
                     play: play.clone(),
-                    uses: (slots.as_ref()).map_or(0, |slots| slots.places(word, false)),
+                    uses,
                     index: NO_PLAY,
                     valuation: valuation as f32,
                     plays_out,
@@ -1235,18 +1235,34 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         };
         for valued in work_buffer.movegen.plays.iter() {
             if let movegen::Play::Place { word, .. } = &valued.play {
-                push(&valued.play, word.iter().filter(|&&t| t != 0).count());
+                // a move's rack places are a bit a tile it places, so with them
+                // its tiles are counted without a second pass
+                match &slots {
+                    Some(slots) => {
+                        let uses = slots.places(word, false);
+                        debug_assert_eq!(
+                            uses.count_ones() as usize,
+                            word.iter().filter(|&&t| t != 0).count()
+                        );
+                        push(&valued.play, uses, uses.count_ones() as usize);
+                    }
+                    None => push(&valued.play, 0, word.iter().filter(|&&t| t != 0).count()),
+                }
             }
         }
         if kept_from {
             // off the reached lanes, the moves two plies up whose tiles the
             // rack still holds
             for kept in &above[ply - 2] {
-                let movegen::Play::Place { down, lane, .. } = &kept.play else {
+                let movegen::Play::Place {
+                    down, lane, word, ..
+                } = &kept.play
+                else {
                     continue;
                 };
                 if (if *down { cols } else { rows }) >> lane & 1 == 0 && kept.uses & spent == 0 {
-                    push(&kept.play, kept.uses.count_ones() as usize);
+                    let uses = (slots.as_ref()).map_or(0, |slots| slots.places(word, false));
+                    push(&kept.play, uses, kept.uses.count_ones() as usize);
                 }
             }
         }
