@@ -1035,8 +1035,6 @@ impl WorkingBuffer {
                     self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_across_plays[idx] =
                         cross_set.score * effective_pwm as i32;
-                    self.allowed_for_across_plays[idx] =
-                        allowed_letters(board_snapshot.board_tiles[idx], cross_set.bits);
                 }
             }
         }
@@ -1064,15 +1062,15 @@ impl WorkingBuffer {
                     self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_down_plays[idx] =
                         cross_set.score * effective_pwm as i32;
-                    self.allowed_for_down_plays[idx] =
-                        allowed_letters(self.transposed_board_tiles[idx], cross_set.bits);
                 }
             }
         }
     }
 
-    // a lane's span sums, filled once a generation, when a span of it is read:
-    // where they start in span_prefix, and the lane's index in span_lanes
+    // a lane's span sums and its squares' allowed letters (only the anagram
+    // tables' path reads either), filled once a generation, when a span of it
+    // is read: where the sums start in span_prefix, and the lane's index in
+    // span_lanes
     #[inline(always)]
     fn fill_span_lane(
         &mut self,
@@ -1116,6 +1114,11 @@ impl WorkingBuffer {
                 &self.remaining_word_multipliers_for_across_plays[start..start + len],
             )
         };
+        let allowed = if down {
+            &mut self.allowed_for_down_plays[start..start + len]
+        } else {
+            &mut self.allowed_for_across_plays[start..start + len]
+        };
         let out = &mut self.span_prefix[at..at + len + 1];
         let mut sum = SpanPrefix::new();
         let mut empty = 0u128;
@@ -1123,6 +1126,7 @@ impl WorkingBuffer {
         out[0] = sum;
         for j in 0..len {
             let b = board_strip[j];
+            allowed[j] = allowed_letters(b, cross_sets[j].bits);
             if b != 0 {
                 sum.face += face_values[j];
                 sum.key += layout.place_value(b & 0x7f);
