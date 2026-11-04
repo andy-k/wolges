@@ -648,10 +648,43 @@ pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], 
     }
 }
 
+// what a letter's count adds to a multiset's rank (MultisetLattice::rank),
+// given the letter, the tiles left from it on, and how many of those are it: a
+// walk adding a letter at a time ranks as it goes, with no table of ranks to
+// read. The last letter adds nothing, its count implied
+struct RankSteps {
+    span: usize, // rack_size + 1, the tiles left or counted
+    steps: Vec<usize>,
+}
+
+impl RankSteps {
+    fn new(lat: &MultisetLattice) -> Self {
+        let n = lat.num_letters();
+        let span = lat.rack_size() + 1;
+        let mut steps = vec![0usize; n * span * span];
+        for t in 0..n - 1 {
+            let parts = n - 1 - t;
+            for rem in 0..span {
+                let mut within = 0usize;
+                for ct in 1..=rem {
+                    within += lat.c((rem - (ct - 1)) + parts - 1, parts - 1) as usize;
+                    steps[(t * span + rem) * span + ct] = within;
+                }
+            }
+        }
+        Self { span, steps }
+    }
+
+    // the rank letter t adds with rem tiles left for it on, ct of them t
+    #[inline(always)]
+    fn of(&self, t: usize, rem: usize, ct: usize) -> usize {
+        self.steps[(t * self.span + rem) * self.span + ct]
+    }
+}
+
 #[inline]
 fn scatter_words(
     lat: &MultisetLattice,
-    add: &AddTable,
     sheet: &[i32],
     leave: &[i32],
     unseen: &[u8],
@@ -659,11 +692,19 @@ fn scatter_words(
 ) {
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
+    let steps = RankSteps::new(lat);
 
+    // a rack R is a played P with a kept K. The walk picks K a letter at a time
+    // and ranks K and R as it goes. At a letter, R's count is P's plus K's, and
+    // the tiles left for R from it on are P's from it on (p_rest) plus K's not
+    // yet picked; once K is whole, P's later letters add p_tail to R's rank
     struct Ctx<'a> {
         sp_val: i32,
         n: usize,
-        add: &'a AddTable,
+        steps: &'a RankSteps,
+        p_tally: &'a [u8],
+        p_rest: &'a [usize],
+        p_tail: &'a [usize],
         leave: &'a [i32],
         avail: &'a [u8],
         suffix_cap: &'a [u32],
@@ -672,13 +713,8 @@ fn scatter_words(
     impl Ctx<'_> {
         fn rec_k(&mut self, t: usize, remaining: usize, k_idx: usize, r_idx: usize) {
             if remaining == 0 {
-                // SAFETY: k_idx is the rank of the drawn complement K (|K| <= rack_size), built up
-                // from 0 one tile at a time via the add table, so < lat.len(); leave is
-                // lat.len()-sized.
-                let cand = self.sp_val + unsafe { *self.leave.get_unchecked(k_idx) };
-                // SAFETY: r_idx is the rank of R = P+K (|R| = rack_size), built up from the word
-                // index pj via the add table, so < lat.len(); best is lat.len()-sized.
-                let cur = unsafe { self.best.get_unchecked_mut(r_idx) };
+                let cand = self.sp_val + self.leave[k_idx];
+                let cur = &mut self.best[r_idx + self.p_tail[t]];
                 if cand > *cur {
                     *cur = cand;
                 }
@@ -688,21 +724,26 @@ fn scatter_words(
                 return;
             }
 
-            self.rec_k(t + 1, remaining, k_idx, r_idx);
+            let rem_r = self.p_rest[t] + remaining;
+            let pt = self.p_tally[t] as usize;
+            self.rec_k(t + 1, remaining, k_idx, r_idx + self.steps.of(t, rem_r, pt));
 
             let cap = (self.avail[t] as usize).min(remaining);
-            let mut kk = k_idx;
-            let mut rr = r_idx;
             for c in 1..=cap {
-                kk = self.add.add(kk, t);
-                rr = self.add.add(rr, t);
-                self.rec_k(t + 1, remaining - c, kk, rr);
+                self.rec_k(
+                    t + 1,
+                    remaining - c,
+                    k_idx + self.steps.of(t, remaining, c),
+                    r_idx + self.steps.of(t, rem_r, pt + c),
+                );
             }
         }
     }
     let mut p_tally = [0u8; MAX_LETTERS];
     let mut avail = [0u8; MAX_LETTERS];
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    let mut p_rest = [0usize; MAX_LETTERS + 1];
+    let mut p_tail = [0usize; MAX_LETTERS + 1];
 
     for pj in 1..lat.len() {
         // SAFETY: pj is the loop index over 1..lat.len(), so pj < lat.len() = sheet.len().
@@ -718,19 +759,26 @@ fn scatter_words(
             avail[t] = unseen[t].saturating_sub(p_tally[t]);
         }
         suffix_cap[n] = 0;
+        p_rest[n] = 0;
+        p_tail[n] = 0;
         for t in (0..n).rev() {
             suffix_cap[t] = suffix_cap[t + 1] + (avail[t] as u32).min(krem as u32);
+            p_rest[t] = p_rest[t + 1] + p_tally[t] as usize;
+            p_tail[t] = p_tail[t + 1] + steps.of(t, p_rest[t], p_tally[t] as usize);
         }
         Ctx {
             sp_val,
             n,
-            add,
+            steps: &steps,
+            p_tally: &p_tally,
+            p_rest: &p_rest,
+            p_tail: &p_tail,
             leave,
             avail: &avail,
             suffix_cap: &suffix_cap,
             best: &mut *best,
         }
-        .rec_k(0, krem, 0, pj);
+        .rec_k(0, krem, lat.size_start(krem), lat.size_start(rack_size));
     }
 }
 
@@ -778,7 +826,7 @@ pub fn apportion_fused(
         subset_max_transform(lat, add, sheet, maxsheet);
     } else if scatter_active {
         subset_max_transform(lat, add, leave, maxsheet);
-        scatter_words(lat, add, sheet, leave, unseen, maxsheet);
+        scatter_words(lat, sheet, leave, unseen, maxsheet);
     }
     let best_from_maxsheet = subset_max || scatter_active;
 
