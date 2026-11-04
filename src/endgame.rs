@@ -2890,6 +2890,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let result = Self::peg_bag_by(&mut sub, progress, self.scoreless, &limits);
         self.swap_tables(&mut sub)?;
         self.work_buffer.progress = limits.progress.take();
+        progress.endgames += limits.endgames.get();
+        progress.nodes += limits.nodes.get();
         Ok(Ok(result?))
     }
 
@@ -2920,6 +2922,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             splits,
             threads,
             state,
+            endgames: _,
+            nodes: _,
         } = progress;
         let mover = position.mover;
         // the position after a split, its mover to move
@@ -3786,12 +3790,15 @@ pub enum PegModel {
 // a search with tiles in the bag that goes on across solves (as one with a tile
 // in the bag does, PegProgress): its position, each split of the tiles the
 // mover cannot see (the opponent's rack, the bag's counts, the deals giving
-// it), the threads it runs on, and how far it has got
+// it), the threads it runs on, how far it has got, and the endgames and nodes
+// its solves searched on the thread solving it
 pub struct PegBagProgress {
     position: PegBagPosition,
     splits: Vec<(Vec<u8>, Vec<u8>, u64)>,
     threads: usize,
     state: PegBagState,
+    endgames: u64,
+    nodes: u64,
 }
 
 impl PegBagProgress {
@@ -3827,6 +3834,8 @@ impl PegBagProgress {
             splits,
             threads: 1,
             state: Default::default(),
+            endgames: 0,
+            nodes: 0,
         })
     }
 
@@ -3835,6 +3844,21 @@ impl PegBagProgress {
     #[inline]
     pub fn set_threads(&mut self, threads: usize) {
         self.threads = threads;
+    }
+
+    // the endgames its solves searched on the thread solving it, and their
+    // nodes (the other threads' not counted)
+    #[inline(always)]
+    pub fn searched(&self) -> (u64, u64) {
+        (self.endgames, self.nodes)
+    }
+
+    // the pass under way: the moves it has valued, of all it values; none
+    // before the search began
+    #[inline(always)]
+    pub fn moves(&self) -> Option<(usize, usize)> {
+        let state = &self.state;
+        (!state.order.is_empty()).then_some((state.next, state.order.len()))
     }
 }
 
@@ -10118,6 +10142,14 @@ mod tests {
                 threads > 1 || last > 0,
                 "{name}, {threads} threads: the last at {last}"
             );
+            // on one thread its progress counts what it searched, and its pass
+            // ends with every move valued
+            if threads == 1 {
+                let (endgames, nodes) = progress.searched();
+                assert!(endgames > 0 && nodes > 0, "{name}: {endgames}, {nodes}");
+                let all = result.moves.len();
+                assert_eq!(progress.moves(), Some((all, all)), "{name}");
+            }
         }
         // one tile in the bag: the committed model's moves are the pass and the
         // places
