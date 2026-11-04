@@ -4412,7 +4412,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
-    for idx in 0..lat.len() {
+    // the sizes kept: not the empty one (the baseline), nor a full rack unless
+    // full
+    for idx in lat.size_start(1)..lat.size_start(max_keep + 1) {
         let valued = if multigen {
             ever[idx]
         } else {
@@ -4423,9 +4425,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         lat.unrank_into(idx, &mut tally_buf);
         let size: usize = tally_buf.iter().map(|&c| c as usize).sum();
-        if size == 0 || size > max_keep {
-            continue; // skip empty (baseline), over-size, and (non-full) full racks.
-        }
         let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
         leave_ser.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
