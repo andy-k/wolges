@@ -4168,6 +4168,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             writeln!(boxed_stdout_or_stderr(), "{said}").ok();
                             last_boards.store(boards + more, std::sync::atomic::Ordering::Relaxed);
                             more_boards.store(more > 0, std::sync::atomic::Ordering::Relaxed);
+                            // each thread's last take went past the boards done,
+                            // so the boards added start where those end
+                            next_board.store(boards, std::sync::atomic::Ordering::Relaxed);
                         }
                         barrier.wait();
                         if more_boards.load(std::sync::atomic::Ordering::Relaxed)
