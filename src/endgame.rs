@@ -1254,6 +1254,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         player_idx: u8,
         verbose: bool,
         limits: &Limits,
+        finished: Option<(i8, equity::Equity)>,
     ) -> error::Returns<Solved> {
         let mut last_valuation = f32::NAN;
         let longest = self.longest_line(player_idx);
@@ -1265,6 +1266,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         let every_depth = limits.time.is_some() || limits.states.is_some();
         let mut max_depth = 0i8;
+        // deepening on from a depth a solve before it finished on this table,
+        // with the value found there: short of the longest line, so that the
+        // pass reaching every line's end is searched
+        if let Some((depth, value)) = finished {
+            max_depth = depth.clamp(0, longest as i8 - 1);
+            self.work_buffer.finished = max_depth;
+            last_valuation = value.raw() as f32;
+        }
         // a deepening search with a tile in the bag asks no deeper than its pass
         let cap = self.work_buffer.depth_cap;
         while (max_depth as usize) < longest {
@@ -1420,7 +1429,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     #[inline(always)]
     pub fn evaluate(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock();
-        self.run_id_loop(player_idx, true, limits)
+        self.run_id_loop(player_idx, true, limits, None)
     }
 
     #[inline(always)]
@@ -1431,7 +1440,22 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     #[inline(always)]
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock();
-        self.run_id_loop(player_idx, false, limits)
+        self.run_id_loop(player_idx, false, limits, None)
+    }
+
+    // solve_within, deepening on from a depth a solve of the same position on
+    // this table finished, with the value it found there, as a page solving in
+    // steps does: the first pass is the next depth, which a limit may stop, and
+    // a solve stopped there answers from the depth it was given
+    #[inline(always)]
+    pub fn solve_within_after(
+        &mut self,
+        player_idx: u8,
+        limits: &Limits,
+        finished: (i8, equity::Equity),
+    ) -> error::Returns<Solved> {
+        self.start_clock();
+        self.run_id_loop(player_idx, false, limits, Some(finished))
     }
 
     // the move for player_idx to play, lead being their score less the other's
@@ -1466,6 +1490,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             player_idx,
             false,
             &share(if winner.is_some() { 9 } else { 10 }, 10),
+            None,
         )?;
         let mut line = Vec::new();
         self.collect_pv(player_idx, &mut line);
@@ -2108,6 +2133,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 states: limits.states,
                 memory: limits.memory,
             },
+            None,
         );
         let work_buffer = &mut self.work_buffer;
         limits.dur_movegen.set(work_buffer.dur_movegen);
@@ -5282,6 +5308,69 @@ mod tests {
             }
             assert!(stepped > 0, "no position took more than one step");
         }
+    }
+
+    // a solve in steps where each step deepens on from the depth the step
+    // before finished, with its value, as a wasm32 page's steps do: no step
+    // searches a depth it was given as finished, none answers from a shallower
+    // one, and the steps end with the position's value
+    #[test]
+    #[inline]
+    fn a_solve_resumed_past_its_finished_depth_ends_as_one_solve() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut resumed = 0;
+        for (name, pos) in all_positions() {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let full = egs.solve(0).unwrap();
+            let mut kept = None;
+            let mut finished = None;
+            for step in 1.. {
+                assert!(step < 10000, "[{name}] the steps never ended");
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                if let Some(table) = kept.take() {
+                    assert!(egs.give_table(table).is_ok());
+                }
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                // the shallowest depth the step searched at any node
+                let shallowest = std::rc::Rc::new(std::cell::Cell::new(i8::MAX));
+                let seen = shallowest.clone();
+                egs.report_progress(move |progress| {
+                    seen.set(seen.get().min(progress.depth));
+                    Ok(())
+                });
+                let limits = super::Limits {
+                    time: None,
+                    states: Some(egs.work_buffer.table.held + 30),
+                    memory: None,
+                };
+                let solved = match finished {
+                    Some(finished) => egs.solve_within_after(0, &limits, finished),
+                    None => egs.solve_within(0, &limits),
+                }
+                .unwrap();
+                kept = Some(egs.take_table());
+                if let Some((depth, _)) = finished {
+                    assert!(
+                        shallowest.get() > depth,
+                        "[{name}] step {step} searched depth {} after depth {depth}",
+                        shallowest.get()
+                    );
+                    assert!(solved.depth >= depth, "[{name}] step {step}");
+                    resumed += 1;
+                }
+                if solved.exact {
+                    assert_eq!(solved.value, full, "[{name}]");
+                    break;
+                }
+                finished = Some((solved.depth, solved.value));
+            }
+        }
+        assert!(resumed > 0, "no position took more than one step");
     }
 
     #[test]
