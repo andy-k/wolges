@@ -988,11 +988,11 @@ pub fn reply_to<N: kwg::Node, L: kwg::Node>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build;
+    use crate::{bites, build};
 
     // every word of two or three tiles from A, E, and T
     #[inline]
-    fn tiny_kwg() -> kwg::Kwg<kwg::Node24> {
+    fn tiny_words() -> Vec<bites::Bites> {
         const LETTERS: [u8; 3] = [1, 5, 20];
         let mut words = Vec::new();
         for &a in &LETTERS {
@@ -1004,11 +1004,17 @@ mod tests {
             }
         }
         words.sort_unstable();
+        words
+    }
+
+    // tiny_words as a graph
+    #[inline]
+    fn tiny_kwg() -> kwg::Kwg<kwg::Node24> {
         let bytes = build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
-            &words,
+            &tiny_words(),
         )
         .unwrap();
         kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap()
@@ -1021,9 +1027,25 @@ mod tests {
     // is quick
     #[inline]
     fn leaves_after(on_board: usize, play: &movegen::Play, fuzz: f64) -> Vec<(Vec<u8>, f64)> {
-        let game_config = game_config::make_english_game_config();
+        leaves_under(
+            &game_config::make_english_game_config(),
+            &tiny_kwg(),
+            on_board,
+            play,
+            fuzz,
+        )
+    }
+
+    // the same, under these rules and words
+    #[inline]
+    fn leaves_under(
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<kwg::Node24>,
+        on_board: usize,
+        play: &movegen::Play,
+        fuzz: f64,
+    ) -> Vec<(Vec<u8>, f64)> {
         let alphabet = game_config.alphabet();
-        let kwg = tiny_kwg();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; 15 * 15];
         let mut watcher_rack = vec![5];
@@ -1041,14 +1063,14 @@ mod tests {
         }
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
-            game_config: &game_config,
-            kwg: &kwg,
+            game_config,
+            kwg,
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
         };
-        let mut tables = InferTables::new(&game_config, &klv).unwrap();
-        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut tables = InferTables::new(game_config, &klv).unwrap();
+        let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
         kept_leaves(
             &mut tables,
             &mut move_generator,
@@ -1059,6 +1081,41 @@ mod tests {
             2,
         )
         .unwrap()
+    }
+
+    // under jumbled rules, on the alphagrams of tiny_words (every order of each
+    // is a word), a move keeps what it keeps under the classic rules
+    #[test]
+    #[inline]
+    fn jumbled_rules_infer_as_classic_ones_on_words_whose_anagrams_are_words() {
+        let classic = game_config::make_english_game_config();
+        let jumbled = game_config::make_jumbled_english_game_config();
+        let bytes = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &build::make_alphagrams(&tiny_words()),
+        )
+        .unwrap();
+        let alphagrams = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
+        let at = movegen::Play::Place {
+            down: false,
+            lane: 7,
+            idx: 7,
+            word: [1, 20][..].into(),
+            score: 0,
+        };
+        let exchange = movegen::Play::Exchange {
+            tiles: [0u8; 3][..].into(),
+        };
+        for (on_board, play, fuzz) in [(0, &at, 0.0), (0, &at, 3.0), (79, &exchange, 3.0)] {
+            let want = leaves_under(&classic, &tiny_kwg(), on_board, play, fuzz);
+            assert!(!want.is_empty());
+            assert_eq!(
+                leaves_under(&jumbled, &alphagrams, on_board, play, fuzz),
+                want
+            );
+        }
     }
 
     #[test]
