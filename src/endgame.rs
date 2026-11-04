@@ -1431,6 +1431,21 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         limits: &Limits,
         finished: Option<(i8, equity::Equity)>,
     ) -> error::Returns<Solved> {
+        self.run_id_loop_below(player_idx, verbose, limits, finished, f32::INFINITY)
+    }
+
+    // the search deepening depth by depth, as run_id_loop; with a finite beta,
+    // each depth searched below it alone, so a value not below beta says only
+    // that the position is worth that much at least
+    #[inline]
+    fn run_id_loop_below(
+        &mut self,
+        player_idx: u8,
+        verbose: bool,
+        limits: &Limits,
+        finished: Option<(i8, equity::Equity)>,
+        beta: f32,
+    ) -> error::Returns<Solved> {
         let mut last_valuation = f32::NAN;
         let longest = self.longest_line(player_idx);
         self.begin_search(limits);
@@ -1473,7 +1488,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.nodes = 0;
             self.work_buffer.cut_short = false;
             self.work_buffer.proven = None;
-            let searched = if max_depth == 1 {
+            let searched = if beta < f32::INFINITY {
+                self.root_search(player_idx, max_depth, f32::NEG_INFINITY, beta)
+            } else if max_depth == 1 {
                 self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
             } else {
                 self.aspiration_search(player_idx, max_depth, last_valuation)
@@ -2295,6 +2312,19 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         limits: &BagLimits,
         exact: &mut bool,
     ) -> error::Returns<f32> {
+        self.solve_in_bag_below(player_idx, f32::INFINITY, limits, exact)
+    }
+
+    // as solve_in_bag, searched below beta alone (run_id_loop_below): a value
+    // not below beta says only that the endgame is worth that much at least
+    #[inline(always)]
+    fn solve_in_bag_below(
+        &mut self,
+        player_idx: u8,
+        beta: f32,
+        limits: &BagLimits,
+        exact: &mut bool,
+    ) -> error::Returns<f32> {
         let may_stop = limits.may_stop.get();
         if may_stop && limits.passed(&self.work_buffer.table) {
             limits.stopped.set(true);
@@ -2306,7 +2336,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         work_buffer.in_bag = Some(limits.endgames.get());
         work_buffer.progress = limits.progress.take();
         work_buffer.depth_cap = limits.depth.get();
-        let solved = self.run_id_loop(
+        let solved = self.run_id_loop_below(
             player_idx,
             false,
             &Limits {
@@ -2315,6 +2345,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 memory: limits.memory,
             },
             None,
+            beta,
         );
         let work_buffer = &mut self.work_buffer;
         limits.dur_movegen.set(work_buffer.dur_movegen);
@@ -4266,17 +4297,48 @@ struct BagSearch<'s, 'a, N: kwg::Node, L: kwg::Node> {
 
 impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // a position's value to its mover: the most any move gets them, a tie going
-    // to the move first in in_bag_moves's order
+    // to the move first in in_bag_moves's order. The placements go first,
+    // highest score first; once one has a value, a placement that empties the
+    // bag is only asked whether its endgame is worth little enough for it to be
+    // the best, and is valued only if so (endgame_below)
     fn node(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
         if let Some(&(value, _)) = self.valued.nodes.get(&key) {
             return Ok(value);
         }
         let mut moves = in_bag_moves(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
-        let mut best = (f64::NEG_INFINITY, 0);
-        for (i, play) in moves.iter().enumerate() {
-            let value = self.move_value(pos, play)?;
-            if value > best.0 {
+        let bag_len = pos.bag_len();
+        let mut asked = (0..moves.len()).collect::<Vec<_>>();
+        asked.sort_by_key(|&i| match &moves[i] {
+            movegen::Play::Place { score, .. } => (std::cmp::Reverse(*score), i),
+            _ => (std::cmp::Reverse(i32::MIN), i),
+        });
+        let mut best = (f64::NEG_INFINITY, usize::MAX);
+        for i in asked {
+            let value = match &moves[i] {
+                movegen::Play::Place { word, score, .. }
+                    if best.1 != usize::MAX
+                        && word.iter().filter(|&&tile| tile != 0).count() >= bag_len =>
+                {
+                    // the best so far, or a tie with it coming first, needs the
+                    // next mover's endgame worth score - best at most
+                    let room = *score as f64 - best.0;
+                    let most = if i < best.1 {
+                        room.floor()
+                    } else {
+                        room.ceil() - 1.0
+                    };
+                    let mut next = pos.placed(self.gc, &moves[i]);
+                    next.draw(&pos.bag.clone());
+                    next.next_turn();
+                    self.endgame_below(&next, most + 1.0)?
+                        .map(|theirs| *score as f64 - theirs)
+                }
+                play => Some(self.move_value(pos, play)?),
+            };
+            if let Some(value) = value
+                && (value > best.0 || (value == best.0 && i < best.1))
+            {
                 best = (value, i);
             }
         }
@@ -4303,6 +4365,32 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
             .solve_in_bag(pos.mover, self.limits, &mut self.exact)? as f64;
         self.valued.endgames.insert(key, value);
         Ok(value)
+    }
+
+    // the endgame's value to its mover when it is below beta (a whole number of
+    // millipoints, as every endgame value is), else none: searched below beta
+    // alone, which stops sooner than a search for the value
+    fn endgame_below(&mut self, pos: &InBag, beta: f64) -> error::Returns<Option<f64>> {
+        let key = pos.key();
+        if let Some(&value) = self.valued.endgames.get(&key) {
+            return Ok((value < beta).then_some(value));
+        }
+        self.sub.init_after_scoreless_turns(
+            &pos.board,
+            [&pos.racks[0], &pos.racks[1]],
+            pos.passes as u16,
+            pos.zeros as u16,
+        );
+        let value =
+            self.sub
+                .solve_in_bag_below(pos.mover, beta as f32, self.limits, &mut self.exact)?
+                as f64;
+        if value < beta {
+            self.valued.endgames.insert(key, value);
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
     }
 
     // the value to the next mover of the position after this one's turn, the
