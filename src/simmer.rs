@@ -294,7 +294,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> error::Returns<bool> {
-        self.simulate_impl::<false, _, _>(game_config, kwg, arm_tables, klv, candidate_play)
+        self.simulate_impl::<false, _, _>(game_config, kwg, arm_tables, klv, candidate_play, false)
     }
 
     // as simulate, its moves found by the move generator's lean arm, so that a
@@ -308,7 +308,40 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> error::Returns<bool> {
-        self.simulate_impl::<true, _, _>(game_config, kwg, arm_tables, klv, candidate_play)
+        self.simulate_impl::<true, _, _>(game_config, kwg, arm_tables, klv, candidate_play, false)
+    }
+
+    // as simulate, its candidate a play challenged off the board: the tiles go
+    // back on the rack; it scores nothing; its turn counts as a scoreless one,
+    // a pass as well where the config says (GameState::challenged_off). The
+    // board stays as it was, so the rest of the rollout goes as a pass's does.
+    #[inline(always)]
+    pub fn simulate_challenged_off<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+    ) -> error::Returns<bool> {
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        self.simulate_impl::<false, _, _>(game_config, kwg, arm_tables, klv, &pass, true)
+    }
+
+    // as simulate_challenged_off, by the move generator's lean arm
+    #[inline(always)]
+    pub fn simulate_lean_challenged_off<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+    ) -> error::Returns<bool> {
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        self.simulate_impl::<true, _, _>(game_config, kwg, arm_tables, klv, &pass, true)
     }
 
     #[inline(always)]
@@ -319,6 +352,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
+        challenged_off: bool,
     ) -> error::Returns<bool> {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
@@ -391,7 +425,11 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 klv.leave_value_from_tally(&self.rack_tally);
             let rng = rollout_rng.get_or_insert_with(|| self.rng.copy_state());
-            self.game_state.play(game_config, rng, &next_play)?;
+            if ply == 0 && challenged_off {
+                self.game_state.challenged_off(game_config);
+            } else {
+                self.game_state.play(game_config, rng, &next_play)?;
+            }
             match self
                 .game_state
                 .check_game_ended(game_config, &mut self.final_scores)?
@@ -1326,6 +1364,67 @@ mod tests {
         }
         assert!(checked > 50, "{checked} checked");
         assert!(placed > 50, "{placed} plies placed tiles");
+    }
+
+    #[test]
+    #[inline]
+    fn a_play_challenged_off_rolls_out_as_a_pass_but_for_its_turns() {
+        // on the same draws a play challenged off the board leaves the board
+        // and the scores a pass leaves; its turn counts as scoreless, and as a
+        // pass only where the config says challenges are passes
+        let kwg = kwg_of(&[1, 5, 9, 14, 18, 19, 20]);
+        let no_tables = anagrams::ArmTables::None;
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let mut checked = 0;
+        for (game_config, passes) in [
+            (game_config::make_english_game_config(), 0),
+            (game_config::make_spanish_game_config(), 1),
+        ] {
+            assert_eq!(game_config.challenges_are_passes(), passes == 1);
+            for seed in 0..6u64 {
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut deal_rng = DefaultRng::seed_from_u64(seed);
+                game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+                for plies in [0, 2] {
+                    let mut simmer = Simmer::new(&game_config).unwrap();
+                    simmer.prepare(&game_config, &game_state, plies, true, &[]);
+                    let pristine = simmer.prepared_state().clone();
+                    let mut after = Vec::new();
+                    for challenged_off in [false, true] {
+                        simmer.restore_prepared(&pristine);
+                        simmer.reseed(seed);
+                        simmer.prepare_iteration();
+                        if challenged_off {
+                            simmer
+                                .simulate_lean_challenged_off(&game_config, &kwg, &no_tables, &klv)
+                                .unwrap();
+                        } else {
+                            simmer
+                                .simulate_lean(&game_config, &kwg, &no_tables, &klv, &pass)
+                                .unwrap();
+                        }
+                        let state = &simmer.game_state;
+                        after.push((
+                            state.board_tiles.clone(),
+                            state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                            state.zero_turns,
+                            state.pass_turns,
+                        ));
+                    }
+                    assert_eq!(after[1].0, after[0].0, "seed {seed}");
+                    assert_eq!(after[1].1, after[0].1, "seed {seed}");
+                    if plies == 0 {
+                        assert_eq!((after[0].2, after[0].3), (1, 1), "seed {seed}");
+                        assert_eq!((after[1].2, after[1].3), (1, passes), "seed {seed}");
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 24);
     }
 
     #[test]
