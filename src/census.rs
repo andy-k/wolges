@@ -711,31 +711,36 @@ fn scatter_words(
         best: &'a mut [i32],
     }
     impl Ctx<'_> {
-        fn rec_k(&mut self, t: usize, remaining: usize, k_idx: usize, r_idx: usize) {
-            if remaining == 0 {
-                let cand = self.sp_val + self.leave[k_idx];
-                let cur = &mut self.best[r_idx + self.p_tail[t]];
-                if cand > *cur {
-                    *cur = cand;
+        // the rest of K from letter t on, with remaining tiles (at least one)
+        // still to pick. At each letter K takes none and the loop moves on, or
+        // it takes some: enough to make it whole (its rack is offered), or
+        // fewer (the walk goes on at the next letter)
+        fn rec_k(&mut self, mut t: usize, remaining: usize, k_idx: usize, mut r_idx: usize) {
+            while t < self.n && (self.suffix_cap[t] as usize) >= remaining {
+                let rem_r = self.p_rest[t] + remaining;
+                let pt = self.p_tally[t] as usize;
+                let cap = (self.avail[t] as usize).min(remaining);
+                for c in 1..=cap {
+                    let k = k_idx + self.steps.of(t, remaining, c);
+                    let r = r_idx + self.steps.of(t, rem_r, pt + c);
+                    if c == remaining {
+                        self.offer(k, r + self.p_tail[t + 1]);
+                    } else {
+                        self.rec_k(t + 1, remaining - c, k, r);
+                    }
                 }
-                return;
+                r_idx += self.steps.of(t, rem_r, pt);
+                t += 1;
             }
-            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
-                return;
-            }
+        }
 
-            let rem_r = self.p_rest[t] + remaining;
-            let pt = self.p_tally[t] as usize;
-            self.rec_k(t + 1, remaining, k_idx, r_idx + self.steps.of(t, rem_r, pt));
-
-            let cap = (self.avail[t] as usize).min(remaining);
-            for c in 1..=cap {
-                self.rec_k(
-                    t + 1,
-                    remaining - c,
-                    k_idx + self.steps.of(t, remaining, c),
-                    r_idx + self.steps.of(t, rem_r, pt + c),
-                );
+        // the rack P + K at r is worth at least P's play with K kept
+        #[inline(always)]
+        fn offer(&mut self, k_idx: usize, r: usize) {
+            let cand = self.sp_val + self.leave[k_idx];
+            let cur = &mut self.best[r];
+            if cand > *cur {
+                *cur = cand;
             }
         }
     }
@@ -766,7 +771,7 @@ fn scatter_words(
             p_rest[t] = p_rest[t + 1] + p_tally[t] as usize;
             p_tail[t] = p_tail[t + 1] + steps.of(t, p_rest[t], p_tally[t] as usize);
         }
-        Ctx {
+        let mut ctx = Ctx {
             sp_val,
             n,
             steps: &steps,
@@ -777,8 +782,13 @@ fn scatter_words(
             avail: &avail,
             suffix_cap: &suffix_cap,
             best: &mut *best,
+        };
+        let r_idx = lat.size_start(rack_size);
+        if krem == 0 {
+            ctx.offer(lat.size_start(0), r_idx + p_tail[0]);
+        } else {
+            ctx.rec_k(0, krem, lat.size_start(krem), r_idx);
         }
-        .rec_k(0, krem, lat.size_start(krem), lat.size_start(rack_size));
     }
 }
 
