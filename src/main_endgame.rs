@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     alphabet, anagrams, bites, build, display, endgame, equity, error, fash, game_config,
-    game_state, klv, kwg, movegen, notation, play_scorer, text,
+    game_state, klv, kwg, movegen, notation, parallelism, play_scorer, text,
 };
 
 mod endgame_watch;
@@ -1575,18 +1575,17 @@ fn solve_position<N: kwg::Node>(
     if bag_size > 1 {
         let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
         egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
-        let result = egs.solve_peg(
-            endgame::PegBagPosition {
-                mover: 0,
-                board: board_tiles.to_vec(),
-                mover_rack: question.rack.to_vec(),
-                unseen_tally: available_tally.to_vec(),
-                bag_size,
-                score_diff: scaled_score_diff,
-                exchanges: [0, 0],
-            },
-            &solving.limits,
-        )?;
+        let mut progress = endgame::PegBagProgress::new(endgame::PegBagPosition {
+            mover: 0,
+            board: board_tiles.to_vec(),
+            mover_rack: question.rack.to_vec(),
+            unseen_tally: available_tally.to_vec(),
+            bag_size,
+            score_diff: scaled_score_diff,
+            exchanges: [0, 0],
+        })?;
+        progress.set_threads(parallelism::available());
+        let result = egs.resume_peg(&mut progress, &solving.limits)?;
         let result = match result {
             Ok(result) => result,
             Err(unsupported) => {
