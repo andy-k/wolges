@@ -79,6 +79,10 @@ path = "src/main_simmer.rs"
 name = "movegen-test"
 path = "src/main_movegen_test.rs"
 
+[[bin]]
+name = "reply-cv"
+path = "src/main_reply_cv.rs"
+
 [[example]]
 name = "arm_table_bytes"
 crate-type = ["lib"]
