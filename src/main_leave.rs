@@ -4464,7 +4464,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     )?;
 
     let summary_name = claim_output_path(&format!("census-summary-{census_run_epoch}.csv"))?;
-    let mut summary_out = csv::Writer::from_path(&summary_name)?;
+    let mut summary_out = std::io::BufWriter::new(std::fs::File::create(&summary_name)?);
     let full_racks = lat.full_rack_start()..lat.len();
     let mut total_points = 0f64;
     let mut total_count = 0u64;
@@ -4474,25 +4474,53 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             total_count += accum_cnt[idx];
         }
     }
-    summary_out.serialize(("", total_points, total_count))?;
+    let mut totals = csv::Writer::from_writer(Vec::new());
+    totals.serialize(("", total_points, total_count))?;
+    summary_out.write_all(&totals.into_inner().map_err(|e| e.into_error())?)?;
+    // each full rack's row, a share of them a thread: each share's rows go to
+    // its own buffer, and the buffers then to the file in order
+    let share = full_racks.len().div_ceil(threads.max(1));
+    let (accum_sum, accum_cnt, lat) = (&accum_sum, &accum_cnt, &lat);
+    let shares = std::thread::scope(|s| {
+        let handles = full_racks
+            .step_by(share)
+            .map(|from| {
+                s.spawn(move || -> error::Returns<(Vec<u8>, usize)> {
+                    let mut out = csv::Writer::from_writer(Vec::new());
+                    let mut tally = vec![0u8; num_letters];
+                    let mut rack = String::new();
+                    let mut racks = 0usize;
+                    for idx in from..(from + share).min(lat.len()) {
+                        if accum_cnt[idx] == 0 {
+                            continue;
+                        }
+                        lat.unrank_into(idx, &mut tally);
+                        rack.clear();
+                        for (t, &c) in tally.iter().enumerate() {
+                            for _ in 0..c {
+                                rack.push_str(alphabet.of_rack(t as u8).unwrap());
+                            }
+                        }
+                        out.serialize((
+                            &rack,
+                            accum_sum[idx] as f64 / equity::SCALE as f64,
+                            accum_cnt[idx],
+                        ))?;
+                        racks += 1;
+                    }
+                    Ok((out.into_inner().map_err(|e| e.into_error())?, racks))
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<error::Returns<Vec<_>>>()
+    })?;
     let mut num_racks = 0usize;
-    for idx in full_racks {
-        if accum_cnt[idx] == 0 {
-            continue;
-        }
-        lat.unrank_into(idx, &mut tally_buf);
-        leave_ser.clear();
-        for (t, &c) in tally_buf.iter().enumerate() {
-            for _ in 0..c {
-                leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
-            }
-        }
-        summary_out.serialize((
-            &leave_ser,
-            accum_sum[idx] as f64 / equity::SCALE as f64,
-            accum_cnt[idx],
-        ))?;
-        num_racks += 1;
+    for (bytes, racks) in shares {
+        summary_out.write_all(&bytes)?;
+        num_racks += racks;
     }
     summary_out.flush()?;
     writeln!(
