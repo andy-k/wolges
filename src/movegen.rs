@@ -1521,7 +1521,45 @@ fn gen_cross_set<'a, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
     }
 }
 
-struct GenPlacePlacementsParams<'a> {
+// what the shadow asks of a span through board tiles before it keeps it: under
+// the tables it asks their key filter, under the lean arm nothing (its check is
+// (), and compiles away)
+trait SpanCheck {
+    fn refuses(&mut self, idx_left: i8, idx_right: i8, num_played: u8) -> bool;
+}
+
+impl SpanCheck for () {
+    #[inline(always)]
+    fn refuses(&mut self, _idx_left: i8, _idx_right: i8, _num_played: u8) -> bool {
+        false
+    }
+}
+
+// a span that plays the whole rack through board tiles holds a word only if the
+// key filter holds the rack's key plus the tiles it crosses
+#[derive(Clone, Copy)]
+struct FullRack<'a> {
+    source: &'a anagrams::Anagrams,
+    key: u128,
+    len: u8,
+    prefix: &'a [SpanPrefix], // the lane's
+}
+
+impl SpanCheck for Option<FullRack<'_>> {
+    #[inline(always)]
+    fn refuses(&mut self, idx_left: i8, idx_right: i8, num_played: u8) -> bool {
+        match self {
+            Some(full) if num_played == full.len => {
+                let crossed =
+                    full.prefix[idx_right as usize].key - full.prefix[idx_left as usize].key;
+                !full.source.may_hold(alphagram::Fitted(full.key + crossed))
+            }
+            _ => false,
+        }
+    }
+}
+
+struct GenPlacePlacementsParams<'a, C: SpanCheck = ()> {
     board_strip: &'a [u8],
     alphabet: &'a alphabet::Alphabet,
     rack_tally: &'a mut [u8],
@@ -1544,6 +1582,7 @@ struct GenPlacePlacementsParams<'a> {
     rack_tally_shadowr: &'a mut [u8],
     left_bounds: &'a mut Vec<i32>,
     bounds_stride: usize,
+    check: C,
 }
 
 fn feasible_word_lengths<const USE_TABLE: bool>(
@@ -1630,22 +1669,56 @@ fn feasible_lengths_of_subracks(
     found
 }
 
+// the whole rack's key, and the lane's span sums filled for it, when a span
+// through board tiles that plays the whole rack can be refused by the key
+// filter at shadow time: the unblanked classic game under the tables
+#[inline(always)]
+fn fill_full_rack<'a, N: kwg::Node, L: kwg::Node>(
+    working_buffer: &mut WorkingBuffer,
+    board_snapshot: &BoardSnapshot<'a, N, L>,
+    dim: &matrix::Dim,
+    down: bool,
+    lane: i8,
+) -> Option<(&'a anagrams::Anagrams, u128, u8, usize)> {
+    let source = board_snapshot.anagrams?;
+    if !matches!(
+        board_snapshot.game_config.game_rules(),
+        game_config::GameRules::Classic
+    ) || working_buffer.rack_tally[0] != 0
+        || working_buffer.subracks.is_empty()
+    {
+        return None;
+    }
+    let n = working_buffer.num_tiles_on_rack as usize;
+    let from = working_buffer.subracks_by_played[n] as usize;
+    // a rack without a blank has one subrack of its own size: itself
+    debug_assert_eq!(working_buffer.subracks_by_played[n + 1] as usize - from, 1);
+    let key = working_buffer.subracks[from].key;
+    let (at, _) =
+        working_buffer.fill_span_lane(board_snapshot.board_tiles, dim, source.layout(), down, lane);
+    Some((source, key, n as u8, at))
+}
+
 #[inline]
-fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8)>(
-    params: &'a mut GenPlacePlacementsParams<'a>,
+fn gen_place_placements<
+    'a,
+    C: SpanCheck,
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
+>(
+    params: &'a mut GenPlacePlacementsParams<'a, C>,
     single_tile_plays: bool,
     want_raw: bool,
     possible_strip_placement_callback: PossibleStripPlacementCallbackType,
 ) {
     if params.per_span {
-        gen_place_placements_impl::<true, _>(
+        gen_place_placements_impl::<true, C, _>(
             params,
             single_tile_plays,
             want_raw,
             possible_strip_placement_callback,
         )
     } else {
-        gen_place_placements_impl::<false, _>(
+        gen_place_placements_impl::<false, C, _>(
             params,
             single_tile_plays,
             want_raw,
@@ -1658,9 +1731,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 fn gen_place_placements_impl<
     'a,
     const PER_SPAN: bool,
+    C: SpanCheck,
     PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
 >(
-    params: &'a mut GenPlacePlacementsParams<'a>,
+    params: &'a mut GenPlacePlacementsParams<'a, C>,
     single_tile_plays: bool,
     want_raw: bool,
     mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
@@ -1677,8 +1751,8 @@ fn gen_place_placements_impl<
         );
     }
 
-    struct Env<'a> {
-        params: &'a mut GenPlacePlacementsParams<'a>,
+    struct Env<'a, C: SpanCheck> {
+        params: &'a mut GenPlacePlacementsParams<'a, C>,
         strider_len: usize,
         anchor: i8,
         leftmost: i8,
@@ -1710,7 +1784,7 @@ fn gen_place_placements_impl<
     }
 
     #[inline(always)]
-    fn ranked_from(env: &Env<'_>, deferred: u128, low_end: usize) -> u128 {
+    fn ranked_from<C: SpanCheck>(env: &Env<'_, C>, deferred: u128, low_end: usize) -> u128 {
         let square_ranks_slice =
             &env.params.lane_scaffold.square_ranks[low_end..low_end + env.strider_len];
         let mut remaining = deferred;
@@ -1724,8 +1798,8 @@ fn gen_place_placements_impl<
     }
 
     #[inline(always)]
-    fn shadow_record<const PER_SPAN: bool>(
-        env: &mut Env<'_>,
+    fn shadow_record<const PER_SPAN: bool, C: SpanCheck>(
+        env: &mut Env<'_, C>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
@@ -1740,6 +1814,9 @@ fn gen_place_placements_impl<
             !acc.crossed_board_tiles
         );
         if !acc.crossed_board_tiles && env.params.feasible_lengths & 1 << num_played == 0 {
+            return;
+        }
+        if acc.crossed_board_tiles && env.params.check.refuses(idx_left, idx_right, num_played) {
             return;
         }
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
@@ -1824,8 +1901,8 @@ fn gen_place_placements_impl<
     }
 
     #[inline(always)]
-    fn shadow_play_right<const PER_SPAN: bool>(
-        env: &mut Env<'_>,
+    fn shadow_play_right<const PER_SPAN: bool, C: SpanCheck>(
+        env: &mut Env<'_, C>,
         mut acc: Accumulator,
         walk: ShadowRightWalk,
     ) -> bool {
@@ -1863,7 +1940,7 @@ fn gen_place_placements_impl<
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
             if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                shadow_record::<PER_SPAN>(env, &acc, idx_left, idx, num_played, low_end, ranked);
+                shadow_record::<PER_SPAN, C>(env, &acc, idx_left, idx, num_played, low_end, ranked);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1958,8 +2035,8 @@ fn gen_place_placements_impl<
     }
 
     #[inline(always)]
-    fn shadow_play_left<const PER_SPAN: bool>(
-        env: &mut Env<'_>,
+    fn shadow_play_left<const PER_SPAN: bool, C: SpanCheck>(
+        env: &mut Env<'_, C>,
         mut acc: Accumulator,
         mut idx: i8,
         mut is_unique: bool,
@@ -1991,7 +2068,7 @@ fn gen_place_placements_impl<
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
             if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-                shadow_record::<PER_SPAN>(
+                shadow_record::<PER_SPAN, C>(
                     env,
                     &acc,
                     idx + 1,
@@ -2007,7 +2084,7 @@ fn gen_place_placements_impl<
 
             // can switch direction only after using the anchor square
             if idx < env.anchor {
-                stale_rack = shadow_play_right::<PER_SPAN>(
+                stale_rack = shadow_play_right::<PER_SPAN, C>(
                     env,
                     Accumulator { ..acc },
                     ShadowRightWalk {
@@ -2113,9 +2190,10 @@ fn gen_place_placements_impl<
     #[inline(always)]
     fn gen_places_from<
         const PER_SPAN: bool,
+        C: SpanCheck,
         PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
     >(
-        env: &mut Env<'_>,
+        env: &mut Env<'_, C>,
         single_tile_plays: bool,
         want_raw: bool,
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
@@ -2131,7 +2209,7 @@ fn gen_place_placements_impl<
                     .left_bounds
                     .resize(env.bounds_at + 2 * env.params.bounds_stride, i32::MIN);
             }
-            shadow_play_left::<PER_SPAN>(
+            shadow_play_left::<PER_SPAN, C>(
                 env,
                 Accumulator {
                     main_score: 0,
@@ -2184,7 +2262,7 @@ fn gen_place_placements_impl<
             env.anchor = leftmost - 1;
             env.leftmost = 0;
             env.rightmost = rightmost;
-            gen_places_from::<PER_SPAN, _>(
+            gen_places_from::<PER_SPAN, C, _>(
                 &mut env,
                 single_tile_plays,
                 want_raw,
@@ -2205,7 +2283,7 @@ fn gen_place_placements_impl<
                         env.anchor = anchor;
                         env.leftmost = leftmost;
                         env.rightmost = rightmost;
-                        gen_places_from::<PER_SPAN, _>(
+                        gen_places_from::<PER_SPAN, C, _>(
                             &mut env,
                             single_tile_plays,
                             want_raw,
@@ -5749,6 +5827,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 per_span: false,
                 left_bounds: &mut working_buffer.anchor_left_bounds,
                 bounds_stride,
+                check: (),
             },
             true,
             want_raw,
@@ -5802,6 +5881,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 per_span: false,
                 left_bounds: &mut working_buffer.anchor_left_bounds,
                 bounds_stride,
+                check: (),
             },
             false,
             want_raw,
@@ -6044,6 +6124,7 @@ fn kurnia_gen_place_moves_iter<
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
+        let full = fill_full_rack(working_buffer, board_snapshot, dim, false, row);
         gen_place_placements(
             &mut GenPlacePlacementsParams {
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
@@ -6076,6 +6157,12 @@ fn kurnia_gen_place_moves_iter<
                 per_span: true,
                 left_bounds: &mut working_buffer.anchor_left_bounds,
                 bounds_stride,
+                check: full.map(|(source, key, len, at)| FullRack {
+                    source,
+                    key,
+                    len,
+                    prefix: &working_buffer.span_prefix[at..at + dim.cols as usize + 1],
+                }),
             },
             true,
             want_raw,
@@ -6098,6 +6185,7 @@ fn kurnia_gen_place_moves_iter<
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
+        let full = fill_full_rack(working_buffer, board_snapshot, dim, true, col);
         gen_place_placements(
             &mut GenPlacePlacementsParams {
                 board_strip: &working_buffer.transposed_board_tiles
@@ -6129,6 +6217,12 @@ fn kurnia_gen_place_moves_iter<
                 per_span: true,
                 left_bounds: &mut working_buffer.anchor_left_bounds,
                 bounds_stride,
+                check: full.map(|(source, key, len, at)| FullRack {
+                    source,
+                    key,
+                    len,
+                    prefix: &working_buffer.span_prefix[at..at + dim.rows as usize + 1],
+                }),
             },
             false,
             want_raw,
