@@ -471,6 +471,31 @@ pub fn make_jumbled_super_german_game_config() -> GameConfig {
     make_super_german_game_config().jumbled()
 }
 
+// the Italian set on the standard board, played as the English game is
+#[inline]
+pub fn make_italian_game_config() -> GameConfig {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_italian_alphabet(),
+        board_layout: board_layout::make_standard_board_layout(),
+        rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
+        num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[inline]
+pub fn make_jumbled_italian_game_config() -> GameConfig {
+    make_italian_game_config().jumbled()
+}
+
 #[inline]
 pub fn make_norwegian_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
@@ -603,6 +628,7 @@ pub const GAME_CONFIGS: &[(&str, MakeGameConfig)] = &[
     ("french", make_french_game_config),
     ("german", make_german_game_config),
     ("hong-kong-english", make_hong_kong_english_game_config),
+    ("italian", make_italian_game_config),
     ("norwegian", make_norwegian_game_config),
     ("polish", make_polish_game_config),
     ("slovene", make_slovene_game_config),
