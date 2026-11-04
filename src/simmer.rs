@@ -80,6 +80,15 @@ pub struct PlyPlayed {
     pub tiles: u8,
 }
 
+// the leaves a seat may have kept: each one, and the weights so far, so that a
+// weighted draw is a binary search
+#[derive(Clone)]
+struct KeptLeaves {
+    seat: u8,
+    leaves: Vec<Vec<u8>>,
+    weight_sums: Vec<f64>,
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
@@ -100,8 +109,7 @@ pub struct Simmer<R = DefaultRng> {
     move_generator: movegen::KurniaMoveGenerator,
     rack_tally: Box<[u8]>,
 
-    kept_leaves: Vec<Vec<u8>>,
-    kept_weight_sums: Vec<f64>, // cumulative, so a weighted draw is a binary search
+    kept: Vec<KeptLeaves>, // a seat's each, the mover's never
 
     lane_bests: Vec<(movegen::ValuedMove, bool, i8)>, // the opponent's replies on the start board, best first, each with its lane
     lane_rows_taken: u128,                            // the lanes those replies lie on
@@ -141,8 +149,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
-            kept_leaves: Vec::new(),
-            kept_weight_sums: Vec::new(),
+            kept: Vec::new(),
 
             lane_bests: Vec::new(),
             lane_rows_taken: 0,
@@ -169,10 +176,36 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             self.wants_win_prob,
             &[],
         );
-        clone.kept_leaves.clone_from(&self.kept_leaves);
-        clone.kept_weight_sums.clone_from(&self.kept_weight_sums);
+        clone.kept.clone_from(&self.kept);
         clone.opponents_pass = self.opponents_pass;
         clone
+    }
+
+    // the leaves a seat other than the mover's may have kept, with weights, one
+    // of them dealt to it first each iteration, the rest of its rack from the
+    // bag; in place of any set for that seat before. prepare sets the next
+    // seat's (the opponent's in a game of two), clearing the others'; so set
+    // any other seat's after it
+    #[inline]
+    pub fn set_kept_leaves(&mut self, seat: u8, kept_leaves: &[(Vec<u8>, f64)]) {
+        self.kept.retain(|kept| kept.seat != seat);
+        let mut kept = KeptLeaves {
+            seat,
+            leaves: Vec::new(),
+            weight_sums: Vec::new(),
+        };
+        let mut total = 0.0;
+        for (leave, weight) in kept_leaves {
+            if *weight > 0.0 {
+                total += weight;
+                kept.leaves.push(leave.clone());
+                kept.weight_sums.push(total);
+            }
+        }
+        if !kept.leaves.is_empty() {
+            self.kept.push(kept);
+            self.kept.sort_by_key(|kept| kept.seat);
+        }
     }
 
     // whether every seat but the mover's passes on each of its turns in a
@@ -190,18 +223,11 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         game_state: &game_state::GameState,
         num_sim_plies: usize,
         report_win_prob: bool,
-        kept_leaves: &[(Vec<u8>, f64)], // the leaves the opponent may have kept, with weights
+        kept_leaves: &[(Vec<u8>, f64)], // the leaves the next seat may have kept, with weights
     ) {
-        self.kept_leaves.clear();
-        self.kept_weight_sums.clear();
-        let mut total = 0.0;
-        for (leave, weight) in kept_leaves {
-            if *weight > 0.0 {
-                total += weight;
-                self.kept_leaves.push(leave.clone());
-                self.kept_weight_sums.push(total);
-            }
-        }
+        self.kept.clear();
+        let next_seat = (game_state.turn + 1) % game_state.players.len() as u8;
+        self.set_kept_leaves(next_seat, kept_leaves);
         self.initial_game_state.clone_from(game_state);
         self.game_state.clone_from(game_state);
         self.initial_score_spread = game_state.current_player().score
@@ -261,23 +287,26 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 player.rack.clear();
             }
         }
-        // put the opponent's kept leave back on their rack first, taking it out
-        // of the bag before the shuffle: taking particular copies out of a
-        // shuffled bag would change the odds of what the rest deals
-        if let Some(&total) = self.kept_weight_sums.last()
-            && self.initial_game_state.players.len() == 2
-        {
-            let opponent = 1 - initial_turn;
+        // put each seat's kept leave back on its rack first, seat by seat,
+        // taking it out of the bag before the shuffle: taking particular copies
+        // out of a shuffled bag would change the odds of what the rest deals
+        for kept in &self.kept {
+            let seat = kept.seat as usize;
+            let Some(&total) = kept.weight_sums.last() else {
+                continue;
+            };
+            if seat == initial_turn || seat >= self.final_scores.len() {
+                continue;
+            }
             let at = self.rng.random_range(0.0..total);
-            let pick = self
-                .kept_weight_sums
+            let pick = (kept.weight_sums)
                 .partition_point(|&weight| weight <= at)
-                .min(self.kept_weight_sums.len() - 1);
-            let rack_len = self.final_scores[opponent] as usize;
+                .min(kept.weight_sums.len() - 1);
+            let rack_len = self.final_scores[seat] as usize;
             let game_state = &mut self.initial_game_state;
-            for &tile in self.kept_leaves[pick].iter().take(rack_len) {
+            for &tile in kept.leaves[pick].iter().take(rack_len) {
                 if game_state.bag.remove_tile(tile).is_some() {
-                    game_state.players[opponent].rack.push(tile);
+                    game_state.players[seat].rack.push(tile);
                 }
             }
         }
@@ -1136,7 +1165,64 @@ mod tests {
 
         // a new prepare forgets them
         simmer.prepare(&game_config, &game_state, 4, false, &[]);
-        assert!(simmer.kept_weight_sums.is_empty());
+        assert!(simmer.kept.is_empty());
+    }
+
+    #[test]
+    #[inline]
+    fn each_seat_keeps_the_leave_set_for_it_in_a_game_of_three() {
+        // in a game of three, prepare's leaves are the next seat's;
+        // set_kept_leaves gives the other one its own. Each is dealt its known
+        // tiles first, every iteration, the mover's rack untouched
+        let mut game_config = game_config::make_english_game_config();
+        let game_config::GameConfig::Static(rules) = &mut game_config;
+        rules.num_players = 3;
+        let alphabet = game_config.alphabet();
+        // the mover holds A to G; every other tile is unseen, the other two
+        // seats dealt seven of them each
+        let mut game_state = game_state::GameState::new(&game_config);
+        game_state.players[0].rack.extend(1..=7);
+        let mut tally = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        for &tile in &game_state.players[0].rack {
+            tally[tile as usize] -= 1;
+        }
+        game_state.bag.set_from_iter(
+            (0u8..)
+                .zip(tally.iter())
+                .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
+        );
+        for seat in 1..3 {
+            game_state
+                .bag
+                .replenish(&mut game_state.players[seat].rack, 7, seat);
+        }
+        let holds = |rack: &[u8], tiles: &[u8]| {
+            let mut left = rack.to_vec();
+            tiles.iter().all(|tile| {
+                left.iter()
+                    .position(|t| t == tile)
+                    .map(|pos| left.swap_remove(pos))
+                    .is_some()
+            })
+        };
+        // the next seat may have kept three Zs, of which the game has one; the
+        // seat after it a Q and a J, one each
+        let (next, after) = (vec![26u8, 26, 26], vec![17u8, 10]);
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.prepare(&game_config, &game_state, 2, false, &[(next, 1.0)]);
+        simmer.set_kept_leaves(2, &[(after.clone(), 1.0)]);
+        for seed in 0..50 {
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            let players = &simmer.initial_game_state.players;
+            assert_eq!(players[0].rack, [1, 2, 3, 4, 5, 6, 7], "seed {seed}");
+            assert_eq!(players[1].rack.len(), 7, "seed {seed}");
+            assert_eq!(players[2].rack.len(), 7, "seed {seed}");
+            assert!(holds(&players[1].rack, &[26]), "seed {seed}");
+            assert!(holds(&players[2].rack, &after), "seed {seed}");
+        }
     }
 
     // every word of two or three tiles over the letters given
