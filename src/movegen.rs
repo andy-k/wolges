@@ -200,18 +200,27 @@ impl LaneScaffold {
         let indexes_to_descending_square_multiplier_slice =
             &mut self.indexes_to_descending_square_multiplier[low_end..high_end];
         // a square's key: its multiplier flipped to sort descending, then its
-        // index.
-        self.square_keys.clear();
-        for j in (0..strider_len).filter(|&j| board_strip[j] == 0) {
+        // index. Each square's key is written at the count of empty squares
+        // before it, kept only if the square is empty (no branch on it: a
+        // tile's key is written over or cut), and a key's rank is the count of
+        // keys below it (they differ), found with no compare a branch, where a
+        // sort's compares were mispredicted. A tile's square's multiplier is
+        // never read.
+        if self.square_keys.len() < strider_len {
+            self.square_keys.resize(strider_len, 0);
+        }
+        let mut n = 0;
+        for j in 0..strider_len {
             let multiplier = remaining_tile_multipliers_strip[j] as i32
                 * (k + perpendicular_word_multipliers_strip[j] as i32);
             precomputed_square_multiplier_slice[j] = multiplier;
-            self.square_keys
-                .push((!(multiplier as u32) as u64) << u8::BITS | j as u64);
+            self.square_keys[n] = (!(multiplier as u32) as u64) << u8::BITS | j as u64;
+            n += (board_strip[j] == 0) as usize;
         }
-        self.square_keys.sort_unstable();
+        let keys = &self.square_keys[..n];
         let square_ranks_slice = &mut self.square_ranks[low_end..high_end];
-        for (rank, &key) in self.square_keys.iter().enumerate() {
+        for &key in keys {
+            let rank = keys.iter().filter(|&&other| other < key).count();
             let j = key as u8;
             indexes_to_descending_square_multiplier_slice[rank] = j as i8;
             square_ranks_slice[j as usize] = rank as u8;
