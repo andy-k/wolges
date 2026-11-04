@@ -493,6 +493,32 @@ impl Anagrams {
         if !self.filter_may_hold(key_part(key.0)) {
             return None;
         }
+        self.group_at_held(key, len)
+    }
+
+    // the key filter's answer with every probe read and and-ed, no branch on
+    // each, for a caller probing a run of keys at once
+    #[inline(always)]
+    pub fn may_hold(&self, key: alphagram::Key) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        let h = filter_hash(key_part(key.0));
+        let base = filter_block(h, self.filter_block_count) * FILTER_BLOCK_WORDS;
+        let block = &self.filter[base..base + FILTER_BLOCK_WORDS];
+        let mut probe = h;
+        let mut all = 1u64;
+        for _ in 0..FILTER_PROBES {
+            let bit = probe as usize & (FILTER_BLOCK_BITS - 1);
+            all &= block[bit >> 6] >> (bit & 63);
+            probe >>= FILTER_BLOCK_SHIFT;
+        }
+        all & 1 != 0
+    }
+
+    // group_at for a key may_hold has passed: the table alone
+    #[inline(always)]
+    pub fn group_at_held(&self, key: alphagram::Key, len: u8) -> Option<u32> {
         self.groups
             .get(len as usize)?
             .get(&KeyBytes::of(key.0))
