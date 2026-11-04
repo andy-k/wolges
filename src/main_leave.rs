@@ -3335,7 +3335,6 @@ fn write_census_klv2(
     full: bool,
     path: &str,
 ) -> error::Returns<usize> {
-    let n = lat.num_letters();
     let rack_size = lat.rack_size();
 
     let max_keep = if full {
@@ -3343,40 +3342,61 @@ fn write_census_klv2(
     } else {
         rack_size.saturating_sub(1)
     };
-    let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
-    let mut tally = vec![0u8; n];
-    let mut word_buf = Vec::<u8>::new();
-    for idx in 0..lat.len() {
-        if !is_valued(idx) {
-            continue;
-        }
-        lat.unrank_into(idx, &mut tally);
-        let size: usize = tally.iter().map(|&c| c as usize).sum();
-        if size == 0 || size > max_keep {
-            continue; // skip empty (baseline), over-size, and (non-full) full racks.
-        }
-        word_buf.clear();
-        for (t, &c) in tally.iter().enumerate() {
-            for _ in 0..c {
-                word_buf.push(t as u8);
+    // each valued multiset of 1 to max_keep tiles, as its tiles in order, the
+    // words already sorted: a word, then the words adding a tile no lower than
+    // its last, a tile at a time (the empty one is the baseline, a full rack
+    // kept only when full)
+    struct Walk<'a> {
+        lat: &'a census::MultisetLattice,
+        value_mp: &'a dyn Fn(usize) -> f64,
+        baseline_mp: f64,
+        is_valued: &'a dyn Fn(usize) -> bool,
+        max_keep: usize,
+        tally: Vec<u8>,
+        word: Vec<u8>,
+        words: Vec<bites::Bites>,
+        values: Vec<f32>,
+    }
+    impl Walk<'_> {
+        fn from(&mut self, low: usize) {
+            for t in low..self.tally.len() {
+                self.tally[t] += 1;
+                self.word.push(t as u8);
+                let idx = self.lat.rank(&self.tally) as usize;
+                if (self.is_valued)(idx) {
+                    let pts = ((self.value_mp)(idx) - self.baseline_mp) / equity::SCALE as f64;
+                    self.words.push(self.word[..].into());
+                    self.values.push(pts as f32);
+                }
+                if self.word.len() < self.max_keep {
+                    self.from(t);
+                }
+                self.word.pop();
+                self.tally[t] -= 1;
             }
         }
-
-        let pts = (value_mp(idx) - baseline_mp) / equity::SCALE as f64;
-        leaves_map.insert(word_buf[..].into(), pts as f32);
     }
-    let mut sorted_words = leaves_map.keys().cloned().collect::<Box<_>>();
-    sorted_words.sort_unstable();
+    let mut walk = Walk {
+        lat,
+        value_mp,
+        baseline_mp,
+        is_valued,
+        max_keep,
+        tally: vec![0u8; lat.num_letters()],
+        word: Vec::with_capacity(max_keep),
+        words: Vec::new(),
+        values: Vec::new(),
+    };
+    if max_keep > 0 {
+        walk.from(0);
+    }
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
         build::BuildLayout::Wolges,
         build::BuildOrder::Sorted,
-        &sorted_words,
+        &walk.words,
     )?;
-    let leave_values = sorted_words
-        .iter()
-        .map(|s| leaves_map[s])
-        .collect::<Box<_>>();
+    let leave_values = walk.values;
     let mut bin = vec![0u8; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
     let mut w = 0;
     bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
