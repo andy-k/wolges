@@ -4918,7 +4918,9 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
     // first, then the margin, a tie going to the first in in_bag_moves's order.
     // The move a shallower pass found best goes first, then the placements,
     // highest score first; a move stops once the splits left cannot lift its
-    // chance to the best's (info_move)
+    // chance to the best's (info_move). The chances come first, then the
+    // margins of the moves at the best chance alone, a split whose margin the
+    // chance's search left unfound solved whole
     fn info_value(&mut self, info: &InfoSet) -> error::Returns<(f64, f64)> {
         let key = info.key();
         let (found, first) = {
@@ -4952,15 +4954,33 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
             _ => (true, std::cmp::Reverse(i32::MIN), i),
         });
-        let mut best = (f64::NEG_INFINITY, f64::NEG_INFINITY, usize::MAX);
+        let mut valued = Vec::new();
+        let mut floor = None;
         for i in asked {
-            let floor = (best.2 != usize::MAX).then_some(best.0);
-            let Some((win, margin)) = self.info_move(info, &moves[i], &splits, floor)? else {
+            let Some((win, margins)) = self.info_move(info, &moves[i], &splits, floor)? else {
                 continue;
             };
-            if win > best.0
-                || (win == best.0 && (margin > best.1 || (margin == best.1 && i < best.2)))
-            {
+            if floor.is_none_or(|floor| win > floor) {
+                floor = Some(win);
+            }
+            valued.push((i, win, margins));
+        }
+        let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
+        let mut best = (f64::NEG_INFINITY, f64::NEG_INFINITY, usize::MAX);
+        for (i, win, margins) in valued {
+            if Some(win) != floor {
+                continue;
+            }
+            let mut margin = 0.0;
+            for ((other, bag, ways), found) in splits.iter().zip(margins) {
+                let m = match found {
+                    Some(m) => m,
+                    None => self.info_split(info, &moves[i], other, bag)?.1,
+                };
+                margin += *ways as f64 * m;
+            }
+            let margin = margin / total;
+            if margin > best.1 || (margin == best.1 && i < best.2) {
                 best = (win, margin, i);
             }
         }
@@ -4971,30 +4991,70 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         Ok((best.0, best.1))
     }
 
-    // a move's chance to win and mean margin at info, over the splits weighed
-    // by their deals; none once even a win in every split left would leave its
-    // chance below floor
+    // a move's chance to win at info over the splits weighed by their deals,
+    // with each split's margin where its search found it; none once even a win
+    // in every split left would leave its chance below floor. While the floor
+    // is above 0 a split is asked its chance alone (info_split_chance); below
+    // that every move may tie at the best chance, its margins wanted
     fn info_move(
         &mut self,
         info: &InfoSet,
         play: &movegen::Play,
         splits: &[(Vec<u8>, Vec<u8>, u64)],
         floor: Option<f64>,
-    ) -> error::Returns<Option<(f64, f64)>> {
+    ) -> error::Returns<Option<(f64, Vec<Option<f64>>)>> {
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
-        let (mut win, mut margin, mut left) = (0.0, 0.0, total);
+        let (mut win, mut left) = (0.0, total);
+        let mut margins = Vec::with_capacity(splits.len());
         for (other, bag, ways) in splits {
             // a share a hair under the floor is not ruled out, lest a sum's
             // rounding rule out a tie
             if floor.is_some_and(|floor| (win + left) / total < floor - 1e-9) {
                 return Ok(None);
             }
-            let (w, m) = self.info_split(info, play, other, bag)?;
+            let (w, m) = if floor.is_some_and(|floor| floor > 0.0) {
+                self.info_split_chance(info, play, other, bag)?
+            } else {
+                let (w, m) = self.info_split(info, play, other, bag)?;
+                (w, Some(m))
+            };
             win += *ways as f64 * w;
-            margin += *ways as f64 * m;
             left -= *ways as f64;
+            margins.push(m);
         }
-        Ok(Some((win / total, margin / total)))
+        Ok(Some((win / total, margins)))
+    }
+
+    // a move's chance to win at info in one split, as info_split finds it, with
+    // its margin where that came too: a placement that empties the bag asks its
+    // endgame only whether the next mover's value leaves the mover a win or a
+    // tie (endgame_below), which finds the margin of either but not of a loss
+    fn info_split_chance(
+        &mut self,
+        info: &InfoSet,
+        play: &movegen::Play,
+        other: &[u8],
+        bag: &[u8],
+    ) -> error::Returns<(f64, Option<f64>)> {
+        if let movegen::Play::Place { word, score, .. } = play
+            && word.iter().filter(|&&tile| tile != 0).count() >= info.bag_len
+        {
+            let mut next = info.at(other, bag).placed(self.gc, play);
+            next.draw(bag);
+            next.next_turn();
+            // a win or a tie leaves the next mover the lead with the score at
+            // most, every endgame value a whole number of millipoints
+            let most = info.lead as f64 + *score as f64;
+            return Ok(match self.endgame_below(&next, most + 1.0)? {
+                Some(theirs) => {
+                    let margin = *score as f64 - theirs;
+                    (beats(info.lead as f64 + margin, 0.0), Some(margin))
+                }
+                None => (0.0, None),
+            });
+        }
+        let (win, margin) = self.info_split(info, play, other, bag)?;
+        Ok((win, Some(margin)))
     }
 
     // a move's chance to win and margin at info in one split of what the mover
