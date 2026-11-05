@@ -3075,6 +3075,7 @@ struct SpanMemoSlot {
     len: u8,
     from: u32,
     upto: u32,
+    cut_bound: i32, // i32::MAX when the visits were not cut
 }
 
 impl SpanMemoSlot {
@@ -3086,6 +3087,7 @@ impl SpanMemoSlot {
             len: 0,
             from: 0,
             upto: 0,
+            cut_bound: 0,
         }
     }
 }
@@ -3115,7 +3117,7 @@ impl SpanMemo {
     }
 
     #[inline(always)]
-    fn find(&self, key: u128, len: u8) -> Result<(u32, u32), usize> {
+    fn find(&self, key: u128, len: u8, bound: i32) -> Result<(u32, u32), usize> {
         let mask = self.slots.len() - 1;
         let mut at = (anagrams::key_hash(key) ^ len as u64) as usize & mask;
         loop {
@@ -3124,6 +3126,11 @@ impl SpanMemo {
                 return Err(at);
             }
             if slot.key == key && slot.len == len {
+                // visits cut at a lower score bound than this span's may lack
+                // subracks it needs
+                if bound > slot.cut_bound {
+                    return Err(at);
+                }
                 return Ok((slot.from, slot.upto));
             }
             at = (at + 1) & mask;
@@ -3131,7 +3138,7 @@ impl SpanMemo {
     }
 
     #[inline(always)]
-    fn keep(&mut self, at: usize, key: u128, len: u8, from: u32) {
+    fn keep(&mut self, at: usize, key: u128, len: u8, from: u32, cut_bound: i32) {
         debug_assert!(self.visits.len() <= u32::MAX as usize);
         self.slots[at] = SpanMemoSlot {
             key,
@@ -3139,6 +3146,7 @@ impl SpanMemo {
             len,
             from,
             upto: self.visits.len() as u32,
+            cut_bound,
         };
     }
 }
@@ -3638,7 +3646,11 @@ fn gen_classic_place_moves<
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
     let len = (rightmost - leftmost) as u8;
-    match env.params.span_memo.find(e.playthrough_key, len) {
+    match env
+        .params
+        .span_memo
+        .find(e.playthrough_key, len, env.params.score_bound)
+    {
         Ok((from, upto)) => {
             for i in from as usize..upto as usize {
                 let (si, at) = env.params.span_memo.visits[i];
@@ -3657,6 +3669,7 @@ fn gen_classic_place_moves<
             // and those with a blank are visited in order
             let width = u64::BITS as usize;
             let mut base = from;
+            let mut cut_at = i32::MAX;
             'runs: while base < upto {
                 let end = (base + width).min(upto);
                 let mut may = 0u64;
@@ -3679,17 +3692,19 @@ fn gen_classic_place_moves<
                     let si = base + may.trailing_zeros() as usize;
                     may &= may - 1;
                     if !visit(&mut env, &e, len, si, None) {
+                        cut_at = env.params.score_bound;
                         break 'runs;
                     }
                 }
                 if cut < end {
+                    cut_at = env.params.score_bound;
                     break;
                 }
                 base = end;
             }
             env.params
                 .span_memo
-                .keep(at, e.playthrough_key, len, kept_from);
+                .keep(at, e.playthrough_key, len, kept_from, cut_at);
         }
     }
 
