@@ -1,0 +1,59 @@
+WHEN EACH FEATURE FIRST REACHED THIS REPOSITORY
+
+One line a feature: the first commit on the main branch that holds it, with
+that commit's author date in the author's time zone (+08:00). Each was found
+by searching every path of the history for a marker of the feature (git log
+-S or -G for a word in the code; git log --diff-filter=A for a file) and then
+reading that commit's diff. So a word that only shares the feature's name
+does not count: "shadow" first appears on 2020-12-07 in a comment about a
+shadowed Rust variable, a month before shadow playing. Where a feature began
+earlier under another name or in another form, the lines under it say so.
+Every commit named here is in the main branch.
+
+    feature                              first commit  author date       subject
+    word graph (kwg)                     149ef864      2020-12-06 01:06  lexicon
+                                         (src/gdw/mod.rs, the node layout kwg
+                                         still reads; its builder came in
+                                         6f6764e4, 2020-12-09 17:06, "prior
+                                         art", wired in by f18f9d18; the name
+                                         kwg in 57d0b050, 2020-12-09 20:02)
+    leave table (klv)                    c2b93977      2020-12-09 20:32  add klv
+                                         (one file: the leaves' graph, then
+                                         their values; a two-file form came
+                                         first in 05d2f5d0, 19:59, "wip
+                                         leaves"; first read by e8a2da8f,
+                                         21:10, "load klv")
+    shadow playing                       2967718b      2021-01-06 14:56  greed first algorithm
+    simulation                           c347cd97      2021-01-07 11:39  partial sim logic
+                                         (in src/main_auto.rs; moved into
+                                         src/simmer.rs by 12a8d77d, 2021-04-09)
+    endgame solver                       04be147a      2021-01-21 15:10  slow endgame module
+    jumbled games on a word graph
+      of alphagrams                      d5009ad4      2021-05-24 01:12  playing games with alpha dawg
+    leave values from self-play          23229b19      2021-06-28 05:53  generate basic leave file
+                                         (from the self-play logs e2399929
+                                         writes, 01:35 the same day)
+    klv2 format                          b297e07b      2023-03-15 05:03  introduce klv2 format
+    leave census                         30dab364      2026-06-14 21:22  census: a module indexing all subracks
+    leave values from the census
+      for every leave on a board         bc37095c      2026-06-14 22:19  census: english-census values leaves per board
+    win% table from self-play            e6ab338e      2026-06-26 10:00  win_pct: build a win% table from self-play
+    pre-endgame with one tile in
+      the bag                            948c07cd      2026-07-07 09:36  peg: enumerate the one-in-bag hypotheses
+    a blend of the census's leave
+      table with self-play's             b11b393f      2026-07-25 17:15  add english-blend to mix two leave tables
+                                         (the whole recipe in one script, the
+                                         census, then self-play seeded by it,
+                                         then the blend: genblend.sh,
+                                         5d9f6d12, 2026-07-27 04:43)
+    alphagram table beside the graph
+      with a key filter in front of it   6fc1c81a      2026-08-12 22:22  carry an alphagram table beside the word graph
+    inference of the rack behind a move  fd897719      2026-10-11 06:46  infer the racks behind a move, and fit its fuzz
+    GCG in the shell                     f8a51f91      2026-10-18 17:41  write and read GCG in the shell
+    exact one-ply reply weighing         4d352ff6      2026-11-02 09:10  weigh the opponent's best reply to a move
+    a move's reply in the shell          a1a5f0db      2026-11-02 09:10  list each move's reply in the shell
+    pre-endgame with tiles in the bag    660b9917      2026-11-02 22:10  solve the pre-endgame with tiles in the bag
+
+The two commits of 2026-11-02 09:10 (4d352ff6 and a1a5f0db) are on the
+repository's main branch. Pull request 390 merged the first at 09:43 and pull
+request 391 the second at 09:44 the same morning.
