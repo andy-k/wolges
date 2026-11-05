@@ -6031,12 +6031,13 @@ fn kurnia_gen_place_moves_iter_lean<
 
 const PLACEMENT_BUCKETS: usize = 64;
 
-// range b is pairs[starts[b]..starts[b + 1]].
+// range b is pairs[starts[b]..starts[b + 1]]; tops[b] is its highest equity.
 #[inline]
 fn bucket_by_equity(
     pairs: &mut Vec<(i32, u32)>,
     scratch: &mut Vec<(i32, u32)>,
     starts: &mut [u32; PLACEMENT_BUCKETS + 1],
+    tops: &mut [i32; PLACEMENT_BUCKETS],
 ) {
     let mut min = i32::MAX;
     let mut max = i32::MIN;
@@ -6049,8 +6050,11 @@ fn bucket_by_equity(
         (u32::BITS - range.leading_zeros()).saturating_sub(PLACEMENT_BUCKETS.trailing_zeros());
     let bucket = |equity: i32| (equity.abs_diff(min) >> shift) as usize;
     *starts = [0; PLACEMENT_BUCKETS + 1];
+    *tops = [i32::MIN; PLACEMENT_BUCKETS];
     for &(equity, _) in pairs.iter() {
-        starts[bucket(equity) + 1] += 1;
+        let b = bucket(equity);
+        starts[b + 1] += 1;
+        tops[b] = tops[b].max(equity);
     }
     for b in 0..PLACEMENT_BUCKETS {
         starts[b + 1] += starts[b];
@@ -6065,24 +6069,6 @@ fn bucket_by_equity(
         next[b] += 1;
     }
     std::mem::swap(pairs, scratch);
-}
-
-#[inline]
-fn sort_next_range(
-    pairs: &mut [(i32, u32)],
-    starts: &[u32; PLACEMENT_BUCKETS + 1],
-    bucket: &mut usize,
-) -> usize {
-    let len = pairs.len();
-    while *bucket > 0 {
-        *bucket -= 1;
-        let from = starts[*bucket] as usize;
-        if from < len {
-            pairs[from..].sort_unstable_by_key(|&(equity, _)| equity);
-            return from;
-        }
-    }
-    0
 }
 
 #[inline]
@@ -6328,27 +6314,51 @@ fn kurnia_gen_place_moves_iter<
             .map(|(i, p)| (p.best_possible_equity, i as u32)),
     );
     let mut starts = [0u32; PLACEMENT_BUCKETS + 1];
+    let mut tops = [i32::MIN; PLACEMENT_BUCKETS];
     let mut bucket = PLACEMENT_BUCKETS;
-    let mut sorted_from = 0;
+    // where the bucket being popped starts; the buckets are popped highest
+    // first, each in no order, since the threshold only rises: a placement it
+    // refuses is passed over, and the walk ends at a bucket whose highest
+    // equity it refuses
+    let mut bucket_from = usize::MAX;
     if !want_raw {
         bucket_by_equity(
             &mut placement_order,
             &mut working_buffer.placement_scratch,
             &mut starts,
+            &mut tops,
         );
-        sorted_from = sort_next_range(&mut placement_order, &starts, &mut bucket);
+        bucket_from = placement_order.len();
     }
     working_buffer.span_memo.start_turn(found_placements.len());
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    std::iter::from_fn(move || match working_buffer.placement_order.pop() {
-        Some((equity, idx)) => {
+    std::iter::from_fn(move || {
+        loop {
             let len = working_buffer.placement_order.len();
-            if len == sorted_from && len != 0 {
-                sorted_from =
-                    sort_next_range(&mut working_buffer.placement_order, &starts, &mut bucket);
+            if len == bucket_from {
+                while bucket > 0 {
+                    bucket -= 1;
+                    if (starts[bucket] as usize) < len {
+                        break;
+                    }
+                }
+                bucket_from = starts[bucket] as usize;
+                if len == 0 || !can_accept(tops[bucket]) {
+                    working_buffer.placement_order.clear();
+                    return None;
+                }
             }
-            if can_accept(equity) {
+            let (equity, idx) = working_buffer.placement_order.pop()?;
+            if !can_accept(equity) {
+                if want_raw {
+                    // fuse the iterator
+                    working_buffer.placement_order.clear();
+                    return None;
+                }
+                continue;
+            }
+            {
                 let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at(GenPlaceMovesAtParams {
                     runs: (),
@@ -6382,14 +6392,9 @@ fn kurnia_gen_place_moves_iter<
                             found_place_move(down, lane, idx, word, score, leave_value)
                         },
                 });
-                Some(())
-            } else {
-                // fuse the iterator
-                working_buffer.placement_order.clear();
-                None
+                return Some(());
             }
         }
-        None => None,
     })
 }
 
