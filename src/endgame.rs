@@ -592,6 +592,8 @@ struct WorkBuffer {
     generated: u64,        // the lists generated, each list's serial
     serials: Vec<u64>,     // the serial of each ply's list
     siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
+    #[cfg(test)]
+    copied: usize, // the lanes copied from an earlier reply's list
     table: Table,
     can_grow: bool, // the memory limit has not yet refused the table more room this solve
     max_depth: i8,  // this pass's depth, for progress
@@ -634,6 +636,8 @@ impl WorkBuffer {
             generated: 0,
             serials: Vec::new(),
             siblings: Vec::new(),
+            #[cfg(test)]
+            copied: 0,
             table: Table::new(),
             can_grow: true,
             max_depth: 0,
@@ -1351,6 +1355,10 @@ impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, L
         } else {
             (0, 0, 0, 0)
         };
+        #[cfg(test)]
+        {
+            work_buffer.copied += (copy_rows.count_ones() + copy_cols.count_ones()) as usize;
+        }
         let (walk_rows, walk_cols) = (rows & !copy_rows, cols & !copy_cols);
         let walks = walk_rows != 0 || walk_cols != 0;
         if walks {
@@ -6539,6 +6547,168 @@ mod tests {
         }
         println!("along random lines: {checked} reused lists, {chained} reused from a reused one");
         assert!(checked > 0 && chained > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn every_table_copies_the_same_lanes() {
+        // no table read beside the word graph turns the lane copy off: with the
+        // anagrams, the rack lengths, or neither, each with and without the run
+        // letters, after each move and reply (a pass among them) a lane the
+        // reply leaves alone is copied when an earlier reply to the same list
+        // walked it, as many lanes as the moves' zones alone say, the same
+        // count under every table, each list equal to a full generation; and
+        // full solves copy lanes under every table, valuing every position the
+        // same
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let [(_, with_tables), (_, lean)] = both_arms(&kwg, &gc);
+        let neither = anagrams::ArmTables::None;
+        assert!(with_tables.anagrams().is_some() && lean.rack_lengths().is_some());
+        let spent_by = |solver: &EndgameSolver<kwg::Node24, kwg::Node24>,
+                        mover: u8,
+                        play: &Option<movegen::Play>| match play {
+            Some(movegen::Play::Place { word, .. }) => {
+                super::rack_places(&solver.work_buffer.racks[mover as usize], word, true)
+            }
+            _ => 0,
+        };
+        let in_order = |solver: &EndgameSolver<kwg::Node24, kwg::Node24>, ply: usize| {
+            solver.work_buffer.orders[ply]
+                .iter()
+                .map(|&key| &solver.work_buffer.lists[ply][key as u32 as usize])
+                .map(|c| (c.play.clone(), c.index, c.valuation, c.plays_out))
+                .collect::<Vec<_>>()
+        };
+        // each table and letters setting: the lanes copied along the lines
+        // below, those copied by full solves, and the values solved
+        let mut runs = Vec::new();
+        for (tables, arm_tables) in [
+            ("anagrams", &with_tables),
+            ("rack lengths", &lean),
+            ("neither", &neither),
+        ] {
+            for letters in [true, false] {
+                let new_solver = || {
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, arm_tables)
+                            .unwrap();
+                    if !letters {
+                        solver.work_buffer.run_letter_bits = None;
+                    }
+                    solver
+                };
+                let mut egs = new_solver();
+                if letters && egs.work_buffer.run_letter_bits.is_none() {
+                    // these tables read no run letters
+                    continue;
+                }
+                let mut afresh = new_solver();
+                let mut expected = 0usize;
+                for (name, pos) in all_positions() {
+                    for mover in 0..2u8 {
+                        egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                        egs.reset_position();
+                        egs.generate(0, mover, true);
+                        let moves = egs.work_buffer.lists[0].len();
+                        for i in 0..=moves {
+                            let first =
+                                (i < moves).then(|| egs.work_buffer.lists[0][i].play.clone());
+                            egs.work_buffer.zones[0] =
+                                first.as_ref().map_or((0, 0), |play| egs.zone_lanes(play));
+                            egs.work_buffer.spent[0] = spent_by(&egs, mover, &first);
+                            if let Some(play) = &first {
+                                egs.place(mover, play);
+                            }
+                            egs.generate(1, mover ^ 1, true);
+                            let replies = egs.work_buffer.lists[1].len();
+                            // a lane only the move changed is walked by the
+                            // first reply that leaves it alone, then copied by
+                            // each later one that does
+                            let (rows, cols) = egs.work_buffer.zones[0];
+                            let (mut walked_rows, mut walked_cols) = (0u128, 0u128);
+                            for j in 0..=replies {
+                                let reply =
+                                    (j < replies).then(|| egs.work_buffer.lists[1][j].play.clone());
+                                egs.work_buffer.zones[1] =
+                                    reply.as_ref().map_or((0, 0), |play| egs.zone_lanes(play));
+                                egs.work_buffer.spent[1] = spent_by(&egs, mover ^ 1, &reply);
+                                if let Some(play) = &reply {
+                                    egs.place(mover ^ 1, play);
+                                }
+                                let (replied_rows, replied_cols) = egs.work_buffer.zones[1];
+                                let (only_rows, only_cols) =
+                                    (rows & !replied_rows, cols & !replied_cols);
+                                expected += ((only_rows & walked_rows).count_ones()
+                                    + (only_cols & walked_cols).count_ones())
+                                    as usize;
+                                walked_rows |= only_rows;
+                                walked_cols |= only_cols;
+                                egs.generate(2, mover, false);
+                                order_ply(&mut egs, 2, super::NO_PLAY);
+                                afresh.init(
+                                    &egs.work_buffer.board_tiles,
+                                    [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
+                                );
+                                afresh.reset_position();
+                                afresh.generate(0, mover, false);
+                                order_ply(&mut afresh, 0, super::NO_PLAY);
+                                assert!(
+                                    in_order(&egs, 2) == in_order(&afresh, 0),
+                                    "[{name}] {tables} letters={letters} the moves made from two \
+                                     plies up"
+                                );
+                                if let Some(play) = &reply {
+                                    egs.unplace(mover ^ 1, play);
+                                }
+                            }
+                            if let Some(play) = &first {
+                                egs.unplace(mover, play);
+                            }
+                        }
+                    }
+                }
+                assert_eq!(
+                    egs.work_buffer.copied, expected,
+                    "{tables} letters={letters}: the lanes copied along the lines"
+                );
+                // full solves, the search choosing which lists keep rack places
+                let mut solver = new_solver();
+                let values = all_positions()
+                    .iter()
+                    .map(|(_, pos)| {
+                        solver.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                        solver.solve(0).unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                runs.push((tables, letters, expected, solver.work_buffer.copied, values));
+            }
+        }
+        // both letters settings were tried
+        assert!(runs.iter().any(|run| run.1) && runs.iter().any(|run| !run.1));
+        for (tables, letters, along_lines, in_solves, values) in &runs {
+            println!(
+                "{tables} letters={letters}: {along_lines} lanes copied along the lines, \
+                 {in_solves} in full solves"
+            );
+            assert!(
+                *along_lines > 0,
+                "{tables} letters={letters}: no lane copied"
+            );
+            assert_eq!(
+                *along_lines, runs[0].2,
+                "{tables} letters={letters}: the lanes copied"
+            );
+            assert!(
+                *in_solves > 0,
+                "{tables} letters={letters}: no lane copied in full solves"
+            );
+            assert!(
+                *values == runs[0].4,
+                "{tables} letters={letters}: the values solved"
+            );
+        }
     }
 
     #[test]
