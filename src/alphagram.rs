@@ -116,16 +116,22 @@ impl KeyLayout {
 
     #[inline(always)]
     pub fn matches(&self, alphabet: &super::alphabet::Alphabet, board_dim: u8) -> bool {
-        match Self::of(alphabet, board_dim) {
-            Some(other) => {
-                let tiles = self.max_count.len().max(other.max_count.len());
-                (0..tiles).all(|tile| {
-                    self.max_count.get(tile).copied().unwrap_or(0)
-                        == other.max_count.get(tile).copied().unwrap_or(0)
-                })
-            }
-            None => false,
-        }
+        // the counts Self::of would give, compared where they are made: equal
+        // counts make the same layout, which this one shows fits, so no layout
+        // need be built (nor allocated) to ask
+        let blanks = alphabet.freq(0);
+        let tiles = self.max_count.len().max(alphabet.len() as usize);
+        (0..tiles).all(|tile| {
+            let want = if tile == 0 || tile >= alphabet.len() as usize {
+                0
+            } else {
+                alphabet
+                    .freq(tile as u8)
+                    .saturating_add(blanks)
+                    .min(board_dim)
+            };
+            self.max_count.get(tile).copied().unwrap_or(0) == want
+        })
     }
 
     #[inline(always)]
