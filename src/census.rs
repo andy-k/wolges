@@ -268,12 +268,12 @@ impl SplitCtx<'_> {
             // That floor is baked into the sheet at build time (init 0; a word
             // only RAISES an entry), so an unreached or negative-scoring P
             // reads as 0 + leave(K) = the exchange-keep-K value.
-            //
-            // SAFETY: s_p, s_k <= rack_size and within_p, within_k are valid
-            // within-size offsets, so pr, kr are in-range lattice indices (<
-            // sheet.len() == leave.len()).
             let pr = (self.lat.size_offset[s_p] + within_p) as usize;
             let kr = (self.lat.size_offset[s_k] + within_k) as usize;
+            // Safety: pr and kr rank P and K, the parts of a rack of at most
+            // rack_size tiles the lattice holds (unrank_into's, or a tally
+            // best_equity_of checked), so each is below lat.len(), the length
+            // of sheet and of leave (both callers check it).
             let v =
                 unsafe { *self.sheet.get_unchecked(pr) } + unsafe { *self.leave.get_unchecked(kr) };
             if v > *self.best {
@@ -407,6 +407,8 @@ impl KeepCtx<'_> {
 
 #[inline]
 pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
+    // the walk's reads are unchecked: every table is the lattice's size
+    assert!(sheet.len() == lat.len() && leave.len() == lat.len() && out.len() == lat.len());
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
     let lo = lat.full_rack_start();
@@ -456,6 +458,9 @@ pub fn apportion_table(
     num: &mut [f64],
     den: &mut [f64],
 ) {
+    // the walk's reads and writes are unchecked: every table is the lattice's
+    // size
+    assert!(best.len() == lat.len() && num.len() == lat.len() && den.len() == lat.len());
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
 
@@ -472,8 +477,9 @@ pub fn apportion_table(
         fn rec(&mut self, i: usize, s_s: usize, within_s: u64) {
             if i == 0 {
                 let sr = (self.lat.size_offset[s_s] + within_s) as usize;
-                // SAFETY: sr is the rank of a sub-multiset of a size<=rack_size rack,
-                // so it is a valid lattice index (< num.len() == den.len()).
+                // Safety: sr ranks a sub-multiset of a full rack the lattice
+                // holds, so it is below lat.len(), the length of num and of den
+                // (apportion_table checks it).
                 unsafe {
                     *self.num.get_unchecked_mut(sr) += self.we;
                     *self.den.get_unchecked_mut(sr) += self.w;
@@ -517,7 +523,8 @@ pub fn apportion_table(
         if !drawable {
             continue;
         }
-        // SAFETY: ridx is in the full-rack block, where best is filled.
+        // Safety: ridx runs over lo..lat.len(), and best's length is lat.len()
+        // (checked above).
         let e = unsafe { *best.get_unchecked(ridx) } as f64;
         Ctx {
             nz: &nz[..m],
@@ -604,12 +611,20 @@ impl AddTable {
         self
     }
 
+    // for idx below the lattice's full_rack_start() and t below its num_letters
+    // (it panics past the table); the rank it returns is always the lattice's,
+    // below its len()
     #[inline(always)]
     pub fn add(&self, idx: usize, t: usize) -> usize {
-        // SAFETY: add holds full_rack_start()*num_letters u32s; the caller's contract is
-        // idx < full_rack_start() and t < num_letters, so idx*num_letters+t is
-        // < add.len().
-        unsafe { *self.add.get_unchecked(idx * self.num_letters + t) as usize }
+        self.add[idx * self.num_letters + t] as usize
+    }
+
+    // whether it was made for lat: a lattice's letters and its full racks'
+    // start fix its rack size, so its every rank
+    #[inline(always)]
+    fn made_for(&self, lat: &MultisetLattice) -> bool {
+        self.num_letters == lat.num_letters()
+            && self.add.len() == lat.full_rack_start() * lat.num_letters()
     }
 
     // add(idx, t) for every idx below the full racks, in order of idx, when the
@@ -623,18 +638,21 @@ impl AddTable {
 
 #[inline]
 pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], dst: &mut [i32]) {
+    // lift's reads and writes are unchecked: dst is the lattice's size, and
+    // add's ranks are the lattice's
+    assert!(dst.len() == lat.len() && add.made_for(lat));
     let n = lat.num_letters();
     let lo = lat.full_rack_start();
     dst.copy_from_slice(src);
     // a superset's value at least its subset's
     #[inline(always)]
     fn lift(dst: &mut [i32], idx: usize, sp: usize) {
-        // SAFETY: idx ranges 0..full_rack_start() (< lat.len()), so idx < dst.len(); dst
-        // is the lat.len() destination buffer.
+        // Safety: idx runs below full_rack_start(), so below lat.len(), dst's
+        // length (subset_max_transform checks it).
         let v = unsafe { *dst.get_unchecked(idx) };
-        // SAFETY: sp = add.add(idx, t) is the rank of multiset(idx) plus one tile t
-        // (idx < full_rack_start(), t < num_letters), a lattice index < lat.len()
-        // = dst.len().
+        // Safety: sp is one of add's ranks (by letter, or add's own), and add
+        // was made for this lattice, so sp is below lat.len(), dst's length
+        // (both checked by subset_max_transform).
         let cur = unsafe { dst.get_unchecked_mut(sp) };
         if v > *cur {
             *cur = v;
@@ -811,7 +829,8 @@ fn scatter_words(
     let mut from = [0u8; MAX_LETTERS + 1];
 
     for pj in 1..lat.len() {
-        // SAFETY: pj is the loop index over 1..lat.len(), so pj < lat.len() = sheet.len().
+        // Safety: pj runs below lat.len(), sheet's length (apportion_fused, the
+        // only caller, checks it).
         let sp_val = unsafe { *sheet.get_unchecked(pj) };
         if sp_val <= 0 {
             continue;
@@ -947,6 +966,14 @@ pub fn apportion_fused(
         null_leave,
         scatter,
     } = mode;
+    // the walks' reads are unchecked: every table is the lattice's size, and
+    // add's ranks are the lattice's
+    assert!(
+        sheet.len() == lat.len()
+            && leave.len() == lat.len()
+            && maxsheet.len() == lat.len()
+            && add.made_for(lat)
+    );
     let n = lat.num_letters();
 
     let subset_max = null_leave && zeta;
@@ -984,9 +1011,10 @@ pub fn apportion_fused(
     impl Ctx<'_> {
         fn rec_max(&self, i: usize, p_idx: usize, k_idx: usize, best: &mut i32) {
             if i == 0 {
-                // SAFETY: p_idx and k_idx are the ranks of the played P and kept K subracks
-                // (P+K = R, a full rack), built up from 0 via the add table, so each is
-                // < lat.len(); sheet and leave are lat.len()-sized.
+                // Safety: p_idx and k_idx rank the played P and the kept K of a
+                // full rack R, built up from 0 by add, whose ranks are the
+                // lattice's; so each is below lat.len(), the length of sheet
+                // and of leave (apportion_fused checks both).
                 let v = unsafe { *self.sheet.get_unchecked(p_idx) }
                     + unsafe { *self.leave.get_unchecked(k_idx) };
                 if v > *best {
@@ -1031,8 +1059,9 @@ pub fn apportion_fused(
         fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
             if remaining == 0 {
                 let best = if self.best_from_maxsheet {
-                    // SAFETY: idx is the full-rack lattice index built up from 0 via the add
-                    // table, so < lat.len(); maxsheet is lat.len()-sized (filled above).
+                    // Safety: idx ranks a full rack, built up from 0 by add,
+                    // whose ranks are the lattice's; so it is below lat.len(),
+                    // maxsheet's length (apportion_fused checks it).
                     unsafe { *self.maxsheet.get_unchecked(idx) }
                 } else {
                     let mut b = UNPLAYABLE;
@@ -1156,9 +1185,9 @@ impl DrawCtx<'_> {
         den: &mut f64,
     ) {
         if remaining == 0 {
-            // SAFETY: at remaining == 0, ridx is a complete full-rack lattice index (the
-            // caller's start advanced one tile at a time via the add table), <
-            // lat.len(); best is the lat.len() best_equity buffer.
+            // Safety: ridx is the start dynamic_leave_value was given (below
+            // lat.len(), it checks) or one of add's ranks, the lattice's; so it
+            // is below lat.len(), best's length (it checks that too).
             let b = unsafe { *self.best.get_unchecked(ridx) } as f64;
             *num += w * b;
             *den += w;
@@ -1188,6 +1217,8 @@ pub fn leave_value_by_draw(
     unseen: &[u8],
     s_tally: &[u8],
 ) -> i32 {
+    // the walk's reads of best are unchecked: it is the lattice's size
+    assert_eq!(best.len(), lat.len());
     let n = lat.num_letters();
 
     for t in 0..n {
@@ -1234,7 +1265,9 @@ pub fn leave_value_by_draw(
                 if ri == !0 {
                     return;
                 }
-                // SAFETY: ri != !0 and r has size rack_size, so ri < best.len().
+                // Safety: rank gives !0 for a tally the lattice does not hold,
+                // and otherwise its rank, below lat.len(), best's length
+                // (checked above).
                 *self.num += w * unsafe { *self.best.get_unchecked(ri as usize) } as i128;
                 *self.den += w;
                 return;
@@ -1275,6 +1308,9 @@ pub fn dynamic_leave_value(
     s_ridx: usize,
     draw: usize,
 ) -> i32 {
+    // the walk's reads of full_v are unchecked: it is the lattice's size, and
+    // the walk starts at one of the lattice's ranks and adds by add's
+    assert!(full_v.len() == lat.len() && s_ridx < lat.len() && add.made_for(lat));
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];

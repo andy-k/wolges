@@ -9,6 +9,10 @@ resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lints.clippy]
+# every unsafe block says, in a SAFETY comment, why it is sound
+undocumented_unsafe_blocks = "warn"
+
 [profile.dev]
 opt-level = 3
 

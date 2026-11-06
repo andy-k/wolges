@@ -44,13 +44,14 @@ impl Pascal {
         p
     }
 
-    // C(n, k), 0 when k > n. SAFETY: row n must already be built (with_rows).
+    // C(n, k), 0 when k > n; row n must already be built (with_rows), else it
+    // panics
     #[inline(always)]
     pub fn binom(&self, n: usize, k: usize) -> u64 {
         if k > n {
             0
         } else {
-            unsafe { *self.raw.get_unchecked(n * (n + 1) / 2 + k) }
+            self.raw[n * (n + 1) / 2 + k]
         }
     }
 }

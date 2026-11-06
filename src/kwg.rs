@@ -254,12 +254,18 @@ impl<N: Node> Kwg<N> {
         if p > 0 {
             let ptr = self.0.as_ptr().wrapping_add(p as usize);
             #[cfg(target_arch = "x86_64")]
+            // Safety: a prefetch only hints; it reads nothing the program sees
+            // and never faults, whatever the address (wrapping_add makes no
+            // reference).
             unsafe {
                 std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
                     ptr as *const i8,
                 );
             }
             #[cfg(target_arch = "aarch64")]
+            // Safety: prfm only hints and never faults, whatever the address;
+            // the asm writes no register or memory and keeps the flags, as its
+            // options say.
             unsafe {
                 std::arch::asm!(
                     "prfm pldl1keep, [{ptr}]",

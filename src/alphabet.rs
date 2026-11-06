@@ -613,30 +613,18 @@ impl AlphabetReader {
         Self::new_for_tiles(supported_tiles)
     }
 
-    // Given sb (str.as_bytes()) and ix, decode the next tile starting at sb[ix].
-    // Returns Ok((tile, updated_index)) if it is a valid tile.
-    // Returns None if it is not a valid tile.
-    // Undefined behavior if ix >= sb.len().
+    // Given sb (str.as_bytes()) and ix, decode the next tile starting at
+    // sb[ix]. Returns Some((tile, updated_index)) if it is a valid tile.
+    // Returns None if it is not a valid tile, or if ix >= sb.len().
     #[inline(always)]
     pub fn next_tile(&self, sb: &[u8], ix: usize) -> Option<(u8, usize)> {
-        // Safe because we have all 256.
-        if let Some((range_lo, range_hi)) = unsafe {
-            self.by_first_byte
-                .get_unchecked(*sb.get_unchecked(ix) as usize)
-        } {
-            let sb_len = sb.len();
-            // Safe because of how by_first_byte was constructed.
-            for (tile, label) in unsafe { self.supported_tiles.get_unchecked(*range_lo..*range_hi) }
-            {
-                let label_len = label.len();
-                let end_ix = ix + label_len;
-                // Safe after accessing sb[ix].
-                if label_len == 1
-                    || end_ix <= sb_len
-                        && unsafe { sb.get_unchecked(ix + 1..end_ix) == label.get_unchecked(1..) }
-                {
-                    return Some((*tile, end_ix));
-                }
+        // by_first_byte has a slot for every byte, each the range of
+        // supported_tiles whose labels start with that byte
+        let (range_lo, range_hi) = self.by_first_byte[*sb.get(ix)? as usize]?;
+        let rest = &sb[ix + 1..];
+        for (tile, label) in &self.supported_tiles[range_lo..range_hi] {
+            if rest.starts_with(&label[1..]) {
+                return Some((*tile, ix + label.len()));
             }
         }
         None
