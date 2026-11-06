@@ -776,7 +776,6 @@ impl WorkingBuffer {
     #[inline]
     fn turn_is_supported<N: kwg::Node, L: kwg::Node>(
         &self,
-        want_raw: bool,
         board_snapshot: &BoardSnapshot<'_, N, L>,
     ) -> bool {
         if !matches!(
@@ -788,9 +787,7 @@ impl WorkingBuffer {
         let dim = board_snapshot.game_config.board_layout().dim();
         let extent = dim.rows.max(dim.cols) as u8;
         let layout = board_snapshot.anagrams.map(anagrams::Anagrams::layout);
-        !want_raw
-            && !self.is_census
-            && self.anagrams_fit_config
+        self.anagrams_fit_config
             && !self.subracks.is_empty()
             && layout
                 .is_some_and(|layout| layout.covers(board_snapshot.game_config.alphabet(), extent))
@@ -3232,11 +3229,13 @@ impl RunLetters for &[u64] {
 
 // what a jumbled turn looks its multisets and cross sets up in
 trait JumbledKeys: Copy {
+    const TABLES: bool; // the tables' keys, given to a jumbled game only
     fn anagrams(&self) -> Option<&anagrams::Anagrams>;
 }
 
 // nothing, so it walks the alphagram graph
 impl JumbledKeys for () {
+    const TABLES: bool = false;
     #[inline(always)]
     fn anagrams(&self) -> Option<&anagrams::Anagrams> {
         None
@@ -3245,6 +3244,7 @@ impl JumbledKeys for () {
 
 // the anagrams, by key (WorkingBuffer::jumbled_keys)
 impl JumbledKeys for &anagrams::Anagrams {
+    const TABLES: bool = true;
     #[inline(always)]
     fn anagrams(&self) -> Option<&anagrams::Anagrams> {
         Some(*self)
@@ -5294,6 +5294,11 @@ fn gen_place_moves_lean<
     runs: R,
     keys: K,
 ) {
+    // the tables' keys come with a jumbled game only, so their instance holds
+    // no classic walk
+    if K::TABLES {
+        return gen_jumbled_place_moves(params, single_tile_plays, keys);
+    }
     match params.board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => {
             gen_classic_place_moves_lean(params, single_tile_plays, left_bounds, runs)
@@ -5314,19 +5319,10 @@ fn gen_place_moves<
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    // the nibble-keyed instance plays only classic games, holding its anagrams
-    if T::NIBBLES {
-        if let Some(held) = params.board_snapshot.anagrams {
-            gen_classic_place_moves::<W, T, _, _, _>(params, held, single_tile_plays);
-        }
-        return;
-    }
-    match params.board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic => match params.board_snapshot.anagrams {
-            Some(held) => gen_classic_place_moves::<W, T, _, _, _>(params, held, single_tile_plays),
-            None => gen_classic_place_moves_lean(params, single_tile_plays, &[], ()),
-        },
-        game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays, ()),
+    // the table walk plays only classic games (gen_moves_tables hands the rest
+    // back), holding its anagrams
+    if let Some(held) = params.board_snapshot.anagrams {
+        gen_classic_place_moves::<W, T, _, _, _>(params, held, single_tile_plays);
     }
 }
 
@@ -6029,13 +6025,23 @@ impl KurniaMoveGenerator {
     ) {
         self.working_buffer.lane_rows = rows;
         self.working_buffer.lane_cols = cols;
-        self.gen_moves_raw_all_unsorted_impl::<LEAN, _, _, _>(
-            board_snapshot,
-            rack,
-            num_exchanges_by_this_player,
-            pass_policy,
-            (),
-        );
+        if LEAN
+            || !self.gen_moves_raw_tables(
+                board_snapshot,
+                rack,
+                num_exchanges_by_this_player,
+                pass_policy,
+                (),
+            )
+        {
+            self.gen_moves_raw_all_unsorted_impl(
+                board_snapshot,
+                rack,
+                num_exchanges_by_this_player,
+                pass_policy,
+                (),
+            );
+        }
         self.working_buffer.lane_rows = !0;
         self.working_buffer.lane_cols = !0;
     }
@@ -6062,13 +6068,23 @@ impl KurniaMoveGenerator {
         debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
         self.working_buffer.lane_rows = rows;
         self.working_buffer.lane_cols = cols;
-        self.gen_moves_raw_all_unsorted_impl::<LEAN, _, _, _>(
-            board_snapshot,
-            rack,
-            0,
-            PassPolicy::AsACandidate,
-            run_letter_bits,
-        );
+        if LEAN
+            || !self.gen_moves_raw_tables(
+                board_snapshot,
+                rack,
+                0,
+                PassPolicy::AsACandidate,
+                run_letter_bits,
+            )
+        {
+            self.gen_moves_raw_all_unsorted_impl(
+                board_snapshot,
+                rack,
+                0,
+                PassPolicy::AsACandidate,
+                run_letter_bits,
+            );
+        }
         self.working_buffer.lane_rows = !0;
         self.working_buffer.lane_cols = !0;
     }
@@ -6082,13 +6098,110 @@ impl KurniaMoveGenerator {
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
     ) {
-        self.gen_moves_raw_all_unsorted_impl::<false, _, _, _>(
+        if !self.gen_moves_raw_tables(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
             (),
-        )
+        ) {
+            self.gen_moves_raw_all_unsorted_impl(
+                board_snapshot,
+                rack,
+                num_exchanges_by_this_player,
+                pass_policy,
+                (),
+            )
+        }
+    }
+
+    // the raw generation by the tables, which plays only a jumbled game (a
+    // classic game's raw moves are the lean arm's): true when it played the
+    // turn, false when it hands it back
+    #[inline]
+    fn gen_moves_raw_tables<'a, R: 'a + RunLetters, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+        runs: R,
+    ) -> bool {
+        if !matches!(
+            board_snapshot.game_config.game_rules(),
+            game_config::GameRules::Jumbled
+        ) || board_snapshot.anagrams.is_none()
+        {
+            return false;
+        }
+        self.plays.clear();
+        let mut vec_moves = std::mem::take(&mut self.plays);
+
+        let working_buffer = &mut self.working_buffer;
+        working_buffer.init::<0, ByLayout, _, _>(
+            board_snapshot,
+            rack,
+            klv::AdjustLeave::Identity,
+            None,
+        );
+        let Some(anagrams) = working_buffer.jumbled_keys(board_snapshot) else {
+            self.plays = vec_moves;
+            return false;
+        };
+        let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
+
+        let found_place_move =
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: i32| {
+                vec_moves.push(ValuedMove {
+                    equity: equity::Equity::ZERO,
+                    play: Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    },
+                });
+                i32::MIN
+            };
+        for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+            runs,
+            keys: anagrams,
+            want_raw: true,
+            board_snapshot,
+            working_buffer,
+            multi_leaves: &multi_leaves,
+            found_place_move,
+            can_accept: |_best_possible_equity: i32| true,
+            current_threshold: || i32::MIN,
+        }) {}
+        kurnia_gen_exchange_moves(
+            board_snapshot,
+            working_buffer,
+            &multi_leaves,
+            num_exchanges_by_this_player,
+            |exchanged_tiles: &[u8], _leave_value: i32| {
+                vec_moves.push(ValuedMove {
+                    equity: equity::Equity::ZERO,
+                    play: Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    },
+                });
+            },
+        );
+        if pass_policy.emits_unconditionally() || vec_moves.is_empty() {
+            vec_moves.push(ValuedMove {
+                equity: equity::Equity::ZERO,
+                play: Play::Exchange {
+                    tiles: (&working_buffer.exchange_buffer[..]).into(),
+                },
+            });
+        }
+
+        self.plays = vec_moves;
+
+        working_buffer.multi_leaves = multi_leaves;
+        true
     }
 
     #[inline(always)]
@@ -6099,7 +6212,7 @@ impl KurniaMoveGenerator {
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
     ) {
-        self.gen_moves_raw_all_unsorted_impl::<true, _, _, _>(
+        self.gen_moves_raw_all_unsorted_impl(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
@@ -6109,13 +6222,7 @@ impl KurniaMoveGenerator {
     }
 
     #[inline]
-    fn gen_moves_raw_all_unsorted_impl<
-        'a,
-        const LEAN: bool,
-        R: 'a + RunLetters,
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
+    fn gen_moves_raw_all_unsorted_impl<'a, R: 'a + RunLetters, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         rack: &'a [u8],
@@ -6149,45 +6256,17 @@ impl KurniaMoveGenerator {
                 });
                 i32::MIN
             };
-        if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
-            for _ in
-                kurnia_gen_place_moves_iter::<0, u128, ByLayout, _, _, _, _, _>(KurniaIterParams {
-                    runs: (),
-                    keys: (),
-                    want_raw: true,
-                    board_snapshot,
-                    working_buffer,
-                    multi_leaves: &multi_leaves,
-                    found_place_move,
-                    can_accept: |_best_possible_equity: i32| true,
-                    current_threshold: || i32::MIN,
-                })
-            {}
-        } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(board_snapshot) {
-            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-                runs,
-                keys: anagrams,
-                want_raw: true,
-                board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |_best_possible_equity: i32| true,
-                current_threshold: || i32::MIN,
-            }) {}
-        } else {
-            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-                runs,
-                keys: (),
-                want_raw: true,
-                board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |_best_possible_equity: i32| true,
-                current_threshold: || i32::MIN,
-            }) {}
-        }
+        for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+            runs,
+            keys: (),
+            want_raw: true,
+            board_snapshot,
+            working_buffer,
+            multi_leaves: &multi_leaves,
+            found_place_move,
+            can_accept: |_best_possible_equity: i32| true,
+            current_threshold: || i32::MIN,
+        }) {}
         kurnia_gen_exchange_moves(
             board_snapshot,
             working_buffer,
@@ -6382,7 +6461,8 @@ impl KurniaMoveGenerator {
     #[inline(always)]
     // The census sheet wants each WORD once, not each PLAY, so its descent
     // takes a real tile before a blank. That is a different generator, not a
-    // setting: the placement path that reads the anagrams does not run it.
+    // setting: the placement path that reads the anagrams does not run it, so
+    // the census is the lean arm's, as gen_census_sheet_lean.
     pub fn gen_census_sheet<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
@@ -6390,7 +6470,7 @@ impl KurniaMoveGenerator {
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
-        self.gen_census_sheet_impl::<false, _, _>(
+        self.gen_census_sheet_impl(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -6398,8 +6478,8 @@ impl KurniaMoveGenerator {
         )
     }
 
-    // as gen_census_sheet, by the lean arm alone, so that a build that runs
-    // only that arm (the wasm) need not carry the other
+    // as gen_census_sheet, itself the lean arm's: kept beside the other lean
+    // entries for a build that runs only that arm (the wasm)
     #[inline(always)]
     pub fn gen_census_sheet_lean<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -6408,7 +6488,7 @@ impl KurniaMoveGenerator {
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
-        self.gen_census_sheet_impl::<true, _, _>(
+        self.gen_census_sheet_impl(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -6417,7 +6497,7 @@ impl KurniaMoveGenerator {
     }
 
     #[inline(always)]
-    fn gen_census_sheet_impl<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    fn gen_census_sheet_impl<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlacePredicate<'_>,
@@ -6425,7 +6505,7 @@ impl KurniaMoveGenerator {
         equity_predicate: EquityPredicate<'_>,
     ) {
         self.working_buffer.is_census = true;
-        self.gen_moves_filtered_impl::<LEAN, _, _>(
+        self.gen_moves_filtered_impl(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -6442,51 +6522,58 @@ impl KurniaMoveGenerator {
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
-        // tables keyed by nibbles: their instance's own generation, and a turn
-        // it hands back the lean arm's, never one keyed by the tables' layout
-        if params
-            .board_snapshot
-            .anagrams
-            .is_some_and(|anagrams| anagrams.nibble_side().is_some())
-        {
-            if let Some((place_move_predicate, equity_predicate)) = self.gen_moves_nibbles(
-                params,
-                place_move_predicate,
-                adjust_leave_value,
-                equity_predicate,
-            ) {
-                self.gen_moves_filtered_impl::<true, _, _>(
+        // the generation by the tables (keyed by nibbles where they are, else
+        // by their layout); a turn it hands back, or a game with no anagrams,
+        // is the lean arm's
+        let handed_back = match params.board_snapshot.anagrams {
+            Some(anagrams) if anagrams.nibble_side().is_some() => self
+                .gen_moves_tables::<15, u16, ByNibble, _, _>(
                     params,
                     place_move_predicate,
                     adjust_leave_value,
                     equity_predicate,
-                );
-            }
-            return;
+                ),
+            Some(_) => self.gen_moves_tables::<0, u128, ByLayout, _, _>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+            ),
+            None => Some((place_move_predicate, equity_predicate)),
+        };
+        if let Some((place_move_predicate, equity_predicate)) = handed_back {
+            self.gen_moves_filtered_impl(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+            );
         }
-        self.gen_moves_filtered_impl::<false, _, _>(
-            params,
-            place_move_predicate,
-            adjust_leave_value,
-            equity_predicate,
-        )
     }
 
-    // the generation keyed by nibbles, compiled for its one instance (a classic
-    // game on a square board of 15, u16 lane sets, nibble keys), on the
-    // generator's own working state. A turn it does not play (a census sheet, a
-    // game its tables do not fit) is handed back before anything is generated,
-    // with the predicates, for the lean arm.
+    // the generation by the tables on the generator's own working state, keyed
+    // by nibbles for its instance (a classic game on a square board of side D,
+    // u16 lane sets), else by its tables' layout (any board). A turn the tables
+    // do not play (a census sheet, a game its tables do not fit, a rack its
+    // subracks do not hold) is handed back before anything is generated, with
+    // the predicates, for the lean arm.
     #[inline]
-    fn gen_moves_nibbles<'a, 'p, 'e, N: kwg::Node, L: kwg::Node>(
+    fn gen_moves_tables<
+        'a,
+        'p,
+        'e,
+        const D: usize,
+        W: LaneBits,
+        T: TablePlaces,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlacePredicate<'p>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'e>,
     ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
-        // the side its instance is compiled for
-        const SIDE: usize = 15;
         if self.working_buffer.is_census {
             return Some((place_move_predicate, equity_predicate));
         }
@@ -6500,32 +6587,46 @@ impl KurniaMoveGenerator {
         let dim = board_layout.dim();
         let max_gen = params.max_gen;
 
-        // a classic game on a square board of its side, its tables built for
-        // that side: checked before init, which is compiled for the side
-        if !(dim.rows as usize == SIDE
-            && dim.cols as usize == SIDE
-            && matches!(
-                params.board_snapshot.game_config.game_rules(),
-                game_config::GameRules::Classic
-            )
-            && params
-                .board_snapshot
-                .anagrams
-                .and_then(anagrams::Anagrams::nibble_side)
-                == Some(SIDE as u8))
+        // nibble keys: a classic game on a square board of the instance's side,
+        // its tables built for that side, checked before init, which is
+        // compiled for the side
+        if T::NIBBLES
+            && !(dim.rows as usize == D
+                && dim.cols as usize == D
+                && matches!(
+                    params.board_snapshot.game_config.game_rules(),
+                    game_config::GameRules::Classic
+                )
+                && params
+                    .board_snapshot
+                    .anagrams
+                    .and_then(anagrams::Anagrams::nibble_side)
+                    == Some(D as u8))
         {
             return Some((place_move_predicate, equity_predicate));
         }
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<SIDE, ByNibble, _, _>(
+        working_buffer.init::<D, T, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
             params.dynamic_leaves,
         );
-        // its tables fit the game's counts (init asked them), and init made the
-        // subracks
-        if !(working_buffer.anagrams_fit_config && !working_buffer.subracks.is_empty()) {
+        // what the arm plays: a classic turn its tables take (by nibble keys,
+        // once its tables fit the game's counts as init asked them and init
+        // made the subracks), or a jumbled game by its tables keyed by their
+        // layout
+        let classic = if T::NIBBLES {
+            working_buffer.anagrams_fit_config && !working_buffer.subracks.is_empty()
+        } else {
+            working_buffer.turn_is_supported(params.board_snapshot)
+        };
+        let jumbled = if T::NIBBLES || classic {
+            None
+        } else {
+            working_buffer.jumbled_keys(params.board_snapshot)
+        };
+        if !classic && jumbled.is_none() {
             return Some((place_move_predicate, equity_predicate));
         }
 
@@ -6604,8 +6705,8 @@ impl KurniaMoveGenerator {
                 }
                 threshold.get().raw()
             };
-        for _ in
-            kurnia_gen_place_moves_iter::<SIDE, u16, ByNibble, _, _, _, _, _>(KurniaIterParams {
+        if classic {
+            for _ in kurnia_gen_place_moves_iter::<D, W, T, _, _, _, _, _>(KurniaIterParams {
                 runs: (),
                 keys: (),
                 want_raw: false,
@@ -6617,8 +6718,24 @@ impl KurniaMoveGenerator {
                     threshold.get() <= equity::Equity::new(best_possible_equity)
                 },
                 current_threshold: || threshold.get().raw(),
-            })
-        {}
+            }) {}
+        } else if !T::NIBBLES
+            && let Some(anagrams) = jumbled
+        {
+            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                runs: (),
+                keys: anagrams,
+                want_raw: false,
+                board_snapshot: params.board_snapshot,
+                working_buffer,
+                multi_leaves: &multi_leaves,
+                found_place_move,
+                can_accept: |best_possible_equity: i32| {
+                    threshold.get() <= equity::Equity::new(best_possible_equity)
+                },
+                current_threshold: || threshold.get().raw(),
+            }) {}
+        }
         kurnia_gen_exchange_moves(
             params.board_snapshot,
             working_buffer,
@@ -6671,7 +6788,7 @@ impl KurniaMoveGenerator {
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
-        self.gen_moves_filtered_impl::<true, _, _>(
+        self.gen_moves_filtered_impl(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -6680,7 +6797,7 @@ impl KurniaMoveGenerator {
     }
 
     #[inline]
-    fn gen_moves_filtered_impl<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    fn gen_moves_filtered_impl<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlacePredicate<'_>,
@@ -6778,51 +6895,19 @@ impl KurniaMoveGenerator {
                 }
                 threshold.get().raw()
             };
-        if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
-            for _ in
-                kurnia_gen_place_moves_iter::<0, u128, ByLayout, _, _, _, _, _>(KurniaIterParams {
-                    runs: (),
-                    keys: (),
-                    want_raw: false,
-                    board_snapshot: params.board_snapshot,
-                    working_buffer,
-                    multi_leaves: &multi_leaves,
-                    found_place_move,
-                    can_accept: |best_possible_equity: i32| {
-                        threshold.get() <= equity::Equity::new(best_possible_equity)
-                    },
-                    current_threshold: || threshold.get().raw(),
-                })
-            {}
-        } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(params.board_snapshot) {
-            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-                runs: (),
-                keys: anagrams,
-                want_raw: false,
-                board_snapshot: params.board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |best_possible_equity: i32| {
-                    threshold.get() <= equity::Equity::new(best_possible_equity)
-                },
-                current_threshold: || threshold.get().raw(),
-            }) {}
-        } else {
-            for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-                runs: (),
-                keys: (),
-                want_raw: false,
-                board_snapshot: params.board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |best_possible_equity: i32| {
-                    threshold.get() <= equity::Equity::new(best_possible_equity)
-                },
-                current_threshold: || threshold.get().raw(),
-            }) {}
-        }
+        for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+            runs: (),
+            keys: (),
+            want_raw: false,
+            board_snapshot: params.board_snapshot,
+            working_buffer,
+            multi_leaves: &multi_leaves,
+            found_place_move,
+            can_accept: |best_possible_equity: i32| {
+                threshold.get() <= equity::Equity::new(best_possible_equity)
+            },
+            current_threshold: || threshold.get().raw(),
+        }) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
             working_buffer,
@@ -7408,6 +7493,8 @@ fn kurnia_gen_place_moves_iter<
         can_accept,
         current_threshold,
     } = p;
+    // the tables make no raw moves: those are the lean arm's
+    debug_assert!(!want_raw);
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
     let fixed;
@@ -7553,7 +7640,7 @@ fn kurnia_gen_place_moves_iter<
                 }),
             },
             true,
-            want_raw,
+            false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
@@ -7616,7 +7703,7 @@ fn kurnia_gen_place_moves_iter<
                 }),
             },
             false,
-            want_raw,
+            false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
@@ -7639,20 +7726,17 @@ fn kurnia_gen_place_moves_iter<
     let mut starts = [0u32; PLACEMENT_BUCKETS + 1];
     let mut tops = [i32::MIN; PLACEMENT_BUCKETS];
     let mut bucket = PLACEMENT_BUCKETS;
+    bucket_by_equity::<T>(
+        &mut placement_order,
+        &mut working_buffer.placement_scratch,
+        &mut starts,
+        &mut tops,
+    );
     // where the bucket being popped starts; the buckets are popped highest
     // first, each in no order, since the threshold only rises: a placement it
     // refuses is passed over, and the walk ends at a bucket whose highest
     // equity it refuses
-    let mut bucket_from = usize::MAX;
-    if !want_raw {
-        bucket_by_equity::<T>(
-            &mut placement_order,
-            &mut working_buffer.placement_scratch,
-            &mut starts,
-            &mut tops,
-        );
-        bucket_from = placement_order.len();
-    }
+    let mut bucket_from = placement_order.len();
     working_buffer.span_memo.start_turn(found_placements.len());
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
@@ -7676,11 +7760,6 @@ fn kurnia_gen_place_moves_iter<
                 }
                 let (equity, idx) = working_buffer.placement_order.pop()?;
                 if !can_accept(equity) {
-                    if want_raw {
-                        // fuse the iterator
-                        working_buffer.placement_order.clear();
-                        return None;
-                    }
                     continue;
                 }
                 {
