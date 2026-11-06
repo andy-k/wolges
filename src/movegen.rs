@@ -1162,6 +1162,13 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
+        // a strip's walk keeps, by the tile on each square, the kwg's node for
+        // the tiles from there to the right; no tile matches an empty square's
+        for computation in (self.cross_set_buffer_for_across_plays.iter_mut())
+            .chain(self.cross_set_buffer_for_down_plays.iter_mut())
+        {
+            computation.b_letter = 0;
+        }
         self.prev_board_tiles.fill(0xff);
         for lane in self.lane_scaffold.iter_mut() {
             lane.valid = false;
@@ -7109,10 +7116,15 @@ mod tests {
 
     #[inline]
     fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
+        test_kwg_of(gc, TEST_WORDS)
+    }
+
+    #[inline]
+    fn test_kwg_of(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::Node24> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
-        let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
-        for w in TEST_WORDS {
+        let mut words = Vec::<bites::Bites>::with_capacity(test_words.len());
+        for w in test_words {
             reader.set_word(w, &mut word_buf).unwrap();
             words.push(word_buf[..].into());
         }
@@ -8678,6 +8690,52 @@ mod tests {
             .collect::<Vec<_>>();
         out.sort_unstable();
         out
+    }
+
+    #[test]
+    #[inline]
+    fn a_generator_reset_for_another_kwg_plays_as_a_new_one() {
+        // a strip's walk keeps the kwg's nodes for the tiles on the board; a
+        // generator reset for another kwg finds on the same board what a new
+        // generator finds, under the anagrams and under the rack lengths
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        // the other kwg lacks every word with an S, so its nodes lie elsewhere
+        // and the same board crosses other sets
+        let other_words = TEST_WORDS
+            .iter()
+            .copied()
+            .filter(|word| !word.contains('S'))
+            .collect::<Vec<_>>();
+        let other_kwg = test_kwg_of(&gc, &other_words);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let rack = parse_test_rack(gc.alphabet(), "?AEST");
+        let mut board_tiles = vec![0u8; 15 * 15];
+        for i in 0..8 {
+            let (row, col) = (i, ((i as i32 * 7 + 3) % 15) as i8);
+            board_tiles[gc.board_layout().dim().at_row_col(row, col)] =
+                rack[1 + i as usize % (rack.len() - 1)];
+        }
+        for lean in [false, true] {
+            let tables = anagrams::ArmTables::build(&kwg, &gc, lean).unwrap();
+            let other_tables = anagrams::ArmTables::build(&other_kwg, &gc, lean).unwrap();
+            let [by_first, by_other] =
+                [(&kwg, &tables), (&other_kwg, &other_tables)].map(|(kwg, tables)| BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg,
+                    anagrams: tables.anagrams(),
+                    rack_lengths: tables.rack_lengths(),
+                    klv: &klv,
+                });
+            let want = place_plays(&mut KurniaMoveGenerator::new(&gc), &by_other, &rack, false);
+            assert!(!want.is_empty());
+            let mut reused = KurniaMoveGenerator::new(&gc);
+            assert_ne!(place_plays(&mut reused, &by_first, &rack, false), want);
+            reused.reset_for_another_kwg();
+            let found = place_plays(&mut reused, &by_other, &rack, false);
+            assert_eq!(found, want, "lean {lean}");
+        }
     }
 
     #[inline]
