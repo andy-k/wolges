@@ -443,6 +443,9 @@ struct WorkingBuffer {
     allowed_for_down_plays: Box<[u64]>,                // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
+    board_tile_score: i32, // the board's tiles' face values, as init last found them
+    prev_tile_count: u16,  // num_tiles_on_board for prev_board_tiles (with no 0xff)
+    prev_tile_score: i32,  // board_tile_score for prev_board_tiles (with no 0xff)
     num_tiles_in_bag: i16, // negative when players also have less than full racks
     play_out_bonus: i32,
     num_tiles_on_rack: u8,
@@ -524,6 +527,9 @@ impl Clone for WorkingBuffer {
             allowed_for_down_plays: self.allowed_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
+            board_tile_score: self.board_tile_score,
+            prev_tile_count: self.prev_tile_count,
+            prev_tile_score: self.prev_tile_score,
             num_tiles_in_bag: self.num_tiles_in_bag,
             play_out_bonus: self.play_out_bonus,
             num_tiles_on_rack: self.num_tiles_on_rack,
@@ -612,6 +618,9 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
             .clone_from(&source.num_tiles_on_board);
+        self.board_tile_score.clone_from(&source.board_tile_score);
+        self.prev_tile_count.clone_from(&source.prev_tile_count);
+        self.prev_tile_score.clone_from(&source.prev_tile_score);
         self.num_tiles_in_bag.clone_from(&source.num_tiles_in_bag);
         self.play_out_bonus.clone_from(&source.play_out_bonus);
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
@@ -730,6 +739,9 @@ impl WorkingBuffer {
             allowed_for_down_plays: vec![0u64; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
+            board_tile_score: 0,
+            prev_tile_count: 0,
+            prev_tile_score: 0,
             num_tiles_in_bag: 0,
             play_out_bonus: 0,
             num_tiles_on_rack: 0,
@@ -821,12 +833,6 @@ impl WorkingBuffer {
             self.rack_tally[*tile as usize] += 1;
             self.rack_bits |= 1u64 << tile;
         }
-        self.word_buffer_for_across_plays
-            .iter_mut()
-            .for_each(|m| *m = 0);
-        self.word_buffer_for_down_plays
-            .iter_mut()
-            .for_each(|m| *m = 0);
         let board_layout = board_snapshot.game_config.board_layout();
         let fixed;
         let dim = if D != 0 {
@@ -843,44 +849,78 @@ impl WorkingBuffer {
         let transposed_premiums = board_layout.transposed_premiums();
         let mut dirty_rows = 0u128;
         let mut dirty_cols = 0u128;
-        for (idx, (&b, &prev)) in board_snapshot.board_tiles[..area]
-            .iter()
-            .zip(self.prev_board_tiles[..area].iter())
-            .enumerate()
-        {
-            if b == prev {
+        // the tiles and face values the squares that changed gained, against
+        // prev_board_tiles's counts; a board it holds as unknown (0xff) is
+        // counted afresh
+        let face = |t: u8| if t != 0 { alphabet.score(t) as i32 } else { 0 };
+        let mut tiles_gained = 0i32;
+        let mut score_gained = 0i32;
+        let mut unknown = false;
+        let board = &board_snapshot.board_tiles[..area];
+        // sixteen squares at a time: a generation's board mostly differs from
+        // the last one's in a few
+        let mut base = 0;
+        while base < area {
+            let end = (base + 16).min(area);
+            let same = if end - base == 16 {
+                u128::from_ne_bytes(board[base..end].try_into().unwrap())
+                    == u128::from_ne_bytes(self.prev_board_tiles[base..end].try_into().unwrap())
+            } else {
+                board[base..end] == self.prev_board_tiles[base..end]
+            };
+            if same {
+                base = end;
                 continue;
             }
-            let row = idx / dim.cols as usize;
-            let col = idx % dim.cols as usize;
-            dirty_rows |= 1 << row;
-            dirty_cols |= 1 << col;
-            let transposed_idx = col * dim.rows as usize + row;
-            self.transposed_board_tiles[transposed_idx] = b;
-            if b == 0 {
-                let premium = &premiums[idx];
-                self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
-                self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
-                self.face_value_scores_for_across_plays[idx] = 0;
-                let premium = &transposed_premiums[transposed_idx];
-                self.remaining_word_multipliers_for_down_plays[transposed_idx] =
-                    premium.word_multiplier;
-                self.remaining_tile_multipliers_for_down_plays[transposed_idx] =
-                    premium.tile_multiplier;
-                self.face_value_scores_for_down_plays[transposed_idx] = 0;
-            } else {
-                self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b);
-                self.remaining_word_multipliers_for_down_plays[transposed_idx] = 1; // needed for the HashMap
-                self.face_value_scores_for_down_plays[transposed_idx] = alphabet.scaled_score(b);
+            for idx in base..end {
+                let b = board[idx];
+                let prev = self.prev_board_tiles[idx];
+                if b == prev {
+                    continue;
+                }
+                if prev == 0xff {
+                    unknown = true;
+                } else {
+                    tiles_gained += (b != 0) as i32 - (prev != 0) as i32;
+                    score_gained += face(b) - face(prev);
+                }
+                let row = idx / dim.cols as usize;
+                let col = idx % dim.cols as usize;
+                dirty_rows |= 1 << row;
+                dirty_cols |= 1 << col;
+                let transposed_idx = col * dim.rows as usize + row;
+                self.transposed_board_tiles[transposed_idx] = b;
+                // a played word reads 0 on the board's tiles, so a square that
+                // changed keeps no letter a walk left on it
+                self.word_buffer_for_across_plays[idx] = 0;
+                self.word_buffer_for_down_plays[transposed_idx] = 0;
+                if b == 0 {
+                    let premium = &premiums[idx];
+                    self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_across_plays[idx] = 0;
+                    let premium = &transposed_premiums[transposed_idx];
+                    self.remaining_word_multipliers_for_down_plays[transposed_idx] =
+                        premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_down_plays[transposed_idx] =
+                        premium.tile_multiplier;
+                    self.face_value_scores_for_down_plays[transposed_idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
+                    self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b);
+                    self.remaining_word_multipliers_for_down_plays[transposed_idx] = 1; // needed for the HashMap
+                    self.face_value_scores_for_down_plays[transposed_idx] =
+                        alphabet.scaled_score(b);
+                }
             }
+            base = end;
         }
-        if dirty_rows != 0 {
-            self.num_tiles_on_board = board_snapshot
-                .board_tiles
-                .iter()
-                .filter(|&t| *t != 0)
-                .count() as u16;
+        if unknown {
+            self.num_tiles_on_board = board.iter().filter(|&&t| t != 0).count() as u16;
+            self.board_tile_score = board.iter().map(|&t| face(t)).sum();
+        } else {
+            self.num_tiles_on_board = (self.prev_tile_count as i32 + tiles_gained) as u16;
+            self.board_tile_score = self.prev_tile_score + score_gained;
         }
         if was_empty || self.num_tiles_on_board == 0 {
             dirty_rows |= 1 << board_layout.star_row();
@@ -897,11 +937,7 @@ impl WorkingBuffer {
                     (alphabet.freq(tile) as i32 - num as i32) * alphabet.score(tile) as i32
                 })
                 .sum::<i32>()
-                - board_snapshot
-                    .board_tiles
-                    .iter()
-                    .map(|&t| if t != 0 { alphabet.score(t) as i32 } else { 0 })
-                    .sum::<i32>())
+                - self.board_tile_score)
                 * equity::SCALE
         } else {
             0
@@ -6872,6 +6908,8 @@ fn kurnia_gen_place_moves_iter_lean<
     if dirty_rows != 0 || dirty_cols != 0 {
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
+        working_buffer.prev_tile_count = working_buffer.num_tiles_on_board;
+        working_buffer.prev_tile_score = working_buffer.board_tile_score;
     }
     working_buffer.init_after_cross_sets::<0, _, _>(board_snapshot, dirty_cols, dirty_rows);
 
@@ -7205,6 +7243,8 @@ fn kurnia_gen_place_moves_iter<
     if dirty_rows != 0 || dirty_cols != 0 {
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
+        working_buffer.prev_tile_count = working_buffer.num_tiles_on_board;
+        working_buffer.prev_tile_score = working_buffer.board_tile_score;
     }
     working_buffer.init_after_cross_sets::<D, _, _>(board_snapshot, dirty_cols, dirty_rows);
 
