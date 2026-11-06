@@ -4761,13 +4761,56 @@ impl KurniaMoveGenerator {
         rows: u128,
         cols: u128,
     ) {
-        self.working_buffer.lane_rows = rows;
-        self.working_buffer.lane_cols = cols;
-        self.gen_moves_raw_all_unsorted(
+        self.gen_moves_raw_lanes_unsorted_impl::<false, _, _>(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
+            rows,
+            cols,
+        )
+    }
+
+    // as gen_moves_raw_lanes_unsorted, by the lean arm alone, so that a build
+    // that runs only that arm (the wasm) need not carry the other
+    #[inline(always)]
+    pub fn gen_moves_raw_lanes_unsorted_lean<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+        rows: u128,
+        cols: u128,
+    ) {
+        self.gen_moves_raw_lanes_unsorted_impl::<true, _, _>(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+            rows,
+            cols,
+        )
+    }
+
+    #[inline(always)]
+    fn gen_moves_raw_lanes_unsorted_impl<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+        rows: u128,
+        cols: u128,
+    ) {
+        self.working_buffer.lane_rows = rows;
+        self.working_buffer.lane_cols = cols;
+        self.gen_moves_raw_all_unsorted_impl::<LEAN, _, _, _>(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+            (),
         );
         self.working_buffer.lane_rows = !0;
         self.working_buffer.lane_cols = !0;
@@ -4777,9 +4820,14 @@ impl KurniaMoveGenerator {
     // candidate, as an endgame searches, where each walk along a run of the
     // word graph's nodes stops once run_letter_bits (by node, the tiles from it
     // to the end of its run: kwg::Kwg::compute_letter_bits) leaves it no
-    // candidate
+    // candidate; by the lean arm alone when lean
     #[inline(always)]
-    pub(crate) fn gen_moves_raw_lanes_unsorted_by_runs<'a, N: kwg::Node, L: kwg::Node>(
+    pub(crate) fn gen_moves_raw_lanes_unsorted_by_runs<
+        'a,
+        const LEAN: bool,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         &mut self,
         run_letter_bits: &'a [u64],
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
@@ -4790,7 +4838,7 @@ impl KurniaMoveGenerator {
         debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
         self.working_buffer.lane_rows = rows;
         self.working_buffer.lane_cols = cols;
-        self.gen_moves_raw_all_unsorted_impl::<false, _, _, _>(
+        self.gen_moves_raw_all_unsorted_impl::<LEAN, _, _, _>(
             board_snapshot,
             rack,
             0,
@@ -5111,8 +5159,42 @@ impl KurniaMoveGenerator {
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
+        self.gen_census_sheet_impl::<false, _, _>(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+        )
+    }
+
+    // as gen_census_sheet, by the lean arm alone, so that a build that runs
+    // only that arm (the wasm) need not carry the other
+    #[inline(always)]
+    pub fn gen_census_sheet_lean<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'_>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'_>,
+    ) {
+        self.gen_census_sheet_impl::<true, _, _>(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+        )
+    }
+
+    #[inline(always)]
+    fn gen_census_sheet_impl<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'_>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'_>,
+    ) {
         self.working_buffer.is_census = true;
-        self.gen_moves_filtered(
+        self.gen_moves_filtered_impl::<LEAN, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -6991,7 +7073,7 @@ mod tests {
                         !0,
                     );
                     let walked = plays(&move_generator);
-                    move_generator.gen_moves_raw_lanes_unsorted_by_runs(
+                    move_generator.gen_moves_raw_lanes_unsorted_by_runs::<false, _, _>(
                         &run_letter_bits,
                         &board_snapshot,
                         &rack,
