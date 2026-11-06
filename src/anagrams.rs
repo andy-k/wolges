@@ -136,10 +136,74 @@ fn layout_for_config(
     layout
 }
 
+// how a table's words are keyed while it is built, and what it keeps of the
+// keys: a packed layout, or nibbles (for a square board of one side, keeping
+// the game's layout, whose counts are the nibbles' counts)
+trait KeyBuild {
+    fn key_of(&self, word: &[u8]) -> Option<u128>;
+    fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_;
+    fn place_value(&self, tile: u8) -> u128;
+    fn kept(self) -> (alphagram::KeyLayout, u8);
+}
+
+impl KeyBuild for alphagram::KeyLayout {
+    #[inline(always)]
+    fn key_of(&self, word: &[u8]) -> Option<u128> {
+        alphagram::KeyLayout::key_of(self, word)
+    }
+
+    #[inline(always)]
+    fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_ {
+        alphagram::KeyLayout::tiles_in(self, key)
+    }
+
+    #[inline(always)]
+    fn place_value(&self, tile: u8) -> u128 {
+        alphagram::KeyLayout::place_value(self, tile)
+    }
+
+    #[inline(always)]
+    fn kept(self) -> (alphagram::KeyLayout, u8) {
+        (self, 0)
+    }
+}
+
+// keys by nibbles: each tile counted up to the game's layout's most of it, for
+// a square board of side
+struct NibbleKeys {
+    layout: alphagram::KeyLayout,
+    side: u8,
+}
+
+impl KeyBuild for NibbleKeys {
+    #[inline(always)]
+    fn key_of(&self, word: &[u8]) -> Option<u128> {
+        alphagram::Nibble::key_of(self.layout.max_counts(), word)
+    }
+
+    #[inline(always)]
+    fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_ {
+        (1..self.layout.max_counts().len())
+            .map(|tile| tile as u8)
+            .filter(move |&tile| alphagram::KeyPlaces::count_in(alphagram::Nibble, key, tile) > 0)
+    }
+
+    #[inline(always)]
+    fn place_value(&self, tile: u8) -> u128 {
+        alphagram::KeyPlaces::place_value(alphagram::Nibble, tile)
+    }
+
+    #[inline(always)]
+    fn kept(self) -> (alphagram::KeyLayout, u8) {
+        (self.layout, self.side)
+    }
+}
+
 // one arena, sorted by length, then alphagram, then word
 pub struct Anagrams {
     layout: alphagram::KeyLayout,
     max_word_len: u8,
+    nibble_side: u8, // the board side of nibble keys, else 0
     arena: Box<[u8]>,
     groups: Box<[Table<u32>]>,
     blanked: Box<[Table<u32>]>,
@@ -245,9 +309,9 @@ impl Anagrams {
         Self::build_within(g, layout, longest, &mut Ledger::up_to(usize::MAX))
     }
 
-    fn build_within<N: kwg::Node>(
+    fn build_within<N: kwg::Node, K: KeyBuild>(
         g: &kwg::Kwg<N>,
-        layout: alphagram::KeyLayout,
+        layout: K,
         longest: u8,
         ledger: &mut Ledger,
     ) -> error::Returns<Option<Self>> {
@@ -258,9 +322,9 @@ impl Anagrams {
     }
 
     // g's dawg holds this many words and no loop
-    fn build_counted<N: kwg::Node>(
+    fn build_counted<N: kwg::Node, K: KeyBuild>(
         g: &kwg::Kwg<N>,
-        layout: alphagram::KeyLayout,
+        layout: K,
         longest: u8,
         words: usize,
         ledger: &mut Ledger,
@@ -369,9 +433,11 @@ impl Anagrams {
         ledger.take(filter_bytes(blank_key_count, BLANK_FILTER_BITS))?;
         let (blank_filter, blank_filter_block_count) =
             Self::filter_of(&blanked, blank_key_count, BLANK_FILTER_BITS);
+        let (layout, nibble_side) = layout.kept();
         Some(Anagrams {
             layout,
             max_word_len: longest,
+            nibble_side,
             filter,
             filter_block_count,
             blank_filter,
@@ -466,6 +532,13 @@ impl Anagrams {
     #[inline(always)]
     pub fn layout(&self) -> &alphagram::KeyLayout {
         &self.layout
+    }
+
+    // the side of the square board these are played on, keyed by nibbles; none
+    // for tables keyed by their layout
+    #[inline(always)]
+    pub fn nibble_side(&self) -> Option<u8> {
+        (self.nibble_side != 0).then_some(self.nibble_side)
     }
 
     // they hold every word a game of this config can play, keyed as it keys
@@ -649,7 +722,18 @@ pub enum ArmTables {
     None,
 }
 
+// the board sides nibble keys are compiled for: one, a square board of 15
+// (KurniaMoveGenerator::gen_moves_nibbles). None for 21: a super game's counts
+// of a tile reach past 15 where its tiles and blanks run to 16 or more, as
+// english's do, so its keys cannot be nibbles, and the super games that would
+// fit (catalan, german) are too few to pay for an instance of their own.
+const NIBBLE_SIDES: [u8; 1] = [15];
+
 impl ArmTables {
+    // the tables of the arm the game config is detected for: with lean, the
+    // lean arm's; else tables keyed by nibbles where they fit the game (a
+    // classic game on a square board of a side in NIBBLE_SIDES), else by their
+    // layout; else none (the lean arm)
     #[inline]
     pub fn build<N: kwg::Node>(
         kwg: &kwg::Kwg<N>,
@@ -680,13 +764,69 @@ impl ArmTables {
         lean: bool,
         ledger: &mut Ledger,
     ) -> error::Returns<Self> {
-        Ok(if lean {
-            RackLengths::build_for_config_within(kwg, game_config, ledger)?
-                .map_or(Self::None, Self::RackLengths)
-        } else {
-            Anagrams::build_for_config_within(kwg, game_config, ledger)?
-                .map_or(Self::None, Self::Anagrams)
-        })
+        if lean {
+            return Ok(
+                RackLengths::build_for_config_within(kwg, game_config, ledger)?
+                    .map_or(Self::None, Self::RackLengths),
+            );
+        }
+        match Self::nibbles_in(kwg, game_config, ledger)? {
+            Some(tables) => Ok(tables),
+            None => Self::layout_in(kwg, game_config, ledger),
+        }
+    }
+
+    // tables keyed by their layout, or none, even where nibbles fit the game
+    // (for the tests that set them against nibble keys)
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn build_by_layout<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+    ) -> error::Returns<Self> {
+        Self::layout_in(kwg, game_config, &mut Ledger::up_to(usize::MAX))
+    }
+
+    #[inline]
+    fn layout_in<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        ledger: &mut Ledger,
+    ) -> error::Returns<Self> {
+        Ok(Anagrams::build_for_config_within(kwg, game_config, ledger)?
+            .map_or(Self::None, Self::Anagrams))
+    }
+
+    // the tables keyed by nibbles, where they fit the game: nibbles, which a
+    // game of at most 32 tiles fits on a board of 15 (no word there holds more
+    // than 15 of a tile)
+    #[inline]
+    fn nibbles_in<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        ledger: &mut Ledger,
+    ) -> error::Returns<Option<Self>> {
+        let dim = game_config.board_layout().dim();
+        let Ok(side) = u8::try_from(dim.rows) else {
+            return Ok(None);
+        };
+        if !matches!(game_config.game_rules(), game_config::GameRules::Classic)
+            || dim.rows != dim.cols
+            || !NIBBLE_SIDES.contains(&side)
+            || game_config.alphabet().len() as usize > alphagram::Nibble::TILES
+        {
+            return Ok(None);
+        }
+        let Some(layout) = layout_for_config(game_config, ledger) else {
+            return Ok(None);
+        };
+        Ok(Anagrams::build_within(
+            kwg,
+            NibbleKeys { layout, side },
+            longest_play(game_config),
+            ledger,
+        )?
+        .map(Self::Anagrams))
     }
 
     #[inline(always)]
@@ -1032,6 +1172,51 @@ mod tests {
         let wide = crate::game_config::make_super_english_game_config();
         let held = Anagrams::build_for_config(&g, &gc).unwrap().unwrap();
         assert!(!held.fit(&wide));
+    }
+
+    #[test]
+    #[inline]
+    fn either_keying_finds_the_same_words() {
+        // tables keyed by nibbles hand back for a set of tiles the words tables
+        // keyed by the layout do
+        let gc = crate::game_config::make_english_game_config();
+        let words = three_letter_words();
+        let layout = test_layout();
+        let by_layout = built(&words);
+        let by_nibbles = Anagrams::build_within(
+            &graph_of(&words),
+            NibbleKeys {
+                layout: test_layout(),
+                side: 15,
+            },
+            longest_play(&gc),
+            &mut Ledger::up_to(usize::MAX),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(by_nibbles.nibble_side(), Some(15));
+        assert_eq!(by_layout.nibble_side(), None);
+        assert!(by_nibbles.fit(&gc) && by_layout.fit(&gc));
+        let mut found = 0;
+        for a in 1u8..=6 {
+            for b in 1u8..=6 {
+                for c in 1u8..=6 {
+                    let tiles = [a, b, c];
+                    let by_nibble_key = alphagram::Fitted(
+                        alphagram::Nibble::key_of(layout.max_counts(), &tiles).unwrap(),
+                    );
+                    let by_layout_key = alphagram::Fitted(layout.key_of(&tiles).unwrap());
+                    let got = sorted(by_nibbles.words(by_nibble_key, 3));
+                    assert_eq!(
+                        got,
+                        sorted(by_layout.words(by_layout_key, 3)),
+                        "{a} {b} {c}"
+                    );
+                    found += got.len();
+                }
+            }
+        }
+        assert!(found > 0, "nothing was found");
     }
 
     #[test]

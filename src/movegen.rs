@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{alphabet, alphagram, anagrams, bites, display, equity, game_config, klv, kwg, matrix};
+use alphagram::KeyPlaces as _;
 
 pub const MAX_ALPHABET_LEN: usize = 64;
 
@@ -229,7 +230,7 @@ impl LaneScaffold {
     }
 
     #[inline]
-    fn refresh(
+    fn refresh<const D: usize>(
         &mut self,
         alphabet: &alphabet::Alphabet,
         board_strip: &[u8],
@@ -245,7 +246,13 @@ impl LaneScaffold {
         {
             return;
         }
-        let strider_len = board_strip.len();
+        let strider_len = if D == 0 { board_strip.len() } else { D };
+        if D != 0 {
+            assert_eq!(board_strip.len(), D);
+            assert_eq!(remaining_word_multipliers_strip.len(), D);
+            assert_eq!(remaining_tile_multipliers_strip.len(), D);
+            assert_eq!(perpendicular_word_multipliers_strip.len(), D);
+        }
         self.aggregated_word_multipliers.clear();
         let mut last_was_one = false;
         for i in 0..strider_len {
@@ -804,7 +811,8 @@ impl WorkingBuffer {
         }
     }
 
-    fn init<N: kwg::Node, L: kwg::Node>(
+    // T: the key places the subracks are keyed by, the anagrams' own
+    fn init<const D: usize, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         rack: &[u8],
@@ -838,7 +846,14 @@ impl WorkingBuffer {
             .iter_mut()
             .for_each(|m| *m = 0);
         let board_layout = board_snapshot.game_config.board_layout();
-        let dim = board_layout.dim();
+        let fixed;
+        let dim = if D != 0 {
+            assert!(board_layout.dim().rows as usize == D && board_layout.dim().cols as usize == D);
+            fixed = square_dim::<D>();
+            &fixed
+        } else {
+            board_layout.dim()
+        };
         let area = (dim.rows as isize * dim.cols as isize) as usize;
         let was_empty = self.num_tiles_on_board == 0;
 
@@ -984,13 +999,13 @@ impl WorkingBuffer {
             self.best_leave_values[i as usize] +=
                 board_snapshot.game_config.num_played_bonus(i) as i32 * equity::SCALE;
         }
-        if let (true, Some(layout)) = (
+        if let (true, Some(places)) = (
             board_snapshot.anagrams.is_some() && self.multi_leaves.is_dense(),
-            board_snapshot.anagrams.map(anagrams::Anagrams::layout),
+            board_snapshot.anagrams.map(T::of),
         ) {
             build_subracks(
                 &self.multi_leaves,
-                layout,
+                places,
                 &self.rack_tally,
                 &mut self.subracks,
                 &mut self.subracks_by_played,
@@ -1013,14 +1028,21 @@ impl WorkingBuffer {
     }
 
     #[inline]
-    fn init_after_cross_sets<N: kwg::Node, L: kwg::Node>(
+    fn init_after_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         dirty_cols: u128,
         dirty_rows: u128,
     ) {
         let board_layout = board_snapshot.game_config.board_layout();
-        let dim = board_layout.dim();
+        let fixed;
+        let dim = if D != 0 {
+            assert!(board_layout.dim().rows as usize == D && board_layout.dim().cols as usize == D);
+            fixed = square_dim::<D>();
+            &fixed
+        } else {
+            board_layout.dim()
+        };
         if dirty_cols != 0 {
             let premiums = board_layout.premiums();
 
@@ -1078,11 +1100,11 @@ impl WorkingBuffer {
     // is read: where the sums start in span_prefix, and the lane's index in
     // span_lanes
     #[inline(always)]
-    fn fill_span_lane(
+    fn fill_span_lane<const D: usize, W: LaneBits, P: alphagram::KeyPlaces>(
         &mut self,
         board_tiles: &[u8],
         dim: &matrix::Dim,
-        layout: &alphagram::KeyLayout,
+        places: P,
         down: bool,
         lane: i8,
     ) -> (usize, usize) {
@@ -1092,12 +1114,17 @@ impl WorkingBuffer {
         let (lane_at, len, start, at) = if down {
             (
                 rows + lane,
-                rows,
+                if D == 0 { rows } else { D },
                 lane * rows,
                 rows * (cols + 1) + lane * (rows + 1),
             )
         } else {
-            (lane, cols, lane * cols, lane * (cols + 1))
+            (
+                lane,
+                if D == 0 { cols } else { D },
+                lane * cols,
+                lane * (cols + 1),
+            )
         };
         if self.span_lanes[lane_at].turn == self.span_turn {
             return (at, lane_at);
@@ -1129,23 +1156,36 @@ impl WorkingBuffer {
         let mut sum = SpanPrefix::new();
         let mut empty = 0u128;
         let mut multiplied = 0u128;
+        // on an instance whose lane sets are u16 (W), in u16
+        let narrow = W::BITS == u16::BITS;
+        let mut empty16 = 0u16;
+        let mut multiplied16 = 0u16;
         out[0] = sum;
         for j in 0..len {
             let b = board_strip[j];
             allowed[j] = allowed_letters(b, cross_sets[j].bits);
             if b != 0 {
                 sum.face += face_values[j];
-                sum.key += layout.place_value(b & 0x7f);
+                sum.key += places.place_value(b & 0x7f);
             } else {
                 let bits = cross_sets[j].bits;
                 sum.free += (bits == 0) as u8;
                 sum.dead += (bits == 1) as u8;
                 sum.played += 1;
                 sum.perp += perpendicular_scores[j];
-                empty |= 1u128 << j;
-                multiplied |= ((word_multipliers[j] != 1) as u128) << j;
+                if narrow {
+                    empty16 |= 1u16 << j;
+                    multiplied16 |= ((word_multipliers[j] != 1) as u16) << j;
+                } else {
+                    empty |= 1u128 << j;
+                    multiplied |= ((word_multipliers[j] != 1) as u128) << j;
+                }
             }
             out[j + 1] = sum;
+        }
+        if narrow {
+            empty = empty16 as u128;
+            multiplied = multiplied16 as u128;
         }
         self.span_lanes[lane_at] = SpanLane {
             turn: self.span_turn,
@@ -1498,7 +1538,8 @@ fn gen_jumbled_cross_set<'a, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
 }
 
 #[inline(always)]
-fn gen_cross_set<'a, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
+// nibble keys come with classic games only
+fn gen_cross_set<'a, B: Keys, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_sets: &'a mut [CrossSet],
@@ -1507,6 +1548,16 @@ fn gen_cross_set<'a, K: JumbledKeys, N: kwg::Node, L: kwg::Node>(
     cached_cross_sets: &'a mut [CachedCrossSet],
     (used_letters_tally, keys): (&'a mut [u8], K),
 ) {
+    if B::NIBBLES {
+        return gen_classic_cross_set(
+            board_snapshot,
+            board_strip,
+            cross_sets,
+            output_strider,
+            cross_set_buffer,
+            cached_cross_sets,
+        );
+    }
     match board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => gen_classic_cross_set(
             board_snapshot,
@@ -1693,8 +1744,9 @@ fn rack_subset_lengths(
     found | 3
 }
 
+// one copy for each kind of keys (T), as bucket_by_equity
 #[inline]
-fn feasible_lengths_of_subracks(
+fn feasible_lengths_of_subracks<T: TablePlaces>(
     anagrams: Option<&anagrams::Anagrams>,
     rack_lengths: Option<&anagrams::RackLengths>,
     rack_tally: &[u8],
@@ -1722,11 +1774,86 @@ fn feasible_lengths_of_subracks(
     found
 }
 
+// the board of an instance compiled for a square board of side D (D is not 0)
+#[inline(always)]
+fn square_dim<const D: usize>() -> matrix::Dim {
+    matrix::Dim {
+        rows: D as i8,
+        cols: D as i8,
+    }
+}
+
+// the set type an instance takes for a lane's squares, bit i for square i: u16
+// for a side of at most 16, u128 for any
+trait LaneBits {
+    const BITS: u32;
+}
+
+impl LaneBits for u16 {
+    const BITS: u32 = u16::BITS;
+}
+
+impl LaneBits for u128 {
+    const BITS: u32 = u128::BITS;
+}
+
+// what an instance's keys are: nibbles (a classic game's, on a square board of
+// the instance's side) or not
+trait Keys {
+    const NIBBLES: bool;
+}
+
+// the lean arm's, which reads no tables
+struct NoTables;
+
+impl Keys for NoTables {
+    const NIBBLES: bool = false;
+}
+
+// the key places the table walk reads its anagrams' keys by: their layout or
+// nibbles
+trait TablePlaces: Keys {
+    type Places<'x>: alphagram::KeyPlaces;
+    fn of(anagrams: &anagrams::Anagrams) -> Self::Places<'_>;
+}
+
+// keys by the tables' layout
+struct ByLayout;
+
+impl Keys for ByLayout {
+    const NIBBLES: bool = false;
+}
+
+impl TablePlaces for ByLayout {
+    type Places<'x> = &'x alphagram::KeyLayout;
+
+    #[inline(always)]
+    fn of(anagrams: &anagrams::Anagrams) -> &alphagram::KeyLayout {
+        anagrams.layout()
+    }
+}
+
+// keys by nibbles
+struct ByNibble;
+
+impl Keys for ByNibble {
+    const NIBBLES: bool = true;
+}
+
+impl TablePlaces for ByNibble {
+    type Places<'x> = alphagram::Nibble;
+
+    #[inline(always)]
+    fn of(_anagrams: &anagrams::Anagrams) -> alphagram::Nibble {
+        alphagram::Nibble
+    }
+}
+
 // the lane's span sums filled, when a span through board tiles can be refused
 // by the key filter at shadow time (KeyCheck): the unblanked classic game under
 // the tables, whose memo is made at its first use
 #[inline(always)]
-fn fill_key_check<'a, N: kwg::Node, L: kwg::Node>(
+fn fill_key_check<'a, const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
     working_buffer: &mut WorkingBuffer,
     board_snapshot: &BoardSnapshot<'a, N, L>,
     dim: &matrix::Dim,
@@ -1745,8 +1872,13 @@ fn fill_key_check<'a, N: kwg::Node, L: kwg::Node>(
     if working_buffer.exist_memo.is_empty() {
         working_buffer.exist_memo = vec![ExistSlot::new(); EXIST_MEMO_SLOTS].into_boxed_slice();
     }
-    let (at, _) =
-        working_buffer.fill_span_lane(board_snapshot.board_tiles, dim, source.layout(), down, lane);
+    let (at, _) = working_buffer.fill_span_lane::<D, W, _>(
+        board_snapshot.board_tiles,
+        dim,
+        T::of(source),
+        down,
+        lane,
+    );
     Some((source, at))
 }
 
@@ -1793,7 +1925,7 @@ fn gen_place_placements_impl<
     let strider_len = params.board_strip.len();
 
     if !want_raw {
-        params.lane_scaffold.refresh(
+        params.lane_scaffold.refresh::<0>(
             params.alphabet,
             params.board_strip,
             params.remaining_word_multipliers_strip,
@@ -2355,6 +2487,641 @@ fn gen_place_placements_impl<
                 break;
             }
         }
+    }
+}
+
+// the shadow pass above for an instance whose lane sets are narrower than u128,
+// an instance a set type: its text gen_place_placements_impl's with the set
+// type, its 0 and 1, and the lane's side D made parameters (the test
+// the_u16_shadow_is_the_shadow holds it to that text). The lean arm and the
+// instances in u128 keep the plain function: a macro's panics report its call
+// site, so its bounds checks would merge and its code would not be theirs.
+#[rustfmt::skip]
+macro_rules! shadow_pass {
+    ($name:ident, $lane:ty, $zero:expr, $one:expr) => {
+#[inline]
+fn $name<
+    'a,
+    const PER_SPAN: bool,
+    const D: usize,
+    C: SpanCheck,
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
+>(
+    params: &'a mut GenPlacePlacementsParams<'a, C>,
+    single_tile_plays: bool,
+    want_raw: bool,
+    mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
+) {
+    let strider_len = if D == 0 { params.board_strip.len() } else { D };
+    if D != 0 {
+        // the lane's length is a constant of this instance
+        assert_eq!(params.board_strip.len(), D);
+        assert_eq!(params.cross_set_strip.len(), D);
+        assert_eq!(params.remaining_word_multipliers_strip.len(), D);
+        assert_eq!(params.remaining_tile_multipliers_strip.len(), D);
+        assert_eq!(params.perpendicular_word_multipliers_strip.len(), D);
+        assert_eq!(params.perpendicular_scores_strip.len(), D);
+    }
+
+    if !want_raw {
+        params.lane_scaffold.refresh::<D>(
+            params.alphabet,
+            params.board_strip,
+            params.remaining_word_multipliers_strip,
+            params.remaining_tile_multipliers_strip,
+            params.perpendicular_word_multipliers_strip,
+        );
+    }
+
+    struct Env<'a, C: SpanCheck> {
+        params: &'a mut GenPlacePlacementsParams<'a, C>,
+        strider_len: usize,
+        anchor: i8,
+        leftmost: i8,
+        rightmost: i8,
+        best_possible_equity: i32,
+        bounds_at: usize,
+    }
+
+    let mut env = Env {
+        params,
+        strider_len,
+        anchor: 0,
+        leftmost: 0,
+        rightmost: 0,
+        best_possible_equity: i32::MIN,
+        bounds_at: 0,
+    };
+
+    // during shadow-playing, main_score and perpendicular_cumulative_score
+    // assume all tiles placed from rack this turn are worth zero,
+    // except forced-placement cases.
+    // their scores are added separately.
+    struct Accumulator {
+        main_score: i32,                     // main_played_through_score
+        perpendicular_cumulative_score: i32, // perpendicular_additional_score
+        word_multiplier: i32,
+        crossed_board_tiles: bool,
+        deferred_score_cap: i32,
+    }
+
+    #[inline(always)]
+    fn ranked_from<C: SpanCheck>(env: &Env<'_, C>, deferred: $lane, low_end: usize) -> $lane {
+        let square_ranks_slice =
+            &env.params.lane_scaffold.square_ranks[low_end..low_end + env.strider_len];
+        let mut remaining = deferred;
+        let mut ranked = $zero;
+        while remaining != 0 {
+            let square = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            ranked |= $one << square_ranks_slice[square];
+        }
+        ranked
+    }
+
+    #[inline(always)]
+    fn shadow_record<const PER_SPAN: bool, C: SpanCheck>(
+        env: &mut Env<'_, C>,
+        acc: &Accumulator,
+        idx_left: i8,
+        idx_right: i8,
+        num_played: u8,
+        low_end: usize,
+        ranked: $lane,
+    ) {
+        debug_assert_eq!(
+            env.params.board_strip[idx_left as usize..idx_right as usize]
+                .iter()
+                .all(|&t| t == 0),
+            !acc.crossed_board_tiles
+        );
+        if !acc.crossed_board_tiles && env.params.feasible_lengths & 1 << num_played == 0 {
+            return;
+        }
+        if acc.crossed_board_tiles && env.params.check.refuses(idx_left, idx_right, num_played) {
+            return;
+        }
+        let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
+            env.params.used_tile_scores_shadowl.as_slice()
+        } else {
+            env.params.used_tile_scores_shadowr.as_slice()
+        };
+        let mut best_scoring = 0;
+        let mut to_assign = num_played - used_tile_scores.len() as u8;
+        if to_assign != 0 {
+            // if a square requiring [B] is encountered while holding a B, the B
+            // must go there. if a square requiring [A,B] is encountered earlier,
+            // that square must be A, but this is not currently implemented.
+            let high_end = low_end + env.strider_len;
+            let precomputed_square_multiplier_slice =
+                &env.params.lane_scaffold.precomputed_square_multiplier[low_end..high_end];
+            let indexes_to_descending_square_multiplier_slice = &env
+                .params
+                .lane_scaffold
+                .indexes_to_descending_square_multiplier[low_end..high_end];
+            debug_assert!(
+                ranked == 0 || acc.deferred_score_cap != i32::MIN,
+                "a deferred square with no deferred_score_cap recorded"
+            );
+            let cap = acc.deferred_score_cap;
+            let mut remaining = ranked;
+            if used_tile_scores.is_empty() {
+                let mut di = 0;
+                while to_assign != 0 && remaining != 0 {
+                    let idx = indexes_to_descending_square_multiplier_slice
+                        [remaining.trailing_zeros() as usize];
+                    remaining &= remaining - 1;
+                    best_scoring += env.params.descending_scores[di].min(cap)
+                        * precomputed_square_multiplier_slice[idx as usize];
+                    di += 1;
+                    to_assign -= 1;
+                }
+            } else {
+                let mut used_tile_scores_iter = used_tile_scores.iter().rev().peekable(); // iterate from highest score
+                let mut desc_scores_iter = env
+                    .params
+                    .descending_scores
+                    .iter()
+                    .filter(|&score| used_tile_scores_iter.next_if_eq(&score).is_none());
+                while to_assign != 0 && remaining != 0 {
+                    let idx = indexes_to_descending_square_multiplier_slice
+                        [remaining.trailing_zeros() as usize];
+                    remaining &= remaining - 1;
+                    best_scoring += (*desc_scores_iter.next().unwrap()).min(cap)
+                        * precomputed_square_multiplier_slice[idx as usize];
+                    to_assign -= 1;
+                }
+            }
+        }
+        let equity = acc.main_score * acc.word_multiplier
+            + acc.perpendicular_cumulative_score
+            + best_scoring
+            + env.params.best_leave_values[num_played as usize];
+        if PER_SPAN {
+            env.params
+                .span_out
+                .push((idx_left, idx_right, num_played, equity));
+        } else {
+            let at = &mut env.params.left_bounds[env.bounds_at + idx_left as usize];
+            *at = (*at).max(equity);
+        }
+        if equity > env.best_possible_equity {
+            env.best_possible_equity = equity;
+        }
+    }
+
+    struct ShadowRightWalk {
+        idx: i8,
+        is_unique: bool,
+        idx_left: i8,
+        num_played: u8,
+        rack_bits: u64,
+        deferred: $lane,
+        low_end: usize,
+        ranked: $lane,
+        stale_rack: bool,
+    }
+
+    #[inline(always)]
+    fn shadow_play_right<const PER_SPAN: bool, C: SpanCheck>(
+        env: &mut Env<'_, C>,
+        mut acc: Accumulator,
+        walk: ShadowRightWalk,
+    ) -> bool {
+        let ShadowRightWalk {
+            mut idx,
+            mut is_unique,
+            idx_left,
+            mut num_played,
+            mut rack_bits,
+            mut deferred,
+            mut low_end,
+            mut ranked,
+            stale_rack,
+        } = walk;
+        if !env.params.used_tile_scores_shadowl.is_empty() {
+            env.params
+                .used_tile_scores_shadowr
+                .copy_from(env.params.used_tile_scores_shadowl);
+        }
+        if stale_rack {
+            env.params
+                .rack_tally_shadowr
+                .clone_from_slice(env.params.rack_tally_shadowl);
+        }
+        let mut took_a_tile = false;
+        loop {
+            if idx < env.rightmost {
+                // tail-recurse placing current sequence of tiles in one go
+                let multi_jump = &env.params.lane_scaffold.multi_jumps[idx as usize];
+                acc.main_score += multi_jump.right_score;
+                acc.crossed_board_tiles |= multi_jump.right_idx != idx;
+                idx = multi_jump.right_idx;
+            }
+            // tiles have been placed from idx_left to idx - 1.
+            // here idx <= env.rightmost.
+            // check if [idx_left, idx) is a thing
+            if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
+                shadow_record::<PER_SPAN, C>(env, &acc, idx_left, idx, num_played, low_end, ranked);
+            }
+            if num_played >= env.params.num_max_played {
+                break;
+            }
+
+            if idx >= env.rightmost {
+                break;
+            }
+
+            // place a tile at [idx] since it is still in bounds.
+            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            if this_cross_bits & 1 == 0 {
+                // nothing hooks here.
+                is_unique = true;
+                deferred |= $one << (idx as u32);
+                ranked |= $one << env.params.lane_scaffold.square_ranks[low_end + idx as usize];
+                acc.deferred_score_cap = i32::MAX;
+            } else if this_cross_bits != 1 {
+                // something hooks here and there is a valid letter.
+                // this_cross_bits has bit 1 set, so blank is always allowed.
+                let matching_bits = this_cross_bits & rack_bits;
+                if matching_bits == 0 {
+                    break;
+                }
+                let tile = matching_bits.trailing_zeros() as u8;
+                if matching_bits.is_power_of_two() {
+                    // case 1: only one tile fits.
+                    // consume the square and the tile.
+                    // rack_bits will turn off if the tile is depleted.
+                    env.params.rack_tally_shadowr[tile as usize] -= 1;
+                    took_a_tile = true;
+                    // this is (rack_tally[tile] == 0 ? matching_bits : 0).
+                    rack_bits ^= matching_bits
+                        & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
+                    // fall-through to case 2 (assume the optimized asm does not recheck the condition).
+                }
+                if matching_bits.is_power_of_two()
+                    || matching_bits & env.params.alphabet.same_score_tile_bits(tile)
+                        == matching_bits
+                {
+                    // case 2: multiple tiles fit, but they all have the same score.
+                    // consume the square, but not the tile.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    let tile_score = env.params.alphabet.scaled_score(tile);
+                    env.params
+                        .used_tile_scores_shadowr
+                        .insert_sorted(tile_score);
+                    let tile_value = tile_score
+                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                    acc.main_score += tile_value;
+                    acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
+                        [idx as usize]
+                        + tile_value
+                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                } else {
+                    // case 3: multiple tiles fit, and they have different scores.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    // defer to greedy algorithm.
+                    let mut remaining = matching_bits;
+                    let mut admissible_max = i32::MIN;
+                    while remaining != 0 {
+                        let t = remaining.trailing_zeros() as u8;
+                        remaining &= remaining - 1;
+                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                    }
+                    acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
+                    deferred |= $one << (idx as u32);
+                    ranked |=
+                        $one << env.params.lane_scaffold.square_ranks[low_end + idx as usize];
+                    acc.perpendicular_cumulative_score +=
+                        env.params.perpendicular_scores_strip[idx as usize];
+                }
+            } else {
+                break;
+            }
+            num_played += 1;
+            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            if word_multiplier != 1 {
+                acc.word_multiplier *= word_multiplier;
+                low_end = env.params.lane_scaffold.ranking(
+                    acc.word_multiplier,
+                    env.params.board_strip,
+                    env.params.remaining_tile_multipliers_strip,
+                    env.params.perpendicular_word_multipliers_strip,
+                );
+                ranked = ranked_from(env, deferred, low_end);
+            }
+            idx += 1;
+        }
+        env.params.used_tile_scores_shadowr.clear(); // use shadowl in shadow_record
+        took_a_tile
+    }
+
+    #[inline(always)]
+    fn shadow_play_left<const PER_SPAN: bool, C: SpanCheck>(
+        env: &mut Env<'_, C>,
+        mut acc: Accumulator,
+        mut idx: i8,
+        mut is_unique: bool,
+    ) {
+        let mut deferred = $zero;
+        let mut ranked = $zero;
+        let mut low_end = env.params.lane_scaffold.ranking(
+            acc.word_multiplier,
+            env.params.board_strip,
+            env.params.remaining_tile_multipliers_strip,
+            env.params.perpendicular_word_multipliers_strip,
+        );
+        let mut num_played = 0;
+        let mut stale_rack = true;
+        env.params.used_tile_scores_shadowl.clear();
+        let mut rack_bits = env.params.rack_bits;
+        env.params
+            .rack_tally_shadowl
+            .clone_from_slice(env.params.rack_tally);
+        loop {
+            if idx >= env.leftmost {
+                // tail-recurse placing current sequence of tiles in one go
+                let multi_jump = &env.params.lane_scaffold.multi_jumps[idx as usize];
+                acc.main_score += multi_jump.left_score;
+                acc.crossed_board_tiles |= multi_jump.left_idx != idx;
+                idx = multi_jump.left_idx;
+            }
+            // tiles have been placed from env.anchor to idx + 1.
+            // here idx >= env.leftmost - 1.
+            // check if [idx + 1, env.anchor + 1) is a thing
+            if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
+                shadow_record::<PER_SPAN, C>(
+                    env,
+                    &acc,
+                    idx + 1,
+                    env.anchor + 1,
+                    num_played,
+                    low_end,
+                    ranked,
+                );
+            }
+            if num_played >= env.params.num_max_played {
+                break;
+            }
+
+            // can switch direction only after using the anchor square
+            if idx < env.anchor {
+                stale_rack = shadow_play_right::<PER_SPAN, C>(
+                    env,
+                    Accumulator { ..acc },
+                    ShadowRightWalk {
+                        idx: env.anchor + 1,
+                        is_unique,
+                        idx_left: idx + 1,
+                        num_played,
+                        rack_bits,
+                        deferred,
+                        low_end,
+                        ranked,
+                        stale_rack,
+                    },
+                );
+            }
+
+            if idx < env.leftmost {
+                break;
+            }
+
+            // place a tile at [idx] since it is still in bounds.
+            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            if this_cross_bits & 1 == 0 {
+                // nothing hooks here.
+                is_unique = true;
+                deferred |= $one << (idx as u32);
+                ranked |= $one << env.params.lane_scaffold.square_ranks[low_end + idx as usize];
+                acc.deferred_score_cap = i32::MAX;
+            } else if this_cross_bits != 1 {
+                // something hooks here and there is a valid letter.
+                // this_cross_bits has bit 1 set, so blank is always allowed.
+                let matching_bits = this_cross_bits & rack_bits;
+                if matching_bits == 0 {
+                    break;
+                }
+                let tile = matching_bits.trailing_zeros() as u8;
+                if matching_bits.is_power_of_two() {
+                    // case 1: only one tile fits.
+                    // consume the square and the tile.
+                    // rack_bits will turn off if the tile is depleted.
+                    env.params.rack_tally_shadowl[tile as usize] -= 1;
+                    stale_rack = true;
+                    // this is (rack_tally[tile] == 0 ? matching_bits : 0).
+                    rack_bits ^= matching_bits
+                        & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
+                    // fall-through to case 2 (assume the optimized asm does not recheck the condition).
+                }
+                if matching_bits.is_power_of_two()
+                    || matching_bits & env.params.alphabet.same_score_tile_bits(tile)
+                        == matching_bits
+                {
+                    // case 2: multiple tiles fit, but they all have the same score.
+                    // consume the square, but not the tile.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    let tile_score = env.params.alphabet.scaled_score(tile);
+                    env.params
+                        .used_tile_scores_shadowl
+                        .insert_sorted(tile_score);
+                    let tile_value = tile_score
+                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                    acc.main_score += tile_value;
+                    acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
+                        [idx as usize]
+                        + tile_value
+                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                } else {
+                    // case 3: multiple tiles fit, and they have different scores.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    // defer to greedy algorithm.
+                    let mut remaining = matching_bits;
+                    let mut admissible_max = i32::MIN;
+                    while remaining != 0 {
+                        let t = remaining.trailing_zeros() as u8;
+                        remaining &= remaining - 1;
+                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                    }
+                    acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
+                    deferred |= $one << (idx as u32);
+                    ranked |=
+                        $one << env.params.lane_scaffold.square_ranks[low_end + idx as usize];
+                    acc.perpendicular_cumulative_score +=
+                        env.params.perpendicular_scores_strip[idx as usize];
+                }
+            } else {
+                break;
+            }
+            num_played += 1;
+            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            if word_multiplier != 1 {
+                acc.word_multiplier *= word_multiplier;
+                low_end = env.params.lane_scaffold.ranking(
+                    acc.word_multiplier,
+                    env.params.board_strip,
+                    env.params.remaining_tile_multipliers_strip,
+                    env.params.perpendicular_word_multipliers_strip,
+                );
+                ranked = ranked_from(env, deferred, low_end);
+            }
+            idx -= 1;
+        }
+    }
+
+    #[inline(always)]
+    fn gen_places_from<
+        const PER_SPAN: bool,
+        C: SpanCheck,
+        PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
+    >(
+        env: &mut Env<'_, C>,
+        single_tile_plays: bool,
+        want_raw: bool,
+        mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
+    ) {
+        if want_raw {
+            possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, i32::MAX, 0);
+        } else {
+            env.best_possible_equity = i32::MIN;
+            env.params.span_out.clear();
+            if !PER_SPAN {
+                env.bounds_at = env.params.left_bounds.len();
+                env.params
+                    .left_bounds
+                    .resize(env.bounds_at + 2 * env.params.bounds_stride, i32::MIN);
+            }
+            shadow_play_left::<PER_SPAN, C>(
+                env,
+                Accumulator {
+                    main_score: 0,
+                    perpendicular_cumulative_score: 0,
+                    word_multiplier: 1,
+                    crossed_board_tiles: false,
+                    deferred_score_cap: i32::MIN,
+                },
+                env.anchor,
+                single_tile_plays,
+            );
+            if env.best_possible_equity != i32::MIN {
+                if PER_SPAN {
+                    for i in 0..env.params.span_out.len() {
+                        let (left, right, num_played, equity) = env.params.span_out[i];
+                        possible_strip_placement_callback(
+                            env.anchor, left, right, equity, num_played,
+                        );
+                    }
+                } else {
+                    let stride = env.params.bounds_stride;
+                    let (at, upto) = env.params.left_bounds[env.bounds_at..].split_at_mut(stride);
+                    let mut best = i32::MIN;
+                    for (left, &bound) in at.iter().enumerate() {
+                        best = best.max(bound);
+                        upto[left] = best;
+                    }
+                    possible_strip_placement_callback(
+                        env.anchor,
+                        env.leftmost,
+                        env.rightmost,
+                        env.best_possible_equity,
+                        0,
+                    );
+                }
+            } else if !PER_SPAN {
+                env.params.left_bounds.truncate(env.bounds_at);
+            }
+        }
+    }
+
+    let mut leftmost = strider_len as i8; // processed up to here
+    loop {
+        let mut rightmost = leftmost;
+        while leftmost > 0 && env.params.board_strip[leftmost as usize - 1] == 0 {
+            leftmost -= 1;
+        }
+        if leftmost > 0 {
+            // board[leftmost - 1] is a tile.
+            env.anchor = leftmost - 1;
+            env.leftmost = 0;
+            env.rightmost = rightmost;
+            gen_places_from::<PER_SPAN, C, _>(
+                &mut env,
+                single_tile_plays,
+                want_raw,
+                &mut possible_strip_placement_callback,
+            );
+        }
+        {
+            // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
+            let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8; // shadowing
+            for anchor in (leftmost..rightmost).rev() {
+                let cross_set_bits = env.params.cross_set_strip[anchor as usize].bits;
+                if cross_set_bits != 0 {
+                    if rightmost - leftmost < 2 {
+                        // not enough room for 2-tile words
+                        break;
+                    }
+                    if cross_set_bits != 1 {
+                        env.anchor = anchor;
+                        env.leftmost = leftmost;
+                        env.rightmost = rightmost;
+                        gen_places_from::<PER_SPAN, C, _>(
+                            &mut env,
+                            single_tile_plays,
+                            want_raw,
+                            &mut possible_strip_placement_callback,
+                        );
+                    }
+                    rightmost = anchor; // prevent duplicates
+                }
+            }
+        }
+        loop {
+            leftmost -= 1;
+            if leftmost <= 1 {
+                // not enough room for 2-tile words
+                return;
+            }
+            if env.params.board_strip[leftmost as usize] == 0 {
+                break;
+            }
+        }
+    }
+}
+    };
+}
+
+shadow_pass!(gen_place_placements_impl_u16, u16, 0u16, 1u16);
+
+// a lane's shadow pass in its instance's set type (W): in u16 sets, a span at a
+// time, else gen_place_placements
+#[inline(always)]
+fn shadow_lane<
+    'a,
+    const D: usize,
+    W: LaneBits,
+    C: SpanCheck,
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
+>(
+    params: &'a mut GenPlacePlacementsParams<'a, C>,
+    single_tile_plays: bool,
+    want_raw: bool,
+    possible_strip_placement_callback: PossibleStripPlacementCallbackType,
+) {
+    if W::BITS == u16::BITS {
+        gen_place_placements_impl_u16::<true, D, C, _>(
+            params,
+            single_tile_plays,
+            want_raw,
+            possible_strip_placement_callback,
+        )
+    } else {
+        gen_place_placements(
+            params,
+            single_tile_plays,
+            want_raw,
+            possible_strip_placement_callback,
+        )
     }
 }
 
@@ -3197,21 +3964,21 @@ impl SpanLane {
 }
 
 #[inline]
-fn build_subracks(
+fn build_subracks<P: alphagram::KeyPlaces>(
     multi_leaves: &klv::MultiLeaves,
-    layout: &alphagram::KeyLayout,
+    places: P,
     rack_tally: &[u8],
     subracks: &mut Vec<Subrack>,
     by_played: &mut Vec<u32>,
     order: &mut Vec<u64>,
     spare: &mut Vec<Subrack>,
 ) {
-    struct Tiles<'a> {
-        layout: &'a alphagram::KeyLayout,
+    struct Tiles<'a, P> {
+        places: P,
         of: &'a [(u8, u8, u32, u128)],
     }
-    fn rec(
-        tiles: &Tiles<'_>,
+    fn rec<P: alphagram::KeyPlaces>(
+        tiles: &Tiles<'_, P>,
         i: usize,
         idx: u32,
         key: u128,
@@ -3220,7 +3987,10 @@ fn build_subracks(
         out: &mut Vec<Subrack>,
     ) {
         if i == tiles.of.len() {
-            debug_assert!(tiles.layout.holds(key));
+            debug_assert!(tiles.places.holds(
+                key,
+                &[alphagram::Nibble::MAX_COUNT; alphagram::Nibble::TILES]
+            ));
             out.push(Subrack {
                 key,
                 leave_idx: idx,
@@ -3256,7 +4026,7 @@ fn build_subracks(
                 if tile == 0 {
                     0
                 } else {
-                    layout.place_value(tile as u8)
+                    places.place_value(tile as u8)
                 },
             );
             n += 1;
@@ -3264,7 +4034,7 @@ fn build_subracks(
     }
     rec(
         &Tiles {
-            layout,
+            places,
             of: &tiles[..n],
         },
         0,
@@ -3301,9 +4071,47 @@ fn build_subracks(
     }
 }
 
+// a span's word multiplier, the product over the squares that keep one, and
+// blank_ok, the letters a blank may be on its empty squares (only for a rack
+// with a blank), on an instance's lanes in u16 sets (W)
+#[inline(always)]
+fn span_sets_u16(
+    params: &GenPlaceMovesParams<
+        '_,
+        impl FnMut(i8, &[u8], i32, i32) -> i32,
+        impl kwg::Node,
+        impl kwg::Node,
+    >,
+    leftmost: i8,
+    rightmost: i8,
+    letters: u64,
+) -> (i32, u64) {
+    let span_bits = (u16::MAX >> (16 - rightmost as u32)) & (u16::MAX << leftmost as u32);
+    let mut word_multiplier = 1i32;
+    let mut multiplied = params.span_lane.multiplied as u16 & span_bits;
+    while multiplied != 0 {
+        let idx = multiplied.trailing_zeros() as usize;
+        multiplied &= multiplied - 1;
+        word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
+    }
+    let mut blank_ok = 0u64;
+    if params.rack_tally[0] != 0 {
+        let mut empty = params.span_lane.empty as u16 & span_bits;
+        while empty != 0 {
+            let idx = empty.trailing_zeros() as usize;
+            empty &= empty - 1;
+            let bits = params.cross_set_strip[idx].bits;
+            blank_ok |= if bits == 0 { letters } else { bits & letters };
+        }
+    }
+    (word_multiplier, blank_ok)
+}
+
 #[inline]
 fn gen_classic_place_moves<
     'a,
+    W: LaneBits,
+    T: TablePlaces,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -3312,10 +4120,16 @@ fn gen_classic_place_moves<
     source: &'a anagrams::Anagrams,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
+    struct Env<
+        'a,
+        T: TablePlaces,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    > {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         source: &'a anagrams::Anagrams,
-        layout: &'a alphagram::KeyLayout,
+        places: T::Places<'a>,
         alphabet: &'a alphabet::Alphabet,
         left: i8,
         right: i8,
@@ -3328,27 +4142,29 @@ fn gen_classic_place_moves<
 
     #[inline]
     fn fit_words_apart<
+        T: TablePlaces,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
-        env: &mut Env<'_, CallbackType, N, L>,
+        env: &mut Env<'_, T, CallbackType, N, L>,
         found: alphagram::Words<'_>,
         leave_idx: u32,
         blank_letter: u8,
         first_blank: u8,
     ) {
-        fit_words::<true, _, _, _>(env, found, leave_idx, blank_letter, first_blank)
+        fit_words::<true, _, _, _, _>(env, found, leave_idx, blank_letter, first_blank)
     }
 
     #[inline(always)]
     fn fit_words<
         const BLANKED: bool,
+        T: TablePlaces,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
-        env: &mut Env<'_, CallbackType, N, L>,
+        env: &mut Env<'_, T, CallbackType, N, L>,
         found: alphagram::Words<'_>,
         leave_idx: u32,
         blank_letter: u8,
@@ -3514,7 +4330,7 @@ fn gen_classic_place_moves<
         e: &mut Extent,
         idx: usize,
         letters: u64,
-        layout: &alphagram::KeyLayout,
+        places: impl alphagram::KeyPlaces,
         params: &GenPlaceMovesParams<
             '_,
             impl FnMut(i8, &[u8], i32, i32) -> i32,
@@ -3525,8 +4341,11 @@ fn gen_classic_place_moves<
         let b = params.board_strip[idx];
         if b != 0 {
             e.base_main += params.face_value_scores_strip[idx];
-            e.playthrough_key += layout.place_value(b & 0x7f);
-            debug_assert!(layout.holds(e.playthrough_key));
+            e.playthrough_key += places.place_value(b & 0x7f);
+            debug_assert!(places.holds(
+                e.playthrough_key,
+                &[alphagram::Nibble::MAX_COUNT; alphagram::Nibble::TILES]
+            ));
         } else {
             let bits = params.cross_set_strip[idx].bits;
             if bits == 0 {
@@ -3544,15 +4363,15 @@ fn gen_classic_place_moves<
     }
 
     let alphabet = params.board_snapshot.game_config.alphabet();
-    let layout = source.layout();
+    let places = T::of(source);
     let letters = (u64::MAX >> (64 - alphabet.len() as u32)) & !1;
     let leftmost = params.leftmost;
     let rightmost = params.rightmost;
     let num_max_played = params.num_max_played;
-    let mut env = Env {
+    let mut env = Env::<T, _, _, _> {
         params,
         source,
-        layout,
+        places,
         alphabet,
         left: leftmost,
         right: rightmost,
@@ -3571,24 +4390,30 @@ fn gen_classic_place_moves<
     // for a rack with a blank
     let lo = env.params.span_prefix[leftmost as usize];
     let hi = env.params.span_prefix[rightmost as usize];
-    let span_bits = (u128::MAX >> (128 - rightmost as u32)) & (u128::MAX << leftmost as u32);
-    let mut word_multiplier = 1i32;
-    let mut multiplied = env.params.span_lane.multiplied & span_bits;
-    while multiplied != 0 {
-        let idx = multiplied.trailing_zeros() as usize;
-        multiplied &= multiplied - 1;
-        word_multiplier *= env.params.remaining_word_multipliers_strip[idx] as i32;
-    }
-    let mut blank_ok = 0u64;
-    if env.params.rack_tally[0] != 0 {
-        let mut empty = env.params.span_lane.empty & span_bits;
-        while empty != 0 {
-            let idx = empty.trailing_zeros() as usize;
-            empty &= empty - 1;
-            let bits = env.params.cross_set_strip[idx].bits;
-            blank_ok |= if bits == 0 { letters } else { bits & letters };
+    let (word_multiplier, blank_ok) = if W::BITS == u16::BITS {
+        // an instance's lanes in u16 sets (W)
+        span_sets_u16(env.params, leftmost, rightmost, letters)
+    } else {
+        let span_bits = (u128::MAX >> (128 - rightmost as u32)) & (u128::MAX << leftmost as u32);
+        let mut word_multiplier = 1i32;
+        let mut multiplied = env.params.span_lane.multiplied & span_bits;
+        while multiplied != 0 {
+            let idx = multiplied.trailing_zeros() as usize;
+            multiplied &= multiplied - 1;
+            word_multiplier *= env.params.remaining_word_multipliers_strip[idx] as i32;
         }
-    }
+        let mut blank_ok = 0u64;
+        if env.params.rack_tally[0] != 0 {
+            let mut empty = env.params.span_lane.empty & span_bits;
+            while empty != 0 {
+                let idx = empty.trailing_zeros() as usize;
+                empty &= empty - 1;
+                let bits = env.params.cross_set_strip[idx].bits;
+                blank_ok |= if bits == 0 { letters } else { bits & letters };
+            }
+        }
+        (word_multiplier, blank_ok)
+    };
     let e = Extent {
         playthrough_key: hi.key - lo.key,
         base_main: hi.face - lo.face,
@@ -3612,7 +4437,7 @@ fn gen_classic_place_moves<
             blank_ok: 0,
         };
         for idx in leftmost..rightmost {
-            add_square(&mut walked, idx as usize, letters, env.layout, env.params);
+            add_square(&mut walked, idx as usize, letters, env.places, env.params);
         }
         debug_assert_eq!(walked.playthrough_key, e.playthrough_key);
         debug_assert_eq!(walked.base_main, e.base_main);
@@ -3652,7 +4477,7 @@ fn gen_classic_place_moves<
         Ok((from, upto)) => {
             for i in from as usize..upto as usize {
                 let (si, at) = env.params.span_memo.visits[i];
-                if !visit(&mut env, &e, len, si as usize, Some(at)) {
+                if !visit::<_, _, _, _>(&mut env, &e, len, si as usize, Some(at)) {
                     break;
                 }
             }
@@ -3689,7 +4514,7 @@ fn gen_classic_place_moves<
                 while may != 0 {
                     let si = base + may.trailing_zeros() as usize;
                     may &= may - 1;
-                    if !visit(&mut env, &e, len, si, None) {
+                    if !visit::<_, _, _, _>(&mut env, &e, len, si, None) {
                         cut_at = env.params.score_bound;
                         break 'runs;
                     }
@@ -3711,8 +4536,13 @@ fn gen_classic_place_moves<
     // memo's (the group, or 0 for a subrack with a blank), None on the first
     // visit, whose key the filter has passed
     #[inline(always)]
-    fn visit<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
-        env: &mut Env<'_, CallbackType, N, L>,
+    fn visit<
+        T: TablePlaces,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, T, CallbackType, N, L>,
         e: &Extent,
         len: u8,
         si: usize,
@@ -3736,7 +4566,7 @@ fn gen_classic_place_moves<
                     at
                 }
             };
-            fit_words::<false, _, _, _>(env, source.words_of(len, at), subrack.leave_idx, 0, 0);
+            fit_words::<false, _, _, _, _>(env, source.words_of(len, at), subrack.leave_idx, 0, 0);
             return true;
         }
         if kept_at.is_none() {
@@ -3751,15 +4581,20 @@ fn gen_classic_place_moves<
             return true;
         }
         if subrack.blanks >= 2 {
-            let key_holds = env.layout.holds(key);
+            // the most of each tile a key counts (nibble keys read it, a layout
+            // holds its own)
+            let counts = env.source.layout().max_counts();
+            let key_holds = env.places.holds(key, counts);
             let mut first = e.blank_ok & !1;
             while first != 0 {
                 let l1 = first.trailing_zeros() as u8;
                 first &= first - 1;
-                let key1 = key + env.layout.place_value(l1);
-                if !(key_holds && env.layout.count_in(key, l1) < env.layout.max_count(l1))
-                    && !env.layout.holds(key1)
-                {
+                let key1 = key + env.places.place_value(l1);
+                let within =
+                    key_holds && env.places.count_in(key, l1) < env.places.max_count(l1, counts);
+                // nibble keys count each tile only as far as a word holds it,
+                // so past that a key holds no word (nor stays exact)
+                if !within && (T::NIBBLES || !env.places.holds(key1, counts)) {
                     continue;
                 }
                 source.blank_groups(alphagram::Fitted(key1), len, e.blank_ok, |tile, at| {
@@ -3784,8 +4619,13 @@ fn gen_classic_place_moves<
     // last blank's by the blanked table, no less than the one before it, so
     // each set of letters is found once
     #[cold]
-    fn visit_blanks<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
-        env: &mut Env<'_, CallbackType, N, L>,
+    fn visit_blanks<
+        T: TablePlaces,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, T, CallbackType, N, L>,
         e: &Extent,
         len: u8,
         leave_idx: u32,
@@ -3809,10 +4649,10 @@ fn gen_classic_place_moves<
         while bits != 0 {
             let letter = bits.trailing_zeros() as u8;
             bits &= bits - 1;
-            let next = key + env.layout.place_value(letter);
-            // past what a word holds of the letter, no word (and on the third
-            // arm's keys no exact key)
-            if !env.layout.holds(next) {
+            let next = key + env.places.place_value(letter);
+            // past what a word holds of the letter, no word (and on nibble keys
+            // no exact key)
+            if !env.places.holds(next, env.source.layout().max_counts()) {
                 continue;
             }
             letters[chosen] = letter;
@@ -3825,11 +4665,12 @@ fn gen_classic_place_moves<
     // letter's blanks ascending, so each set of squares is played once
     #[cold]
     fn fit_words_blanks<
+        T: TablePlaces,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
-        env: &mut Env<'_, CallbackType, N, L>,
+        env: &mut Env<'_, T, CallbackType, N, L>,
         found: alphagram::Words<'_>,
         leave_idx: u32,
         letters: &[u8],
@@ -3885,8 +4726,13 @@ fn gen_classic_place_moves<
     // the blanks from the i-th letter on put on the word's squares, a letter's
     // from square from on when it repeats the letter before, then the play
     #[cold]
-    fn place_blanks<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
-        env: &mut Env<'_, CallbackType, N, L>,
+    fn place_blanks<
+        T: TablePlaces,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, T, CallbackType, N, L>,
         word: &[u8],
         letters: &[u8],
         i: usize,
@@ -4459,6 +5305,8 @@ fn gen_place_moves_lean<
 #[inline(always)]
 fn gen_place_moves<
     'a,
+    W: LaneBits,
+    T: TablePlaces,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -4466,9 +5314,16 @@ fn gen_place_moves<
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
+    // the nibble-keyed instance plays only classic games, holding its anagrams
+    if T::NIBBLES {
+        if let Some(held) = params.board_snapshot.anagrams {
+            gen_classic_place_moves::<W, T, _, _, _>(params, held, single_tile_plays);
+        }
+        return;
+    }
     match params.board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => match params.board_snapshot.anagrams {
-            Some(held) => gen_classic_place_moves(params, held, single_tile_plays),
+            Some(held) => gen_classic_place_moves::<W, T, _, _, _>(params, held, single_tile_plays),
             None => gen_classic_place_moves_lean(params, single_tile_plays, &[], ()),
         },
         game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays, ()),
@@ -4636,6 +5491,9 @@ fn gen_place_moves_at_lean<
 #[inline(always)]
 fn gen_place_moves_at<
     'a,
+    const D: usize,
+    W: LaneBits,
+    T: TablePlaces,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -4653,7 +5511,15 @@ fn gen_place_moves_at<
         threshold,
         mut found_place_move,
     } = p;
-    let dim = board_snapshot.game_config.board_layout().dim();
+    let fixed;
+    let dim = if D != 0 {
+        let board = board_snapshot.game_config.board_layout().dim();
+        assert!(board.rows as usize == D && board.cols as usize == D);
+        fixed = square_dim::<D>();
+        &fixed
+    } else {
+        board_snapshot.game_config.board_layout().dim()
+    };
     let strip_range_start;
 
     let strip_range_end = if placement.down {
@@ -4668,16 +5534,18 @@ fn gen_place_moves_at<
         board_snapshot.game_config.game_rules(),
         board_snapshot.anagrams,
     ) {
-        (game_config::GameRules::Classic, Some(held)) => Some(working_buffer.fill_span_lane(
-            board_snapshot.board_tiles,
-            dim,
-            held.layout(),
-            placement.down,
-            placement.lane,
-        )),
+        (game_config::GameRules::Classic, Some(held)) => {
+            Some(working_buffer.fill_span_lane::<D, W, _>(
+                board_snapshot.board_tiles,
+                dim,
+                T::of(held),
+                placement.down,
+                placement.lane,
+            ))
+        }
         _ => None,
     };
-    gen_place_moves(
+    gen_place_moves::<W, T, _, _, _>(
         &mut GenPlaceMovesParams {
             board_snapshot,
             board_strip: if placement.down {
@@ -5259,7 +6127,12 @@ impl KurniaMoveGenerator {
         let mut vec_moves = std::mem::take(&mut self.plays);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, rack, klv::AdjustLeave::Identity, None);
+        working_buffer.init::<0, ByLayout, _, _>(
+            board_snapshot,
+            rack,
+            klv::AdjustLeave::Identity,
+            None,
+        );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
         let found_place_move =
@@ -5277,17 +6150,19 @@ impl KurniaMoveGenerator {
                 i32::MIN
             };
         if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
-            for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
-                runs: (),
-                keys: (),
-                want_raw: true,
-                board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |_best_possible_equity: i32| true,
-                current_threshold: || i32::MIN,
-            }) {}
+            for _ in
+                kurnia_gen_place_moves_iter::<0, u128, ByLayout, _, _, _, _, _>(KurniaIterParams {
+                    runs: (),
+                    keys: (),
+                    want_raw: true,
+                    board_snapshot,
+                    working_buffer,
+                    multi_leaves: &multi_leaves,
+                    found_place_move,
+                    can_accept: |_best_possible_equity: i32| true,
+                    current_threshold: || i32::MIN,
+                })
+            {}
         } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(board_snapshot) {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
                 runs,
@@ -5399,7 +6274,7 @@ impl KurniaMoveGenerator {
         }
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(
+        working_buffer.init::<0, ByLayout, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
@@ -5567,12 +6442,225 @@ impl KurniaMoveGenerator {
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
+        // tables keyed by nibbles: their instance's own generation, and a turn
+        // it hands back the lean arm's, never one keyed by the tables' layout
+        if params
+            .board_snapshot
+            .anagrams
+            .is_some_and(|anagrams| anagrams.nibble_side().is_some())
+        {
+            if let Some((place_move_predicate, equity_predicate)) = self.gen_moves_nibbles(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+            ) {
+                self.gen_moves_filtered_impl::<true, _, _>(
+                    params,
+                    place_move_predicate,
+                    adjust_leave_value,
+                    equity_predicate,
+                );
+            }
+            return;
+        }
         self.gen_moves_filtered_impl::<false, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
         )
+    }
+
+    // the generation keyed by nibbles, compiled for its one instance (a classic
+    // game on a square board of 15, u16 lane sets, nibble keys), on the
+    // generator's own working state. A turn it does not play (a census sheet, a
+    // game its tables do not fit) is handed back before anything is generated,
+    // with the predicates, for the lean arm.
+    #[inline]
+    fn gen_moves_nibbles<'a, 'p, 'e, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        mut place_move_predicate: PlacePredicate<'p>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'e>,
+    ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
+        // the side its instance is compiled for
+        const SIDE: usize = 15;
+        if self.working_buffer.is_census {
+            return Some((place_move_predicate, equity_predicate));
+        }
+        self.plays.clear();
+        if params.max_gen == 0 {
+            return None;
+        }
+
+        let alphabet = params.board_snapshot.game_config.alphabet();
+        let board_layout = params.board_snapshot.game_config.board_layout();
+        let dim = board_layout.dim();
+        let max_gen = params.max_gen;
+
+        // a classic game on a square board of its side, its tables built for
+        // that side: checked before init, which is compiled for the side
+        if !(dim.rows as usize == SIDE
+            && dim.cols as usize == SIDE
+            && matches!(
+                params.board_snapshot.game_config.game_rules(),
+                game_config::GameRules::Classic
+            )
+            && params
+                .board_snapshot
+                .anagrams
+                .and_then(anagrams::Anagrams::nibble_side)
+                == Some(SIDE as u8))
+        {
+            return Some((place_move_predicate, equity_predicate));
+        }
+        let working_buffer = &mut self.working_buffer;
+        working_buffer.init::<SIDE, ByNibble, _, _>(
+            params.board_snapshot,
+            params.rack,
+            adjust_leave_value,
+            params.dynamic_leaves,
+        );
+        // its tables fit the game's counts (init asked them), and init made the
+        // subracks
+        if !(working_buffer.anagrams_fit_config && !working_buffer.subracks.is_empty()) {
+            return Some((place_move_predicate, equity_predicate));
+        }
+
+        let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
+        let mut equity_predicate = equity_predicate;
+        let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
+
+        #[inline(always)]
+        fn push_move<F: FnMut() -> Play>(
+            found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
+            equity_pred: &mut EquityPredicate<'_>,
+            threshold: &std::cell::Cell<equity::Equity>,
+            max_gen: usize,
+            equity: equity::Equity,
+            mut construct_play: F,
+        ) {
+            if found_moves.len() >= max_gen && threshold.get() > equity {
+                return;
+            }
+            let play = construct_play();
+            if equity_pred.test(equity, &play) {
+                if found_moves.len() >= max_gen {
+                    let candidate = ValuedMove { equity, play };
+                    let mut worst = found_moves.peek_mut().unwrap();
+                    if candidate >= *worst {
+                        return;
+                    }
+                    *worst = candidate;
+                } else {
+                    found_moves.push(ValuedMove { equity, play });
+                }
+                if found_moves.len() >= max_gen {
+                    threshold.set(found_moves.peek().unwrap().equity);
+                }
+            }
+        }
+
+        let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
+        let num_tiles_on_board = working_buffer.num_tiles_on_board;
+
+        let found_place_move =
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
+                if place_move_predicate.test(down, lane, idx, word, score) {
+                    let other_adjustments = if num_tiles_on_board == 0 {
+                        (idx..)
+                            .zip(word)
+                            .filter(|&(ref i, &tile)| {
+                                tile != 0
+                                    && alphabet.is_vowel(tile)
+                                    && if down {
+                                        board_layout.danger_star_down(*i)
+                                    } else {
+                                        board_layout.danger_star_across(*i)
+                                    }
+                            })
+                            .count() as i32
+                            * -equity::OPENING_HOTSPOT_PENALTY
+                    } else {
+                        0
+                    };
+                    let equity = equity::Equity::new(score + leave_value + other_adjustments);
+                    push_move(
+                        &mut found_moves,
+                        &mut equity_predicate,
+                        &threshold,
+                        max_gen,
+                        equity,
+                        || Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word: word.into(),
+                            score,
+                        },
+                    );
+                }
+                threshold.get().raw()
+            };
+        for _ in
+            kurnia_gen_place_moves_iter::<SIDE, u16, ByNibble, _, _, _, _, _>(KurniaIterParams {
+                runs: (),
+                keys: (),
+                want_raw: false,
+                board_snapshot: params.board_snapshot,
+                working_buffer,
+                multi_leaves: &multi_leaves,
+                found_place_move,
+                can_accept: |best_possible_equity: i32| {
+                    threshold.get() <= equity::Equity::new(best_possible_equity)
+                },
+                current_threshold: || threshold.get().raw(),
+            })
+        {}
+        kurnia_gen_exchange_moves(
+            params.board_snapshot,
+            working_buffer,
+            &multi_leaves,
+            params.num_exchanges_by_this_player,
+            |exchanged_tiles: &[u8], leave_value: i32| {
+                push_move(
+                    &mut found_moves,
+                    &mut equity_predicate,
+                    &threshold,
+                    max_gen,
+                    equity::Equity::new(leave_value),
+                    || Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    },
+                );
+            },
+        );
+        if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
+            push_move(
+                &mut found_moves,
+                &mut equity_predicate,
+                &threshold,
+                max_gen,
+                equity::Equity::new(if multi_leaves.is_dense() {
+                    multi_leaves.pass_leave_value()
+                } else {
+                    params
+                        .board_snapshot
+                        .klv
+                        .leave_value_from_tally(&working_buffer.rack_tally)
+                }),
+                || Play::Exchange {
+                    tiles: (&working_buffer.exchange_buffer[..]).into(),
+                },
+            );
+        }
+
+        self.plays = found_moves.into_sorted_vec();
+
+        working_buffer.multi_leaves = multi_leaves;
+        None
     }
 
     #[inline(always)]
@@ -5643,7 +6731,7 @@ impl KurniaMoveGenerator {
         }
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(
+        working_buffer.init::<0, ByLayout, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
@@ -5691,19 +6779,21 @@ impl KurniaMoveGenerator {
                 threshold.get().raw()
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
-            for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
-                runs: (),
-                keys: (),
-                want_raw: false,
-                board_snapshot: params.board_snapshot,
-                working_buffer,
-                multi_leaves: &multi_leaves,
-                found_place_move,
-                can_accept: |best_possible_equity: i32| {
-                    threshold.get() <= equity::Equity::new(best_possible_equity)
-                },
-                current_threshold: || threshold.get().raw(),
-            }) {}
+            for _ in
+                kurnia_gen_place_moves_iter::<0, u128, ByLayout, _, _, _, _, _>(KurniaIterParams {
+                    runs: (),
+                    keys: (),
+                    want_raw: false,
+                    board_snapshot: params.board_snapshot,
+                    working_buffer,
+                    multi_leaves: &multi_leaves,
+                    found_place_move,
+                    can_accept: |best_possible_equity: i32| {
+                        threshold.get() <= equity::Equity::new(best_possible_equity)
+                    },
+                    current_threshold: || threshold.get().raw(),
+                })
+            {}
         } else if !LEAN && let Some(anagrams) = working_buffer.jumbled_keys(params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
                 runs: (),
@@ -5842,7 +6932,12 @@ impl KurniaMoveGenerator {
         found_word: FoundWord,
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, &[], klv::AdjustLeave::Identity, None);
+        working_buffer.init::<0, ByLayout, _, _>(
+            board_snapshot,
+            &[],
+            klv::AdjustLeave::Identity,
+            None,
+        );
         working_buffer.prev_board_tiles.fill(0xff);
         gen_remaining_words(board_snapshot, working_buffer, found_word)
     }
@@ -5859,7 +6954,12 @@ impl KurniaMoveGenerator {
         mut found: impl FnMut(usize, u64, u64),
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, &[], klv::AdjustLeave::Identity, None);
+        working_buffer.init::<0, ByLayout, _, _>(
+            board_snapshot,
+            &[],
+            klv::AdjustLeave::Identity,
+            None,
+        );
         let dim = board_snapshot.game_config.board_layout().dim();
         let transposed_dim = matrix::Dim {
             rows: dim.cols,
@@ -5868,7 +6968,7 @@ impl KurniaMoveGenerator {
         for col in 0..dim.cols {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
             let strip_range_end = strip_range_start + dim.rows as usize;
-            gen_cross_set(
+            gen_cross_set::<NoTables, _, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
                 &mut working_buffer.cross_set_for_across_plays,
@@ -5883,7 +6983,7 @@ impl KurniaMoveGenerator {
         for row in 0..dim.rows {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
-            gen_cross_set(
+            gen_cross_set::<NoTables, _, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 &mut working_buffer.cross_set_for_down_plays,
@@ -6003,7 +7103,7 @@ fn kurnia_gen_place_moves_iter_lean<
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
             let strip_range_end = strip_range_start + dim.rows as usize;
-            gen_cross_set(
+            gen_cross_set::<NoTables, _, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
                 &mut working_buffer.cross_set_for_across_plays,
@@ -6025,7 +7125,7 @@ fn kurnia_gen_place_moves_iter_lean<
         if dirty_rows & (1 << row) != 0 {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
-            gen_cross_set(
+            gen_cross_set::<NoTables, _, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 &mut working_buffer.cross_set_for_down_plays,
@@ -6054,7 +7154,7 @@ fn kurnia_gen_place_moves_iter_lean<
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
     }
-    working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
+    working_buffer.init_after_cross_sets::<0, _, _>(board_snapshot, dirty_cols, dirty_rows);
 
     let feasible_lengths = feasible_word_lengths::<false>(
         board_snapshot.anagrams,
@@ -6242,8 +7342,10 @@ fn kurnia_gen_place_moves_iter_lean<
 const PLACEMENT_BUCKETS: usize = 64;
 
 // range b is pairs[starts[b]..starts[b + 1]]; tops[b] is its highest equity.
+// one copy for each kind of keys (T), so neither's inlining depends on the
+// other's
 #[inline]
-fn bucket_by_equity(
+fn bucket_by_equity<T: TablePlaces>(
     pairs: &mut Vec<(i32, u32)>,
     scratch: &mut Vec<(i32, u32)>,
     starts: &mut [u32; PLACEMENT_BUCKETS + 1],
@@ -6284,6 +7386,9 @@ fn bucket_by_equity(
 #[inline]
 fn kurnia_gen_place_moves_iter<
     'a,
+    const D: usize,
+    W: LaneBits,
+    T: 'a + TablePlaces,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
@@ -6305,7 +7410,14 @@ fn kurnia_gen_place_moves_iter<
     } = p;
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
-    let dim = board_layout.dim();
+    let fixed;
+    let dim = if D != 0 {
+        assert!(board_layout.dim().rows as usize == D && board_layout.dim().cols as usize == D);
+        fixed = square_dim::<D>();
+        &fixed
+    } else {
+        board_layout.dim()
+    };
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
     // the key check's answers are asked afresh each generation of this arm, and
@@ -6324,7 +7436,7 @@ fn kurnia_gen_place_moves_iter<
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
             let strip_range_end = strip_range_start + dim.rows as usize;
-            gen_cross_set(
+            gen_cross_set::<T, _, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
                 &mut working_buffer.cross_set_for_across_plays,
@@ -6346,7 +7458,7 @@ fn kurnia_gen_place_moves_iter<
         if dirty_rows & (1 << row) != 0 {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
-            gen_cross_set(
+            gen_cross_set::<T, _, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 &mut working_buffer.cross_set_for_down_plays,
@@ -6375,9 +7487,9 @@ fn kurnia_gen_place_moves_iter<
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
     }
-    working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
+    working_buffer.init_after_cross_sets::<D, _, _>(board_snapshot, dirty_cols, dirty_rows);
 
-    let feasible_lengths = feasible_lengths_of_subracks(
+    let feasible_lengths = feasible_lengths_of_subracks::<T>(
         board_snapshot.anagrams,
         board_snapshot.rack_lengths,
         &working_buffer.rack_tally,
@@ -6396,8 +7508,9 @@ fn kurnia_gen_place_moves_iter<
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
-        let check = fill_key_check(working_buffer, board_snapshot, dim, false, row);
-        gen_place_placements(
+        let check =
+            fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, false, row);
+        shadow_lane::<D, W, _, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 alphabet: board_snapshot.game_config.alphabet(),
@@ -6460,8 +7573,8 @@ fn kurnia_gen_place_moves_iter<
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
-        let check = fill_key_check(working_buffer, board_snapshot, dim, true, col);
-        gen_place_placements(
+        let check = fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, true, col);
+        shadow_lane::<D, W, _, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: &working_buffer.transposed_board_tiles
                     [strip_range_start..strip_range_end],
@@ -6532,7 +7645,7 @@ fn kurnia_gen_place_moves_iter<
     // equity it refuses
     let mut bucket_from = usize::MAX;
     if !want_raw {
-        bucket_by_equity(
+        bucket_by_equity::<T>(
             &mut placement_order,
             &mut working_buffer.placement_scratch,
             &mut starts,
@@ -6543,69 +7656,72 @@ fn kurnia_gen_place_moves_iter<
     working_buffer.span_memo.start_turn(found_placements.len());
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    std::iter::from_fn(move || {
-        loop {
-            let len = working_buffer.placement_order.len();
-            if len == bucket_from {
-                while bucket > 0 {
-                    bucket -= 1;
-                    if (starts[bucket] as usize) < len {
-                        break;
+    std::iter::from_fn(
+        #[inline(never)]
+        move || {
+            loop {
+                let len = working_buffer.placement_order.len();
+                if len == bucket_from {
+                    while bucket > 0 {
+                        bucket -= 1;
+                        if (starts[bucket] as usize) < len {
+                            break;
+                        }
+                    }
+                    bucket_from = starts[bucket] as usize;
+                    if len == 0 || !can_accept(tops[bucket]) {
+                        working_buffer.placement_order.clear();
+                        return None;
                     }
                 }
-                bucket_from = starts[bucket] as usize;
-                if len == 0 || !can_accept(tops[bucket]) {
-                    working_buffer.placement_order.clear();
-                    return None;
+                let (equity, idx) = working_buffer.placement_order.pop()?;
+                if !can_accept(equity) {
+                    if want_raw {
+                        // fuse the iterator
+                        working_buffer.placement_order.clear();
+                        return None;
+                    }
+                    continue;
+                }
+                {
+                    let placement = working_buffer.found_placements[idx as usize];
+                    gen_place_moves_at::<D, W, T, _, _, _>(GenPlaceMovesAtParams {
+                        runs: (),
+                        keys: (),
+                        board_snapshot,
+                        working_buffer,
+                        multi_leaves,
+                        placement: &placement,
+                        num_max_played,
+                        threshold: current_threshold(),
+                        found_place_move:
+                            &mut |down: bool,
+                                  lane: i8,
+                                  idx: i8,
+                                  word: &[u8],
+                                  score: i32,
+                                  leave_value: i32| {
+                                let this_best = score + leave_value;
+                                debug_assert!(
+                                    this_best <= placement.best_possible_equity,
+                                    "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
+                                    this_best,
+                                    placement.best_possible_equity,
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    score,
+                                    leave_value,
+                                );
+                                found_place_move(down, lane, idx, word, score, leave_value)
+                            },
+                    });
+                    return Some(());
                 }
             }
-            let (equity, idx) = working_buffer.placement_order.pop()?;
-            if !can_accept(equity) {
-                if want_raw {
-                    // fuse the iterator
-                    working_buffer.placement_order.clear();
-                    return None;
-                }
-                continue;
-            }
-            {
-                let placement = working_buffer.found_placements[idx as usize];
-                gen_place_moves_at(GenPlaceMovesAtParams {
-                    runs: (),
-                    keys: (),
-                    board_snapshot,
-                    working_buffer,
-                    multi_leaves,
-                    placement: &placement,
-                    num_max_played,
-                    threshold: current_threshold(),
-                    found_place_move:
-                        &mut |down: bool,
-                              lane: i8,
-                              idx: i8,
-                              word: &[u8],
-                              score: i32,
-                              leave_value: i32| {
-                            let this_best = score + leave_value;
-                            debug_assert!(
-                                this_best <= placement.best_possible_equity,
-                                "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
-                                this_best,
-                                placement.best_possible_equity,
-                                down,
-                                lane,
-                                idx,
-                                word,
-                                score,
-                                leave_value,
-                            );
-                            found_place_move(down, lane, idx, word, score, leave_value)
-                        },
-                });
-                return Some(());
-            }
-        }
-    })
+        },
+    )
 }
 
 struct GenRemainingConnectedWordsParams<'a, N: kwg::Node> {
@@ -9172,7 +10288,8 @@ mod tests {
     fn a_generator_reset_for_another_kwg_plays_as_a_new_one() {
         // a strip's walk keeps the kwg's nodes for the tiles on the board; a
         // generator reset for another kwg finds on the same board what a new
-        // generator finds, under the anagrams and under the rack lengths
+        // generator finds, under anagrams keyed by their layout, anagrams keyed
+        // by nibbles, and the rack lengths
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
         // the other kwg lacks every word with an S, so its nodes lie elsewhere
@@ -9191,9 +10308,25 @@ mod tests {
             board_tiles[gc.board_layout().dim().at_row_col(row, col)] =
                 rack[1 + i as usize % (rack.len() - 1)];
         }
-        for lean in [false, true] {
-            let tables = anagrams::ArmTables::build(&kwg, &gc, lean).unwrap();
-            let other_tables = anagrams::ArmTables::build(&other_kwg, &gc, lean).unwrap();
+        type Build = fn(&kwg::Kwg<kwg::Node24>, &game_config::GameConfig) -> anagrams::ArmTables;
+        let builds: [(&str, Build); 3] = [
+            ("layout", |kwg, gc| {
+                anagrams::ArmTables::build_by_layout(kwg, gc).unwrap()
+            }),
+            ("nibbles", |kwg, gc| {
+                anagrams::ArmTables::build(kwg, gc, false).unwrap()
+            }),
+            ("lean", |kwg, gc| {
+                anagrams::ArmTables::build(kwg, gc, true).unwrap()
+            }),
+        ];
+        for (arm, build) in builds {
+            let tables = build(&kwg, &gc);
+            let other_tables = build(&other_kwg, &gc);
+            assert_eq!(
+                tables.anagrams().and_then(anagrams::Anagrams::nibble_side),
+                (arm == "nibbles").then_some(15),
+            );
             let [by_first, by_other] =
                 [(&kwg, &tables), (&other_kwg, &other_tables)].map(|(kwg, tables)| BoardSnapshot {
                     board_tiles: &board_tiles,
@@ -9209,8 +10342,203 @@ mod tests {
             assert_ne!(place_plays(&mut reused, &by_first, &rack, false), want);
             reused.reset_for_another_kwg();
             let found = place_plays(&mut reused, &by_other, &rack, false);
-            assert_eq!(found, want, "lean {lean}");
+            assert_eq!(found, want, "{arm}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn nibble_keys_play_as_layout_keys() {
+        // a classic game on a square board of 15 whose tiles fit nibbles is
+        // keyed by nibbles, a board of 16 by the tables' layout; on the board
+        // of 15, as tiles go down, nibble keys find the moves layout keys find,
+        // for racks of no blank, one, and two, each generator reused from step
+        // to step
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let nibbles = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        assert_eq!(
+            nibbles.anagrams().and_then(anagrams::Anagrams::nibble_side),
+            Some(15)
+        );
+        let layout = anagrams::ArmTables::build_by_layout(&kwg, &gc).unwrap();
+        assert!(layout.anagrams().is_some_and(|a| a.nibble_side().is_none()));
+        let wide = uneven_game_config(16, 16, 7, 7, false);
+        let wide_kwg = test_kwg(&wide);
+        assert!(
+            anagrams::ArmTables::build(&wide_kwg, &wide, false)
+                .unwrap()
+                .anagrams()
+                .is_some_and(|a| a.nibble_side().is_none())
+        );
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let racks = ["AEST", "?AEST", "??AE"].map(|r| parse_test_rack(gc.alphabet(), r));
+        let tiles = (0..15)
+            .map(|i| (i, ((i as i32 * 7 + 3) % 15) as i8))
+            .collect::<Vec<_>>();
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let mut by_nibbles = KurniaMoveGenerator::new(&gc);
+        let mut by_layout = KurniaMoveGenerator::new(&gc);
+        let mut compared = 0;
+        for step in 0..=tiles.len() {
+            if step > 0 {
+                let (row, col) = tiles[step - 1];
+                board_tiles[gc.board_layout().dim().at_row_col(row, col)] =
+                    racks[0][(step - 1) % racks[0].len()];
+            }
+            let [by_nibbles_tables, by_layout_tables] =
+                [&nibbles, &layout].map(|tables| BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: tables.anagrams(),
+                    rack_lengths: tables.rack_lengths(),
+                    klv: &klv,
+                });
+            for rack in &racks {
+                let found = place_plays(&mut by_nibbles, &by_nibbles_tables, rack, false);
+                assert!(!found.is_empty(), "nothing to play at step {step}");
+                assert_eq!(
+                    found,
+                    place_plays(&mut by_layout, &by_layout_tables, rack, false),
+                    "step {step}, rack {rack:?}"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 3 * (tiles.len() + 1));
+    }
+
+    #[test]
+    #[inline]
+    fn nibble_keys_keep_what_a_caller_sets_and_reads() {
+        // what a caller sets on the generator before a generation, or reads of
+        // it after one, holds under nibble keys: a census sheet (the lean
+        // arm's) takes each word once, the bag's count is the board's, and a
+        // reset for another kwg leaves its kept state as a new generator's
+        let gc = game_config::make_english_game_config();
+        let dim = gc.board_layout().dim();
+        let kwg = test_kwg(&gc);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let nibbles = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        assert!(
+            nibbles
+                .anagrams()
+                .is_some_and(|a| a.nibble_side().is_some())
+        );
+        let layout = anagrams::ArmTables::build_by_layout(&kwg, &gc).unwrap();
+        let rack = parse_test_rack(gc.alphabet(), "?AEST");
+        let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        for i in 0..8 {
+            let (row, col) = (i, ((i as i32 * 7 + 3) % 15) as i8);
+            board_tiles[dim.at_row_col(row, col)] = rack[1 + i as usize % (rack.len() - 1)];
+        }
+        let [by_nibbles, by_layout] = [&nibbles, &layout].map(|tables| BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: tables.anagrams(),
+            rack_lengths: tables.rack_lengths(),
+            klv: &klv,
+        });
+        let census =
+            |move_generator: &mut KurniaMoveGenerator,
+             board_snapshot: &BoardSnapshot<'_, kwg::Node24, kwg::Node24>| {
+                let mut words = Vec::new();
+                move_generator.gen_census_sheet(
+                    &GenMovesParams {
+                        board_snapshot,
+                        rack: &rack,
+                        max_gen: 1,
+                        num_exchanges_by_this_player: i16::MAX,
+                        pass_policy: PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    },
+                    PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                        words.push((down, lane, idx, word.to_vec(), score));
+                        false
+                    }),
+                    klv::AdjustLeave::Identity,
+                    EquityPredicate::RejectAll,
+                );
+                words.sort_unstable();
+                words
+            };
+        let mut by_nibbles_generator = KurniaMoveGenerator::new(&gc);
+        let mut by_layout_generator = KurniaMoveGenerator::new(&gc);
+        let words = census(&mut by_nibbles_generator, &by_nibbles);
+        assert!(!words.is_empty());
+        assert_eq!(words, census(&mut by_layout_generator, &by_layout));
+        let mut fresh = KurniaMoveGenerator::new(&gc);
+        assert!(!place_plays(&mut fresh, &by_nibbles, &rack, false).is_empty());
+        place_plays(&mut by_layout_generator, &by_layout, &rack, false);
+        assert_eq!(
+            fresh.num_tiles_in_bag(),
+            by_layout_generator.num_tiles_in_bag()
+        );
+        // the other kwg lacks every word with an S, so its nodes lie elsewhere
+        // and the same board crosses other sets
+        let other_words = TEST_WORDS
+            .iter()
+            .copied()
+            .filter(|word| !word.contains('S'))
+            .collect::<Vec<_>>();
+        let other_kwg = test_kwg_of(&gc, &other_words);
+        let other_nibbles = anagrams::ArmTables::build(&other_kwg, &gc, false).unwrap();
+        assert!(
+            other_nibbles
+                .anagrams()
+                .is_some_and(|a| a.nibble_side().is_some())
+        );
+        let by_other = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &other_kwg,
+            anagrams: other_nibbles.anagrams(),
+            rack_lengths: other_nibbles.rack_lengths(),
+            klv: &klv,
+        };
+        let want = place_plays(&mut KurniaMoveGenerator::new(&gc), &by_other, &rack, false);
+        assert_ne!(want, place_plays(&mut fresh, &by_nibbles, &rack, false));
+        fresh.reset_for_another_kwg();
+        assert_eq!(place_plays(&mut fresh, &by_other, &rack, false), want);
+    }
+
+    #[test]
+    #[inline]
+    fn the_u16_shadow_is_the_shadow() {
+        // shadow_pass's body is gen_place_placements_impl's text with the set
+        // type, its 0 and 1, and the lane's side as parameters: written back in
+        // the u128 instance's terms, it is that function, word for word
+        let source = include_str!("movegen.rs");
+        let plain_at = source
+            .find("#[inline]\nfn gen_place_placements_impl<")
+            .unwrap();
+        let plain = &source[plain_at..plain_at + source[plain_at..].find("\n}\n").unwrap() + 3];
+        let header = "    ($name:ident, $lane:ty, $zero:expr, $one:expr) => {\n";
+        let body_at = source.find(header).unwrap() + header.len();
+        let body = &source[body_at..body_at + source[body_at..].find("\n    };\n}\n").unwrap() + 1];
+        let side = "    let strider_len = if D == 0 { params.board_strip.len() } else { D };
+    if D != 0 {
+        // the lane's length is a constant of this instance
+        assert_eq!(params.board_strip.len(), D);
+        assert_eq!(params.cross_set_strip.len(), D);
+        assert_eq!(params.remaining_word_multipliers_strip.len(), D);
+        assert_eq!(params.remaining_tile_multipliers_strip.len(), D);
+        assert_eq!(params.perpendicular_word_multipliers_strip.len(), D);
+        assert_eq!(params.perpendicular_scores_strip.len(), D);
+    }
+";
+        assert_eq!(body.matches(side).count(), 1);
+        let as_plain = body
+            .replacen("fn $name<", "fn gen_place_placements_impl<", 1)
+            .replacen("    const D: usize,\n", "", 1)
+            .replacen(side, "    let strider_len = params.board_strip.len();\n", 1)
+            .replacen("refresh::<D>(", "refresh::<0>(", 1)
+            .replace("$zero", "0u128")
+            .replace("$one", "1u128")
+            .replace("$lane", "u128");
+        assert_eq!(as_plain, plain);
     }
 
     #[test]
