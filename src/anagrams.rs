@@ -420,6 +420,11 @@ impl Anagrams {
         drop(keyed);
         ledger.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
 
+        // every offset into the arena, a group's above all, below u32::MAX
+        // (movegen marks a group not looked up yet by it)
+        if u32::try_from(letters).is_err() {
+            return None;
+        }
         ledger.take(letters)?;
         let mut arena = vec![alphagram::END; letters].into_boxed_slice();
         let mut index = 0usize;
