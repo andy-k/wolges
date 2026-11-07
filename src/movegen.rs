@@ -6441,6 +6441,21 @@ impl KurniaMoveGenerator {
                     adjust_leave_value,
                     equity_predicate,
                 ),
+            // keyed by the tables' layout, compiled for a 15 by 15 board, else
+            // for any
+            Some(_)
+                if {
+                    let dim = params.board_snapshot.game_config.board_layout().dim();
+                    dim.rows == 15 && dim.cols == 15
+                } =>
+            {
+                self.gen_moves_tables::<15, u128, ByLayout, _, _>(
+                    params,
+                    place_move_predicate,
+                    adjust_leave_value,
+                    equity_predicate,
+                )
+            }
             Some(_) => self.gen_moves_tables::<0, u128, ByLayout, _, _>(
                 params,
                 place_move_predicate,
