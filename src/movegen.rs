@@ -1011,6 +1011,20 @@ impl WorkingBuffer {
             }
         }
 
+        // a full rack's leaves and subracks' order from the leaves' rack table,
+        // when the leaves are taken as walked: no adjustment, no dynamic
+        // leaves, and tiles left in the bag
+        let setup = if self.num_tiles_in_bag > 0
+            && dynamic_leaves.is_none()
+            && matches!(adjust_leave_value, klv::AdjustLeave::Identity)
+        {
+            board_snapshot
+                .klv
+                .racks()
+                .and_then(|racks| racks.get(&self.rack_tally))
+        } else {
+            None
+        };
         if self.num_tiles_in_bag <= 0 {
             self.multi_leaves.init(
                 &self.rack_tally,
@@ -1033,12 +1047,15 @@ impl WorkingBuffer {
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = play_out_bonus;
         } else {
-            self.multi_leaves.init(
-                &self.rack_tally,
-                board_snapshot.klv,
-                true,
-                adjust_leave_value,
-            );
+            match setup {
+                Some((leaves, _)) => self.multi_leaves.init_from_leaves(&self.rack_tally, leaves),
+                None => self.multi_leaves.init(
+                    &self.rack_tally,
+                    board_snapshot.klv,
+                    true,
+                    adjust_leave_value,
+                ),
+            }
             if self.multi_leaves.is_dense() {
                 if let Some(dyn_ref) = dynamic_leaves {
                     let n = dyn_ref.lat.num_letters();
@@ -1081,8 +1098,8 @@ impl WorkingBuffer {
                 &self.rack_tally,
                 &mut self.subracks,
                 &mut self.subracks_by_played,
-                &mut self.subrack_order,
-                &mut self.subracks_spare,
+                (&mut self.subrack_order, &mut self.subracks_spare),
+                setup.map(|(_, order)| order),
             );
         } else {
             self.subracks.clear();
@@ -3994,18 +4011,47 @@ impl SpanLane {
     }
 }
 
+// the subracks' order (positions in build_subracks's walk of them): by tiles
+// played, then leave descending, then position, a key each into order, sorted
 #[inline]
-fn build_subracks<P: alphagram::KeyPlaces>(
+fn sort_subracks(subracks: &[Subrack], order: &mut Vec<u64>) {
+    debug_assert!(subracks.len() <= 1 << 24);
+    order.clear();
+    order.extend(subracks.iter().enumerate().map(|(i, s)| {
+        (s.num_played as u64) << 56
+            | (!(s.leave_value as u32 ^ i32::MIN as u32) as u64) << 24
+            | i as u64
+    }));
+    order.sort_unstable();
+}
+
+// a rack's subracks' order as a rack table keeps it (racks::RackTable): each
+// subrack's position in build_subracks's walk of them, in sort_subracks's
+// order; the rack's leaves are multi_leaves's
+pub(crate) fn subrack_order(
+    multi_leaves: &klv::MultiLeaves,
+    rack_tally: &[u8],
+    order: &mut Vec<u8>,
+) {
+    let mut subracks = Vec::new();
+    walk_subracks(multi_leaves, alphagram::Nibble, rack_tally, &mut subracks);
+    let mut keys = Vec::new();
+    sort_subracks(&subracks, &mut keys);
+    order.clear();
+    order.extend(keys.iter().map(|&key| (key & 0xffffff) as u8));
+}
+
+// a rack's subracks in build_subracks's walk of them, each with its leave
+#[inline]
+fn walk_subracks<P: alphagram::KeyPlaces>(
     multi_leaves: &klv::MultiLeaves,
     places: P,
     rack_tally: &[u8],
     subracks: &mut Vec<Subrack>,
-    by_played: &mut Vec<u32>,
-    order: &mut Vec<u64>,
-    spare: &mut Vec<Subrack>,
 ) {
     struct Tiles<'a, P> {
         places: P,
+        multi_leaves: &'a klv::MultiLeaves,
         of: &'a [(u8, u8, u32, u128)],
     }
     fn rec<P: alphagram::KeyPlaces>(
@@ -4026,7 +4072,7 @@ fn build_subracks<P: alphagram::KeyPlaces>(
                 key,
                 part: anagrams::key_part(key),
                 leave_idx: idx,
-                leave_value: 0,
+                leave_value: tiles.multi_leaves.leave_value(idx),
                 num_played: played,
                 blanks,
             });
@@ -4067,6 +4113,7 @@ fn build_subracks<P: alphagram::KeyPlaces>(
     rec(
         &Tiles {
             places,
+            multi_leaves,
             of: &tiles[..n],
         },
         0,
@@ -4076,18 +4123,29 @@ fn build_subracks<P: alphagram::KeyPlaces>(
         0,
         subracks,
     );
-    // one key a subrack: num_played, then leave descending, then position.
-    debug_assert!(subracks.len() <= 1 << 24);
-    order.clear();
-    order.extend(subracks.iter_mut().enumerate().map(|(i, s)| {
-        s.leave_value = multi_leaves.leave_value(s.leave_idx);
-        (s.num_played as u64) << 56
-            | (!(s.leave_value as u32 ^ i32::MIN as u32) as u64) << 24
-            | i as u64
-    }));
-    order.sort_unstable();
+}
+
+// a rack's subracks in sort_subracks's order, by played their starts: sorted,
+// or taken in the order a rack table gives (given, positions in the walk)
+#[inline]
+fn build_subracks<P: alphagram::KeyPlaces>(
+    multi_leaves: &klv::MultiLeaves,
+    places: P,
+    rack_tally: &[u8],
+    subracks: &mut Vec<Subrack>,
+    by_played: &mut Vec<u32>,
+    (order, spare): (&mut Vec<u64>, &mut Vec<Subrack>),
+    given: Option<&[u8]>,
+) {
+    walk_subracks(multi_leaves, places, rack_tally, subracks);
     spare.clear();
-    spare.extend(order.iter().map(|&k| subracks[(k & 0xffffff) as usize]));
+    match given {
+        Some(given) => spare.extend(given.iter().map(|&at| subracks[at as usize])),
+        None => {
+            sort_subracks(subracks, order);
+            spare.extend(order.iter().map(|&k| subracks[(k & 0xffffff) as usize]));
+        }
+    }
     std::mem::swap(subracks, spare);
     let num_tiles_on_rack = rack_tally
         .iter()

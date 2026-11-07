@@ -33,6 +33,7 @@ pub mod notation;
 pub mod parallelism;
 pub mod play_scorer;
 pub mod prob;
+pub mod racks;
 pub mod simmer;
 pub mod stats;
 pub mod text;
