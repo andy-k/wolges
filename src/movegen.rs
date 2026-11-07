@@ -7442,36 +7442,77 @@ struct RcsWalk {
     crossed: bool,
 }
 
+// a lane's walks' taken squares by their multipliers under the walk's word
+// multiplier, best first (each with the square): the left walk's, and a right
+// walk's (the left walk's it starts from, then its own); and the lane's empty
+// squares a cross word reaches, a bit each
+struct RcsLists {
+    left: [(i32, u8); u64::BITS as usize],
+    right: [(i32, u8); u64::BITS as usize],
+    hooks: u64,
+}
+
 impl RcsGeometry<'_> {
+    // a span of the walk, its multipliers the walk's list
     #[inline(always)]
-    fn record(&mut self, walk: &RcsWalk, anchor: i8, left: i8, right: i8) {
+    fn record(
+        &mut self,
+        walk: &RcsWalk,
+        list: &[(i32, u8)],
+        hooks: u64,
+        anchor: i8,
+        left: i8,
+        right: i8,
+    ) {
         let at = self.kept.multipliers.len();
-        let mut placed = walk.placed;
-        let mut hooked = 0u64;
-        while placed != 0 {
-            let idx = placed.trailing_zeros() as usize;
-            placed &= placed - 1;
-            self.kept.multipliers.push((
-                self.tile_multipliers[idx] as i32
-                    * (walk.word_multiplier + self.perpendicular_word_multipliers[idx] as i32),
-                idx as u8,
-            ));
-            if self.cross_sets[idx].bits & 1 != 0 {
-                hooked |= 1 << idx;
-            }
-        }
-        self.kept.multipliers[at..]
-            .sort_unstable_by_key(|&(multiplier, _)| std::cmp::Reverse(multiplier));
+        self.kept
+            .multipliers
+            .extend_from_slice(&list[..walk.num_played as usize]);
         self.kept.spans.push(RcsSpan {
             anchor,
             left,
             right,
             num_played: walk.num_played,
             crossed: walk.crossed,
-            hooked,
+            hooked: walk.placed & hooks,
             fixed: walk.board_score * walk.word_multiplier + walk.cross_score,
             at: at as u32,
         });
+    }
+
+    // the walk's list once it took idx (having had word_multiplier before): the
+    // square's multiplier put in its place, or, when the square changed the
+    // word multiplier, every taken square's again, sorted
+    #[inline(always)]
+    fn list_took(
+        &self,
+        list: &mut [(i32, u8); u64::BITS as usize],
+        walk: &RcsWalk,
+        word_multiplier: i32,
+        idx: i8,
+    ) {
+        let multiplier_of = |i: usize| {
+            self.tile_multipliers[i] as i32
+                * (walk.word_multiplier + self.perpendicular_word_multipliers[i] as i32)
+        };
+        let n = walk.num_played as usize;
+        if walk.word_multiplier != word_multiplier {
+            let mut placed = walk.placed;
+            for entry in &mut list[..n] {
+                let i = placed.trailing_zeros() as usize;
+                placed &= placed - 1;
+                *entry = (multiplier_of(i), i as u8);
+            }
+            list[..n].sort_unstable_by_key(|&(multiplier, _)| std::cmp::Reverse(multiplier));
+            return;
+        }
+        let multiplier = multiplier_of(idx as usize);
+        let mut j = n - 1;
+        while j > 0 && list[j - 1].0 < multiplier {
+            list[j] = list[j - 1];
+            j -= 1;
+        }
+        list[j] = (multiplier, idx as u8);
     }
 
     // the square idx taken by a tile: false for a dead one (the walk ends)
@@ -7493,12 +7534,15 @@ impl RcsGeometry<'_> {
     #[inline(always)]
     fn right(
         &mut self,
+        lists: &mut RcsLists,
         mut walk: RcsWalk,
         mut is_unique: bool,
         anchor: i8,
         idx_left: i8,
         rightmost: i8,
     ) {
+        let n = walk.num_played as usize;
+        lists.right[..n].copy_from_slice(&lists.left[..n]);
         let mut idx = anchor + 1;
         loop {
             if idx < rightmost {
@@ -7508,20 +7552,22 @@ impl RcsGeometry<'_> {
                 idx = multi_jump.right_idx;
             }
             if idx > anchor + 1 && walk.num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                self.record(&walk, anchor, idx_left, idx);
+                self.record(&walk, &lists.right, lists.hooks, anchor, idx_left, idx);
             }
             if walk.num_played >= self.num_max_played || idx >= rightmost {
                 break;
             }
+            let word_multiplier = walk.word_multiplier;
             if !self.take(&mut walk, &mut is_unique, idx) {
                 break;
             }
+            self.list_took(&mut lists.right, &walk, word_multiplier, idx);
             idx += 1;
         }
     }
 
     #[inline(always)]
-    fn from(&mut self, anchor: i8, leftmost: i8, rightmost: i8) {
+    fn from(&mut self, lists: &mut RcsLists, anchor: i8, leftmost: i8, rightmost: i8) {
         let mut walk = RcsWalk {
             board_score: 0,
             cross_score: 0,
@@ -7540,24 +7586,37 @@ impl RcsGeometry<'_> {
                 idx = multi_jump.left_idx;
             }
             if walk.num_played > !is_unique as u8 && anchor - idx >= 2 {
-                self.record(&walk, anchor, idx + 1, anchor + 1);
+                self.record(&walk, &lists.left, lists.hooks, anchor, idx + 1, anchor + 1);
             }
             if walk.num_played >= self.num_max_played {
                 break;
             }
             if idx < anchor {
-                self.right(walk, is_unique, anchor, idx + 1, rightmost);
+                self.right(lists, walk, is_unique, anchor, idx + 1, rightmost);
             }
+            let word_multiplier = walk.word_multiplier;
             if idx < leftmost || !self.take(&mut walk, &mut is_unique, idx) {
                 break;
             }
+            self.list_took(&mut lists.left, &walk, word_multiplier, idx);
             idx -= 1;
         }
     }
 
-    // the shadow pass's anchors, in its order
+    // the shadow pass's anchors, in its order (a lane holds at most 64 squares,
+    // so a walk at most 64 taken)
     #[inline]
     fn find(&mut self) {
+        assert!(self.tiles.len() <= u64::BITS as usize);
+        let lists = &mut RcsLists {
+            left: [(0, 0); u64::BITS as usize],
+            right: [(0, 0); u64::BITS as usize],
+            hooks: self
+                .cross_sets
+                .iter()
+                .enumerate()
+                .fold(0, |hooks, (i, cross_set)| hooks | (cross_set.bits & 1) << i),
+        };
         let mut leftmost = self.tiles.len() as i8;
         loop {
             let mut rightmost = leftmost;
@@ -7565,7 +7624,7 @@ impl RcsGeometry<'_> {
                 leftmost -= 1;
             }
             if leftmost > 0 {
-                self.from(leftmost - 1, 0, rightmost);
+                self.from(lists, leftmost - 1, 0, rightmost);
             }
             {
                 let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8;
@@ -7576,7 +7635,7 @@ impl RcsGeometry<'_> {
                             break;
                         }
                         if bits != 1 {
-                            self.from(anchor, leftmost, rightmost);
+                            self.from(lists, anchor, leftmost, rightmost);
                         }
                         rightmost = anchor;
                     }
