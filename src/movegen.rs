@@ -6463,24 +6463,33 @@ impl KurniaMoveGenerator {
             },
             current_threshold: || threshold.get().raw(),
         }) {}
-        kurnia_gen_exchange_moves(
-            params.board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            params.num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], leave_value: i32| {
-                push_move(
-                    &mut found_moves,
-                    &mut equity_predicate,
-                    &threshold,
-                    max_gen,
-                    equity::Equity::new(leave_value),
-                    || Play::Exchange {
-                        tiles: exchanged_tiles.into(),
-                    },
-                );
-            },
-        );
+        // with the threshold above the best an exchange can be, push_move would
+        // turn each one away
+        if threshold.get()
+            <= best_exchange_equity(
+                params.board_snapshot.game_config,
+                &working_buffer.best_leave_values,
+            )
+        {
+            kurnia_gen_exchange_moves(
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                params.num_exchanges_by_this_player,
+                |exchanged_tiles: &[u8], leave_value: i32| {
+                    push_move(
+                        &mut found_moves,
+                        &mut equity_predicate,
+                        &threshold,
+                        max_gen,
+                        equity::Equity::new(leave_value),
+                        || Play::Exchange {
+                            tiles: exchanged_tiles.into(),
+                        },
+                    );
+                },
+            );
+        }
         if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
             push_move(
                 &mut found_moves,
@@ -6656,24 +6665,33 @@ impl KurniaMoveGenerator {
                 }) {}
             }
         }
-        kurnia_gen_exchange_moves(
-            params.board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            params.num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], leave_value: i32| {
-                push_move(
-                    &mut found_moves,
-                    &mut equity_predicate,
-                    &threshold,
-                    max_gen,
-                    equity::Equity::new(leave_value),
-                    || Play::Exchange {
-                        tiles: exchanged_tiles.into(),
-                    },
-                );
-            },
-        );
+        // with the threshold above the best an exchange can be, push_move would
+        // turn each one away
+        if threshold.get()
+            <= best_exchange_equity(
+                params.board_snapshot.game_config,
+                &working_buffer.best_leave_values,
+            )
+        {
+            kurnia_gen_exchange_moves(
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                params.num_exchanges_by_this_player,
+                |exchanged_tiles: &[u8], leave_value: i32| {
+                    push_move(
+                        &mut found_moves,
+                        &mut equity_predicate,
+                        &threshold,
+                        max_gen,
+                        equity::Equity::new(leave_value),
+                        || Play::Exchange {
+                            tiles: exchanged_tiles.into(),
+                        },
+                    );
+                },
+            );
+        }
         if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
             push_move(
                 &mut found_moves,
@@ -6841,6 +6859,26 @@ impl KurniaMoveGenerator {
         // the next generation computes every cross set again, its own way
         working_buffer.prev_board_tiles.fill(0xff);
     }
+}
+
+// the best equity an exchange can have: the best leave of the tiles kept when
+// one or more go, best_leave_values less the bonus for playing them (an
+// exchange plays none)
+#[inline(always)]
+fn best_exchange_equity(
+    game_config: &game_config::GameConfig,
+    best_leave_values: &[i32],
+) -> equity::Equity {
+    equity::Equity::new(
+        (1..best_leave_values.len())
+            .map(|exchanged| {
+                best_leave_values[exchanged].saturating_sub(
+                    game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE,
+                )
+            })
+            .max()
+            .unwrap_or(i32::MIN),
+    )
 }
 
 #[inline]
