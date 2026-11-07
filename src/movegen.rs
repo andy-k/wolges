@@ -6598,17 +6598,40 @@ impl KurniaMoveGenerator {
                 }
                 threshold.get().raw()
             };
-        for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
-            runs: (),
-            board_snapshot: params.board_snapshot,
-            working_buffer,
-            multi_leaves: &multi_leaves,
-            found_place_move,
-            can_accept: |best_possible_equity: i32| {
-                threshold.get() <= equity::Equity::new(best_possible_equity)
-            },
-            current_threshold: || threshold.get().raw(),
-        }) {}
+        let can_accept = |best_possible_equity: i32| {
+            threshold.get() <= equity::Equity::new(best_possible_equity)
+        };
+        let current_threshold = || threshold.get().raw();
+        // with the run letters the lean arm's table keeps, the walk goes
+        // straight to a tile's node
+        let runs = params
+            .board_snapshot
+            .rack_lengths
+            .and_then(anagrams::RackLengths::run_letter_bits);
+        match runs {
+            Some(runs) => {
+                for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                    runs,
+                    board_snapshot: params.board_snapshot,
+                    working_buffer,
+                    multi_leaves: &multi_leaves,
+                    found_place_move,
+                    can_accept,
+                    current_threshold,
+                }) {}
+            }
+            None => {
+                for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
+                    runs: (),
+                    board_snapshot: params.board_snapshot,
+                    working_buffer,
+                    multi_leaves: &multi_leaves,
+                    found_place_move,
+                    can_accept,
+                    current_threshold,
+                }) {}
+            }
+        }
         kurnia_gen_exchange_moves(
             params.board_snapshot,
             working_buffer,
