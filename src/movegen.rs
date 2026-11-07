@@ -42,16 +42,13 @@ struct CrossSet {
 }
 
 // the letters a play may put on a square, a bit each: a tile's own letter, else
-// those its cross set allows, every letter when nothing crosses it
+// those its cross set allows, every letter when nothing crosses it; selected by
+// masks, with no branch
 #[inline(always)]
 fn allowed_letters(tile: u8, cross_bits: u64) -> u64 {
-    if tile != 0 {
-        1u64 << (tile & 0x7f)
-    } else if cross_bits == 0 {
-        !0
-    } else {
-        cross_bits
-    }
+    let empty = cross_bits | ((cross_bits == 0) as u64).wrapping_neg();
+    let on_tile = ((tile != 0) as u64).wrapping_neg();
+    (1u64 << (tile & 0x7f)) & on_tile | empty & !on_tile
 }
 
 #[derive(Clone)]
@@ -439,6 +436,7 @@ struct RcsLane {
     perpendicular_word_multipliers: Vec<i8>,
     perpendicular_scores: Vec<i32>,
     jumps: Vec<MultiJump>, // over its runs of tiles (fill_multi_jumps)
+    hooks: u64,            // its empty squares a cross word reaches, a bit each
     spans: Vec<RcsSpan>,
     multipliers: Vec<(i32, u8)>, // each span's empty squares' with the square, descending, from its at
 }
@@ -7790,6 +7788,17 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
             .resize(num_lanes, RcsLane::default());
     }
     let rack_bits = working_buffer.rack_bits;
+    // the rack's tiles (a bit each) and their scores, for the caps
+    let mut rack_tiles = [(0u64, 0i32); u64::BITS as usize];
+    let mut num_rack_tiles = 0;
+    let mut bits = rack_bits;
+    while bits != 0 {
+        let tile = bits.trailing_zeros() as u8;
+        bits &= bits - 1;
+        rack_tiles[num_rack_tiles] = (1 << tile, alphabet.scaled_score(tile));
+        num_rack_tiles += 1;
+    }
+    let rack_tiles = &rack_tiles[..num_rack_tiles];
     for at in 0..num_lanes {
         let down = at >= dim.rows as usize;
         let lane = if down { at - dim.rows as usize } else { at } as i8;
@@ -7879,6 +7888,10 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
             }
             .find();
             kept.jumps = jumps;
+            kept.hooks = cross_sets
+                .iter()
+                .enumerate()
+                .fold(0, |hooks, (i, cross_set)| hooks | (cross_set.bits & 1) << i);
             kept.tiles.clear();
             kept.tiles.extend_from_slice(tiles);
             kept.cross_bits.clear();
@@ -7898,26 +7911,21 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
         }
         // the crossing squares none of the rack's tiles fit (with a blank on
         // hand, none: a cross set's bit 0 is the blank's), and each crossing
-        // square's cap, the best score of the rack's tiles that fit it (a
-        // square no cross word reaches takes any tile)
+        // square's cap, the best score of the rack's tiles that fit it, each
+        // tile's kept or dropped by a select (a square no cross word reaches
+        // takes any tile)
         let mut unfillable = 0u64;
         let mut caps = [i32::MAX; u64::BITS as usize];
-        for (idx, cross_set) in cross_sets.iter().enumerate() {
-            if cross_set.bits & 1 == 0 {
-                continue;
-            }
-            let mut fits = cross_set.bits & rack_bits;
-            if fits == 0 {
-                unfillable |= 1 << idx;
-                continue;
-            }
-            let mut cap = 0i32;
-            while fits != 0 {
-                let tile = fits.trailing_zeros() as u8;
-                fits &= fits - 1;
-                cap = cap.max(alphabet.scaled_score(tile));
-            }
-            caps[idx] = cap;
+        let mut hooks = kept.hooks;
+        while hooks != 0 {
+            let idx = hooks.trailing_zeros() as usize;
+            hooks &= hooks - 1;
+            let fits = cross_sets[idx].bits & rack_bits;
+            unfillable |= ((fits == 0) as u64) << idx;
+            caps[idx] = rack_tiles
+                .iter()
+                .map(|&(bit, score)| if fits & bit != 0 { score } else { 0 })
+                .fold(0, i32::max);
         }
         let mut check = check.map(|(source, prefix_at)| KeyCheck {
             source,
