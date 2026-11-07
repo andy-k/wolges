@@ -4818,20 +4818,32 @@ fn gen_classic_place_moves<
                 if !within && (T::NIBBLES || !env.places.holds(key1, counts)) {
                     continue;
                 }
-                source.blank_groups(alphagram::Fitted(key1), len, e.blank_ok, |tile, at| {
-                    if tile < l1 {
-                        return;
-                    }
-                    let found = source.words_at(at);
-                    fit_words_apart(env, found, subrack.leave_idx, tile, l1);
-                });
+                source.blank_groups(
+                    alphagram::Fitted(key1),
+                    len,
+                    e.blank_ok,
+                    #[inline(never)]
+                    |tile, at| {
+                        if tile < l1 {
+                            return;
+                        }
+                        let found = source.words_at(at);
+                        fit_words_apart(env, found, subrack.leave_idx, tile, l1);
+                    },
+                );
             }
             return true;
         }
-        source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
-            let found = source.words_at(at);
-            fit_words_apart(env, found, subrack.leave_idx, tile, 0);
-        });
+        source.blank_groups(
+            alphagram::Fitted(key),
+            len,
+            e.blank_ok,
+            #[inline(never)]
+            |tile, at| {
+                let found = source.words_at(at);
+                fit_words_apart(env, found, subrack.leave_idx, tile, 0);
+            },
+        );
         true
     }
 
