@@ -675,12 +675,11 @@ impl MultiLeaves {
     pub fn extract_raw_best_leave_values(&self, best_leave_values: &mut Vec<i32>) {
         best_leave_values.clear();
         best_leave_values.resize(self.num_playeds[0] as usize + 1, i32::MIN);
-        for i in 0..self.leave_values.len() {
-            let this_leave_value = self.leave_values[i];
-            let num_tiles_exchanged = self.num_playeds[i] as usize;
-            if this_leave_value > best_leave_values[num_tiles_exchanged] {
-                best_leave_values[num_tiles_exchanged] = this_leave_value;
-            }
+        // each count's best by max, not by a branch a leave
+        for (&leave_value, &num_tiles_exchanged) in self.leave_values.iter().zip(&self.num_playeds)
+        {
+            let best = &mut best_leave_values[num_tiles_exchanged as usize];
+            *best = (*best).max(leave_value);
         }
     }
 
