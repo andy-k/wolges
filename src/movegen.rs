@@ -426,10 +426,9 @@ impl ShadowScores {
     }
 }
 
-// the nibble-keyed instance's spans of a lane, kept until its inputs change:
-// found by the shadow pass with every letter on hand without limit, so they are
-// every span a rack can have; each with what of its bound needs no rack
-// (rcs_placements)
+// the table walk's spans of a lane, kept until its inputs change: found by the
+// shadow pass with every letter on hand without limit, so they are every span a
+// rack can have; each with what of its bound needs no rack (rcs_placements)
 #[derive(Clone, Default)]
 struct RcsLane {
     valid: bool,
@@ -510,7 +509,7 @@ struct WorkingBuffer {
     subracks_spare: Vec<Subrack>,
     found_placements: Vec<PossiblePlacement>,
     raw_anchors: Vec<(i8, i8, i8)>, // a lane's anchors, raw: (anchor, leftmost, rightmost)
-    rcs_lanes: Vec<RcsLane>,        // with nibble keys, rows then columns
+    rcs_lanes: Vec<RcsLane>,        // the table walk's, rows then columns
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
     span_memo: SpanMemo,
@@ -7841,7 +7840,7 @@ impl RcsGeometry<'_> {
     // the shadow pass's anchors, in its order (a lane holds at most 64 squares,
     // so a walk at most 64 taken); the lists are the caller's, made once for
     // every lane (a walk reads only the entries it wrote), their hooks set here
-    #[inline]
+    #[inline(always)]
     fn find(&mut self, lists: &mut RcsLists) {
         assert!(self.tiles.len() <= u64::BITS as usize);
         lists.hooks = self
@@ -7886,17 +7885,17 @@ impl RcsGeometry<'_> {
     }
 }
 
-// the nibble-keyed instance's placements of a turn, a span each, by span bounds
-// that need no shadow pass: a lane's spans and what of each bound needs no rack
-// are kept in rcs_lanes until the lane's inputs change, then found by the
-// shadow pass with every letter on hand without limit; a span the rack can fill
-// (no crossing square fits none of its tiles, unless it holds a blank) is
-// bounded by its fixed part, the rack's best scores on its multipliers, best
-// first, and the best leave of the tiles it plays. No play scores more: its
-// tiles on any of the span's squares score at most the best on the best. The
-// span lengths a rack's tiles cannot fill alone and the key check are asked as
-// the shadow pass asks them.
-#[inline]
+// the table walk's placements of a turn, a span each, by span bounds that need
+// no shadow pass: a lane's spans and what of each bound needs no rack are kept
+// in rcs_lanes until the lane's inputs change, then found by the shadow pass
+// with every letter on hand without limit; a span the rack can fill (no
+// crossing square fits none of its tiles, unless it holds a blank) is bounded
+// by its fixed part, the rack's best scores on its multipliers, best first, and
+// the best leave of the tiles it plays. No play scores more: its tiles on any
+// of the span's squares score at most the best on the best. The span lengths a
+// rack's tiles cannot fill alone and the key check are asked as the shadow pass
+// asks them.
+#[inline(always)]
 fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &BoardSnapshot<'_, N, L>,
     working_buffer: &mut WorkingBuffer,
@@ -8233,7 +8232,10 @@ fn kurnia_gen_place_moves_iter<
     placement_order.clear();
     let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
     working_buffer.anchor_left_bounds.clear();
-    if T::NIBBLES {
+    // the kept lanes' spans (whatever the keys, on lanes of at most 64
+    // squares), else the shadow pass's, lane by lane
+    let kept_lanes = dim.rows.max(dim.cols) as u32 <= u64::BITS;
+    if kept_lanes {
         rcs_placements::<D, W, T, _, _>(
             board_snapshot,
             working_buffer,
@@ -8245,7 +8247,7 @@ fn kurnia_gen_place_moves_iter<
         );
     }
     for row in 0..dim.rows {
-        if T::NIBBLES || working_buffer.lane_rows & (1 << row) == 0 {
+        if kept_lanes || working_buffer.lane_rows & (1 << row) == 0 {
             continue;
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
@@ -8311,7 +8313,7 @@ fn kurnia_gen_place_moves_iter<
         );
     }
     for col in 0..dim.cols {
-        if T::NIBBLES || working_buffer.lane_cols & (1 << col) == 0 {
+        if kept_lanes || working_buffer.lane_cols & (1 << col) == 0 {
             continue;
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
