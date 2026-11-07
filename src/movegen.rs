@@ -286,40 +286,7 @@ impl LaneScaffold {
         self.ranked
             .resize(self.aggregated_word_multipliers.len(), false);
 
-        self.multi_jumps.resize(
-            strider_len,
-            MultiJump {
-                left_score: 0,
-                right_score: 0,
-                left_idx: 0,
-                right_idx: 0,
-            },
-        );
-        let mut score = 0i32;
-        let mut last_empty = strider_len as i8;
-        for j in (0..strider_len).rev() {
-            let b = board_strip[j];
-            if b != 0 {
-                score += alphabet.scaled_score(b);
-            } else {
-                score = 0; // cumulative face-value score (millipoints)
-                last_empty = j as i8; // last seen empty square
-            }
-            self.multi_jumps[j].right_score = score;
-            self.multi_jumps[j].right_idx = last_empty;
-        }
-        score = 0i32;
-        last_empty = -1i8;
-        for (j, &b) in board_strip.iter().enumerate() {
-            if b != 0 {
-                score += alphabet.scaled_score(b);
-            } else {
-                score = 0; // cumulative face-value score (millipoints)
-                last_empty = j as i8; // last seen empty square
-            }
-            self.multi_jumps[j].left_score = score;
-            self.multi_jumps[j].left_idx = last_empty;
-        }
+        fill_multi_jumps::<D>(alphabet, board_strip, &mut self.multi_jumps);
 
         self.valid = true;
         self.board_strip.clear();
@@ -333,6 +300,55 @@ impl LaneScaffold {
         self.perpendicular_word_multipliers_strip.clear();
         self.perpendicular_word_multipliers_strip
             .extend_from_slice(perpendicular_word_multipliers_strip);
+    }
+}
+
+// a lane's jumps over its runs of tiles: from each square, the nearest empty
+// square at or to its right (the lane's end if none) and at or to its left (-1
+// if none), with the face values of the tiles passed
+#[inline(always)]
+fn fill_multi_jumps<const D: usize>(
+    alphabet: &alphabet::Alphabet,
+    board_strip: &[u8],
+    multi_jumps: &mut Vec<MultiJump>,
+) {
+    let strider_len = if D == 0 { board_strip.len() } else { D };
+    if D != 0 {
+        assert_eq!(board_strip.len(), D);
+    }
+    multi_jumps.resize(
+        strider_len,
+        MultiJump {
+            left_score: 0,
+            right_score: 0,
+            left_idx: 0,
+            right_idx: 0,
+        },
+    );
+    let mut score = 0i32;
+    let mut last_empty = strider_len as i8;
+    for j in (0..strider_len).rev() {
+        let b = board_strip[j];
+        if b != 0 {
+            score += alphabet.scaled_score(b);
+        } else {
+            score = 0; // cumulative face-value score (millipoints)
+            last_empty = j as i8; // last seen empty square
+        }
+        multi_jumps[j].right_score = score;
+        multi_jumps[j].right_idx = last_empty;
+    }
+    score = 0i32;
+    last_empty = -1i8;
+    for (j, &b) in board_strip.iter().enumerate() {
+        if b != 0 {
+            score += alphabet.scaled_score(b);
+        } else {
+            score = 0; // cumulative face-value score (millipoints)
+            last_empty = j as i8; // last seen empty square
+        }
+        multi_jumps[j].left_score = score;
+        multi_jumps[j].left_idx = last_empty;
     }
 }
 
@@ -422,6 +438,7 @@ struct RcsLane {
     tile_multipliers: Vec<i8>,
     perpendicular_word_multipliers: Vec<i8>,
     perpendicular_scores: Vec<i32>,
+    jumps: Vec<MultiJump>, // over its runs of tiles (fill_multi_jumps)
     spans: Vec<RcsSpan>,
     multipliers: Vec<(i32, u8)>, // each span's empty squares' with the square, descending, from its at
 }
@@ -7667,18 +7684,13 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
         {
             // every span any rack has, as the shadow pass finds them with every
             // letter on hand and no count running out
-            working_buffer.lane_scaffold[at].refresh::<D>(
-                alphabet,
-                tiles,
-                word_multipliers,
-                tile_multipliers,
-                perpendicular_word_multipliers,
-            );
+            let mut jumps = std::mem::take(&mut kept.jumps);
+            fill_multi_jumps::<D>(alphabet, tiles, &mut jumps);
             kept.spans.clear();
             kept.multipliers.clear();
             RcsGeometry {
                 kept: &mut kept,
-                multi_jumps: &working_buffer.lane_scaffold[at].multi_jumps,
+                multi_jumps: &jumps,
                 tiles,
                 cross_sets,
                 word_multipliers,
@@ -7689,6 +7701,7 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
                 num_max_played: rack_size as u8,
             }
             .find();
+            kept.jumps = jumps;
             kept.tiles.clear();
             kept.tiles.extend_from_slice(tiles);
             kept.cross_bits.clear();
