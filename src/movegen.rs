@@ -7743,8 +7743,20 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
         let len = if down { dim.rows } else { dim.cols } as usize;
         let start = lane as usize * len;
         let end = start + len;
-        let check =
-            fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, down, lane);
+        // the key check is asked only of a span through a board tile, so a lane
+        // with none needs no span sums for it (a walk fills its own)
+        let holds_tiles = if down {
+            &working_buffer.transposed_board_tiles[start..end]
+        } else {
+            &board_snapshot.board_tiles[start..end]
+        }
+        .iter()
+        .any(|&tile| tile != 0);
+        let check = if holds_tiles {
+            fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, down, lane)
+        } else {
+            None
+        };
         let mut kept = std::mem::take(&mut working_buffer.rcs_lanes[at]);
         let tiles = if down {
             &working_buffer.transposed_board_tiles[start..end]
