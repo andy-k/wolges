@@ -462,15 +462,25 @@ impl MultiLeaves {
     // << 20 of them), how many, and the rack's tiles
     #[inline(always)]
     fn set_digits(&mut self, rack_tally: &[u8]) -> (bool, u32, u8) {
-        self.unique_tiles.clear();
-        self.digits.clear();
-        self.digits.resize(
-            rack_tally.len(),
-            MultiLeavesDigit {
+        // every digit none: the last rack's tiles' put back (the others are
+        // none already), or all of them anew for an alphabet of another length
+        for &tile in &self.unique_tiles {
+            self.digits[tile as usize] = MultiLeavesDigit {
                 count: 0,
                 place_value: 0,
-            },
-        );
+            };
+        }
+        self.unique_tiles.clear();
+        if self.digits.len() != rack_tally.len() {
+            self.digits.clear();
+            self.digits.resize(
+                rack_tally.len(),
+                MultiLeavesDigit {
+                    count: 0,
+                    place_value: 0,
+                },
+            );
+        }
         let mut place_value = 1u32;
         let mut num_tiles_on_rack = 0u8;
         let mut dense = true;
