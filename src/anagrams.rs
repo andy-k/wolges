@@ -18,8 +18,10 @@ const BLANK_FILTER_BITS: usize = 16;
 // https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
 const KEY_MUL: u128 = 0xff51_afd7_ed55_8ccd_c4ce_b9fe_1a85_ec53;
 
+// a key's part: the filters hash it, and the part of a sum of keys is the sum
+// of their parts (mod 2^128), so a caller adding keys may add their parts
 #[inline(always)]
-fn key_part(key: u128) -> u128 {
+pub fn key_part(key: u128) -> u128 {
     key.wrapping_mul(KEY_MUL)
 }
 
@@ -33,7 +35,13 @@ fn filter_hash(part: u128) -> u64 {
 // every bit of the key reaches
 #[inline(always)]
 pub fn key_hash(key: u128) -> u64 {
-    filter_hash(key_part(key)).swap_bytes()
+    part_hash(key_part(key))
+}
+
+// key_hash of the key whose part this is
+#[inline(always)]
+pub fn part_hash(part: u128) -> u64 {
+    filter_hash(part).swap_bytes()
 }
 
 #[inline(always)]
@@ -573,10 +581,16 @@ impl Anagrams {
     // each, for a caller probing a run of keys at once
     #[inline(always)]
     pub fn may_hold(&self, key: alphagram::Key) -> bool {
+        self.may_hold_part(key_part(key.0))
+    }
+
+    // may_hold of the key whose part (key_part) this is
+    #[inline(always)]
+    pub fn may_hold_part(&self, part: u128) -> bool {
         if self.filter.is_empty() {
             return true;
         }
-        let h = filter_hash(key_part(key.0));
+        let h = filter_hash(part);
         let base = filter_block(h, self.filter_block_count) * FILTER_BLOCK_WORDS;
         let block = &self.filter[base..base + FILTER_BLOCK_WORDS];
         let mut probe = h;
