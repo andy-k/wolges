@@ -7688,12 +7688,15 @@ impl RcsGeometry<'_> {
     ) {
         let at = self.kept.multipliers.len();
         let n = walk.num_played as usize;
-        if n <= RCS_COPIED {
-            // a fixed count of entries copied, those past the span's dropped
-            self.kept.multipliers.extend_from_slice(&list[..RCS_COPIED]);
-            self.kept.multipliers.truncate(at + n);
+        // a fixed count of entries copied, then the rest of a longer span's, or
+        // those past the span's dropped
+        self.kept.multipliers.extend_from_slice(&list[..RCS_COPIED]);
+        if n > RCS_COPIED {
+            self.kept
+                .multipliers
+                .extend_from_slice(&list[RCS_COPIED..n]);
         } else {
-            self.kept.multipliers.extend_from_slice(&list[..n]);
+            self.kept.multipliers.truncate(at + n);
         }
         self.kept.spans.push(RcsSpan {
             anchor,
@@ -7769,11 +7772,11 @@ impl RcsGeometry<'_> {
         rightmost: i8,
     ) {
         let n = walk.num_played as usize;
-        if n <= RCS_COPIED {
-            // a fixed count of entries copied, those past the walk's never read
-            lists.right[..RCS_COPIED].copy_from_slice(&lists.left[..RCS_COPIED]);
-        } else {
-            lists.right[..n].copy_from_slice(&lists.left[..n]);
+        // a fixed count of entries copied, then the rest of a longer walk's
+        // (those past the walk's are never read)
+        lists.right[..RCS_COPIED].copy_from_slice(&lists.left[..RCS_COPIED]);
+        if n > RCS_COPIED {
+            lists.right[RCS_COPIED..n].copy_from_slice(&lists.left[RCS_COPIED..n]);
         }
         let mut idx = anchor + 1;
         loop {
