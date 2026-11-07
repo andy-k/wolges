@@ -1679,7 +1679,7 @@ struct KeyCheck<'a> {
 }
 
 const EXIST_MEMO_SLOTS: usize = 4096;
-const EXIST_MIN_PLAYED: u8 = 6;
+const EXIST_MIN_PLAYED: u8 = 5;
 
 #[derive(Clone, Copy)]
 struct ExistSlot {
