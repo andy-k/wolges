@@ -7635,6 +7635,24 @@ struct RcsWalk {
     crossed: bool,
 }
 
+// how many entries of a walk's list RcsGeometry's record and right copy when
+// the walk holds no more (the rest dropped or never read)
+const RCS_COPIED: usize = 8;
+
+// whether a kept lane's input is the lane's: as arrays of the board's side when
+// it is fixed, every element compared and folded without a branch
+#[inline(always)]
+fn same_lane<const D: usize, T: Copy + PartialEq>(kept: &[T], lane: &[T]) -> bool {
+    if D != 0 && kept.len() == D && lane.len() == D {
+        kept[..D]
+            .iter()
+            .zip(&lane[..D])
+            .fold(true, |same, (a, b)| same & (a == b))
+    } else {
+        kept == lane
+    }
+}
+
 // a lane's walks' taken squares by their multipliers under the walk's word
 // multiplier, best first (each with the square): the left walk's, and a right
 // walk's (the left walk's it starts from, then its own); and the lane's empty
@@ -7658,9 +7676,14 @@ impl RcsGeometry<'_> {
         right: i8,
     ) {
         let at = self.kept.multipliers.len();
-        self.kept
-            .multipliers
-            .extend_from_slice(&list[..walk.num_played as usize]);
+        let n = walk.num_played as usize;
+        if n <= RCS_COPIED {
+            // a fixed count of entries copied, those past the span's dropped
+            self.kept.multipliers.extend_from_slice(&list[..RCS_COPIED]);
+            self.kept.multipliers.truncate(at + n);
+        } else {
+            self.kept.multipliers.extend_from_slice(&list[..n]);
+        }
         self.kept.spans.push(RcsSpan {
             anchor,
             left,
@@ -7735,7 +7758,12 @@ impl RcsGeometry<'_> {
         rightmost: i8,
     ) {
         let n = walk.num_played as usize;
-        lists.right[..n].copy_from_slice(&lists.left[..n]);
+        if n <= RCS_COPIED {
+            // a fixed count of entries copied, those past the walk's never read
+            lists.right[..RCS_COPIED].copy_from_slice(&lists.left[..RCS_COPIED]);
+        } else {
+            lists.right[..n].copy_from_slice(&lists.left[..n]);
+        }
         let mut idx = anchor + 1;
         loop {
             if idx < rightmost {
@@ -7888,6 +7916,8 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
         num_rack_tiles += 1;
     }
     let rack_tiles = &rack_tiles[..num_rack_tiles];
+    // each square's cap (none but a lane's hooked squares'), made once a turn
+    let mut caps = [i32::MAX; u64::BITS as usize];
     for at in 0..num_lanes {
         let down = at >= dim.rows as usize;
         let lane = if down { at - dim.rows as usize } else { at } as i8;
@@ -7946,11 +7976,14 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
             &working_buffer.perpendicular_scores_for_across_plays[start..end]
         };
         if !(kept.valid
-            && kept.tiles == tiles
-            && kept.word_multipliers == word_multipliers
-            && kept.tile_multipliers == tile_multipliers
-            && kept.perpendicular_word_multipliers == perpendicular_word_multipliers
-            && kept.perpendicular_scores == perpendicular_scores
+            && same_lane::<D, _>(&kept.tiles, tiles)
+            && same_lane::<D, _>(&kept.word_multipliers, word_multipliers)
+            && same_lane::<D, _>(&kept.tile_multipliers, tile_multipliers)
+            && same_lane::<D, _>(
+                &kept.perpendicular_word_multipliers,
+                perpendicular_word_multipliers,
+            )
+            && same_lane::<D, _>(&kept.perpendicular_scores, perpendicular_scores)
             && kept
                 .cross_bits
                 .iter()
@@ -8004,7 +8037,6 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
         // tile's kept or dropped by a select (a square no cross word reaches
         // takes any tile)
         let mut unfillable = 0u64;
-        let mut caps = [i32::MAX; u64::BITS as usize];
         let mut hooks = kept.hooks;
         while hooks != 0 {
             let idx = hooks.trailing_zeros() as usize;
@@ -8060,6 +8092,12 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
                 best_possible_equity: bound,
                 kept_at: span.at,
             });
+        }
+        // the lane's caps back to none for the next
+        let mut hooks = kept.hooks;
+        while hooks != 0 {
+            caps[hooks.trailing_zeros() as usize] = i32::MAX;
+            hooks &= hooks - 1;
         }
         working_buffer.rcs_lanes[at] = kept;
     }
