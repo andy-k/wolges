@@ -7663,6 +7663,17 @@ struct RcsLists {
     hooks: u64,
 }
 
+impl RcsLists {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            left: [(0, 0); u64::BITS as usize],
+            right: [(0, 0); u64::BITS as usize],
+            hooks: 0,
+        }
+    }
+}
+
 impl RcsGeometry<'_> {
     // a span of the walk, its multipliers the walk's list
     #[inline(always)]
@@ -7825,19 +7836,16 @@ impl RcsGeometry<'_> {
     }
 
     // the shadow pass's anchors, in its order (a lane holds at most 64 squares,
-    // so a walk at most 64 taken)
+    // so a walk at most 64 taken); the lists are the caller's, made once for
+    // every lane (a walk reads only the entries it wrote), their hooks set here
     #[inline]
-    fn find(&mut self) {
+    fn find(&mut self, lists: &mut RcsLists) {
         assert!(self.tiles.len() <= u64::BITS as usize);
-        let lists = &mut RcsLists {
-            left: [(0, 0); u64::BITS as usize],
-            right: [(0, 0); u64::BITS as usize],
-            hooks: self
-                .cross_sets
-                .iter()
-                .enumerate()
-                .fold(0, |hooks, (i, cross_set)| hooks | (cross_set.bits & 1) << i),
-        };
+        lists.hooks = self
+            .cross_sets
+            .iter()
+            .enumerate()
+            .fold(0, |hooks, (i, cross_set)| hooks | (cross_set.bits & 1) << i);
         let mut leftmost = self.tiles.len() as i8;
         loop {
             let mut rightmost = leftmost;
@@ -7918,6 +7926,9 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
     let rack_tiles = &rack_tiles[..num_rack_tiles];
     // each square's cap (none but a lane's hooked squares'), made once a turn
     let mut caps = [i32::MAX; u64::BITS as usize];
+    // the walks' lists of a lane found again (RcsGeometry::find), made once a
+    // turn
+    let mut lists = RcsLists::new();
     for at in 0..num_lanes {
         let down = at >= dim.rows as usize;
         let lane = if down { at - dim.rows as usize } else { at } as i8;
@@ -8008,12 +8019,9 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
                 single_tile_plays: !down,
                 num_max_played: rack_size as u8,
             }
-            .find();
+            .find(&mut lists);
             kept.jumps = jumps;
-            kept.hooks = cross_sets
-                .iter()
-                .enumerate()
-                .fold(0, |hooks, (i, cross_set)| hooks | (cross_set.bits & 1) << i);
+            kept.hooks = lists.hooks;
             kept.tiles.clear();
             kept.tiles.extend_from_slice(tiles);
             kept.cross_bits.clear();
@@ -11243,7 +11251,7 @@ mod tests {
                     single_tile_plays: !down,
                     num_max_played: rack_size,
                 }
-                .find();
+                .find(&mut RcsLists::new());
                 let kept_spans = kept
                     .spans
                     .iter()
