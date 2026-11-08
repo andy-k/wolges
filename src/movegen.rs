@@ -6992,7 +6992,7 @@ impl KurniaMoveGenerator {
     ) {
         let dim = params.board_snapshot.game_config.board_layout().dim();
         if dim.rows == 15 && dim.cols == 15 {
-            return self.gen_moves_filtered_impl::<15, u16, _, _>(
+            return self.gen_moves_filtered_impl::<15, u32, _, _>(
                 params,
                 place_move_predicate,
                 adjust_leave_value,
