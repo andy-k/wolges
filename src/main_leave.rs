@@ -7624,14 +7624,14 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     });
     writeln!(
         std::io::stdout(),
-        "infer-fit: the mover {}{}, the watcher hasty; {num_games} games on the {} arm",
+        "infer-fit: the mover {}{}, the watcher hasty; {num_games} games{}",
         picker_name(mover),
         if matches!(mover, SeatPicker::Simmer) {
             format!(" ({num_sim_iters} rollouts a move)")
         } else {
             String::new()
         },
-        if lean { "lean" } else { "unadorned" },
+        if lean { " on the lean arm" } else { "" },
     )?;
     let t0 = std::time::Instant::now();
     let claimed_games = std::sync::atomic::AtomicU64::new(0);
@@ -9384,8 +9384,8 @@ fn compare_seats<
     };
     writeln!(
         boxed_stdout_or_stderr(),
-        "compare: the {} arm; p0 {}; p1 {}",
-        if LEAN { "lean" } else { "unadorned" },
+        "compare: {}p0 {}; p1 {}",
+        if LEAN { "the lean arm; " } else { "" },
         seat_line(
             p0_picker,
             p0_plies,
