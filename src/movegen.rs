@@ -1,6 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, alphagram, anagrams, bites, display, equity, game_config, klv, kwg, matrix};
+use super::{
+    alphabet, alphagram, anagrams, bites, display, equity, error, game_config, klv, kwg, matrix,
+};
 use alphagram::KeyPlaces as _;
 
 pub const MAX_ALPHABET_LEN: usize = 64;
@@ -461,7 +463,7 @@ struct RcsSpan {
 // WorkingBuffer can also be reset for reuse with another kwg by calling
 // reset_for_another_kwg().
 // This is not enforced.
-struct WorkingBuffer {
+struct WorkingBuffer<G: LaneBits> {
     rack_tally: [u8; MAX_ALPHABET_LEN],
     word_buffer_for_across_plays: Box<[u8]>,     // r*c
     word_buffer_for_down_plays: Box<[u8]>,       // c*r
@@ -472,10 +474,10 @@ struct WorkingBuffer {
     cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
     cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>, // r*c (perpendicular strips)
     prev_board_tiles: Box<[u8]>,                 // r*c (previous board tiles for dirty tracking)
-    dirty_rows: u128,
-    dirty_cols: u128,
-    lane_rows: u128,
-    lane_cols: u128,
+    dirty_rows: G,
+    dirty_cols: G,
+    lane_rows: G,
+    lane_cols: G,
     remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
     remaining_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
@@ -530,7 +532,7 @@ struct WorkingBuffer {
     is_census: bool,
 }
 
-impl Clone for WorkingBuffer {
+impl<G: LaneBits> Clone for WorkingBuffer<G> {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
@@ -717,7 +719,7 @@ impl Clone for WorkingBuffer {
     }
 }
 
-impl WorkingBuffer {
+impl<G: LaneBits> WorkingBuffer<G> {
     fn new(game_config: &game_config::GameConfig) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
@@ -768,10 +770,10 @@ impl WorkingBuffer {
             ]
             .into_boxed_slice(),
             prev_board_tiles: vec![0xffu8; rows_times_cols].into_boxed_slice(),
-            dirty_rows: 0,
-            dirty_cols: 0,
-            lane_rows: !0,
-            lane_cols: !0,
+            dirty_rows: G::from(0),
+            dirty_cols: G::from(0),
+            lane_rows: !G::from(0),
+            lane_cols: !G::from(0),
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             remaining_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -902,8 +904,8 @@ impl WorkingBuffer {
 
         let premiums = board_layout.premiums();
         let transposed_premiums = board_layout.transposed_premiums();
-        let mut dirty_rows = 0u128;
-        let mut dirty_cols = 0u128;
+        let mut dirty_rows = G::from(0);
+        let mut dirty_cols = G::from(0);
         // the tiles and face values the squares that changed gained, against
         // prev_board_tiles's counts; a board it holds as unknown (0xff) is
         // counted afresh
@@ -941,8 +943,8 @@ impl WorkingBuffer {
                 }
                 let row = idx / dim.cols as usize;
                 let col = idx % dim.cols as usize;
-                dirty_rows |= 1 << row;
-                dirty_cols |= 1 << col;
+                dirty_rows |= G::from(1) << row as u32;
+                dirty_cols |= G::from(1) << col as u32;
                 let transposed_idx = col * dim.rows as usize + row;
                 self.transposed_board_tiles[transposed_idx] = b;
                 // a played word reads 0 on the board's tiles, so a square that
@@ -978,8 +980,8 @@ impl WorkingBuffer {
             self.board_tile_score = self.prev_tile_score + score_gained;
         }
         if was_empty || self.num_tiles_on_board == 0 {
-            dirty_rows |= 1 << board_layout.star_row();
-            dirty_cols |= 1 << board_layout.star_col();
+            dirty_rows |= G::from(1) << board_layout.star_row() as u32;
+            dirty_cols |= G::from(1) << board_layout.star_col() as u32;
         }
         self.dirty_rows = dirty_rows;
         self.dirty_cols = dirty_cols;
@@ -1125,8 +1127,8 @@ impl WorkingBuffer {
     fn init_after_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
-        dirty_cols: u128,
-        dirty_rows: u128,
+        dirty_cols: G,
+        dirty_rows: G,
     ) {
         let board_layout = board_snapshot.game_config.board_layout();
         let fixed;
@@ -1137,11 +1139,11 @@ impl WorkingBuffer {
         } else {
             board_layout.dim()
         };
-        if dirty_cols != 0 {
+        if dirty_cols != G::from(0) {
             let premiums = board_layout.premiums();
 
             for col in 0..dim.cols {
-                if dirty_cols & (1 << col) == 0 {
+                if dirty_cols & (G::from(1) << col as u32) == G::from(0) {
                     continue;
                 }
                 let strider = dim.down(col);
@@ -1160,7 +1162,7 @@ impl WorkingBuffer {
                 }
             }
         }
-        if dirty_rows != 0 {
+        if dirty_rows != G::from(0) {
             let transposed_dim = matrix::Dim {
                 rows: dim.cols,
                 cols: dim.rows,
@@ -1168,7 +1170,7 @@ impl WorkingBuffer {
             let transposed_premiums = board_layout.transposed_premiums();
 
             for row in 0..dim.rows {
-                if dirty_rows & (1 << row) == 0 {
+                if dirty_rows & (G::from(1) << row as u32) == G::from(0) {
                     continue;
                 }
                 let strider = transposed_dim.down(row);
@@ -1865,22 +1867,60 @@ fn square_dim<const D: usize>() -> matrix::Dim {
     }
 }
 
+mod lane_bits {
+    pub trait Sealed {}
+
+    impl Sealed for u16 {}
+
+    impl Sealed for u32 {}
+
+    impl Sealed for u128 {}
+}
+
 // the set type an instance takes for a lane's squares, bit i for square i: u16
-// for a side of at most 16, u32 for one of at most 32, u128 for any
-trait LaneBits {
+// for a side of at most 16, u32 for one of at most 32, u128 for any; and a
+// generator's for its sets of rows and of columns (KurniaMoveGenerator's G)
+pub trait LaneBits:
+    lane_bits::Sealed
+    + Copy
+    + Eq
+    + From<u8>
+    + std::ops::BitAnd<Output = Self>
+    + std::ops::BitOrAssign
+    + std::ops::Not<Output = Self>
+    + std::ops::Shl<u32, Output = Self>
+{
     const BITS: u32;
+
+    // x's lowest bits, as many as the type holds
+    fn of_u128(x: u128) -> Self;
 }
 
 impl LaneBits for u16 {
     const BITS: u32 = u16::BITS;
+
+    #[inline(always)]
+    fn of_u128(x: u128) -> Self {
+        x as u16
+    }
 }
 
 impl LaneBits for u32 {
     const BITS: u32 = u32::BITS;
+
+    #[inline(always)]
+    fn of_u128(x: u128) -> Self {
+        x as u32
+    }
 }
 
 impl LaneBits for u128 {
     const BITS: u32 = u128::BITS;
+
+    #[inline(always)]
+    fn of_u128(x: u128) -> Self {
+        x
+    }
 }
 
 // what an instance's keys are: nibbles (a classic game's, on a square board of
@@ -1939,8 +1979,16 @@ impl TablePlaces for ByNibble {
 // by the key filter at shadow time (KeyCheck): the unblanked classic game under
 // the tables, whose memo is made at its first use
 #[inline(always)]
-fn fill_key_check<'a, const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
-    working_buffer: &mut WorkingBuffer,
+fn fill_key_check<
+    'a,
+    const D: usize,
+    W: LaneBits,
+    T: TablePlaces,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+>(
+    working_buffer: &mut WorkingBuffer<G>,
     board_snapshot: &BoardSnapshot<'a, N, L>,
     dim: &matrix::Dim,
     down: bool,
@@ -5638,10 +5686,11 @@ struct GenPlaceMovesAtParams<
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 > {
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer,
+    working_buffer: &'a mut WorkingBuffer<G>,
     multi_leaves: &'a klv::MultiLeaves,
     placement: &'a PossiblePlacement,
     num_max_played: u8,
@@ -5657,8 +5706,9 @@ fn gen_place_moves_at_lean<
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 >(
-    p: GenPlaceMovesAtParams<'a, R, FoundPlaceMove, N, L>,
+    p: GenPlaceMovesAtParams<'a, R, FoundPlaceMove, N, L, G>,
 ) {
     let GenPlaceMovesAtParams {
         runs,
@@ -5787,8 +5837,9 @@ fn gen_place_moves_at<
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 >(
-    p: GenPlaceMovesAtParams<'a, (), FoundPlaceMove, N, L>,
+    p: GenPlaceMovesAtParams<'a, (), FoundPlaceMove, N, L, G>,
 ) {
     let GenPlaceMovesAtParams {
         runs: (),
@@ -6225,12 +6276,25 @@ pub struct GenMovesParams<'a, N: kwg::Node, L: kwg::Node> {
 // KurniaMoveGenerator can only be reused for the same game_config and kwg.
 // (Refer to note at WorkingBuffer.)
 // This is not enforced.
-pub struct KurniaMoveGenerator {
-    working_buffer: WorkingBuffer,
+// Its parameters, new's by default: its sets of rows and of columns (u128, for
+// a board of up to 128 squares a side; the wasm's u32); whether its lean walk
+// may go straight to a tile's node by the run letters a lean arm's table keeps
+// (true; the wasm's false, so no walk that jumps is compiled for it); and
+// whether it keeps the lean arm's copy for any side beside those for 15 by 15
+// and 21 by 21 (true; the wasm's false, so it takes those two boards alone,
+// each by its own copy, the raw walk's too).
+pub struct KurniaMoveGenerator<
+    G: LaneBits = u128,
+    const JUMPS: bool = true,
+    const ANY_SIDE: bool = true,
+> {
+    working_buffer: WorkingBuffer<G>,
     pub plays: Vec<ValuedMove>,
 }
 
-impl Clone for KurniaMoveGenerator {
+impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> Clone
+    for KurniaMoveGenerator<G, JUMPS, ANY_SIDE>
+{
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
@@ -6249,15 +6313,41 @@ impl Clone for KurniaMoveGenerator {
 impl KurniaMoveGenerator {
     #[inline(always)]
     pub fn new(game_config: &game_config::GameConfig) -> Self {
-        let working_buffer = WorkingBuffer::new(game_config);
-        Self {
-            working_buffer,
-            plays: Vec::new(),
-        }
+        Self::new_in(game_config)
     }
 }
 
-impl KurniaMoveGenerator {
+impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G, JUMPS, ANY_SIDE> {
+    // a generator whose sets of rows and of columns are G; a board with more
+    // rows or columns than G holds is refused
+    #[inline(always)]
+    pub fn try_new(game_config: &game_config::GameConfig) -> error::Returns<Self> {
+        let dim = game_config.board_layout().dim();
+        if dim.rows as u32 > G::BITS || dim.cols as u32 > G::BITS {
+            return_error!(format!(
+                "a board of {} by {} is past this generator's {} lanes",
+                dim.rows,
+                dim.cols,
+                G::BITS
+            ));
+        }
+        if !ANY_SIDE && !(dim.rows == dim.cols && (dim.rows == 15 || dim.rows == 21)) {
+            return_error!(format!(
+                "a board of {} by {} has no copy of the lean arm in this generator",
+                dim.rows, dim.cols
+            ));
+        }
+        Ok(Self::new_in(game_config))
+    }
+
+    // try_new's generator, for a game whose board a generator in G has taken
+    #[inline(always)]
+    pub(crate) fn new_in(game_config: &game_config::GameConfig) -> Self {
+        Self {
+            working_buffer: WorkingBuffer::new(game_config),
+            plays: Vec::new(),
+        }
+    }
     #[inline(always)]
     pub fn num_tiles_in_bag(&self) -> i16 {
         self.working_buffer.num_tiles_in_bag
@@ -6324,8 +6414,8 @@ impl KurniaMoveGenerator {
         rows: u128,
         cols: u128,
     ) {
-        self.working_buffer.lane_rows = rows;
-        self.working_buffer.lane_cols = cols;
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_raw_all_unsorted_impl(
             board_snapshot,
             rack,
@@ -6333,8 +6423,8 @@ impl KurniaMoveGenerator {
             pass_policy,
             (),
         );
-        self.working_buffer.lane_rows = !0;
-        self.working_buffer.lane_cols = !0;
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
     }
 
     // as gen_moves_raw_lanes_unsorted with no exchange made and a pass a
@@ -6352,8 +6442,8 @@ impl KurniaMoveGenerator {
         cols: u128,
     ) {
         debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
-        self.working_buffer.lane_rows = rows;
-        self.working_buffer.lane_cols = cols;
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_raw_all_unsorted_impl(
             board_snapshot,
             rack,
@@ -6361,8 +6451,8 @@ impl KurniaMoveGenerator {
             PassPolicy::AsACandidate,
             run_letter_bits,
         );
-        self.working_buffer.lane_rows = !0;
-        self.working_buffer.lane_cols = !0;
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
     }
 
     // skip equity computation and sorting
@@ -6435,13 +6525,34 @@ impl KurniaMoveGenerator {
                 });
                 i32::MIN
             };
-        kurnia_gen_raw_place_moves(
-            runs,
-            board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            found_place_move,
-        );
+        // the copy for any side in G, or (a generator with none: the wasm's)
+        // the copy compiled for the board's side
+        let dim = board_snapshot.game_config.board_layout().dim();
+        if ANY_SIDE {
+            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _>(
+                runs,
+                board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                found_place_move,
+            );
+        } else if dim.rows == 15 {
+            kurnia_gen_raw_place_moves::<15, u32, _, _, _, _, _>(
+                runs,
+                board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                found_place_move,
+            );
+        } else {
+            kurnia_gen_raw_place_moves::<21, u32, _, _, _, _, _>(
+                runs,
+                board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                found_place_move,
+            );
+        }
         kurnia_gen_exchange_moves(
             board_snapshot,
             working_buffer,
@@ -6575,7 +6686,7 @@ impl KurniaMoveGenerator {
                 }
                 threshold.get().raw()
             };
-        for _ in kurnia_gen_place_moves_iter_lean::<0, u128, _, _, _, _, _, _>(KurniaIterParams {
+        for _ in kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
             runs: (),
             board_snapshot: params.board_snapshot,
             working_buffer,
@@ -6900,7 +7011,7 @@ impl KurniaMoveGenerator {
                 }
                 threshold.get().raw()
             };
-        for _ in kurnia_gen_place_moves_iter::<D, W, T, _, _, _, _, _>(KurniaIterParams {
+        for _ in kurnia_gen_place_moves_iter::<D, W, T, _, _, _, _, _, _>(KurniaIterParams {
             runs: (),
             board_snapshot: params.board_snapshot,
             working_buffer,
@@ -7007,7 +7118,12 @@ impl KurniaMoveGenerator {
                 equity_predicate,
             );
         }
-        self.gen_moves_filtered_impl::<0, u128, _, _>(
+        // any other side, by the copy for any side in G; a generator with none
+        // (the wasm's) refused this board at try_new
+        if !ANY_SIDE {
+            unreachable!("a board with no copy of the lean arm in this generator");
+        }
+        self.gen_moves_filtered_impl::<0, G, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -7119,15 +7235,20 @@ impl KurniaMoveGenerator {
         };
         let current_threshold = || threshold.get().raw();
         // with the run letters the lean arm's table keeps, the walk goes
-        // straight to a tile's node
-        let runs = params
-            .board_snapshot
-            .rack_lengths
-            .and_then(anagrams::RackLengths::run_letter_bits);
+        // straight to a tile's node; a generator that never jumps (the wasm's,
+        // whose table keeps none) has no walk that does
+        let runs = if JUMPS {
+            params
+                .board_snapshot
+                .rack_lengths
+                .and_then(anagrams::RackLengths::run_letter_bits)
+        } else {
+            None
+        };
         match runs {
             Some(runs) => {
-                for _ in
-                    kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _>(KurniaIterParams {
+                for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _>(
+                    KurniaIterParams {
                         runs,
                         board_snapshot: params.board_snapshot,
                         working_buffer,
@@ -7135,12 +7256,12 @@ impl KurniaMoveGenerator {
                         found_place_move,
                         can_accept,
                         current_threshold,
-                    })
-                {}
+                    },
+                ) {}
             }
             None => {
-                for _ in
-                    kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _>(KurniaIterParams {
+                for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _>(
+                    KurniaIterParams {
                         runs: (),
                         board_snapshot: params.board_snapshot,
                         working_buffer,
@@ -7148,8 +7269,8 @@ impl KurniaMoveGenerator {
                         found_place_move,
                         can_accept,
                         current_threshold,
-                    })
-                {}
+                    },
+                ) {}
             }
         }
         // with the threshold above the best an exchange can be, push_move would
@@ -7214,11 +7335,11 @@ impl KurniaMoveGenerator {
         rows: u128,
         cols: u128,
     ) {
-        self.working_buffer.lane_rows = rows;
-        self.working_buffer.lane_cols = cols;
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_unfiltered(params);
-        self.working_buffer.lane_rows = !0;
-        self.working_buffer.lane_cols = !0;
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
     }
 
     // as gen_moves_unfiltered_lanes, by the lean arm
@@ -7229,11 +7350,11 @@ impl KurniaMoveGenerator {
         rows: u128,
         cols: u128,
     ) {
-        self.working_buffer.lane_rows = rows;
-        self.working_buffer.lane_cols = cols;
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_unfiltered_lean(params);
-        self.working_buffer.lane_rows = !0;
-        self.working_buffer.lane_cols = !0;
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
     }
 
     #[inline(always)]
@@ -7374,9 +7495,10 @@ fn kurnia_gen_exchange_moves<
     FoundExchangeMove: FnMut(&[u8], i32),
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &mut WorkingBuffer,
+    working_buffer: &mut WorkingBuffer<G>,
     multi_leaves: &klv::MultiLeaves,
     num_exchanges_by_this_player: i16,
     found_exchange_move: FoundExchangeMove,
@@ -7407,9 +7529,9 @@ fn kurnia_gen_exchange_moves<
 // empty board, the board kept as the last one seen, and what init leaves to be
 // done after the cross sets
 #[inline(always)]
-fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
+fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node, G: LaneBits>(
     board_snapshot: &BoardSnapshot<'_, N, L>,
-    working_buffer: &mut WorkingBuffer,
+    working_buffer: &mut WorkingBuffer<G>,
 ) {
     let board_layout = board_snapshot.game_config.board_layout();
     let fixed;
@@ -7424,7 +7546,7 @@ fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
     let dirty_rows = working_buffer.dirty_rows;
     let dirty_cols = working_buffer.dirty_cols;
     for col in 0..dim.cols {
-        if dirty_cols & (1 << col) != 0 {
+        if dirty_cols & (G::from(1) << col as u32) != G::from(0) {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
             let strip_range_end = strip_range_start + dim.rows as usize;
             gen_cross_set::<NoTables, _, _>(
@@ -7446,7 +7568,7 @@ fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
     };
 
     for row in 0..dim.rows {
-        if dirty_rows & (1 << row) != 0 {
+        if dirty_rows & (G::from(1) << row as u32) != G::from(0) {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
             gen_cross_set::<NoTables, _, _>(
@@ -7474,7 +7596,7 @@ fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
             CrossSet { bits: !1, score: 0 };
     }
 
-    if dirty_rows != 0 || dirty_cols != 0 {
+    if dirty_rows != G::from(0) || dirty_cols != G::from(0) {
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
         working_buffer.prev_tile_count = working_buffer.num_tiles_on_board;
@@ -7491,10 +7613,11 @@ struct KurniaIterParams<
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 > {
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer,
+    working_buffer: &'a mut WorkingBuffer<G>,
     multi_leaves: &'a klv::MultiLeaves,
     found_place_move: FoundPlaceMove,
     can_accept: CanAccept,
@@ -7512,8 +7635,9 @@ fn kurnia_gen_place_moves_iter_lean<
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 >(
-    p: KurniaIterParams<'a, R, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
+    p: KurniaIterParams<'a, R, FoundPlaceMove, CanAccept, CurrentThreshold, N, L, G>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         runs,
@@ -7537,7 +7661,7 @@ fn kurnia_gen_place_moves_iter_lean<
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
-    lean_cross_sets::<D, _, _>(board_snapshot, working_buffer);
+    lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
 
     let feasible_lengths = feasible_word_lengths::<false>(
         board_snapshot.anagrams,
@@ -7551,7 +7675,7 @@ fn kurnia_gen_place_moves_iter_lean<
     let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
     working_buffer.anchor_left_bounds.clear();
     for row in 0..dim.rows {
-        if working_buffer.lane_rows & (1 << row) == 0 {
+        if working_buffer.lane_rows & (G::from(1) << row as u32) == G::from(0) {
             continue;
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
@@ -7607,7 +7731,7 @@ fn kurnia_gen_place_moves_iter_lean<
         );
     }
     for col in 0..dim.cols {
-        if working_buffer.lane_cols & (1 << col) == 0 {
+        if working_buffer.lane_cols & (G::from(1) << col as u32) == G::from(0) {
             continue;
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -7675,7 +7799,7 @@ fn kurnia_gen_place_moves_iter_lean<
             if can_accept(equity) {
                 let placement = working_buffer.found_placements[idx as usize];
                 working_buffer.bounds_at = idx as usize * 2 * bounds_stride;
-                gen_place_moves_at_lean::<D, _, _, _, _>(GenPlaceMovesAtParams {
+                gen_place_moves_at_lean::<D, _, _, _, _, _>(GenPlaceMovesAtParams {
                     runs,
                     board_snapshot,
                     working_buffer,
@@ -7725,14 +7849,17 @@ fn kurnia_gen_place_moves_iter_lean<
 #[inline]
 fn kurnia_gen_raw_place_moves<
     'a,
+    const D: usize,
+    W: LaneBits,
     R: 'a + RunLetters,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 >(
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer,
+    working_buffer: &'a mut WorkingBuffer<G>,
     multi_leaves: &'a klv::MultiLeaves,
     mut found_place_move: FoundPlaceMove,
 ) {
@@ -7741,7 +7868,7 @@ fn kurnia_gen_raw_place_moves<
     let num_max_played = game_config
         .rack_size()
         .min(working_buffer.num_tiles_on_rack);
-    lean_cross_sets::<0, _, _>(board_snapshot, working_buffer);
+    lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
     let feasible_lengths = feasible_word_lengths::<false>(
         board_snapshot.anagrams,
         board_snapshot.rack_lengths,
@@ -7756,8 +7883,8 @@ fn kurnia_gen_raw_place_moves<
             working_buffer.lane_cols
         } else {
             working_buffer.lane_rows
-        }) & (1 << lane)
-            == 0
+        }) & (G::from(1) << lane as u32)
+            == G::from(0)
         {
             continue;
         }
@@ -7765,7 +7892,7 @@ fn kurnia_gen_raw_place_moves<
         let start = lane as usize * len;
         let end = start + len;
         anchors.clear();
-        gen_place_placements(
+        shadow_lane_lean::<D, W, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: if down {
                     &working_buffer.transposed_board_tiles[start..end]
@@ -8254,9 +8381,16 @@ impl RcsGeometry<'_> {
 // rack's tiles cannot fill alone and the key check are asked as the shadow pass
 // asks them.
 #[inline(always)]
-fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
+fn rcs_placements<
+    const D: usize,
+    W: LaneBits,
+    T: TablePlaces,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+>(
     board_snapshot: &BoardSnapshot<'_, N, L>,
-    working_buffer: &mut WorkingBuffer,
+    working_buffer: &mut WorkingBuffer<G>,
     dim: &matrix::Dim,
     num_max_played: u8,
     feasible_lengths: u64,
@@ -8296,8 +8430,8 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
             working_buffer.lane_cols
         } else {
             working_buffer.lane_rows
-        } & (1 << lane);
-        if in_lanes == 0 {
+        } & (G::from(1) << lane as u32);
+        if in_lanes == G::from(0) {
             continue;
         }
         let len = if down { dim.rows } else { dim.cols } as usize;
@@ -8313,7 +8447,7 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
         .iter()
         .any(|&tile| tile != 0);
         let check = if holds_tiles {
-            fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, down, lane)
+            fill_key_check::<D, W, T, _, _, _>(working_buffer, board_snapshot, dim, down, lane)
         } else {
             None
         };
@@ -8482,8 +8616,9 @@ fn kurnia_gen_place_moves_iter<
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
+    G: LaneBits,
 >(
-    p: KurniaIterParams<'a, (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
+    p: KurniaIterParams<'a, (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L, G>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         runs: (),
@@ -8519,7 +8654,7 @@ fn kurnia_gen_place_moves_iter<
     let dirty_rows = working_buffer.dirty_rows;
     let dirty_cols = working_buffer.dirty_cols;
     for col in 0..dim.cols {
-        if dirty_cols & (1 << col) != 0 {
+        if dirty_cols & (G::from(1) << col as u32) != G::from(0) {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
             let strip_range_end = strip_range_start + dim.rows as usize;
             gen_cross_set::<T, _, _>(
@@ -8541,7 +8676,7 @@ fn kurnia_gen_place_moves_iter<
     };
 
     for row in 0..dim.rows {
-        if dirty_rows & (1 << row) != 0 {
+        if dirty_rows & (G::from(1) << row as u32) != G::from(0) {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
             gen_cross_set::<T, _, _>(
@@ -8569,7 +8704,7 @@ fn kurnia_gen_place_moves_iter<
             CrossSet { bits: !1, score: 0 };
     }
 
-    if dirty_rows != 0 || dirty_cols != 0 {
+    if dirty_rows != G::from(0) || dirty_cols != G::from(0) {
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
         working_buffer.prev_tile_count = working_buffer.num_tiles_on_board;
@@ -8594,7 +8729,7 @@ fn kurnia_gen_place_moves_iter<
     // squares), else the shadow pass's, lane by lane
     let kept_lanes = dim.rows.max(dim.cols) as u32 <= u64::BITS;
     if kept_lanes {
-        rcs_placements::<D, W, T, _, _>(
+        rcs_placements::<D, W, T, _, _, _>(
             board_snapshot,
             working_buffer,
             dim,
@@ -8605,13 +8740,13 @@ fn kurnia_gen_place_moves_iter<
         );
     }
     for row in 0..dim.rows {
-        if kept_lanes || working_buffer.lane_rows & (1 << row) == 0 {
+        if kept_lanes || working_buffer.lane_rows & (G::from(1) << row as u32) == G::from(0) {
             continue;
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         let check =
-            fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, false, row);
+            fill_key_check::<D, W, T, _, _, _>(working_buffer, board_snapshot, dim, false, row);
         shadow_lane::<D, W, _, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
@@ -8671,12 +8806,13 @@ fn kurnia_gen_place_moves_iter<
         );
     }
     for col in 0..dim.cols {
-        if kept_lanes || working_buffer.lane_cols & (1 << col) == 0 {
+        if kept_lanes || working_buffer.lane_cols & (G::from(1) << col as u32) == G::from(0) {
             continue;
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
-        let check = fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, true, col);
+        let check =
+            fill_key_check::<D, W, T, _, _, _>(working_buffer, board_snapshot, dim, true, col);
         shadow_lane::<D, W, _, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: &working_buffer.transposed_board_tiles
@@ -8782,7 +8918,7 @@ fn kurnia_gen_place_moves_iter<
                 }
                 {
                     let placement = working_buffer.found_placements[idx as usize];
-                    gen_place_moves_at::<D, W, T, _, _, _>(GenPlaceMovesAtParams {
+                    gen_place_moves_at::<D, W, T, _, _, _, _>(GenPlaceMovesAtParams {
                         runs: (),
                         board_snapshot,
                         working_buffer,
@@ -9107,9 +9243,15 @@ fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Nod
 // alphagram as long as the run that holds its board tiles; and the words of the
 // tiles not on the board alone. found_word may be called multiple times for the
 // same word
-fn gen_remaining_jumbled_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
+fn gen_remaining_jumbled_words<
+    'a,
+    FoundWord: 'a + FnMut(&[u8]),
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer,
+    working_buffer: &'a mut WorkingBuffer<G>,
     mut found_word: FoundWord,
 ) {
     struct Env<'a, FoundWord: FnMut(&[u8]), N: kwg::Node> {
@@ -9243,9 +9385,15 @@ fn gen_remaining_jumbled_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L
 
 // found_word may be called multiple times for the same word.
 #[inline]
-fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
+fn gen_remaining_words<
+    'a,
+    FoundWord: 'a + FnMut(&[u8]),
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer,
+    working_buffer: &'a mut WorkingBuffer<G>,
     mut found_word: FoundWord,
 ) {
     let game_config = &board_snapshot.game_config;
@@ -11339,8 +11487,8 @@ mod tests {
     }
 
     #[inline]
-    fn place_plays(
-        move_generator: &mut KurniaMoveGenerator,
+    fn place_plays<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>(
+        move_generator: &mut KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         board_snapshot: &BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
         rack: &[u8],
         transposed: bool,
@@ -11797,6 +11945,138 @@ mod tests {
             }
         }
         assert!(played > 0, "nothing was played");
+    }
+
+    #[test]
+    fn a_generator_in_u32_plays_as_the_default_one() {
+        // the wasm's generator (its sets in u32, never jumping, with no copy of
+        // the lean arm for any side) plays what the default one plays on a board
+        // of 15 and on one of 21, reused turn after turn
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut played = 0;
+        for (gc, fens) in [
+            (
+                game_config::make_english_game_config(),
+                [
+                    "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+                    "15/15/15/15/15/15/15/4CARE7/4A10/4N10/4E10/15/15/15/15",
+                ],
+            ),
+            (
+                game_config::make_super_english_game_config(),
+                [
+                    "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
+                    "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
+                ],
+            ),
+        ] {
+            let kwg = test_kwg(&gc);
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            let mut reused = KurniaMoveGenerator::<u32, false, false>::try_new(&gc).unwrap();
+            for fen in fens {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                for rack in ["AEST", "?ANTS", "RETAINS", "Q"] {
+                    let rack = parse_test_rack(gc.alphabet(), rack);
+                    let want = place_plays(
+                        &mut KurniaMoveGenerator::new(&gc),
+                        &board_snapshot,
+                        &rack,
+                        false,
+                    );
+                    let found = place_plays(&mut reused, &board_snapshot, &rack, false);
+                    assert_eq!(found, want, "{fen} {rack:?}");
+                    played += usize::from(!want.is_empty());
+                }
+            }
+        }
+        assert!(played > 0, "nothing was played");
+    }
+
+    #[test]
+    fn a_generator_that_never_jumps_plays_as_one_that_does() {
+        // with the run letters a lean arm's table keeps, the default generator
+        // jumps to a tile's node; one that never jumps walks the run and plays
+        // the same
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let lean = anagrams::ArmTables::build(&kwg, &gc, true).unwrap();
+        let rack_lengths = lean.rack_lengths();
+        assert!(
+            rack_lengths
+                .and_then(anagrams::RackLengths::run_letter_bits)
+                .is_some()
+        );
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let mut walker = KurniaMoveGenerator::<u128, false>::try_new(&gc).unwrap();
+        let mut played = 0;
+        for fen in [
+            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/4CARE7/4A10/4N10/4E10/15/15/15/15",
+        ] {
+            let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths,
+                klv: &klv,
+            };
+            for rack in ["AEST", "?ANTS", "RETAINS", "Q"] {
+                let rack = parse_test_rack(gc.alphabet(), rack);
+                let want = place_plays(
+                    &mut KurniaMoveGenerator::new(&gc),
+                    &board_snapshot,
+                    &rack,
+                    false,
+                );
+                let found = place_plays(&mut walker, &board_snapshot, &rack, false);
+                assert_eq!(found, want, "{fen} {rack:?}");
+                played += usize::from(!want.is_empty());
+            }
+        }
+        assert!(played > 0, "nothing was played");
+    }
+
+    #[test]
+    fn a_generator_with_no_copy_for_any_side_refuses_other_boards() {
+        // the wasm's generator takes a board of 15 by 15 or of 21 by 21 alone
+        for gc in [
+            uneven_game_config(9, 9, 4, 4, false),
+            uneven_game_config(15, 21, 7, 10, false),
+            uneven_game_config(17, 17, 8, 8, false),
+        ] {
+            assert!(KurniaMoveGenerator::<u32, false, false>::try_new(&gc).is_err());
+            assert!(KurniaMoveGenerator::<u32, false, true>::try_new(&gc).is_ok());
+        }
+        for gc in [
+            game_config::make_english_game_config(),
+            game_config::make_super_english_game_config(),
+        ] {
+            assert!(KurniaMoveGenerator::<u32, false, false>::try_new(&gc).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_generator_in_u32_refuses_a_board_past_32() {
+        let fits = uneven_game_config(32, 15, 16, 7, false);
+        assert!(KurniaMoveGenerator::<u32>::try_new(&fits).is_ok());
+        for gc in [
+            uneven_game_config(33, 15, 16, 7, false),
+            uneven_game_config(15, 33, 7, 16, false),
+        ] {
+            assert!(KurniaMoveGenerator::<u32>::try_new(&gc).is_err());
+            assert!(KurniaMoveGenerator::<u128>::try_new(&gc).is_ok());
+        }
     }
 
     #[inline]
