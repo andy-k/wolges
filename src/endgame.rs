@@ -424,9 +424,87 @@ impl Table {
 
 // a position's value as a search found it, and whether no line below it was cut
 // short by the depth
+#[derive(Clone, Copy)]
 struct Searched {
     value: f32,
     complete: bool,
+}
+
+// a node to search: negamax_eval's arguments
+#[derive(Clone, Copy)]
+struct Enter {
+    ply: usize,
+    player_idx: u8,
+    depth: i8,
+    alpha: f32,
+    beta: f32,
+    scoreless: Scoreless,
+}
+
+// a node on the search's stack: what negamax_eval keeps of it while its moves
+// are searched, the recursion made a loop over these so that a stopped search
+// can go on where it stopped
+struct Frame {
+    node: Enter,
+    root: bool,
+    key: u64,
+    alpha_searched: f32,
+    table_first: bool,
+    best: Searched,
+    best_play: u16,
+    first_is_best: bool,
+    next: usize, // the place in its order of the next move to search
+    child: Child,
+}
+
+// what a frame searches below it
+enum Child {
+    Moves, // none yet, its moves not done
+    Move {
+        index: u16,
+        score: f32,
+        play: movegen::Play,
+    }, // a move, placed
+    Pass,  // the pass
+    PassDone, // its moves and its pass done
+}
+
+// a frame's next step
+enum Advance {
+    Enter(Enter),   // a child to search
+    Done(Searched), // its value, its frame popped
+}
+
+// a pass a limit stopped in a timed solve, kept for the next step's solve to go
+// on from: the frames, the node it stopped at (and whether that was the root),
+// which pass (the position's key, the mover, the depth, and the window), the
+// move it proved, each ply's lists (which the frames read), and how many lists
+// were generated, so that a list the next step's solver generates gets a serial
+// none of those has
+struct Stopped {
+    frames: Vec<Frame>,
+    pending: (Enter, bool),
+    pass: (u64, u8, i8, u32, u32),
+    proven: Option<(u16, f32)>,
+    lists: Vec<Vec<Candidate>>,
+    orders: Vec<Vec<u128>>,
+    zones: Vec<(u128, u128)>,
+    spent: Vec<u32>,
+    keeps: Vec<bool>,
+    serials: Vec<u64>,
+    siblings: Vec<Siblings>,
+    generated: u64,
+}
+
+// a line collect_pv read, what it was read for (the position's key, the mover,
+// and the deepest finished pass), and the move and value it starts with. While
+// the three stay and a stopped solve answers with that move, if any, it is the
+// line again, read without the table, whose entries along it a later pass may
+// replace
+struct Line {
+    of: (u64, u8, i8),
+    start: Option<(u16, u32)>,
+    plies: Vec<(equity::Equity, movegen::Play)>,
 }
 
 // a move generated for a position, as the search orders it
@@ -614,6 +692,12 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     root_best: u16,      // the root's best move in the deepest finished pass
     proven: Option<(u16, f32)>, // a move this pass found worth more than its first, and its value
     answer: Option<(u16, f32)>, // the move and value a solve stopped partway answers with
+    frames: Vec<Frame>,  // the search's stack, root first
+    pending: Option<(Enter, bool)>, // the node a limit stopped the search at, and whether the root
+    resumable: bool,     // a timed solve's pass, which a limit stops without unwinding
+    stopped: Option<(u64, u8, i8, u32, u32)>, // which pass the frames are, when one stopped
+    resumed: u64,        // the passes this solver went on with from a step before
+    line: Option<Box<Line>>, // the line collect_pv read last
 }
 
 impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G, JUMPS, ANY_SIDE> {
@@ -661,6 +745,12 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             root_best: NO_PLAY,
             proven: None,
             answer: None,
+            frames: Vec::new(),
+            pending: None,
+            resumable: false,
+            stopped: None,
+            resumed: 0,
+            line: None,
         }
     }
 
@@ -1039,6 +1129,8 @@ fn gen_raw_all<
 pub struct KeptTable {
     table: Box<Table>,
     made_with: [usize; 3],
+    stopped: Option<Box<Stopped>>, // a timed solve's pass a limit stopped, for the next step
+    line: Option<Box<Line>>,       // the line its solver read last
 }
 
 // EndgameSolver is the main two-player endgame solver.
@@ -1569,8 +1661,13 @@ impl<
         verbose: bool,
         limits: &Limits,
         finished: Option<(i8, equity::Equity)>,
+        resumable: bool,
     ) -> error::Returns<Solved> {
-        self.run_id_loop_below(player_idx, verbose, limits, finished, f32::INFINITY)
+        let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
+        self.work_buffer.resumable = resumable && limited;
+        let solved = self.run_id_loop_below(player_idx, verbose, limits, finished, f32::INFINITY);
+        self.work_buffer.resumable = false;
+        solved
     }
 
     // the search deepening depth by depth, as run_id_loop; with a finite beta,
@@ -1626,7 +1723,12 @@ impl<
             self.work_buffer.check_limits = max_depth > 1 && limited;
             self.work_buffer.nodes = 0;
             self.work_buffer.cut_short = false;
-            self.work_buffer.proven = None;
+            // a stopped pass resumed keeps the move it proved
+            if !(self.work_buffer.resumable
+                && (self.work_buffer.stopped).is_some_and(|(_, _, depth, _, _)| depth == max_depth))
+            {
+                self.work_buffer.proven = None;
+            }
             let searched = if beta < f32::INFINITY {
                 self.root_search(player_idx, max_depth, f32::NEG_INFINITY, beta)
             } else if max_depth == 1 {
@@ -1710,8 +1812,58 @@ impl<
         beta: f32,
     ) -> error::Returns<Searched> {
         self.reset_position();
-        self.work_buffer.at_root = true;
-        self.negamax_eval(0, player_idx, depth, alpha, beta, self.entering())
+        if !self.work_buffer.resumable {
+            self.work_buffer.at_root = true;
+            return self.negamax_eval(0, player_idx, depth, alpha, beta, self.entering());
+        }
+        // a timed solve's pass: a stopped one of the same position and pass goes
+        // on where it stopped, its moves placed again on the board as it left
+        // them; any other is dropped. A limit keeps this one's frames
+        let pass = (
+            self.node_key(player_idx, self.entering()),
+            player_idx,
+            depth,
+            alpha.to_bits(),
+            beta.to_bits(),
+        );
+        let enter = if self.work_buffer.stopped == Some(pass) && self.work_buffer.pending.is_some()
+        {
+            for t in 0..self.work_buffer.frames.len() {
+                if let Child::Move { play, .. } = &self.work_buffer.frames[t].child {
+                    let (play, mover) = (play.clone(), self.work_buffer.frames[t].node.player_idx);
+                    self.place(mover, &play);
+                }
+            }
+            self.work_buffer.resumed += 1;
+            self.work_buffer
+                .pending
+                .take()
+                .map(|(node, root)| (node, Some(root)))
+        } else {
+            self.work_buffer.frames.clear();
+            self.work_buffer.pending = None;
+            self.work_buffer.at_root = true;
+            let scoreless = self.entering();
+            Some((
+                Enter {
+                    ply: 0,
+                    player_idx,
+                    depth,
+                    alpha,
+                    beta,
+                    scoreless,
+                },
+                None,
+            ))
+        };
+        self.work_buffer.stopped = None;
+        let searched = self.search_from(0, enter);
+        match searched {
+            Err(_) if self.work_buffer.cut_short => self.work_buffer.stopped = Some(pass),
+            Err(_) => self.unwind(0),
+            Ok(_) => {}
+        }
+        searched
     }
 
     #[inline]
@@ -1724,12 +1876,21 @@ impl<
         const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
         let lo = last_valuation - ASPIRATION_WINDOW;
         let hi = last_valuation + ASPIRATION_WINDOW;
-        let searched = self.root_search(player_idx, max_depth, lo, hi)?;
-        if searched.value > lo && searched.value < hi {
-            Ok(searched)
-        } else {
-            self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
+        // a stopped search with the full window goes on as that, the narrow one
+        // having been searched
+        let full = (self.work_buffer.stopped).is_some_and(|(_, mover, depth, alpha, beta)| {
+            mover == player_idx
+                && depth == max_depth
+                && alpha == f32::NEG_INFINITY.to_bits()
+                && beta == f32::INFINITY.to_bits()
+        });
+        if !(self.work_buffer.resumable && full) {
+            let searched = self.root_search(player_idx, max_depth, lo, hi)?;
+            if searched.value > lo && searched.value < hi {
+                return Ok(searched);
+            }
         }
+        self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
     }
 
     // the nodes the last solve searched, every one its listener heard of
@@ -1766,7 +1927,7 @@ impl<
     #[inline(always)]
     pub fn evaluate(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock();
-        self.run_id_loop(player_idx, true, limits, None)
+        self.run_id_loop(player_idx, true, limits, None, false)
     }
 
     #[inline(always)]
@@ -1777,13 +1938,14 @@ impl<
     #[inline(always)]
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock();
-        self.run_id_loop(player_idx, false, limits, None)
+        self.run_id_loop(player_idx, false, limits, None, true)
     }
 
     // solve_within, deepening on from a depth a solve of the same position on
     // this table finished, with the value it found there, as a page solving in
     // steps does: the first pass is the next depth, which a limit may stop, and
-    // a solve stopped there answers from the depth it was given
+    // a solve stopped there answers from the depth it was given. A pass a limit
+    // stopped goes on where it stopped, the table (taken and given) carrying it
     #[inline(always)]
     pub fn solve_within_after(
         &mut self,
@@ -1792,7 +1954,7 @@ impl<
         finished: (i8, equity::Equity),
     ) -> error::Returns<Solved> {
         self.start_clock();
-        self.run_id_loop(player_idx, false, limits, Some(finished))
+        self.run_id_loop(player_idx, false, limits, Some(finished), true)
     }
 
     // the move for player_idx to play, lead being their score less the other's
@@ -1828,6 +1990,7 @@ impl<
             false,
             &share(if winner.is_some() { 9 } else { 10 }, 10),
             None,
+            false,
         )?;
         let mut line = Vec::new();
         self.collect_pv(player_idx, &mut line);
@@ -1976,27 +2139,82 @@ impl<
     // based on https://en.wikipedia.org/wiki/Negamax
     // search the position for player_idx to move, depth plies on, within alpha
     // and beta, its moves at this ply's list; scoreless is the scoreless turns
-    // before it, which say whether a pass now ends the line
+    // before it, which say whether a pass now ends the line. A limit unwinds
+    // the search (a timed solve's root search keeps it instead)
     fn negamax_eval(
         &mut self,
         ply: usize,
         player_idx: u8,
         depth: i8,
-        mut alpha: f32,
+        alpha: f32,
         beta: f32,
         scoreless: Scoreless,
     ) -> error::Returns<Searched> {
+        let base = self.work_buffer.frames.len();
+        let node = Enter {
+            ply,
+            player_idx,
+            depth,
+            alpha,
+            beta,
+            scoreless,
+        };
+        let searched = self.search_from(base, Some((node, None)));
+        if searched.is_err() {
+            self.unwind(base);
+        }
+        searched
+    }
+
+    // the recursion of negamax_eval as a loop over the frames above base, from
+    // the node to enter (whether it is a pass's root given when it resumes a
+    // stopped search, else taken from at_root); a limit leaves the frames as
+    // they stand and the node it stopped at pending
+    fn search_from(
+        &mut self,
+        base: usize,
+        mut enter: Option<(Enter, Option<bool>)>,
+    ) -> error::Returns<Searched> {
+        let mut value = None;
+        loop {
+            if let Some((node, root)) = enter.take() {
+                value = self.enter_node(node, root)?;
+            }
+            if let Some(searched) = value.take() {
+                if self.work_buffer.frames.len() == base {
+                    return Ok(searched);
+                }
+                self.child_returned(searched);
+            }
+            match self.advance_top() {
+                Advance::Enter(node) => enter = Some((node, None)),
+                Advance::Done(searched) => value = Some(searched),
+            }
+        }
+    }
+
+    // a node entered: its value at once (at depth 0, or from the table), or its
+    // frame pushed, its moves generated and ordered
+    fn enter_node(&mut self, node: Enter, root: Option<bool>) -> error::Returns<Option<Searched>> {
+        let Enter {
+            ply,
+            player_idx,
+            depth,
+            alpha,
+            beta,
+            scoreless,
+        } = node;
         // a line cut short by the depth is valued as if both passed
         if depth == 0 {
-            return Ok(Searched {
+            return Ok(Some(Searched {
                 value: self.both_pass_value(player_idx),
                 complete: false,
-            });
+            }));
         }
         // a pass's root, the only node that records moves for a solve stopped
         // partway (the principal variation also searches from ply 0, never as a
         // root)
-        let root = std::mem::take(&mut self.work_buffer.at_root);
+        let root = root.unwrap_or_else(|| std::mem::take(&mut self.work_buffer.at_root));
 
         // the listener, if any, hears every node
         if self.work_buffer.progress.is_some() {
@@ -2018,6 +2236,7 @@ impl<
                     }) || work_buffer.memory_passed()))
             {
                 work_buffer.cut_short = true;
+                work_buffer.pending = Some((node, root));
                 return Err("a limit stopped the search".into());
             }
         }
@@ -2040,13 +2259,12 @@ impl<
                 if root {
                     self.work_buffer.pass_best = entry.play;
                 }
-                return Ok(Searched {
+                return Ok(Some(Searched {
                     value: entry.value,
                     complete: entry.depth == COMPLETE,
-                });
+                }));
             }
         }
-        let alpha_searched = alpha;
 
         // the list stays at its ply while searched, for the ply two down to
         // reuse. Sort lazily: with a table move, all of them, that one first;
@@ -2054,8 +2272,8 @@ impl<
         self.generate(ply, player_idx, depth >= 3);
         let table_first =
             table_play < PASS_PLAY && (table_play as usize) < self.work_buffer.orders[ply].len();
+        let work_buffer = &mut self.work_buffer;
         {
-            let work_buffer = &mut self.work_buffer;
             let (list, ordered) = (&mut work_buffer.lists[ply], &mut work_buffer.orders[ply]);
             if table_first {
                 order(list, ordered, 0, table_play);
@@ -2063,34 +2281,66 @@ impl<
                 order_first(list, ordered);
             }
         }
-        let mut best = Searched {
-            value: f32::NEG_INFINITY,
-            complete: true,
-        };
-        let mut best_play = NO_PLAY;
-        // at a pass's root: true when the first move searched was the last
-        // finished pass's best, so that a later move with a higher exact value
-        // outranks it at this depth
-        let mut first_is_best = false;
-        for i in 0..self.work_buffer.orders[ply].len() {
-            if i == 1 && !table_first {
+        // its first_is_best, at a pass's root: true when the first move searched
+        // was the last finished pass's best, so that a later move with a higher
+        // exact value outranks it at this depth
+        work_buffer.frames.push(Frame {
+            node,
+            root,
+            key,
+            alpha_searched: alpha,
+            table_first,
+            best: Searched {
+                value: f32::NEG_INFINITY,
+                complete: true,
+            },
+            best_play: NO_PLAY,
+            first_is_best: false,
+            next: 0,
+            child: Child::Moves,
+        });
+        Ok(None)
+    }
+
+    // the top frame's next step: the next move or the pass to search below it,
+    // or, its moves and its pass done, its value stored and its frame popped
+    fn advance_top(&mut self) -> Advance {
+        let t = self.work_buffer.frames.len() - 1;
+        let frame = &self.work_buffer.frames[t];
+        let Enter {
+            ply,
+            player_idx,
+            depth,
+            ..
+        } = frame.node;
+        if matches!(frame.child, Child::Moves) {
+            let (root, table_first, mut next) = (frame.root, frame.table_first, frame.next);
+            let moves = self.work_buffer.orders[ply].len();
+            while next < moves {
+                let i = next;
+                next += 1;
                 let work_buffer = &mut self.work_buffer;
-                order(
-                    &mut work_buffer.lists[ply],
-                    &mut work_buffer.orders[ply][1..],
-                    1,
-                    NO_PLAY,
-                );
-            }
-            let found = self.work_buffer.orders[ply][i] as u32 as usize;
-            let candidate = &self.work_buffer.lists[ply][found];
-            let index = candidate.index;
-            if root && i == 0 {
-                first_is_best = index == self.work_buffer.root_best;
-            }
-            let value = if candidate.plays_out {
-                candidate.valuation
-            } else {
+                if i == 1 && !table_first {
+                    order(
+                        &mut work_buffer.lists[ply],
+                        &mut work_buffer.orders[ply][1..],
+                        1,
+                        NO_PLAY,
+                    );
+                }
+                let found = work_buffer.orders[ply][i] as u32 as usize;
+                let candidate = &work_buffer.lists[ply][found];
+                let (index, plays_out, score) =
+                    (candidate.index, candidate.plays_out, candidate.valuation);
+                if root && i == 0 {
+                    work_buffer.frames[t].first_is_best = index == work_buffer.root_best;
+                }
+                if plays_out {
+                    if self.take_value(i, index, score) {
+                        break;
+                    }
+                    continue;
+                }
                 // the math goes like this:
                 // child negamax returns v.
                 // this parent negamax wants (score - v),
@@ -2099,8 +2349,7 @@ impl<
                 // since child_alpha <= v <= child_beta,
                 // we set child_alpha = (score - beta)
                 // and child_beta = (score - alpha).
-                let score = candidate.valuation;
-                let play = candidate.play.clone();
+                let play = self.work_buffer.lists[ply][found].play.clone();
                 // read by the next two plies when they generate
                 if depth >= 2 {
                     self.work_buffer.zones[ply] = self.zone_lanes(&play);
@@ -2115,6 +2364,7 @@ impl<
                 // alpha is used as the value in place of the reply's search (an
                 // upper bound, as a fail low gives). Below the root only, where
                 // depth is at least 2
+                let Enter { alpha, beta, .. } = self.work_buffer.frames[t].node;
                 let bound = if ply > 0
                     && depth >= 2
                     && self.work_buffer.racks[player_idx as usize].len() == 1
@@ -2125,100 +2375,214 @@ impl<
                 };
                 if bound <= alpha {
                     self.unplace(player_idx, &play);
-                    bound
+                    if self.take_value(i, index, bound) {
+                        break;
+                    }
+                    continue;
+                }
+                let frame = &mut self.work_buffer.frames[t];
+                frame.next = next;
+                frame.child = Child::Move { index, score, play };
+                return Advance::Enter(Enter {
+                    ply: ply + 1,
+                    player_idx: player_idx ^ 1,
+                    depth: depth - 1,
+                    alpha: score - beta,
+                    beta: score - alpha,
+                    scoreless: Scoreless::Counted {
+                        passes: 0,
+                        zeros: 0,
+                    },
+                });
+            }
+
+            // the pass, unless a move placing tiles has already reached beta: it
+            // ends the line when it answers a pass or brings the scoreless turns
+            // to the config's count, each player losing their rack. The depth
+            // stays the same across a forced pass (no move placing tiles)
+            let frame = &mut self.work_buffer.frames[t];
+            frame.next = next;
+            frame.child = Child::PassDone;
+            if frame.best.value < frame.node.beta {
+                let (scoreless, alpha, beta) =
+                    (frame.node.scoreless, frame.node.alpha, frame.node.beta);
+                if self.pass_ends_the_line(scoreless) {
+                    let value = self.both_pass_value(player_idx);
+                    self.take_pass_value(value);
                 } else {
-                    let child = self.negamax_eval(
-                        ply + 1,
-                        player_idx ^ 1,
-                        depth - 1,
-                        score - beta,
-                        score - alpha,
-                        Scoreless::Counted {
-                            passes: 0,
-                            zeros: 0,
-                        },
-                    );
-                    self.unplace(player_idx, &play);
-                    let child = child?;
-                    best.complete &= child.complete;
-                    score - child.value
-                }
-            };
-            if value > best.value {
-                if i > 0 && first_is_best && value > alpha_searched && value < beta {
-                    self.work_buffer.proven = Some((index, value));
-                }
-                best.value = value;
-                best_play = index;
-                if value > alpha {
-                    alpha = value;
-                }
-                if value >= beta {
-                    break;
+                    self.work_buffer.zones[ply] = (0, 0);
+                    self.work_buffer.spent[ply] = 0;
+                    let forced = self.work_buffer.lists[ply].is_empty();
+                    self.work_buffer.frames[t].child = Child::Pass;
+                    return Advance::Enter(Enter {
+                        ply: ply + 1,
+                        player_idx: player_idx ^ 1,
+                        depth: if forced { depth } else { depth - 1 },
+                        alpha: -beta,
+                        beta: -alpha,
+                        scoreless: Scoreless::Answering,
+                    });
                 }
             }
         }
 
-        // the pass, unless a move placing tiles has already reached beta: it ends
-        // the line when it answers a pass or brings the scoreless turns to the
-        // config's count, each player losing their rack. The depth stays the
-        // same across a forced pass (no move placing tiles)
-        if best.value < beta {
-            let value = if self.pass_ends_the_line(scoreless) {
-                self.both_pass_value(player_idx)
-            } else {
-                self.work_buffer.zones[ply] = (0, 0);
-                self.work_buffer.spent[ply] = 0;
-                let forced = self.work_buffer.lists[ply].is_empty();
-                let child = self.negamax_eval(
-                    ply + 1,
-                    player_idx ^ 1,
-                    if forced { depth } else { depth - 1 },
-                    -beta,
-                    -alpha,
-                    Scoreless::Answering,
-                )?;
-                best.complete &= child.complete;
-                -child.value
-            };
-            if value > best.value {
-                if first_is_best && value > alpha_searched && value < beta {
-                    self.work_buffer.proven = Some((PASS_PLAY, value));
-                }
-                best.value = value;
-                best_play = PASS_PLAY;
-            }
-        }
-
-        if root {
-            self.work_buffer.pass_best = best_play;
+        let frame = self.work_buffer.frames.pop().unwrap();
+        if frame.root {
+            self.work_buffer.pass_best = frame.best_play;
         }
         self.work_buffer.store(
-            key,
+            frame.key,
             Entry {
-                value: best.value,
-                play: best_play,
-                depth: if best.complete { COMPLETE } else { depth },
-                bound: if best.value <= alpha_searched {
+                value: frame.best.value,
+                play: frame.best_play,
+                depth: if frame.best.complete {
+                    COMPLETE
+                } else {
+                    frame.node.depth
+                },
+                bound: if frame.best.value <= frame.alpha_searched {
                     Bound::Upper
-                } else if best.value >= beta {
+                } else if frame.best.value >= frame.node.beta {
                     Bound::Lower
                 } else {
                     Bound::Exact
                 },
             },
         );
-        Ok(best)
+        Advance::Done(frame.best)
+    }
+
+    // the top frame takes the value its child returned: a move's, unplaced
+    // first, or the pass's
+    fn child_returned(&mut self, child: Searched) {
+        let frame = self.work_buffer.frames.last_mut().unwrap();
+        frame.best.complete &= child.complete;
+        match std::mem::replace(&mut frame.child, Child::Moves) {
+            Child::Move { index, score, play } => {
+                let (mover, i) = (frame.node.player_idx, frame.next - 1);
+                self.unplace(mover, &play);
+                if self.take_value(i, index, score - child.value) {
+                    // a cutoff: no more moves, nor the pass
+                    self.work_buffer.frames.last_mut().unwrap().next = usize::MAX;
+                }
+            }
+            Child::Pass => {
+                frame.child = Child::PassDone;
+                self.take_pass_value(-child.value);
+            }
+            Child::Moves | Child::PassDone => unreachable!("a child returned to no search"),
+        }
+    }
+
+    // the top frame takes a move's value (the move at place i of its order);
+    // whether it reached beta
+    #[inline(always)]
+    fn take_value(&mut self, i: usize, index: u16, value: f32) -> bool {
+        let work_buffer = &mut self.work_buffer;
+        let frame = work_buffer.frames.last_mut().unwrap();
+        if value > frame.best.value {
+            if i > 0
+                && frame.first_is_best
+                && value > frame.alpha_searched
+                && value < frame.node.beta
+            {
+                work_buffer.proven = Some((index, value));
+            }
+            frame.best.value = value;
+            frame.best_play = index;
+            if value > frame.node.alpha {
+                frame.node.alpha = value;
+            }
+            if value >= frame.node.beta {
+                return true;
+            }
+        }
+        false
+    }
+
+    // the top frame takes the pass's value
+    #[inline(always)]
+    fn take_pass_value(&mut self, value: f32) {
+        let work_buffer = &mut self.work_buffer;
+        let frame = work_buffer.frames.last_mut().unwrap();
+        if value > frame.best.value {
+            if frame.first_is_best && value > frame.alpha_searched && value < frame.node.beta {
+                work_buffer.proven = Some((PASS_PLAY, value));
+            }
+            frame.best.value = value;
+            frame.best_play = PASS_PLAY;
+        }
+    }
+
+    // the frames above base unwound, each move placed for a child unplaced, as
+    // an error unwound negamax_eval's recursion
+    fn unwind(&mut self, base: usize) {
+        while self.work_buffer.frames.len() > base {
+            let frame = self.work_buffer.frames.pop().unwrap();
+            if let Child::Move { play, .. } = frame.child {
+                self.unplace(frame.node.player_idx, &play);
+            }
+        }
+        self.work_buffer.pending = None;
     }
 
     // the principal variation of the deepest pass that finished: each move with
     // the value of the position it is played from, for its mover, read from the
     // table to the end of the line or as deep as that pass went; a position the
-    // table cannot answer exactly is searched again with a full window. A
-    // stopped solve's line starts with the move it answers with
+    // table cannot answer exactly is searched again with a full window, but
+    // while a stopped pass waits, it ends the line, as a search would replace
+    // entries the pass reads. A stopped solve's line starts with the move it
+    // answers with. The line read last is read again while the position, the
+    // mover, the deepest finished pass, and that move stay
     #[inline]
     pub fn collect_pv(&mut self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
+        let stopped = self.set_aside();
+        let search = stopped.is_none();
+        let of = self.line_of(player_idx);
+        let start = (self.work_buffer.answer).map(|(play, value)| (play, value.to_bits()));
+        if !(self.work_buffer.line.as_ref()).is_some_and(|line| {
+            line.of == of && start.is_none_or(|start| line.start == Some(start))
+        }) {
+            self.keep_line(of, player_idx, search);
+        }
+        if let Some(line) = &self.work_buffer.line {
+            out.clone_from(&line.plies);
+        }
+        self.put_back(stopped);
+    }
+
+    // what a line of player_idx to move is read for: the key of the position to
+    // solve, the mover, and the deepest finished pass
+    #[inline]
+    fn line_of(&mut self, player_idx: u8) -> (u64, u8, i8) {
+        self.reset_position();
+        let key = self.node_key(player_idx, self.entering());
+        (key, player_idx, self.work_buffer.finished)
+    }
+
+    // the line read for of and kept, searching where the table cannot answer
+    // only if search
+    #[inline]
+    fn keep_line(&mut self, of: (u64, u8, i8), player_idx: u8, search: bool) {
+        let mut plies = (self.work_buffer.line.take()).map_or_else(Vec::new, |line| line.plies);
+        let start = self.collect_pv_of(player_idx, &mut plies, search);
+        self.work_buffer.line = Some(Box::new(Line {
+            of,
+            start: start.map(|(play, value)| (play, value.to_bits())),
+            plies,
+        }));
+    }
+
+    // the line, and the move and value it starts with
+    #[inline]
+    fn collect_pv_of(
+        &mut self,
+        player_idx: u8,
+        out: &mut Vec<(equity::Equity, movegen::Play)>,
+        search: bool,
+    ) -> Option<(u16, f32)> {
         out.clear();
+        let mut start = None;
         let check_limits = std::mem::replace(&mut self.work_buffer.check_limits, false);
         self.reset_position();
         let mut player_idx = player_idx;
@@ -2240,16 +2604,17 @@ impl<
                 None => match self.work_buffer.table.probe(key).filter(fits) {
                     Some(entry) => entry,
                     None => {
-                        if self
-                            .negamax_eval(
-                                0,
-                                player_idx,
-                                depth,
-                                f32::NEG_INFINITY,
-                                f32::INFINITY,
-                                scoreless,
-                            )
-                            .is_err()
+                        if !search
+                            || self
+                                .negamax_eval(
+                                    0,
+                                    player_idx,
+                                    depth,
+                                    f32::NEG_INFINITY,
+                                    f32::INFINITY,
+                                    scoreless,
+                                )
+                                .is_err()
                         {
                             break;
                         }
@@ -2260,6 +2625,9 @@ impl<
                     }
                 },
             };
+            if start.is_none() {
+                start = Some((entry.play, entry.value));
+            }
             let value = to_equity(entry.value);
             // a ply of depth, none for a forced pass, as in the search
             let mut cost = 1;
@@ -2312,6 +2680,7 @@ impl<
             depth -= cost;
         }
         self.work_buffer.check_limits = check_limits;
+        start
     }
 
     #[inline]
@@ -2525,8 +2894,10 @@ impl<
     #[inline(always)]
     pub fn take_table(&mut self) -> KeptTable {
         KeptTable {
+            stopped: self.set_aside(),
             table: Box::new(std::mem::replace(&mut self.work_buffer.table, Table::new())),
             made_with: self.made_with(),
+            line: self.work_buffer.line.take(),
         }
     }
 
@@ -2539,7 +2910,51 @@ impl<
             return Err(kept);
         }
         self.work_buffer.table = *kept.table;
+        self.work_buffer.line = kept.line;
+        self.put_back(kept.stopped);
         Ok(())
+    }
+
+    // a stopped pass taken out of the work buffer with the lists its frames
+    // read, for a table taken or a line collected; none without one
+    fn set_aside(&mut self) -> Option<Box<Stopped>> {
+        let work_buffer = &mut self.work_buffer;
+        let pass = work_buffer.stopped.take()?;
+        let pending = work_buffer.pending.take()?;
+        Some(Box::new(Stopped {
+            frames: std::mem::take(&mut work_buffer.frames),
+            pending,
+            pass,
+            proven: work_buffer.proven,
+            lists: std::mem::take(&mut work_buffer.lists),
+            orders: std::mem::take(&mut work_buffer.orders),
+            zones: std::mem::take(&mut work_buffer.zones),
+            spent: std::mem::take(&mut work_buffer.spent),
+            keeps: std::mem::take(&mut work_buffer.keeps),
+            serials: std::mem::take(&mut work_buffer.serials),
+            siblings: std::mem::take(&mut work_buffer.siblings),
+            generated: work_buffer.generated,
+        }))
+    }
+
+    // a stopped pass set aside put back, to be resumed
+    fn put_back(&mut self, stopped: Option<Box<Stopped>>) {
+        let Some(stopped) = stopped else {
+            return;
+        };
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.frames = stopped.frames;
+        work_buffer.pending = Some(stopped.pending);
+        work_buffer.stopped = Some(stopped.pass);
+        work_buffer.proven = stopped.proven;
+        work_buffer.lists = stopped.lists;
+        work_buffer.orders = stopped.orders;
+        work_buffer.zones = stopped.zones;
+        work_buffer.spent = stopped.spent;
+        work_buffer.keeps = stopped.keeps;
+        work_buffer.serials = stopped.serials;
+        work_buffer.siblings = stopped.siblings;
+        work_buffer.generated = work_buffer.generated.max(stopped.generated);
     }
 
     // the game_config, kwg, and arm_tables this solver was made with, by address
@@ -6317,6 +6732,75 @@ mod tests {
             0,
             table_play,
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_solve_in_steps_goes_on_where_each_step_stopped() {
+        // a page's steps: each a fresh solver given the table the step before
+        // took (a pass a limit stopped with it), deepening on from the depth
+        // the steps before finished, its line read between steps; each step
+        // stops a few stored positions on, and the last answers as one solve
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut resumed = 0u64;
+        let mut stepped = 0usize;
+        for (name, pos) in all_positions() {
+            let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+            for mover in 0..2u8 {
+                let mut whole =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                whole.init(&pos.board, racks);
+                let want = whole.solve(mover).unwrap();
+                let mut table = None;
+                let mut finished = None;
+                for step in 0.. {
+                    assert!(step < 100_000, "[{name}] mover {mover}: no end");
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    if let Some(table) = table.take() {
+                        assert!(solver.give_table(table).is_ok());
+                    }
+                    // a list it generates is numbered past every list kept
+                    let generated = solver.work_buffer.generated;
+                    let kept = &solver.work_buffer.serials;
+                    assert!(kept.iter().all(|&serial| serial <= generated), "[{name}]");
+                    solver.init(&pos.board, racks);
+                    let limits = super::Limits {
+                        states: Some(solver.work_buffer.table.held + 7),
+                        ..super::Limits::NONE
+                    };
+                    let solved = match finished {
+                        Some(finished) => solver.solve_within_after(mover, &limits, finished),
+                        None => solver.solve_within(mover, &limits),
+                    }
+                    .unwrap();
+                    resumed += solver.work_buffer.resumed;
+                    let mut line = Vec::new();
+                    solver.collect_pv(mover, &mut line);
+                    let mut again = Vec::new();
+                    solver.collect_pv(mover, &mut again);
+                    assert!(again == line, "[{name}] mover {mover}");
+                    table = Some(solver.take_table());
+                    finished = Some((solved.depth, solved.value));
+                    stepped += 1;
+                    if solved.exact {
+                        assert_eq!(solved.value, want, "[{name}] mover {mover}");
+                        assert_eq!(
+                            line.first().map(|ply| ply.0),
+                            Some(want),
+                            "[{name}] mover {mover}"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        println!("{stepped} steps, {resumed} passes resumed");
+        assert!(resumed > 0);
     }
 
     #[test]
