@@ -3240,6 +3240,7 @@ struct GenPlaceMovesParams<
     jumbled: &'a mut JumbledMultisets, // jumbled mode only
     is_census: bool, // real-before-blank descent for the census's spell-once sheet build
     threshold: i32,
+    best_leave_values: &'a [i32], // by tiles played, the bonus included
 }
 
 // what the table walk of one span reads (gen_classic_place_moves): its lane's
@@ -5107,6 +5108,10 @@ fn gen_jumbled_place_moves<
         num_played: u8,
         unplaced: [u8; MAX_ALPHABET_LEN], // the multiset's letters not yet placed
         unplaced_bits: u64,
+        square_bounded: bool,
+        span_word_multiplier: i32,
+        square_weights: [i32; JUMBLED_BOUND_SQUARES], // by place in the span
+        span_leave: i32,
     }
     struct Accumulator {
         main_score: i32,
@@ -5190,7 +5195,12 @@ fn gen_jumbled_place_moves<
             env.params.play_out_bonus,
             env.alphabet,
         );
-        (env.params.callback)(
+        // a play under the threshold is not offered, as the classic walk's; the
+        // census's sheet takes every play
+        if !env.params.is_census && score + leave_value < env.params.threshold {
+            return;
+        }
+        env.params.threshold = (env.params.callback)(
             env.idx_left,
             &env.params.word_strip_buffer[env.idx_left as usize..env.idx_right as usize],
             score,
@@ -5209,6 +5219,49 @@ fn gen_jumbled_place_moves<
         if idx >= env.idx_right {
             record(env, acc);
             return;
+        }
+        if env.square_bounded && env.params.threshold != i32::MIN {
+            // the squares still empty, their weights highest first, and the
+            // letters still to place, their scores highest first
+            let mut weights = [0i32; JUMBLED_BOUND_TILES];
+            let mut scores = [0i32; JUMBLED_BOUND_TILES];
+            let mut n = 0;
+            let mut perpendicular = 0i32;
+            for i in idx..env.idx_right {
+                if env.params.board_strip[i as usize] == 0 {
+                    weights[n] = env.square_weights[(i - env.idx_left) as usize];
+                    perpendicular += env.params.perpendicular_scores_strip[i as usize];
+                    n += 1;
+                }
+            }
+            let mut m = 0;
+            let mut bits = env.unplaced_bits & !1;
+            while bits != 0 {
+                let tile = bits.trailing_zeros() as u8;
+                bits &= bits - 1;
+                let real = env.unplaced[tile as usize].min(env.params.rack_tally[tile as usize]);
+                for k in 0..env.unplaced[tile as usize] {
+                    scores[m] = if k < real {
+                        env.alphabet.score(tile) as i32 * equity::SCALE
+                    } else {
+                        env.alphabet.scaled_score(0)
+                    };
+                    m += 1;
+                }
+            }
+            debug_assert_eq!(m, n);
+            weights[..n].sort_unstable_by(|a, b| b.cmp(a));
+            scores[..m].sort_unstable_by(|a, b| b.cmp(a));
+            let bound = scores[..m].iter().zip(&weights[..n]).fold(
+                acc.main_score * env.span_word_multiplier
+                    + acc.perpendicular_cumulative_score
+                    + perpendicular
+                    + env.span_leave,
+                |sum, (&score, &weight)| sum + score * weight,
+            );
+            if bound < env.params.threshold {
+                return;
+            }
         }
         let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
         // bit 0 and the star's !1 are no letters; unplaced_bits drops them
@@ -5296,6 +5349,10 @@ fn gen_jumbled_place_moves<
         num_played: 0,
         unplaced: [0u8; MAX_ALPHABET_LEN],
         unplaced_bits: 0,
+        square_bounded: false,
+        span_word_multiplier: 1,
+        square_weights: [0i32; JUMBLED_BOUND_SQUARES],
+        span_leave: 0,
     };
 
     // a span holds every tile it crosses, so its ends fix its forced letters
@@ -5358,8 +5415,104 @@ fn gen_jumbled_place_moves<
                     env.idx_left = idx_l;
                     env.idx_right = idx_r + 1;
                     env.num_played = num_played;
+                    // for a best move (a threshold, not the census), a
+                    // multiset's bound: the span's fixed part with the best
+                    // leave for its tiles, and its tiles' scores highest first
+                    // on the span's square weights (what a tile's score is
+                    // worth on each empty square) highest first; made once a
+                    // span, when a threshold first stands
+                    let boundable =
+                        !env.params.is_census && num_played as usize <= JUMBLED_BOUND_TILES;
+                    let mut weights = [0i32; JUMBLED_BOUND_TILES];
+                    let mut base = 0i32;
+                    let mut weighed = false;
+                    env.square_bounded = false;
                     for which in 0..env.params.jumbled.by_size[num_played as usize].len() {
                         let at = env.params.jumbled.by_size[num_played as usize][which] as usize;
+                        if boundable && env.params.threshold != i32::MIN {
+                            if !weighed {
+                                let mut word_multiplier = 1i32;
+                                let mut perpendicular = 0i32;
+                                for idx in idx_l..=idx_r {
+                                    if env.params.board_strip[idx as usize] == 0 {
+                                        word_multiplier *=
+                                            env.params.remaining_word_multipliers_strip
+                                                [idx as usize]
+                                                as i32;
+                                        perpendicular +=
+                                            env.params.perpendicular_scores_strip[idx as usize];
+                                    }
+                                }
+                                let mut n = 0;
+                                for idx in idx_l..=idx_r {
+                                    if env.params.board_strip[idx as usize] == 0 {
+                                        weights[n] = env.params.remaining_tile_multipliers_strip
+                                            [idx as usize]
+                                            as i32
+                                            * (word_multiplier
+                                                + env.params.perpendicular_word_multipliers_strip
+                                                    [idx as usize]
+                                                    as i32);
+                                        n += 1;
+                                    }
+                                }
+                                // each square's weight by its place, for
+                                // fill_span's bound at each square
+                                if ((idx_r + 1 - idx_l) as usize) <= JUMBLED_BOUND_SQUARES {
+                                    for idx in idx_l..=idx_r {
+                                        env.square_weights[(idx - idx_l) as usize] = env
+                                            .params
+                                            .remaining_tile_multipliers_strip
+                                            [idx as usize]
+                                            as i32
+                                            * (word_multiplier
+                                                + env.params.perpendicular_word_multipliers_strip
+                                                    [idx as usize]
+                                                    as i32);
+                                    }
+                                    env.span_word_multiplier = word_multiplier;
+                                    env.span_leave =
+                                        env.params.best_leave_values[num_played as usize];
+                                    env.square_bounded = true;
+                                }
+                                weights[..n].sort_unstable_by(|a, b| b.cmp(a));
+                                base = (main_score_left + main_score_right) * word_multiplier
+                                    + perpendicular
+                                    + env.params.best_leave_values[num_played as usize];
+                                weighed = true;
+                            }
+                            // its letters (ascending) as the rack holds them, a
+                            // blank for each past the rack's count
+                            let mut scores = [0i32; JUMBLED_BOUND_TILES];
+                            let mut run_tile = u8::MAX;
+                            let mut run_len = 0u8;
+                            for (i, &tile) in env.params.jumbled.multisets
+                                [at..at + num_played as usize]
+                                .iter()
+                                .enumerate()
+                            {
+                                if tile == run_tile {
+                                    run_len += 1;
+                                } else {
+                                    run_tile = tile;
+                                    run_len = 1;
+                                }
+                                scores[i] = if run_len <= env.params.rack_tally[tile as usize] {
+                                    alphabet.score(tile) as i32 * equity::SCALE
+                                } else {
+                                    alphabet.scaled_score(0)
+                                };
+                            }
+                            let scores = &mut scores[..num_played as usize];
+                            scores.sort_unstable_by(|a, b| b.cmp(a));
+                            let bound = scores
+                                .iter()
+                                .zip(&weights)
+                                .fold(base, |sum, (&score, &weight)| sum + score * weight);
+                            if bound < env.params.threshold {
+                                continue;
+                            }
+                        }
                         for offset in 0..num_played as usize {
                             let tile = env.params.jumbled.multisets[at + offset];
                             env.unplaced[tile as usize] += 1;
@@ -5569,6 +5722,7 @@ fn gen_place_moves_at_lean<
             jumbled: &mut working_buffer.jumbled,
             is_census: working_buffer.is_census,
             threshold,
+            best_leave_values: &working_buffer.best_leave_values,
         },
         !placement.down,
         left_bounds,
@@ -7640,6 +7794,7 @@ fn kurnia_gen_raw_place_moves<
                     jumbled: &mut working_buffer.jumbled,
                     is_census: working_buffer.is_census,
                     threshold: i32::MIN,
+                    best_leave_values: &working_buffer.best_leave_values,
                 },
                 !down,
                 &[],
@@ -7651,6 +7806,15 @@ fn kurnia_gen_raw_place_moves<
 }
 
 const PLACEMENT_BUCKETS: usize = 64;
+
+// the most tiles a jumbled span's bound sorts on the stack; a span of more is
+// filled unbounded
+const JUMBLED_BOUND_TILES: usize = 16;
+
+// the most squares a jumbled span's weights are kept for, by their place in it
+// (fill_span's bound at each square); a longer span is bounded per multiset
+// only
+const JUMBLED_BOUND_SQUARES: usize = 32;
 
 // range b is pairs[starts[b]..starts[b + 1]]; tops[b] is its highest equity.
 // one copy for each kind of keys (T), so neither's inlining depends on the
