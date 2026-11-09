@@ -3207,7 +3207,6 @@ struct GenPlaceMovesParams<
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
-    allowed_strip: &'a [u64],
     cross_set_buffer_strip: &'a [CrossSetComputation], // cached GADDAG state per position
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -3221,13 +3220,43 @@ struct GenPlaceMovesParams<
     anchor: i8,
     leftmost: i8,
     rightmost: i8,
-    span_num_played: u8,
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
     num_tiles_in_bag: i16,
     play_out_bonus: i32,
     jumbled: &'a mut JumbledMultisets, // jumbled mode only
     is_census: bool, // real-before-blank descent for the census's spell-once sheet build
+    threshold: i32,
+}
+
+// what the table walk of one span reads (gen_classic_place_moves): its lane's
+// strips and sums, the rack's subracks and leaves (by leave index: dense under
+// the tables), and what changes span to span
+struct TableWalkParams<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+> {
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    board_strip: &'a [u8],
+    cross_set_strip: &'a [CrossSet],
+    allowed_strip: &'a [u64],
+    remaining_word_multipliers_strip: &'a [i8],
+    remaining_tile_multipliers_strip: &'a [i8],
+    perpendicular_word_multipliers_strip: &'a [i8],
+    #[cfg(debug_assertions)]
+    face_value_scores_strip: &'a [i32], // the debug walk's (add_square)
+    #[cfg(debug_assertions)]
+    perpendicular_scores_strip: &'a [i32], // the debug walk's (add_square)
+    has_blank: bool, // the rack holds a blank
+    word_strip_buffer: &'a mut [u8],
+    num_max_played: u8,
+    leftmost: i8,
+    rightmost: i8,
+    span_num_played: u8,
+    callback: CallbackType,
+    leave_values: &'a [i32], // the rack's, by leave index (klv::MultiLeaves)
     score_bound: i32,
     threshold: i32,
     subracks: &'a [Subrack],
@@ -3235,8 +3264,9 @@ struct GenPlaceMovesParams<
     descending_scores: &'a [i32],      // the rack's, as WorkingBuffer's
     span_multipliers: &'a [(i32, u8)], // its kept span's (own_bound), or none
     span_memo: &'a mut SpanMemo,
-    span_prefix: &'a [SpanPrefix], // the lane's, for gen_classic_place_moves only
-    span_lane: SpanLane,
+    span_prefix: &'a [SpanPrefix], // the lane's
+    span_empty: u128,              // the lane's empty squares, a bit each
+    span_multiplied: u128,         // of those, the ones with a word multiplier
 }
 
 #[inline(always)]
@@ -4204,7 +4234,7 @@ fn build_subracks<P: alphagram::KeyPlaces>(
 // with a blank), on an instance's lanes in u16 sets (W)
 #[inline(always)]
 fn span_sets_u16(
-    params: &GenPlaceMovesParams<
+    params: &TableWalkParams<
         '_,
         impl FnMut(i8, &[u8], i32, i32) -> i32,
         impl kwg::Node,
@@ -4216,15 +4246,15 @@ fn span_sets_u16(
 ) -> (i32, u64) {
     let span_bits = (u16::MAX >> (16 - rightmost as u32)) & (u16::MAX << leftmost as u32);
     let mut word_multiplier = 1i32;
-    let mut multiplied = params.span_lane.multiplied as u16 & span_bits;
+    let mut multiplied = params.span_multiplied as u16 & span_bits;
     while multiplied != 0 {
         let idx = multiplied.trailing_zeros() as usize;
         multiplied &= multiplied - 1;
         word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
     }
     let mut blank_ok = 0u64;
-    if params.rack_tally[0] != 0 {
-        let mut empty = params.span_lane.empty as u16 & span_bits;
+    if params.has_blank {
+        let mut empty = params.span_empty as u16 & span_bits;
         while empty != 0 {
             let idx = empty.trailing_zeros() as usize;
             empty &= empty - 1;
@@ -4244,7 +4274,7 @@ fn gen_classic_place_moves<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
+    params: &'a mut TableWalkParams<'a, CallbackType, N, L>,
     source: &'a anagrams::Anagrams,
     single_tile_plays: bool,
 ) {
@@ -4255,7 +4285,7 @@ fn gen_classic_place_moves<
         N: kwg::Node,
         L: kwg::Node,
     > {
-        params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
+        params: &'a mut TableWalkParams<'a, CallbackType, N, L>,
         source: &'a anagrams::Anagrams,
         places: T::Places<'a>,
         alphabet: &'a alphabet::Alphabet,
@@ -4371,15 +4401,7 @@ fn gen_classic_place_moves<
                     .game_config
                     .num_played_bonus(env.num_played) as i32
                     * equity::SCALE;
-            let leave_value = leave_value_of(
-                env.params.multi_leaves,
-                env.params.board_snapshot.klv,
-                env.params.rack_tally,
-                leave_idx,
-                env.params.num_tiles_in_bag,
-                env.params.play_out_bonus,
-                env.alphabet,
-            );
+            let leave_value = env.params.leave_values[leave_idx as usize];
             #[cfg(debug_assertions)]
             macro_rules! covered {
                 ($score:expr) => {
@@ -4488,7 +4510,7 @@ fn gen_classic_place_moves<
         idx: usize,
         letters: u64,
         places: impl alphagram::KeyPlaces,
-        params: &GenPlaceMovesParams<
+        params: &TableWalkParams<
             '_,
             impl FnMut(i8, &[u8], i32, i32) -> i32,
             impl kwg::Node,
@@ -4554,15 +4576,15 @@ fn gen_classic_place_moves<
     } else {
         let span_bits = (u128::MAX >> (128 - rightmost as u32)) & (u128::MAX << leftmost as u32);
         let mut word_multiplier = 1i32;
-        let mut multiplied = env.params.span_lane.multiplied & span_bits;
+        let mut multiplied = env.params.span_multiplied & span_bits;
         while multiplied != 0 {
             let idx = multiplied.trailing_zeros() as usize;
             multiplied &= multiplied - 1;
             word_multiplier *= env.params.remaining_word_multipliers_strip[idx] as i32;
         }
         let mut blank_ok = 0u64;
-        if env.params.rack_tally[0] != 0 {
-            let mut empty = env.params.span_lane.empty & span_bits;
+        if env.params.has_blank {
+            let mut empty = env.params.span_empty & span_bits;
             while empty != 0 {
                 let idx = empty.trailing_zeros() as usize;
                 empty &= empty - 1;
@@ -4604,7 +4626,7 @@ fn gen_classic_place_moves<
         debug_assert_eq!(walked.num_played, e.num_played);
         debug_assert_eq!(walked.free_squares, e.free_squares);
         debug_assert_eq!(walked.dead_squares, e.dead_squares);
-        debug_assert!(env.params.rack_tally[0] == 0 || walked.blank_ok == e.blank_ok);
+        debug_assert!(!env.params.has_blank || walked.blank_ok == e.blank_ok);
     }
     debug_assert!(leftmost == 0 || env.params.board_strip[leftmost as usize - 1] == 0);
     debug_assert!(
@@ -4909,15 +4931,7 @@ fn gen_classic_place_moves<
                     .game_config
                     .num_played_bonus(env.num_played) as i32
                     * equity::SCALE;
-            let leave_value = leave_value_of(
-                env.params.multi_leaves,
-                env.params.board_snapshot.klv,
-                env.params.rack_tally,
-                leave_idx,
-                env.params.num_tiles_in_bag,
-                env.params.play_out_bonus,
-                env.alphabet,
-            );
+            let leave_value = env.params.leave_values[leave_idx as usize];
             place_blanks(env, word, letters, 0, 0, score, leave_value);
         }
     }
@@ -5362,25 +5376,6 @@ fn gen_place_moves_lean<
     }
 }
 
-#[inline(always)]
-fn gen_place_moves<
-    'a,
-    W: LaneBits,
-    T: TablePlaces,
-    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
-    N: kwg::Node,
-    L: kwg::Node,
->(
-    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
-    single_tile_plays: bool,
-) {
-    // the table walk plays only classic games (gen_moves_tables hands the rest
-    // back), holding its anagrams
-    if let Some(held) = params.board_snapshot.anagrams {
-        gen_classic_place_moves::<W, T, _, _, _>(params, held, single_tile_plays);
-    }
-}
-
 struct GenPlaceMovesAtParams<
     'a,
     R: RunLetters,
@@ -5444,11 +5439,6 @@ fn gen_place_moves_at_lean<
             } else {
                 &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
-            allowed_strip: if placement.down {
-                &working_buffer.allowed_for_down_plays[strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.allowed_for_across_plays[strip_range_start..strip_range_end]
-            },
             cross_set_buffer_strip: if placement.down {
                 &working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end]
@@ -5500,7 +5490,6 @@ fn gen_place_moves_at_lean<
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
-            span_num_played: placement.num_played,
             callback: |idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 found_place_move(
                     placement.down,
@@ -5516,15 +5505,7 @@ fn gen_place_moves_at_lean<
             play_out_bonus: working_buffer.play_out_bonus,
             jumbled: &mut working_buffer.jumbled,
             is_census: working_buffer.is_census,
-            score_bound: i32::MAX,
             threshold,
-            subracks: &working_buffer.subracks,
-            subracks_by_played: &working_buffer.subracks_by_played,
-            descending_scores: &working_buffer.descending_scores,
-            span_multipliers: &[],
-            span_memo: &mut working_buffer.span_memo,
-            span_prefix: &[],
-            span_lane: SpanLane::new(),
         },
         !placement.down,
         left_bounds,
@@ -5574,21 +5555,21 @@ fn gen_place_moves_at<
         strip_range_start + dim.cols as usize
     };
     let strip_len = strip_range_end - strip_range_start;
-    let span_sums = match (
+    // the table walk plays only classic games (gen_moves_tables hands the rest
+    // back), holding its anagrams
+    let (game_config::GameRules::Classic, Some(held)) = (
         board_snapshot.game_config.game_rules(),
         board_snapshot.anagrams,
-    ) {
-        (game_config::GameRules::Classic, Some(held)) => {
-            Some(working_buffer.fill_span_lane::<D, W, _>(
-                board_snapshot.board_tiles,
-                dim,
-                T::of(held),
-                placement.down,
-                placement.lane,
-            ))
-        }
-        _ => None,
+    ) else {
+        return;
     };
+    let (prefix_at, lane_at) = working_buffer.fill_span_lane::<D, W, _>(
+        board_snapshot.board_tiles,
+        dim,
+        T::of(held),
+        placement.down,
+        placement.lane,
+    );
     // the kept span's multipliers, best first, for own_bound: none for a
     // placement no kept span made, or a rack whose tiles' places pass a u32's
     let span_multipliers: &[(i32, u8)] = if placement.kept_at == NO_KEPT
@@ -5606,9 +5587,8 @@ fn gen_place_moves_at<
     };
     // the lane's face values and cross scores, which only the debug walk reads
     // (add_square)
-    let (face_values, perpendicular_scores): (&[i32], &[i32]) = if !cfg!(debug_assertions) {
-        (&[], &[])
-    } else if placement.down {
+    #[cfg(debug_assertions)]
+    let (face_values, perpendicular_scores): (&[i32], &[i32]) = if placement.down {
         (
             &working_buffer.face_value_scores_for_down_plays[strip_range_start..strip_range_end],
             &working_buffer.perpendicular_scores_for_down_plays[strip_range_start..strip_range_end],
@@ -5620,8 +5600,8 @@ fn gen_place_moves_at<
                 [strip_range_start..strip_range_end],
         )
     };
-    gen_place_moves::<W, T, _, _, _>(
-        &mut GenPlaceMovesParams {
+    gen_classic_place_moves::<W, T, _, _, _>(
+        &mut TableWalkParams {
             board_snapshot,
             board_strip: if placement.down {
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
@@ -5638,7 +5618,6 @@ fn gen_place_moves_at<
             } else {
                 &working_buffer.allowed_for_across_plays[strip_range_start..strip_range_end]
             },
-            cross_set_buffer_strip: &[], // only the lean walk reads it
             remaining_word_multipliers_strip: if placement.down {
                 &working_buffer.remaining_word_multipliers_for_down_plays
                     [strip_range_start..strip_range_end]
@@ -5653,7 +5632,6 @@ fn gen_place_moves_at<
                 &working_buffer.remaining_tile_multipliers_for_across_plays
                     [strip_range_start..strip_range_end]
             },
-            face_value_scores_strip: face_values,
             perpendicular_word_multipliers_strip: if placement.down {
                 &working_buffer.perpendicular_word_multipliers_for_down_plays
                     [strip_range_start..strip_range_end]
@@ -5661,16 +5639,17 @@ fn gen_place_moves_at<
                 &working_buffer.perpendicular_word_multipliers_for_across_plays
                     [strip_range_start..strip_range_end]
             },
+            #[cfg(debug_assertions)]
+            face_value_scores_strip: face_values,
+            #[cfg(debug_assertions)]
             perpendicular_scores_strip: perpendicular_scores,
-            rack_tally: &mut working_buffer.rack_tally,
-            rack_bits: working_buffer.rack_bits,
+            has_blank: working_buffer.rack_tally[0] != 0,
             word_strip_buffer: if placement.down {
                 &mut working_buffer.word_buffer_for_down_plays[strip_range_start..strip_range_end]
             } else {
                 &mut working_buffer.word_buffer_for_across_plays[strip_range_start..strip_range_end]
             },
             num_max_played,
-            anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
             span_num_played: placement.num_played,
@@ -5684,11 +5663,7 @@ fn gen_place_moves_at<
                     leave_value,
                 )
             },
-            multi_leaves,
-            num_tiles_in_bag: working_buffer.num_tiles_in_bag,
-            play_out_bonus: working_buffer.play_out_bonus,
-            jumbled: &mut working_buffer.jumbled,
-            is_census: working_buffer.is_census,
+            leave_values: multi_leaves.leave_values(),
             score_bound: placement.best_possible_equity
                 - working_buffer.best_leave_values[placement.num_played as usize]
                 + board_snapshot
@@ -5701,15 +5676,11 @@ fn gen_place_moves_at<
             descending_scores: &working_buffer.descending_scores,
             span_multipliers,
             span_memo: &mut working_buffer.span_memo,
-            span_prefix: match span_sums {
-                Some((at, _)) => &working_buffer.span_prefix[at..at + strip_len + 1],
-                None => &[],
-            },
-            span_lane: match span_sums {
-                Some((_, lane_at)) => working_buffer.span_lanes[lane_at],
-                None => SpanLane::new(),
-            },
+            span_prefix: &working_buffer.span_prefix[prefix_at..prefix_at + strip_len + 1],
+            span_empty: working_buffer.span_lanes[lane_at].empty,
+            span_multiplied: working_buffer.span_lanes[lane_at].multiplied,
         },
+        held,
         !placement.down,
     );
 }
@@ -7510,16 +7481,14 @@ fn kurnia_gen_raw_place_moves<
         } else {
             &board_snapshot.board_tiles[start..end]
         };
-        let (cross_set_strip, allowed_strip, cross_set_buffer_strip) = if down {
+        let (cross_set_strip, cross_set_buffer_strip) = if down {
             (
                 &working_buffer.cross_set_for_down_plays[start..end],
-                &working_buffer.allowed_for_down_plays[start..end],
                 &working_buffer.cross_set_buffer_for_across_plays[start..end],
             )
         } else {
             (
                 &working_buffer.cross_set_for_across_plays[start..end],
-                &working_buffer.allowed_for_across_plays[start..end],
                 &working_buffer.cross_set_buffer_for_down_plays[start..end],
             )
         };
@@ -7558,7 +7527,6 @@ fn kurnia_gen_raw_place_moves<
                     board_snapshot,
                     board_strip,
                     cross_set_strip,
-                    allowed_strip,
                     cross_set_buffer_strip,
                     remaining_word_multipliers_strip: word_multipliers,
                     remaining_tile_multipliers_strip: tile_multipliers,
@@ -7572,7 +7540,6 @@ fn kurnia_gen_raw_place_moves<
                     anchor,
                     leftmost,
                     rightmost,
-                    span_num_played: 0,
                     callback: |idx: i8, word: &[u8], score: i32, leave_value: i32| {
                         found_place_move(down, lane, idx, word, score, leave_value)
                     },
@@ -7581,15 +7548,7 @@ fn kurnia_gen_raw_place_moves<
                     play_out_bonus: working_buffer.play_out_bonus,
                     jumbled: &mut working_buffer.jumbled,
                     is_census: working_buffer.is_census,
-                    score_bound: i32::MAX,
                     threshold: i32::MIN,
-                    subracks: &working_buffer.subracks,
-                    subracks_by_played: &working_buffer.subracks_by_played,
-                    descending_scores: &working_buffer.descending_scores,
-                    span_multipliers: &[],
-                    span_memo: &mut working_buffer.span_memo,
-                    span_prefix: &[],
-                    span_lane: SpanLane::new(),
                 },
                 !down,
                 &[],
