@@ -1689,8 +1689,9 @@ impl SpanCheck for Option<KeyCheck<'_>> {
             return false;
         }
         let crossed = check.prefix[idx_right as usize].key - check.prefix[idx_left as usize].key;
-        let at =
-            (anagrams::key_hash(crossed) ^ num_played as u64) as usize & (EXIST_MEMO_SLOTS - 1);
+        let crossed_part = anagrams::key_part(crossed);
+        let at = (anagrams::part_hash(crossed_part) ^ num_played as u64) as usize
+            & (EXIST_MEMO_SLOTS - 1);
         let slot = &mut check.memo[at];
         if slot.turn != check.turn || slot.key != crossed || slot.played != num_played {
             let from = check.by_played[num_played as usize] as usize;
@@ -1699,7 +1700,7 @@ impl SpanCheck for Option<KeyCheck<'_>> {
             for subrack in &check.subracks[from..upto] {
                 held |= check
                     .source
-                    .may_hold(alphagram::Fitted(crossed + subrack.key));
+                    .may_hold_part(crossed_part.wrapping_add(subrack.part));
             }
             *slot = ExistSlot {
                 key: crossed,
@@ -3848,6 +3849,7 @@ fn gen_classic_place_moves_lean<
 #[derive(Clone, Copy)]
 struct Subrack {
     key: u128,
+    part: u128, // its key's part (anagrams::key_part)
     leave_idx: u32,
     leave_value: i32,
     num_played: u8,
@@ -3909,10 +3911,11 @@ impl SpanMemo {
         self.visits.clear();
     }
 
+    // key's part is part (anagrams::key_part)
     #[inline(always)]
-    fn find(&self, key: u128, len: u8, bound: i32) -> Result<(u32, u32), usize> {
+    fn find(&self, key: u128, part: u128, len: u8, bound: i32) -> Result<(u32, u32), usize> {
         let mask = self.slots.len() - 1;
-        let mut at = (anagrams::key_hash(key) ^ len as u64) as usize & mask;
+        let mut at = (anagrams::part_hash(part) ^ len as u64) as usize & mask;
         loop {
             let slot = &self.slots[at];
             if slot.turn != self.turn {
@@ -4021,6 +4024,7 @@ fn build_subracks<P: alphagram::KeyPlaces>(
             ));
             out.push(Subrack {
                 key,
+                part: anagrams::key_part(key),
                 leave_idx: idx,
                 leave_value: 0,
                 num_played: played,
@@ -4497,11 +4501,14 @@ fn gen_classic_place_moves<
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
     let len = (rightmost - leftmost) as u8;
-    match env
-        .params
-        .span_memo
-        .find(e.playthrough_key, len, env.params.score_bound)
-    {
+    // the playthrough's part, which each subrack's adds to
+    let playthrough_part = anagrams::key_part(e.playthrough_key);
+    match env.params.span_memo.find(
+        e.playthrough_key,
+        playthrough_part,
+        len,
+        env.params.score_bound,
+    ) {
         Ok((from, upto)) => {
             for i in from as usize..upto as usize {
                 let (si, at) = env.params.span_memo.visits[i];
@@ -4536,7 +4543,7 @@ fn gen_classic_place_moves<
                     let held = (subrack.blanks != 0)
                         | env
                             .source
-                            .may_hold(alphagram::Fitted(e.playthrough_key + subrack.key));
+                            .may_hold_part(playthrough_part.wrapping_add(subrack.part));
                     may |= (held as u64) << (i - base);
                 }
                 while may != 0 {
