@@ -6667,6 +6667,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         self.working_buffer.reset_for_another_kwg();
     }
 
+    // the most leaves a rack's tiles may have for this generator to keep them
+    // as a table (klv::DENSE_LEAVES_MOST until set)
+    #[inline(always)]
+    pub fn set_dense_leaves_most(&mut self, dense_most: u32) {
+        self.working_buffer.multi_leaves.set_dense_most(dense_most);
+    }
+
     // as gen_moves_raw_all_unsorted, the place moves on the rows and columns in
     // the masks only (bit i, row or column i): the moves a change to the board
     // can touch, when the rest are known
