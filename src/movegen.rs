@@ -4523,8 +4523,9 @@ fn gen_classic_place_moves<
             let kept_from = env.params.span_memo.visits.len() as u32;
             // the key filter is probed for the subracks above the threshold a
             // mask's width at a time, without a branch each (a probe's branch
-            // went either way and was mispredicted), then the ones it may hold
-            // and those with a blank are visited in order
+            // went either way and was mispredicted), the blank filter for those
+            // with one blank, then the ones they may hold and those with more
+            // blanks are visited in order
             let width = u64::BITS as usize;
             let mut base = from;
             let mut cut_at = i32::MAX;
@@ -4540,10 +4541,12 @@ fn gen_classic_place_moves<
                         cut = i;
                         break;
                     }
-                    let held = (subrack.blanks != 0)
-                        | env
-                            .source
-                            .may_hold_part(playthrough_part.wrapping_add(subrack.part));
+                    let part = playthrough_part.wrapping_add(subrack.part);
+                    let held = match subrack.blanks {
+                        0 => env.source.may_hold_part(part),
+                        1 => env.source.blank_may_hold_part(part),
+                        _ => true,
+                    };
                     may |= (held as u64) << (i - base);
                 }
                 while may != 0 {

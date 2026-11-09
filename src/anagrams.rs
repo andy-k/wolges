@@ -587,12 +587,25 @@ impl Anagrams {
     // may_hold of the key whose part (key_part) this is
     #[inline(always)]
     pub fn may_hold_part(&self, part: u128) -> bool {
-        if self.filter.is_empty() {
+        Self::probe_all(&self.filter, self.filter_block_count, part)
+    }
+
+    // the blank filter's answer as may_hold_part's: some tile added to the key
+    // whose part this is may key a word
+    #[inline(always)]
+    pub fn blank_may_hold_part(&self, part: u128) -> bool {
+        Self::probe_all(&self.blank_filter, self.blank_filter_block_count, part)
+    }
+
+    // a filter's answer with every probe read and and-ed, no branch on each
+    #[inline(always)]
+    fn probe_all(filter: &[u64], blocks: usize, part: u128) -> bool {
+        if filter.is_empty() {
             return true;
         }
         let h = filter_hash(part);
-        let base = filter_block(h, self.filter_block_count) * FILTER_BLOCK_WORDS;
-        let block = &self.filter[base..base + FILTER_BLOCK_WORDS];
+        let base = filter_block(h, blocks) * FILTER_BLOCK_WORDS;
+        let block = &filter[base..base + FILTER_BLOCK_WORDS];
         let mut probe = h;
         let mut all = 1u64;
         for _ in 0..FILTER_PROBES {
