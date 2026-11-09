@@ -723,7 +723,7 @@ pub enum ArmTables {
 }
 
 // the board sides nibble keys are compiled for: one, a square board of 15
-// (KurniaMoveGenerator::gen_moves_nibbles). None for 21: a super game's counts
+// (KurniaMoveGenerator::gen_moves_tables). None for 21: a super game's counts
 // of a tile reach past 15 where its tiles and blanks run to 16 or more, as
 // english's do, so its keys cannot be nibbles, and the super games that would
 // fit (catalan, german) are too few to pay for an instance of their own.
