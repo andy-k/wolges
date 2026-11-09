@@ -1254,6 +1254,10 @@ impl WorkingBuffer {
         let narrow = W::BITS == u16::BITS;
         let mut empty16 = 0u16;
         let mut multiplied16 = 0u16;
+        // or u32 (W), in u32
+        let mid = W::BITS == u32::BITS;
+        let mut empty32 = 0u32;
+        let mut multiplied32 = 0u32;
         out[0] = sum;
         for j in 0..len {
             let b = board_strip[j];
@@ -1270,6 +1274,9 @@ impl WorkingBuffer {
                 if narrow {
                     empty16 |= 1u16 << j;
                     multiplied16 |= ((word_multipliers[j] != 1) as u16) << j;
+                } else if mid {
+                    empty32 |= 1u32 << j;
+                    multiplied32 |= ((word_multipliers[j] != 1) as u32) << j;
                 } else {
                     empty |= 1u128 << j;
                     multiplied |= ((word_multipliers[j] != 1) as u128) << j;
@@ -1280,6 +1287,9 @@ impl WorkingBuffer {
         if narrow {
             empty = empty16 as u128;
             multiplied = multiplied16 as u128;
+        } else if mid {
+            empty = empty32 as u128;
+            multiplied = multiplied32 as u128;
         }
         self.span_lanes[lane_at] = SpanLane {
             turn: self.span_turn,
@@ -1856,13 +1866,17 @@ fn square_dim<const D: usize>() -> matrix::Dim {
 }
 
 // the set type an instance takes for a lane's squares, bit i for square i: u16
-// for a side of at most 16, u128 for any
+// for a side of at most 16, u32 for one of at most 32, u128 for any
 trait LaneBits {
     const BITS: u32;
 }
 
 impl LaneBits for u16 {
     const BITS: u32 = u16::BITS;
+}
+
+impl LaneBits for u32 {
+    const BITS: u32 = u32::BITS;
 }
 
 impl LaneBits for u128 {
@@ -4265,6 +4279,40 @@ fn span_sets_u16(
     (word_multiplier, blank_ok)
 }
 
+// span_sets_u16's sums in u32 sets (W)
+#[inline(always)]
+fn span_sets_u32(
+    params: &TableWalkParams<
+        '_,
+        impl FnMut(i8, &[u8], i32, i32) -> i32,
+        impl kwg::Node,
+        impl kwg::Node,
+    >,
+    leftmost: i8,
+    rightmost: i8,
+    letters: u64,
+) -> (i32, u64) {
+    let span_bits = (u32::MAX >> (32 - rightmost as u32)) & (u32::MAX << leftmost as u32);
+    let mut word_multiplier = 1i32;
+    let mut multiplied = params.span_multiplied as u32 & span_bits;
+    while multiplied != 0 {
+        let idx = multiplied.trailing_zeros() as usize;
+        multiplied &= multiplied - 1;
+        word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
+    }
+    let mut blank_ok = 0u64;
+    if params.has_blank {
+        let mut empty = params.span_empty as u32 & span_bits;
+        while empty != 0 {
+            let idx = empty.trailing_zeros() as usize;
+            empty &= empty - 1;
+            let bits = params.cross_set_strip[idx].bits;
+            blank_ok |= if bits == 0 { letters } else { bits & letters };
+        }
+    }
+    (word_multiplier, blank_ok)
+}
+
 #[inline]
 fn gen_classic_place_moves<
     'a,
@@ -4573,6 +4621,9 @@ fn gen_classic_place_moves<
     let (word_multiplier, blank_ok) = if W::BITS == u16::BITS {
         // an instance's lanes in u16 sets (W)
         span_sets_u16(env.params, leftmost, rightmost, letters)
+    } else if W::BITS == u32::BITS {
+        // an instance's lanes in u32 sets (W)
+        span_sets_u32(env.params, leftmost, rightmost, letters)
     } else {
         let span_bits = (u128::MAX >> (128 - rightmost as u32)) & (u128::MAX << leftmost as u32);
         let mut word_multiplier = 1i32;
@@ -6474,7 +6525,7 @@ impl KurniaMoveGenerator {
                     dim.rows == 21 && dim.cols == 21
                 } =>
             {
-                self.gen_moves_tables::<21, u128, ByLayout, _, _>(
+                self.gen_moves_tables::<21, u32, ByLayout, _, _>(
                     params,
                     place_move_predicate,
                     adjust_leave_value,
