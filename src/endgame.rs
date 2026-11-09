@@ -462,6 +462,70 @@ struct Frame {
     child: Child,
 }
 
+impl Frame {
+    // a node's frame before any of its moves is searched
+    #[inline(always)]
+    fn new(node: Enter, root: bool, key: u64, table_first: bool) -> Self {
+        // its first_is_best, at a pass's root: true when the first move searched
+        // was the last finished pass's best, so that a later move with a higher
+        // exact value outranks it at this depth
+        Self {
+            node,
+            root,
+            key,
+            alpha_searched: node.alpha,
+            table_first,
+            best: Searched {
+                value: f32::NEG_INFINITY,
+                complete: true,
+            },
+            best_play: NO_PLAY,
+            first_is_best: false,
+            next: 0,
+            child: Child::Moves,
+        }
+    }
+
+    // a move's value taken (the move at place i of its order); whether it
+    // reached beta
+    #[inline(always)]
+    fn take_value(
+        &mut self,
+        proven: &mut Option<(u16, f32)>,
+        i: usize,
+        index: u16,
+        value: f32,
+    ) -> bool {
+        if value > self.best.value {
+            if i > 0 && self.first_is_best && value > self.alpha_searched && value < self.node.beta
+            {
+                *proven = Some((index, value));
+            }
+            self.best.value = value;
+            self.best_play = index;
+            if value > self.node.alpha {
+                self.node.alpha = value;
+            }
+            if value >= self.node.beta {
+                return true;
+            }
+        }
+        false
+    }
+
+    // the pass's value taken, as a move's is
+    #[inline(always)]
+    fn take_pass_value(&mut self, proven: &mut Option<(u16, f32)>, value: f32) {
+        if value > self.best.value {
+            if self.first_is_best && value > self.alpha_searched && value < self.node.beta {
+                *proven = Some((PASS_PLAY, value));
+            }
+            self.best.value = value;
+            self.best_play = PASS_PLAY;
+        }
+    }
+}
+
 // what a frame searches below it
 enum Child {
     Moves, // none yet, its moves not done
@@ -1406,6 +1470,21 @@ impl<
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
     }
 
+    // both_pass_value for the other player after player_idx plays the move at
+    // place found of ply's list, as placing it would leave the rack scores
+    #[inline(always)]
+    fn both_pass_value_after(&self, player_idx: u8, ply: usize, found: usize) -> f32 {
+        let alphabet = self.game_config.alphabet();
+        let rack_scores = &self.work_buffer.rack_scores;
+        let mut mover = rack_scores[player_idx as usize];
+        if let movegen::Play::Place { word, .. } = &self.work_buffer.lists[ply][found].play {
+            for &tile in word.iter().filter(|&&t| t != 0) {
+                mover -= alphabet.scaled_score(held_tile(tile));
+            }
+        }
+        (mover - rack_scores[player_idx as usize ^ 1]) as f32
+    }
+
     // the ceiling on what player_idx's last tile adds after their move from
     // this ply (its zone set there): the larger of the both-pass value and that
     // tile's highest single placement with the opponent's rack counted double.
@@ -2317,24 +2396,12 @@ impl<
                 order_first(list, ordered);
             }
         }
-        // its first_is_best, at a pass's root: true when the first move searched
-        // was the last finished pass's best, so that a later move with a higher
-        // exact value outranks it at this depth
-        work_buffer.frames.push(Frame {
-            node,
-            root,
-            key,
-            alpha_searched: alpha,
-            table_first,
-            best: Searched {
-                value: f32::NEG_INFINITY,
-                complete: true,
-            },
-            best_play: NO_PLAY,
-            first_is_best: false,
-            next: 0,
-            child: Child::Moves,
-        });
+        if depth == 1 && !work_buffer.lists[ply].is_empty() {
+            return Ok(Some(self.search_last_ply(node, root, key, table_first)));
+        }
+        work_buffer
+            .frames
+            .push(Frame::new(node, root, key, table_first));
         Ok(None)
     }
 
@@ -2463,6 +2530,73 @@ impl<
         }
 
         let frame = self.work_buffer.frames.pop().unwrap();
+        self.finish(&frame);
+        Advance::Done(frame.best)
+    }
+
+    // a node one ply from the depth with moves to search, searched in one go,
+    // no frame pushed, as a limit is looked at only as a node is entered: each
+    // reply, the pass's too, is valued as if both passed (as enter_node values
+    // depth 0), by the rack scores alone, no move placed; its moves taken in
+    // advance_top's order, and its entry stored as advance_top stores it
+    #[inline(never)]
+    fn search_last_ply(
+        &mut self,
+        node: Enter,
+        root: bool,
+        key: u64,
+        table_first: bool,
+    ) -> Searched {
+        let mut frame = Frame::new(node, root, key, table_first);
+        let Enter {
+            ply, player_idx, ..
+        } = node;
+        for i in 0..self.work_buffer.orders[ply].len() {
+            let work_buffer = &mut self.work_buffer;
+            if i == 1 && !frame.table_first {
+                order(
+                    &mut work_buffer.lists[ply],
+                    &mut work_buffer.orders[ply][1..],
+                    1,
+                    NO_PLAY,
+                );
+            }
+            let found = work_buffer.orders[ply][i] as u32 as usize;
+            let candidate = &work_buffer.lists[ply][found];
+            let (index, plays_out, score) =
+                (candidate.index, candidate.plays_out, candidate.valuation);
+            if frame.root && i == 0 {
+                frame.first_is_best = index == work_buffer.root_best;
+            }
+            let value = if plays_out {
+                score
+            } else {
+                frame.best.complete = false;
+                score - self.both_pass_value_after(player_idx, ply, found)
+            };
+            if frame.take_value(&mut self.work_buffer.proven, i, index, value) {
+                break;
+            }
+        }
+        if frame.best.value < frame.node.beta {
+            let value = if self.pass_ends_the_line(frame.node.scoreless) {
+                self.both_pass_value(player_idx)
+            } else {
+                self.work_buffer.zones[ply] = (0, 0);
+                self.work_buffer.spent[ply] = 0;
+                frame.best.complete = false;
+                -self.both_pass_value(player_idx ^ 1)
+            };
+            frame.take_pass_value(&mut self.work_buffer.proven, value);
+        }
+        self.finish(&frame);
+        frame.best
+    }
+
+    // a node's search done: its value stored, and at a pass's root its move
+    // named the pass's best
+    #[inline(always)]
+    fn finish(&mut self, frame: &Frame) {
         if frame.root {
             self.work_buffer.pass_best = frame.best_play;
         }
@@ -2485,7 +2619,6 @@ impl<
                 },
             },
         );
-        Advance::Done(frame.best)
     }
 
     // the top frame takes the value its child returned: a move's, unplaced
@@ -2510,30 +2643,12 @@ impl<
         }
     }
 
-    // the top frame takes a move's value (the move at place i of its order);
-    // whether it reached beta
+    // the top frame takes a move's value (Frame::take_value)
     #[inline(always)]
     fn take_value(&mut self, i: usize, index: u16, value: f32) -> bool {
         let work_buffer = &mut self.work_buffer;
         let frame = work_buffer.frames.last_mut().unwrap();
-        if value > frame.best.value {
-            if i > 0
-                && frame.first_is_best
-                && value > frame.alpha_searched
-                && value < frame.node.beta
-            {
-                work_buffer.proven = Some((index, value));
-            }
-            frame.best.value = value;
-            frame.best_play = index;
-            if value > frame.node.alpha {
-                frame.node.alpha = value;
-            }
-            if value >= frame.node.beta {
-                return true;
-            }
-        }
-        false
+        frame.take_value(&mut work_buffer.proven, i, index, value)
     }
 
     // the top frame takes the pass's value
@@ -2541,13 +2656,7 @@ impl<
     fn take_pass_value(&mut self, value: f32) {
         let work_buffer = &mut self.work_buffer;
         let frame = work_buffer.frames.last_mut().unwrap();
-        if value > frame.best.value {
-            if frame.first_is_best && value > frame.alpha_searched && value < frame.node.beta {
-                work_buffer.proven = Some((PASS_PLAY, value));
-            }
-            frame.best.value = value;
-            frame.best_play = PASS_PLAY;
-        }
+        frame.take_pass_value(&mut work_buffer.proven, value);
     }
 
     // the frames above base unwound, each move placed for a child unplaced, as
