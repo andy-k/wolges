@@ -421,6 +421,116 @@ pub fn weigh_racks(
     }
 }
 
+// the most racks an inference generates one by one instead of building the
+// census sheet: one for when the anagram tables are loaded, one for the lean
+// arm, whose racks each take more than twice as long
+const GENERATE_EACH_RACK_UPTO: usize = 2000;
+const GENERATE_EACH_RACK_UPTO_LEAN: usize = 800;
+
+// weigh_racks, single-threaded, each rack's best equity found by generating the
+// rack's own moves on the board instead of reading the census sheet (is's sheet
+// is not read): when the move leaves few tiles unseen there are few racks, and
+// generating each costs less than building the sheet. As there, the best is
+// over the moves that are not a pass; a rack with none (it can neither play nor
+// exchange) is valued as the sheet values it, the least it reads: the best
+// leave it could keep, from an entry no play reached. Made lean, by the lean
+// arm alone, so that a build that runs only that arm (the wasm) need not carry
+// the other.
+#[inline]
+pub fn weigh_racks_by_generation<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    is: &InferSheet<'_>,
+    pool: &[u8],
+    tiles: MoveTiles<'_>,
+    move_value: i32,
+    f: &mut impl FnMut(u32, f64, i32, u32),
+) {
+    let (lat, leave, ln_binom) = (is.lat, is.leave, is.ln_binom);
+    let num_letters = lat.num_letters();
+    let rack_size = lat.rack_size();
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let ln_deals = ln_binom.ln_binom(pool_size, rack_size);
+    let mut avail = pool.to_vec();
+    let none_placed = vec![0u8; num_letters];
+    let (placed, left) = match tiles {
+        MoveTiles::Placed(placed) => {
+            for (a, &p) in avail.iter_mut().zip(placed) {
+                *a -= p;
+            }
+            (
+                placed,
+                rack_size - placed.iter().map(|&c| c as usize).sum::<usize>(),
+            )
+        }
+        MoveTiles::Exchanged(_) => (&none_placed[..], rack_size),
+    };
+    let passed = matches!(tiles, MoveTiles::Placed(placed) if placed.iter().all(|&c| c == 0));
+    let mut cap = vec![0usize; num_letters + 1];
+    for t in (0..num_letters).rev() {
+        cap[t] = cap[t + 1] + avail[t] as usize;
+    }
+    let mut cur = vec![0u8; num_letters];
+    let mut rack = vec![0u8; num_letters];
+    let mut rack_tiles = Vec::with_capacity(rack_size);
+    each_tally_of_size(&avail, &cap, 0, left, &mut cur, &mut |drawn| {
+        for (r, (&d, &p)) in rack.iter_mut().zip(drawn.iter().zip(placed)) {
+            *r = d + p;
+        }
+        let rank = lat.rank(&rack);
+        rack_tiles.clear();
+        rack_tiles.extend(
+            (0u8..)
+                .zip(rack.iter())
+                .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
+        );
+        let params = movegen::GenMovesParams {
+            board_snapshot,
+            rack: &rack_tiles,
+            max_gen: 1,
+            num_exchanges_by_this_player: 0,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        if LEAN {
+            move_generator.gen_moves_unfiltered_lean(&params);
+        } else {
+            move_generator.gen_moves_unfiltered(&params);
+        }
+        let top = &move_generator.plays[0];
+        let mut best = match &top.play {
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                i32::MIN / 4
+                    + (0..=rack_tiles.len())
+                        .map(|keep| census::best_keep_of(lat, leave, &rack, keep).0)
+                        .max()
+                        .unwrap_or(census::UNPLAYABLE)
+            }
+            _ => top.equity.raw(),
+        };
+        if passed {
+            best = best.max(leave[rank as usize]);
+        }
+        // exchanging n tiles scores 0 and keeps the best leave of the rest
+        let (value, kept) = match tiles {
+            MoveTiles::Placed(_) => {
+                let kept = lat.rank(drawn);
+                (move_value + leave[kept as usize], kept)
+            }
+            MoveTiles::Exchanged(n) => {
+                census::best_keep_of(lat, leave, &rack, rack_size.saturating_sub(n))
+            }
+        };
+        let ln_prior = rack
+            .iter()
+            .zip(pool)
+            .map(|(&r, &u)| ln_binom.ln_binom(u as usize, r as usize))
+            .sum::<f64>()
+            - ln_deals;
+        f(rank, ln_prior, best - value, kept);
+    });
+}
+
 // the census sheet for the pool on this board: every multiset of the pool, the
 // best it can score played, floored at 0 when it could be exchanged instead.
 // Playing nothing is no entry at all: weigh_racks weighs a pass itself.
@@ -722,7 +832,51 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
-    let leaves = kept_leaves_packed(
+    kept_leaves_impl::<false, _, _>(
+        tables,
+        move_generator,
+        board_snapshot,
+        watcher_rack,
+        play,
+        fuzz,
+        threads,
+    )
+}
+
+// as kept_leaves, by the lean arm alone, so that a build that runs only that
+// arm (the wasm) need not carry the other
+#[inline]
+pub fn kept_leaves_lean<N: kwg::Node, L: kwg::Node>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    watcher_rack: &[u8],
+    play: &movegen::Play,
+    fuzz: f64,
+    threads: usize,
+) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+    kept_leaves_impl::<true, _, _>(
+        tables,
+        move_generator,
+        board_snapshot,
+        watcher_rack,
+        play,
+        fuzz,
+        threads,
+    )
+}
+
+#[inline(always)]
+fn kept_leaves_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    watcher_rack: &[u8],
+    play: &movegen::Play,
+    fuzz: f64,
+    threads: usize,
+) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+    let leaves = kept_leaves_packed_impl::<LEAN, _, _>(
         tables,
         move_generator,
         board_snapshot,
@@ -739,6 +893,49 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
 // kept_leaves's leaves, packed, in the same order
 #[inline]
 pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    watcher_rack: &[u8],
+    play: &movegen::Play,
+    fuzz: f64,
+    threads: usize,
+) -> error::Returns<PackedLeaves> {
+    kept_leaves_packed_impl::<false, _, _>(
+        tables,
+        move_generator,
+        board_snapshot,
+        watcher_rack,
+        play,
+        fuzz,
+        threads,
+    )
+}
+
+// as kept_leaves_packed, by the lean arm alone, as kept_leaves_lean
+#[inline]
+pub fn kept_leaves_packed_lean<N: kwg::Node, L: kwg::Node>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    watcher_rack: &[u8],
+    play: &movegen::Play,
+    fuzz: f64,
+    threads: usize,
+) -> error::Returns<PackedLeaves> {
+    kept_leaves_packed_impl::<true, _, _>(
+        tables,
+        move_generator,
+        board_snapshot,
+        watcher_rack,
+        play,
+        fuzz,
+        threads,
+    )
+}
+
+#[inline]
+fn kept_leaves_packed_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
     tables: &mut InferTables,
     move_generator: &mut movegen::KurniaMoveGenerator,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
@@ -774,20 +971,6 @@ pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
         return Ok(PackedLeaves::new());
     }
     let ln_binom = LnBinom::new(pool_size);
-    infer_sheet_for(
-        move_generator,
-        board_tiles,
-        SpellTables {
-            game_config,
-            kwg: board_snapshot.kwg,
-            klv: board_snapshot.klv,
-            lat: &tables.lat,
-        },
-        &pool,
-        can_exchange,
-        (&mut tables.movegen_rack, &mut tables.blank_deltas),
-        &mut tables.sheet,
-    );
     let tiles = match exchanged {
         Some(n) => MoveTiles::Exchanged(n),
         None => MoveTiles::Placed(&placed),
@@ -795,19 +978,67 @@ pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
     // each rack as the walk finds it: the leave it kept, its gap, and the log of
     // its chance to be dealt
     let mut racks = Vec::new();
-    weigh_racks(
-        &InferSheet {
-            lat: &tables.lat,
-            sheet: &tables.sheet,
-            leave: &tables.leave,
-            ln_binom: &ln_binom,
-        },
-        &pool,
-        tiles,
-        move_value,
-        threads,
-        &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
-    );
+    // the racks the move could have come from: few, when it leaves few tiles
+    // unseen, and then each is generated on the board in place of the sheet
+    let num_racks = match exchanged {
+        Some(_) => count_tallies_of_size(&pool, rack_size),
+        None => {
+            let avail: Vec<u8> = pool.iter().zip(&placed).map(|(&u, &p)| u - p).collect();
+            count_tallies_of_size(
+                &avail,
+                rack_size - placed.iter().map(|&c| c as usize).sum::<usize>(),
+            )
+        }
+    };
+    let generate_upto = if board_snapshot.anagrams.is_some() {
+        GENERATE_EACH_RACK_UPTO
+    } else {
+        GENERATE_EACH_RACK_UPTO_LEAN
+    };
+    if num_racks <= generate_upto && board_tiles.iter().any(|&tile| tile != 0) {
+        weigh_racks_by_generation::<LEAN, _, _>(
+            move_generator,
+            board_snapshot,
+            &InferSheet {
+                lat: &tables.lat,
+                sheet: &[],
+                leave: &tables.leave,
+                ln_binom: &ln_binom,
+            },
+            &pool,
+            tiles,
+            move_value,
+            &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
+        );
+    } else {
+        infer_sheet_for(
+            move_generator,
+            board_tiles,
+            SpellTables {
+                game_config,
+                kwg: board_snapshot.kwg,
+                klv: board_snapshot.klv,
+                lat: &tables.lat,
+            },
+            &pool,
+            can_exchange,
+            (&mut tables.movegen_rack, &mut tables.blank_deltas),
+            &mut tables.sheet,
+        );
+        weigh_racks(
+            &InferSheet {
+                lat: &tables.lat,
+                sheet: &tables.sheet,
+                leave: &tables.leave,
+                ln_binom: &ln_binom,
+            },
+            &pool,
+            tiles,
+            move_value,
+            threads,
+            &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
+        );
+    }
     let weighed = weights_by_leave(racks, fuzz);
     let mut leaves = PackedLeaves::with_capacity(weighed.len(), weighed.len() * rack_size);
     let mut kept = vec![0u8; num_letters];
