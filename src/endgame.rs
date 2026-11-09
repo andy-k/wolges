@@ -3733,6 +3733,8 @@ impl<
                         limits,
                         model: position.model,
                         exact: true,
+                        hand_overs: &[],
+                        hand_over: None,
                     };
                     match value_root_move(&mut search, splits, &at, &state.moves[i], score_diff) {
                         Ok(value) => {
@@ -3844,6 +3846,10 @@ impl<
         let answered = state.answer.is_some();
         let on_one_clock = limits.on_one_clock();
         let (order, moves) = (&state.order, &state.moves);
+        // each task's hand-over (HandOver), and how many tasks that hand the
+        // turn over are still being valued
+        let hand_overs = (0..tasks).map(|_| HandOver::new()).collect::<Vec<_>>();
+        let handing = AtomicUsize::new(0);
         // a thread's share: each move and split it valued (by its task, the
         // move's place in the rest of the order times the splits, plus the
         // split's), with the value, the chance to win, whether it was exact, and
@@ -3867,7 +3873,17 @@ impl<
                 search.exact = true;
                 let play = &moves[order[base + m]];
                 let began = limits.t0.elapsed();
-                match value_root_split(search, &splits[s], at, play, score_diff) {
+                let hands_over = matches!(play, movegen::Play::Exchange { .. });
+                if hands_over {
+                    handing.fetch_add(1, Relaxed);
+                    search.hand_over = Some(task);
+                }
+                let valued = value_root_split(search, &splits[s], at, play, score_diff);
+                if hands_over {
+                    search.hand_over = None;
+                    handing.fetch_sub(1, Relaxed);
+                }
+                match valued {
                     Ok((value, win)) => {
                         let took = limits.t0.elapsed().saturating_sub(began);
                         mine.push((task, value, win, search.exact, took));
@@ -3885,9 +3901,46 @@ impl<
                     }
                 }
             }
+            // no task left: while a task that hands the turn over is valued,
+            // help the one with the most moves left, from the end
+            while !stop.load(Relaxed) {
+                let open = (hand_overs.iter())
+                    .filter_map(|help| {
+                        let work = help.opened()?;
+                        let back = help.back.load(Relaxed);
+                        let left = back.saturating_sub(help.forward.load(Relaxed) + 1);
+                        (left > 0).then_some((help, work, left))
+                    })
+                    .max_by_key(|(_, _, left)| *left);
+                let Some((help, work, _)) = open else {
+                    if handing.load(Relaxed) == 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                };
+                let Some(j) = help.take_back() else {
+                    continue;
+                };
+                let floor = help.floor.load(Relaxed);
+                let floor = (floor != NO_FLOOR).then(|| f64::from_bits(floor));
+                let (info, work, splits) = &*work;
+                match search.info_move(info, &work[j], splits, floor) {
+                    Ok(_) => {}
+                    Err(_) if limits.stopped.get() => {
+                        stop.store(true, Relaxed);
+                        return Ok((mine, true));
+                    }
+                    Err(e) => {
+                        stop.store(true, Relaxed);
+                        return Err(e);
+                    }
+                }
+            }
             Ok((mine, false))
         };
         let valued = &state.searched;
+        let hand_overs = &hand_overs[..];
         // each other thread's table as the pass before left it
         let mut kept = std::mem::take(&mut state.tables);
         kept.resize_with(threads - 1, || None);
@@ -3925,6 +3978,8 @@ impl<
                                 limits: &limits,
                                 model,
                                 exact: true,
+                                hand_overs,
+                                hand_over: None,
                             };
                             work(&mut search, &limits)
                         });
@@ -3945,6 +4000,8 @@ impl<
                     limits,
                     model,
                     exact: true,
+                    hand_overs,
+                    hand_over: None,
                 };
                 work(&mut search, limits)
             });
@@ -5536,12 +5593,78 @@ impl BagValued {
     }
 }
 
+// what a root task that hands the turn over (a pass or an exchange) opens to
+// the threads with no task left: the info set it hands the other, its moves in
+// the order it values them, and its splits (work, put once, then open); the
+// place in that order it has reached (forward), one past the next a helper
+// takes from the end (back), and its floor as f64 bits (NO_FLOOR for none). A
+// helper values moves from the end into the shared table, so the task finds
+// them there; the task still values every move itself, so what it finds is what
+// it would find alone
+struct HandOver {
+    work: std::sync::Mutex<Option<std::sync::Arc<HandOverWork>>>,
+    open: std::sync::atomic::AtomicBool,
+    forward: std::sync::atomic::AtomicUsize,
+    back: std::sync::atomic::AtomicUsize,
+    floor: std::sync::atomic::AtomicU64,
+}
+
+type HandOverWork = (InfoSet, Vec<movegen::Play>, Vec<(Vec<u8>, Vec<u8>, u64)>);
+
+const NO_FLOOR: u64 = u64::MAX;
+
+impl HandOver {
+    fn new() -> Self {
+        Self {
+            work: std::sync::Mutex::new(None),
+            open: Default::default(),
+            forward: Default::default(),
+            back: Default::default(),
+            floor: std::sync::atomic::AtomicU64::new(NO_FLOOR),
+        }
+    }
+
+    // work opened to helpers, the first time only
+    fn put(&self, work: HandOverWork) {
+        use std::sync::atomic::Ordering::{Relaxed, Release};
+        let mut kept = self.work.lock().unwrap();
+        if kept.is_none() {
+            self.back.store(work.1.len(), Relaxed);
+            *kept = Some(std::sync::Arc::new(work));
+            self.open.store(true, Release);
+        }
+    }
+
+    // the work, once opened
+    fn opened(&self) -> Option<std::sync::Arc<HandOverWork>> {
+        if !self.open.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        self.work.lock().unwrap().clone()
+    }
+
+    // the next move from the end for a helper, while it is past the task's
+    // place
+    fn take_back(&self) -> Option<usize> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let forward = self.forward.load(Relaxed);
+        (self.back)
+            .try_update(Relaxed, Relaxed, |back| {
+                (back > forward + 1).then(|| back - 1)
+            })
+            .ok()
+            .map(|back| back - 1)
+    }
+}
+
 // the search with tiles in the bag, under either model (PegModel): under
 // InfoSets each player to move chooses blind (info_value); under RandomDraws,
 // the fast approximation, both players know both racks; a draw is at random, so
 // a move's value is what it scores less the next mover's value over what the
 // draw may bring, each draw weighed by the deals that give it. Once a placement
-// empties the bag, sub solves the endgame. What it carries down
+// empties the bag, sub solves the endgame. What it carries down, with the root
+// tasks' hand-overs on threads (by task, none off threads) and the one the
+// first info set it values opens
 struct BagSearch<
     's,
     'a,
@@ -5562,6 +5685,8 @@ struct BagSearch<
     limits: &'s BagLimits,
     model: PegModel,
     exact: bool, // cleared by an endgame a limit cut short
+    hand_overs: &'s [HandOver],
+    hand_over: Option<usize>,
 }
 
 impl<
@@ -6017,16 +6142,35 @@ impl<
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
             _ => (true, std::cmp::Reverse(i32::MIN), i),
         });
+        // a root task's hand-over opens these moves to the threads with none
+        // left, who value them from the end into the shared table
+        use std::sync::atomic::Ordering::Relaxed;
+        let hand_overs = self.hand_overs;
+        let help = self.hand_over.take().map(|task| &hand_overs[task]);
+        let num_asked = asked.len();
+        if let Some(help) = help {
+            let work = asked.iter().map(|&i| moves[i].clone()).collect();
+            help.put((info.clone(), work, splits.clone()));
+        }
         let mut valued = Vec::new();
         let mut floor = None;
-        for i in asked {
+        for (k, i) in asked.into_iter().enumerate() {
+            if let Some(help) = help {
+                help.forward.store(k, Relaxed);
+            }
             let Some((win, margins)) = self.info_move(info, &moves[i], &splits, floor)? else {
                 continue;
             };
             if floor.is_none_or(|floor| win > floor) {
                 floor = Some(win);
+                if let Some(help) = help {
+                    help.floor.store(win.to_bits(), Relaxed);
+                }
             }
             valued.push((i, win, margins));
+        }
+        if let Some(help) = help {
+            help.forward.store(num_asked, Relaxed);
         }
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
         let mut best = (f64::NEG_INFINITY, f64::NEG_INFINITY, usize::MAX);
@@ -11612,6 +11756,8 @@ mod tests {
             limits: &limits,
             model: super::PegModel::RandomDraws,
             exact: true,
+            hand_overs: &[],
+            hand_over: None,
         };
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
