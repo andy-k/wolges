@@ -7,8 +7,13 @@ use super::{anagrams, display, equity, error, fash, game_config, infer, klv, kwg
 use std::io::Write;
 
 // how many nodes the search visits between looks at the clock and the memory,
-// for their limits
+// for their limits, at most
 const LIMIT_CADENCE: u64 = 64;
+
+// the time a timed search's nodes may take between looks at the clock: past it,
+// it looks twice as often, down to every node, and else half as often, up to
+// LIMIT_CADENCE
+const LOOK_EVERY: std::time::Duration = std::time::Duration::from_millis(1);
 
 // splitmix64's increment: https://prng.di.unimi.it/splitmix64.c
 const SPLITMIX64_GAMMA: u64 = 0x9e3779b97f4a7c15;
@@ -698,6 +703,9 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     stopped: Option<(u64, u8, i8, u32, u32)>, // which pass the frames are, when one stopped
     resumed: u64,        // the passes this solver went on with from a step before
     line: Option<Box<Line>>, // the line collect_pv read last
+    cadence: u64,        // the nodes between looks at the clock, 1 to LIMIT_CADENCE
+    next_look: u64,      // the nodes this pass searches before the next look
+    last_look: std::time::Duration, // the time at the last look, from the solve's start
 }
 
 impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G, JUMPS, ANY_SIDE> {
@@ -751,6 +759,9 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             stopped: None,
             resumed: 0,
             line: None,
+            cadence: 1,
+            next_look: 1,
+            last_look: std::time::Duration::ZERO,
         }
     }
 
@@ -787,6 +798,29 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
     fn memory_passed(&self) -> bool {
         self.memory_limit
             .is_some_and(|limit| limit.passed(self.table.leaving()))
+    }
+
+    // whether the time or the memory limit has passed, looked at once the pass
+    // has searched next_look nodes; how many nodes on the next look comes is
+    // set by how long the nodes since the last took (LOOK_EVERY)
+    fn time_or_memory_passed(&mut self) -> bool {
+        let mut cadence = LIMIT_CADENCE;
+        if let (Some(limit), Some(t0)) = (self.time_limit, self.t0) {
+            let now = t0.elapsed();
+            if now >= limit {
+                return true;
+            }
+            let took = now.saturating_sub(self.last_look);
+            self.last_look = now;
+            if took > LOOK_EVERY {
+                self.cadence = (self.cadence / 2).max(1);
+            } else {
+                self.cadence = (self.cadence * 2).min(LIMIT_CADENCE);
+            }
+            cadence = self.cadence;
+        }
+        self.next_look = self.nodes + cadence;
+        self.memory_passed()
     }
 }
 
@@ -1131,6 +1165,7 @@ pub struct KeptTable {
     made_with: [usize; 3],
     stopped: Option<Box<Stopped>>, // a timed solve's pass a limit stopped, for the next step
     line: Option<Box<Line>>,       // the line its solver read last
+    cadence: u64,                  // its solver's nodes between looks at the clock
 }
 
 // EndgameSolver is the main two-player endgame solver.
@@ -1652,6 +1687,7 @@ impl<
         work_buffer.root_best = NO_PLAY;
         work_buffer.answer = None;
         work_buffer.table.generation += 1;
+        work_buffer.last_look = std::time::Duration::ZERO;
     }
 
     #[inline]
@@ -1722,6 +1758,7 @@ impl<
             // the first pass always finishes, so a solve cut short still has a value
             self.work_buffer.check_limits = max_depth > 1 && limited;
             self.work_buffer.nodes = 0;
+            self.work_buffer.next_look = self.work_buffer.cadence;
             self.work_buffer.cut_short = false;
             // a stopped pass resumed keeps the move it proved
             if !(self.work_buffer.resumable
@@ -2027,6 +2064,7 @@ impl<
             self.work_buffer.max_depth = max_depth;
             self.work_buffer.check_limits = max_depth > 1 && limited;
             self.work_buffer.nodes = 0;
+            self.work_buffer.next_look = self.work_buffer.cadence;
             self.work_buffer.cut_short = false;
             self.work_buffer.proven = None;
             match self.root_search(player_idx, max_depth, margin, margin + point) {
@@ -2222,18 +2260,16 @@ impl<
         }
         self.work_buffer.searched += 1;
 
-        // the table is looked at every node, the clock and the memory every
-        // LIMIT_CADENCE nodes
+        // the table is looked at every node, the clock and the memory every few
+        // nodes, the fewer the slower they come (time_or_memory_passed)
         if self.work_buffer.check_limits {
             let work_buffer = &mut self.work_buffer;
             work_buffer.nodes += 1;
             if work_buffer
                 .state_limit
                 .is_some_and(|limit| work_buffer.table.held >= limit)
-                || (work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
-                    && (work_buffer.time_limit.is_some_and(|limit| {
-                        work_buffer.t0.is_some_and(|t0| t0.elapsed() >= limit)
-                    }) || work_buffer.memory_passed()))
+                || (work_buffer.nodes >= work_buffer.next_look
+                    && work_buffer.time_or_memory_passed())
             {
                 work_buffer.cut_short = true;
                 work_buffer.pending = Some((node, root));
@@ -2898,6 +2934,7 @@ impl<
             table: Box::new(std::mem::replace(&mut self.work_buffer.table, Table::new())),
             made_with: self.made_with(),
             line: self.work_buffer.line.take(),
+            cadence: self.work_buffer.cadence,
         }
     }
 
@@ -2911,6 +2948,7 @@ impl<
         }
         self.work_buffer.table = *kept.table;
         self.work_buffer.line = kept.line;
+        self.work_buffer.cadence = kept.cadence;
         self.put_back(kept.stopped);
         Ok(())
     }
@@ -6801,6 +6839,53 @@ mod tests {
         }
         println!("{stepped} steps, {resumed} passes resumed");
         assert!(resumed > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_timed_solve_on_a_slow_clock_looks_at_every_node() {
+        // a clock moving twice LOOK_EVERY at each read: each look finds more
+        // than LOOK_EVERY gone, so the looks come twice as often each time, and
+        // the next step's solver, given the table, looks from its first node on
+        // and stops a few nodes in, past its limit of sixteen LOOK_EVERY (a
+        // look every LIMIT_CADENCE nodes would search 64 first)
+        static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        fn slow() -> std::time::Duration {
+            let reads = READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            super::LOOK_EVERY * 2 * reads as u32
+        }
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let limits = super::Limits {
+            time: Some(super::LOOK_EVERY * 16),
+            ..super::Limits::NONE
+        };
+        let mut stopped = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                let mut table = None;
+                for step in 0..2 {
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    solver.set_clock(slow);
+                    if let Some(table) = table.take() {
+                        assert!(solver.give_table(table).is_ok());
+                    }
+                    solver.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    let solved = solver.solve_within(mover, &limits).unwrap();
+                    if step == 1 && !solved.exact {
+                        let nodes = solver.work_buffer.nodes;
+                        assert!(nodes <= 16, "[{name}] mover {mover}: {nodes} nodes");
+                        stopped += 1;
+                    }
+                    table = Some(solver.take_table());
+                }
+            }
+        }
+        assert!(stopped > 0);
     }
 
     #[test]
