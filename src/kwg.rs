@@ -331,6 +331,23 @@ impl<N: Node> Kwg<N> {
             .all(|pair| pair[0].is_end() || pair[0].tile() < pair[1].tile())
     }
 
+    // by node, the tiles from it to the end of its run: compute_letter_bits's
+    // letter_bits, without the accepting bits
+    #[inline(always)]
+    pub fn run_letter_bits(&self) -> Box<[u64]> {
+        let mut letter_bits = vec![0u64; self.0.len()].into_boxed_slice();
+        let mut all_acc = 0u64;
+        for i in (0..self.0.len()).rev() {
+            let node = self.0[i];
+            if node.is_end() {
+                all_acc = 0;
+            }
+            all_acc |= 1u64 << node.tile();
+            letter_bits[i] = all_acc;
+        }
+        letter_bits
+    }
+
     #[inline(always)]
     pub fn compute_letter_bits(&self) -> LetterBits {
         let len = self.0.len();
