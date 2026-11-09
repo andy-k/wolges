@@ -377,7 +377,7 @@ fn run(
         let rack = parse_rack(alphabet, case.rack)?;
 
         let mut lean = String::new();
-        for (arm, table) in [("lean", None), ("unadorned", Some(&anagrams))] {
+        for (arm, table) in [(" lean", None), ("", Some(&anagrams))] {
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
                 game_config,
@@ -416,7 +416,7 @@ fn run(
             }
             writeln!(
                 boxed_stdout_or_stderr(),
-                "Case {case_idx} {arm}: {} moves, {elapsed:?}",
+                "Case {case_idx}{arm}: {} moves, {elapsed:?}",
                 move_generator.plays.len()
             )?;
             total_moves += move_generator.plays.len();
