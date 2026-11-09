@@ -6994,14 +6994,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 }
                 threshold.get().raw()
             };
-        // a rack of one tile under classic rules has its plays from the cross
-        // sets, with no walk
-        if working_buffer.num_tiles_on_rack == 1
-            && matches!(
-                params.board_snapshot.game_config.game_rules(),
-                game_config::GameRules::Classic
-            )
-        {
+        // a rack of one tile has its plays from the cross sets, with no walk
+        if working_buffer.num_tiles_on_rack == 1 {
             lean_cross_sets::<0, _, _, _>(params.board_snapshot, working_buffer);
             kurnia_gen_one_tile_moves(
                 params.board_snapshot,
@@ -7720,14 +7714,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             None
         };
         match runs {
-            // a rack of one tile under classic rules has its plays from the
-            // cross sets, with no walk
-            _ if working_buffer.num_tiles_on_rack == 1
-                && matches!(
-                    params.board_snapshot.game_config.game_rules(),
-                    game_config::GameRules::Classic
-                ) =>
-            {
+            // a rack of one tile has its plays from the cross sets, with no
+            // walk
+            _ if working_buffer.num_tiles_on_rack == 1 => {
                 lean_cross_sets::<D, _, _, _>(params.board_snapshot, working_buffer);
                 kurnia_gen_one_tile_moves(
                     params.board_snapshot,
@@ -8382,12 +8371,10 @@ fn kurnia_gen_raw_place_moves<
         .rack_size()
         .min(working_buffer.num_tiles_on_rack);
     lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
-    // a rack of one tile under classic rules, whose every play places that tile
-    // alone: the plays the cross sets give, in the walk's order where the
-    // graph's runs ascend
-    if working_buffer.num_tiles_on_rack == 1
-        && matches!(game_config.game_rules(), game_config::GameRules::Classic)
-    {
+    // a rack of one tile, whose every play places that tile alone: the plays
+    // the cross sets give, in the classic walk's order where the graph's runs
+    // ascend
+    if working_buffer.num_tiles_on_rack == 1 {
         kurnia_gen_one_tile_moves(
             board_snapshot,
             working_buffer,
@@ -8563,16 +8550,16 @@ fn kurnia_gen_raw_place_moves<
 }
 
 // the moves of a rack of one tile, on the lanes in working_buffer's masks, with
-// no walk: a tile placed alone makes at most one word across and one down, and
-// its square's cross set each way says which letters make that way's word (bit
-// 0, whether a tile is beside it that way) and what that way's tiles beside it
-// score at face value. They come as the raw walk finds them where the graph's
-// runs ascend: lane by lane, each lane's runs of tiles from the left, a run's
-// square after it (unless it is the one square between two runs, which the next
-// run's walk takes) and then its square before it, whose word takes in a run
-// just beyond. A down lane plays only a square no tile is beside across: the
-// across lane plays the others. As in the walk, a play under the threshold
-// found_place_move last returned is not offered
+// no walk: a tile placed alone makes at most one word across and one down (its
+// letters in any order under jumbled rules), and its square's cross set each
+// way says which letters make that way's word (bit 0, whether a tile is beside
+// it that way) and what that way's tiles beside it score at face value. They
+// come as the classic raw walk finds them where the graph's runs ascend: lane
+// by lane, each lane's runs of tiles from the left, a run's square after it
+// (unless it is the one square between two runs, which the next run's walk
+// takes) and then its square before it, whose word takes in a run just beyond.
+// A down lane plays only a square no tile is beside across: the across lane
+// plays the others
 #[inline]
 fn kurnia_gen_one_tile_moves<
     'a,
@@ -8700,6 +8687,8 @@ fn kurnia_gen_one_tile_moves<
             while fits != 0 {
                 let letter = fits.trailing_zeros() as u8;
                 fits &= fits - 1;
+                // as in the walk, a play under the threshold found_place_move
+                // last returned is not offered
                 if score + leave_value < threshold {
                     continue;
                 }
@@ -10751,10 +10740,11 @@ mod tests {
     }
 
     // a rack of one tile, its plays from the cross sets, plays what the walk
-    // finds, with its scores, on any lanes, in every generation: raw (with the
-    // run letters or without), by the lean arm, and by the tables, on a fresh
-    // generator and on one whose cross sets a walk left. The walk is of the
-    // tile beside a Z, which no word here holds, so it plays the tile alone
+    // finds, with its scores, on any lanes, under classic and jumbled rules, in
+    // every generation: raw (with the run letters or without), by the lean arm,
+    // and by the tables, on a fresh generator and on one whose cross sets a
+    // walk left. The walk is of the tile beside a Z, which no word here holds,
+    // so it plays the tile alone
     #[inline]
     #[test]
     fn a_lone_tile_plays_what_the_walk_finds() {
@@ -10800,8 +10790,19 @@ mod tests {
                 game_config::make_super_english_game_config(),
                 &twenty_one[..],
             ),
+            (
+                game_config::make_jumbled_english_game_config(),
+                &fifteen[..],
+            ),
+            (
+                game_config::make_jumbled_super_english_game_config(),
+                &twenty_one[..],
+            ),
         ] {
-            let kwg = sweep_kwg_covering(&gc);
+            let kwg = match gc.game_rules() {
+                game_config::GameRules::Classic => sweep_kwg_covering(&gc),
+                game_config::GameRules::Jumbled => test_kad(&gc, SWEEP_WORDS),
+            };
             let run_letter_bits = kwg.compute_letter_bits().letter_bits;
             let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
                 .unwrap()
