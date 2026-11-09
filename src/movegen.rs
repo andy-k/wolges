@@ -8252,14 +8252,15 @@ fn kurnia_gen_place_moves_iter<
     // where the bucket being popped starts; the buckets are popped highest
     // first, each in no order, since the threshold only rises: a placement it
     // refuses is passed over, and the walk ends at a bucket whose highest
-    // equity it refuses
+    // equity it refuses. One call of the closure walks every placement (its one
+    // caller takes no item)
     let mut bucket_from = placement_order.len();
     working_buffer.span_memo.start_turn(found_placements.len());
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
     std::iter::from_fn(
         #[inline(never)]
-        move || {
+        move || -> Option<()> {
             loop {
                 let len = working_buffer.placement_order.len();
                 if len == bucket_from {
@@ -8312,7 +8313,6 @@ fn kurnia_gen_place_moves_iter<
                                 found_place_move(down, lane, idx, word, score, leave_value)
                             },
                     });
-                    return Some(());
                 }
             }
         },
