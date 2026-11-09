@@ -730,10 +730,10 @@ pub enum ArmTables {
 const NIBBLE_SIDES: [u8; 1] = [15];
 
 impl ArmTables {
-    // the tables of the arm the game config is detected for: with lean, the
-    // lean arm's; else tables keyed by nibbles where they fit the game (a
-    // classic game on a square board of a side in NIBBLE_SIDES), else by their
-    // layout; else none (the lean arm)
+    // the tables of the arm the game config is detected for: with lean or for a
+    // jumbled game, the lean arm's; else tables keyed by nibbles where they fit
+    // the game (a classic game on a square board of a side in NIBBLE_SIDES),
+    // else by their layout; else none (the lean arm)
     #[inline]
     pub fn build<N: kwg::Node>(
         kwg: &kwg::Kwg<N>,
@@ -764,7 +764,8 @@ impl ArmTables {
         lean: bool,
         ledger: &mut Ledger,
     ) -> error::Returns<Self> {
-        if lean {
+        // a jumbled game is the lean arm's, whose walk beats the tables there
+        if lean || matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
             return Ok(
                 RackLengths::build_for_config_within(kwg, game_config, ledger)?
                     .map_or(Self::None, Self::RackLengths),
@@ -784,7 +785,12 @@ impl ArmTables {
         kwg: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
     ) -> error::Returns<Self> {
-        Self::layout_in(kwg, game_config, &mut Ledger::up_to(usize::MAX))
+        let mut ledger = Ledger::up_to(usize::MAX);
+        // a jumbled game is the lean arm's, whatever arm is asked for
+        if matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+            return Self::build_in(kwg, game_config, true, &mut ledger);
+        }
+        Self::layout_in(kwg, game_config, &mut ledger)
     }
 
     #[inline]
@@ -797,7 +803,8 @@ impl ArmTables {
             .map_or(Self::None, Self::Anagrams))
     }
 
-    // the tables keyed by nibbles, where they fit the game: nibbles, which a
+    // the tables keyed by nibbles, where they fit the game (a classic one,
+    // build_in having given a jumbled game the lean arm's): nibbles, which a
     // game of at most 32 tiles fits on a board of 15 (no word there holds more
     // than 15 of a tile)
     #[inline]
@@ -810,8 +817,7 @@ impl ArmTables {
         let Ok(side) = u8::try_from(dim.rows) else {
             return Ok(None);
         };
-        if !matches!(game_config.game_rules(), game_config::GameRules::Classic)
-            || dim.rows != dim.cols
+        if dim.rows != dim.cols
             || !NIBBLE_SIDES.contains(&side)
             || game_config.alphabet().len() as usize > alphagram::Nibble::TILES
         {

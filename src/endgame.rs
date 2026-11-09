@@ -958,7 +958,7 @@ fn gen_raw_lanes<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
     cols: u128,
 ) {
     match run_letter_bits {
-        Some(run_letter_bits) => generator.gen_moves_raw_lanes_unsorted_by_runs::<LEAN, _, _>(
+        Some(run_letter_bits) => generator.gen_moves_raw_lanes_unsorted_by_runs(
             run_letter_bits,
             board_snapshot,
             rack,
