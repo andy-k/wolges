@@ -6449,7 +6449,7 @@ impl KurniaMoveGenerator {
                     dim.rows == 15 && dim.cols == 15
                 } =>
             {
-                self.gen_moves_tables::<15, u128, ByLayout, _, _>(
+                self.gen_moves_tables::<15, u16, ByLayout, _, _>(
                     params,
                     place_move_predicate,
                     adjust_leave_value,
