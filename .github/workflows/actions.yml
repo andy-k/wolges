@@ -5,8 +5,89 @@ name: Rust
 env:
   CARGO_TERM_COLOR: always
 jobs:
+  merge:
+    if: github.event_name == 'push'
+    continue-on-error: true
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      passed: "${{ steps.passed.outputs.passed }}"
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+    - name: A merge of passed parents, with the second one's tree
+      id: passed
+      shell: bash
+      env:
+        GH_TOKEN: "${{ github.token }}"
+      run: |
+        # a commit has passed when this workflow has a successful run for a push
+        # of it, or when it is a merge of two parents, its tree is the second
+        # one's, and both parents have passed, down the first parents as far as
+        # that goes; the build is skipped when this commit is such a merge, and
+        # in any other case, or one this cannot tell, it runs
+        declare -A seen
+        merge() {
+          local info tree a b more btree
+          info=$(git log -1 --format='%T %P' "$1") || return 1
+          read -r tree a b more <<<"$info"
+          [ -n "$b" ] || { echo "$1 is not a merge" >&2; return 1; }
+          [ -z "$more" ] || { echo "$1 has more than two parents" >&2; return 1; }
+          btree=$(git log -1 --format=%T "$b") || return 1
+          [ -n "$tree" ] && [ "$tree" = "$btree" ] || { echo "the tree of $1 is not its second parent's" >&2; return 1; }
+          printf '%s %s\n' "$a" "$b"
+        }
+        runs() {
+          SHA=$1 WORKFLOW=$w gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$1&status=success&event=push" \
+            --jq '.workflow_runs[] | select(.workflow_id == (env.WORKFLOW | tonumber)
+              and .head_sha == env.SHA and .event == "push"
+              and .status == "completed" and .conclusion == "success") | .html_url'
+        }
+        passed() {
+          local c=$1 chain= verdict=no r ab a b x
+          while :; do
+            case ${seen[$c]-} in
+              yes) verdict=yes; break ;;
+              no) break ;;
+            esac
+            r=$(runs "$c") || { echo "the runs of $c cannot be read"; break; }
+            if [ -n "$r" ]; then
+              printf '%s passed: %s\n' "$c" "$r"
+              seen[$c]=yes
+              verdict=yes
+              break
+            fi
+            ab=$(merge "$c") || { seen[$c]=no; break; }
+            read -r a b <<<"$ab"
+            echo "$c has no successful push run, and it is a merge holding its second parent's tree"
+            chain="$chain $c"
+            passed "$b" || break
+            c=$a
+          done
+          for x in $chain; do seen[$x]=$verdict; done
+          [ "$verdict" = yes ]
+        }
+        decide() {
+          local ab a b
+          ab=$(merge "$GITHUB_SHA") || return 1
+          read -r a b <<<"$ab"
+          w=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id) || return 1
+          case $w in '' | *[!0-9]*) echo "no workflow id: $w"; return 1 ;; esac
+          passed "$b" && passed "$a"
+        }
+        if decide; then
+          echo "the build is skipped"
+          echo 'passed=true' >>"$GITHUB_OUTPUT"
+        else
+          echo "the build runs"
+        fi
   build:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    needs: merge
+    if: "!cancelled() && needs.merge.outputs.passed != 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository)"
     strategy:
       matrix:
         os:
