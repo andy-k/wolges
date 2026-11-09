@@ -113,6 +113,7 @@ pub struct Simmer<
     reply_equity: Option<equity::Equity>, // the last rollout's ply-1 reply, as reply_to values it
 
     move_generator: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+    start_board: movegen::BoardState, // the generator's there, once it has been
     rack_tally: Box<[u8]>,
 
     kept: Vec<KeptLeaves>, // a seat's each, the mover's never
@@ -212,6 +213,7 @@ impl<
             reply_equity: None,
 
             move_generator,
+            start_board: movegen::BoardState::default(),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
             kept: Vec::new(),
@@ -538,6 +540,12 @@ impl<
         challenged_off: bool,
     ) -> error::Returns<bool> {
         self.game_state.clone_from(&self.initial_game_state);
+        // the generator starts from its state on the start board, kept the
+        // first time it generated there, so it brings up only the lanes this
+        // rollout changes rather than also undoing the last rollout's
+        if self.start_board.is_of(&self.initial_game_state.board_tiles) {
+            self.move_generator.restore_board_state(&self.start_board);
+        }
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
         self.plies_played.clear();
@@ -789,6 +797,9 @@ impl<
                         (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols);
                     }
                 }
+            }
+            if !self.start_board.is_of(&self.initial_game_state.board_tiles) {
+                self.move_generator.save_board_state(&mut self.start_board);
             }
             match self.move_generator.plays[0].play {
                 movegen::Play::Place { down, lane, .. } => {
