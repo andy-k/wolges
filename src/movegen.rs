@@ -5449,8 +5449,9 @@ fn gen_place_moves_at<
     } = p;
     let fixed;
     let dim = if D != 0 {
+        // its one caller, the iterator, asserts the board's side once a turn
         let board = board_snapshot.game_config.board_layout().dim();
-        assert!(board.rows as usize == D && board.cols as usize == D);
+        debug_assert!(board.rows as usize == D && board.cols as usize == D);
         fixed = square_dim::<D>();
         &fixed
     } else {
@@ -5481,6 +5482,22 @@ fn gen_place_moves_at<
         }
         _ => None,
     };
+    // the lane's face values and cross scores, which only the debug walk reads
+    // (add_square)
+    let (face_values, perpendicular_scores): (&[i32], &[i32]) = if !cfg!(debug_assertions) {
+        (&[], &[])
+    } else if placement.down {
+        (
+            &working_buffer.face_value_scores_for_down_plays[strip_range_start..strip_range_end],
+            &working_buffer.perpendicular_scores_for_down_plays[strip_range_start..strip_range_end],
+        )
+    } else {
+        (
+            &working_buffer.face_value_scores_for_across_plays[strip_range_start..strip_range_end],
+            &working_buffer.perpendicular_scores_for_across_plays
+                [strip_range_start..strip_range_end],
+        )
+    };
     gen_place_moves::<W, T, _, _, _>(
         &mut GenPlaceMovesParams {
             board_snapshot,
@@ -5499,12 +5516,7 @@ fn gen_place_moves_at<
             } else {
                 &working_buffer.allowed_for_across_plays[strip_range_start..strip_range_end]
             },
-            cross_set_buffer_strip: if placement.down {
-                &working_buffer.cross_set_buffer_for_across_plays
-                    [strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.cross_set_buffer_for_down_plays[strip_range_start..strip_range_end]
-            },
+            cross_set_buffer_strip: &[], // only the lean walk reads it
             remaining_word_multipliers_strip: if placement.down {
                 &working_buffer.remaining_word_multipliers_for_down_plays
                     [strip_range_start..strip_range_end]
@@ -5519,12 +5531,7 @@ fn gen_place_moves_at<
                 &working_buffer.remaining_tile_multipliers_for_across_plays
                     [strip_range_start..strip_range_end]
             },
-            face_value_scores_strip: if placement.down {
-                &working_buffer.face_value_scores_for_down_plays[strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.face_value_scores_for_across_plays
-                    [strip_range_start..strip_range_end]
-            },
+            face_value_scores_strip: face_values,
             perpendicular_word_multipliers_strip: if placement.down {
                 &working_buffer.perpendicular_word_multipliers_for_down_plays
                     [strip_range_start..strip_range_end]
@@ -5532,13 +5539,7 @@ fn gen_place_moves_at<
                 &working_buffer.perpendicular_word_multipliers_for_across_plays
                     [strip_range_start..strip_range_end]
             },
-            perpendicular_scores_strip: if placement.down {
-                &working_buffer.perpendicular_scores_for_down_plays
-                    [strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.perpendicular_scores_for_across_plays
-                    [strip_range_start..strip_range_end]
-            },
+            perpendicular_scores_strip: perpendicular_scores,
             rack_tally: &mut working_buffer.rack_tally,
             rack_bits: working_buffer.rack_bits,
             word_strip_buffer: if placement.down {
