@@ -2,10 +2,11 @@
 # ./build-pgo.sh CSW24.kwg CSW24.klv2
 #
 # A profile-guided build of leave for this machine, by hand only (CI and the
-# release stay plain): an instrumented build, a training run on both arms
-# (1000 pairs each, one thread), the profiles merged with rustup's
-# llvm-profdata (rustup component add llvm-tools), then the final build.
-# It writes only under target/ and stops if target/pgo-raw is already there.
+# release stay plain): an instrumented build, a training run on both arms (1000
+# pairs each; the super board, 300 pairs; one thread), the profiles merged with
+# rustup's llvm-profdata (rustup component add llvm-tools), then the final
+# build. It writes only under target/ and stops if target/pgo-raw is already
+# there.
 
 set -euo pipefail
 
@@ -34,6 +35,7 @@ mkdir -p "$raw"
 RUSTFLAGS="-C target-cpu=native -Cprofile-generate=${raw}" \
   cargo build --release --target-dir target/pgo-gen --bin leave
 target/pgo-gen/release/leave --threads 1 compare "$kwg" "$klv" "$klv" 1000 1
+target/pgo-gen/release/leave --threads 1 --preset super-english compare "$kwg" "$klv" "$klv" 300 1
 target/pgo-gen/release/leave --threads 1 compare --lean "$kwg" "$klv" "$klv" 1000 1
 "$profdata" merge -o "${raw}/merged.profdata" "$raw"
 RUSTFLAGS="-C target-cpu=native -Cprofile-use=${raw}/merged.profdata" \
