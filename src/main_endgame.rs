@@ -424,7 +424,7 @@ fn run_batch<N: kwg::Node>(
             },
             |word: &[u8]| vec_of_words.push(word.into()),
         );
-        let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
+        let smaller_kwg_bytes = build::build_for_game(&game_config, &vec_of_words)?;
         let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
         let arm_tables = solver_tables(&smaller_kwg, &game_config, solving.lean)?;
 
@@ -1356,27 +1356,6 @@ fn refuse_a_wider_graph<N: kwg::Node>(
     ));
 }
 
-#[inline(always)]
-fn build_pruned_kwg(
-    game_config: &game_config::GameConfig,
-    words: &[bites::Bites],
-) -> error::Returns<bites::Bites> {
-    match game_config.game_rules() {
-        game_config::GameRules::Classic => build::build_big(
-            build::BuildContent::Gaddawg,
-            build::BuildLayout::Wolges,
-            build::BuildOrder::Sorted,
-            words,
-        ),
-        game_config::GameRules::Jumbled => build::build_big(
-            build::BuildContent::DawgOnly,
-            build::BuildLayout::Wolges,
-            build::BuildOrder::Sorted,
-            &build::make_alphagrams(words),
-        ),
-    }
-}
-
 // what a search with tiles in the bag answered from when it was not exact, by
 // the pass it is of
 fn say_where_a_limit_stopped(depth: i8) -> std::io::Result<()> {
@@ -1565,7 +1544,7 @@ fn solve_position<N: kwg::Node>(
         "word_prune: {} words",
         vec_of_words.len()
     )?;
-    let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
+    let smaller_kwg_bytes = build::build_for_game(game_config, &vec_of_words)?;
     writeln!(
         std::io::stdout(),
         "word_prune: {} bytes kwg",
@@ -1878,42 +1857,5 @@ mod tests {
     #[inline]
     fn the_command_line_is_well_formed() {
         <Cli as clap::CommandFactory>::command().debug_assert();
-    }
-
-    #[test]
-    #[inline]
-    fn build_pruned_kwg_matches_game_rules() {
-        use wolges::kwg::Node; // arc_index is a Node trait method
-        let classic = game_config::make_english_game_config();
-        let jumbled = game_config::make_jumbled_english_game_config();
-        let reader = alphabet::AlphabetReader::new_for_words(classic.alphabet());
-        let mut buf = Vec::new();
-        reader.set_word("DOG", &mut buf).unwrap();
-        let word: bites::Bites = buf[..].into();
-        let mut sorted_buf = buf.clone();
-        sorted_buf.sort_unstable();
-        let sorted: bites::Bites = sorted_buf[..].into();
-
-        assert_ne!(word, sorted);
-        let words = [word.clone()];
-
-        let present = |kwg: &kwg::Kwg<kwg::Node24>, w: &[u8]| {
-            let counts = kwg.count_dawg_words_alloc().unwrap();
-            kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
-        };
-
-        let classic_kwg =
-            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap())
-                .unwrap();
-
-        assert!(present(&classic_kwg, &word));
-        assert!(!present(&classic_kwg, &sorted));
-
-        let jumbled_kwg =
-            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap())
-                .unwrap();
-
-        assert!(present(&jumbled_kwg, &sorted));
-        assert!(!present(&jumbled_kwg, &word));
     }
 }

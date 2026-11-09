@@ -235,6 +235,12 @@ impl<
         self.rng = R::seed_from_u64(seed);
     }
 
+    // before the rollouts walk a graph other than the one they last walked
+    #[inline(always)]
+    pub fn reset_for_another_kwg(&mut self) {
+        self.move_generator.reset_for_another_kwg();
+    }
+
     // the clone's generator starts fixed: reseed it before it draws.
     #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
