@@ -113,7 +113,11 @@ struct PossiblePlacement {
     leftmost: i8,
     rightmost: i8,
     best_possible_equity: i32,
+    kept_at: u32, // its kept span's multipliers' start (RcsLane), or NO_KEPT
 }
+
+// a placement no kept span made (the shadow pass's)
+const NO_KEPT: u32 = u32::MAX;
 
 #[derive(Clone)]
 struct MultiJump {
@@ -999,9 +1003,13 @@ impl WorkingBuffer {
         self.descending_scores.clear();
         self.descending_scores
             .reserve(self.num_tiles_on_rack as usize);
+        // each tile's first place in descending_scores, for the subracks'
+        // places (a rack holds at most u8::MAX tiles)
+        let mut first_places = [0u8; MAX_ALPHABET_LEN];
         for &tile in alphabet.tiles_by_descending_scores() {
             let count = self.rack_tally[tile as usize];
             if count != 0 {
+                first_places[tile as usize] = self.descending_scores.len() as u8;
                 let score = alphabet.scaled_score(tile);
                 for _ in 0..count {
                     self.descending_scores.push(score);
@@ -1093,7 +1101,7 @@ impl WorkingBuffer {
             build_subracks(
                 &self.multi_leaves,
                 places,
-                &self.rack_tally,
+                (&self.rack_tally, &first_places),
                 &mut self.subracks,
                 &mut self.subracks_by_played,
                 (&mut self.subrack_order, &mut self.subracks_spare),
@@ -3224,6 +3232,8 @@ struct GenPlaceMovesParams<
     threshold: i32,
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
+    descending_scores: &'a [i32],      // the rack's, as WorkingBuffer's
+    span_multipliers: &'a [(i32, u8)], // its kept span's (own_bound), or none
     span_memo: &'a mut SpanMemo,
     span_prefix: &'a [SpanPrefix], // the lane's, for gen_classic_place_moves only
     span_lane: SpanLane,
@@ -3867,8 +3877,23 @@ struct Subrack {
     part: u128, // its key's part (anagrams::key_part)
     leave_idx: u32,
     leave_value: i32,
+    places: u32, // its tiles' places in descending_scores, a bit each
     num_played: u8,
     blanks: u8,
+}
+
+// a memo visit's group not looked up yet (no group is at u32::MAX, as the arena
+// it indexes is shorter)
+const UNSEEN_GROUP: u32 = u32::MAX;
+
+// the places start..start + taken, a bit each, or none when they pass a u32's
+// bits (a rack of more tiles is bounded without them)
+#[inline(always)]
+fn taken_places(start: u8, taken: u8) -> u32 {
+    if start as u32 + taken as u32 > u32::BITS {
+        return 0;
+    }
+    (((1u64 << taken) - 1) << start) as u32
 }
 
 #[derive(Clone)]
@@ -4032,7 +4057,14 @@ pub(crate) fn subrack_order(
     order: &mut Vec<u8>,
 ) {
     let mut subracks = Vec::new();
-    walk_subracks(multi_leaves, alphagram::Nibble, rack_tally, &mut subracks);
+    // the order reads no places, so every tile's first place is 0
+    walk_subracks(
+        multi_leaves,
+        alphagram::Nibble,
+        rack_tally,
+        &[0; MAX_ALPHABET_LEN],
+        &mut subracks,
+    );
     let mut keys = Vec::new();
     sort_subracks(&subracks, &mut keys);
     order.clear();
@@ -4049,15 +4081,18 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
     multi_leaves: &klv::MultiLeaves,
     places: P,
     rack_tally: &[u8],
+    first_places: &[u8],
     subracks: &mut Vec<Subrack>,
 ) {
     // each tile on the rack: its count; its place values in the leave's index,
-    // in the key (none for the blank), and in the key's part; and whether it is
-    // the blank
-    let mut tiles = [(0u8, 0u32, 0u128, 0u128, 0u8); MAX_ALPHABET_LEN];
+    // in the key (none for the blank), and in the key's part; whether it is the
+    // blank; and its first place in descending_scores (first_places: its taken
+    // copies hold the places from it on)
+    let mut tiles = [(0u8, 0u32, 0u128, 0u128, 0u8, 0u8); MAX_ALPHABET_LEN];
     let mut kept = [0u8; MAX_ALPHABET_LEN];
     let mut n = 0;
     let (mut key, mut part, mut played, mut blanks) = (0u128, 0u128, 0u8, 0u8);
+    let mut taken_at = 0u32;
     for (tile, &count) in rack_tally.iter().enumerate() {
         if count != 0 {
             let blank = (tile == 0) as u8;
@@ -4073,11 +4108,13 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
                 key_place_value,
                 part_place_value,
                 blank,
+                first_places[tile],
             );
             key += count as u128 * key_place_value;
             part = part.wrapping_add(part_place_value.wrapping_mul(count as u128));
             played += count;
             blanks += blank * count;
+            taken_at |= taken_places(first_places[tile], count);
             n += 1;
         }
     }
@@ -4094,6 +4131,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
             part,
             leave_idx: idx,
             leave_value: multi_leaves.leave_value(idx),
+            places: taken_at,
             num_played: played,
             blanks,
         });
@@ -4103,7 +4141,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
                 return;
             }
             i -= 1;
-            let (count, place_value, key_place_value, part_place_value, blank) = tiles[i];
+            let (count, place_value, key_place_value, part_place_value, blank, first) = tiles[i];
             if kept[i] < count {
                 kept[i] += 1;
                 idx += place_value;
@@ -4111,6 +4149,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
                 part = part.wrapping_sub(part_place_value);
                 played -= 1;
                 blanks -= blank;
+                taken_at &= !taken_places(first + count - kept[i], 1);
                 break;
             }
             kept[i] = 0;
@@ -4119,6 +4158,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
             part = part.wrapping_add(part_place_value.wrapping_mul(count as u128));
             played += count;
             blanks += blank * count;
+            taken_at |= taken_places(first, count);
         }
     }
 }
@@ -4129,13 +4169,13 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
 fn build_subracks<P: alphagram::KeyPlaces>(
     multi_leaves: &klv::MultiLeaves,
     places: P,
-    rack_tally: &[u8],
+    (rack_tally, first_places): (&[u8], &[u8]),
     subracks: &mut Vec<Subrack>,
     by_played: &mut Vec<u32>,
     (order, spare): (&mut Vec<u64>, &mut Vec<Subrack>),
     given: Option<&[u8]>,
 ) {
-    walk_subracks(multi_leaves, places, rack_tally, subracks);
+    walk_subracks(multi_leaves, places, rack_tally, first_places, subracks);
     spare.clear();
     match given {
         Some(given) => spare.extend(given.iter().map(|&at| subracks[at as usize])),
@@ -4226,6 +4266,35 @@ fn gen_classic_place_moves<
         base_perp: i32,
         word_multiplier: i32,
         bound: i32,
+        fixed: i32, // the span's fixed part, with its tiles' bonus
+    }
+
+    // the most the subrack whose places these are scores on the span: its
+    // tiles' scores, best first, on the kept span's multipliers, best first,
+    // plus the fixed part, no more than the span's score bound (no play of the
+    // tiles on the squares scores more), or that bound when it has none
+    #[inline(always)]
+    fn own_bound<
+        T: TablePlaces,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &Env<'_, T, CallbackType, N, L>,
+        mut places: u32,
+    ) -> i32 {
+        let multipliers = env.params.span_multipliers;
+        if multipliers.is_empty() {
+            return env.params.score_bound;
+        }
+        debug_assert_eq!(places.count_ones() as usize, multipliers.len());
+        let scores = env.params.descending_scores;
+        let mut bound = env.fixed;
+        for &(multiplier, _) in multipliers {
+            bound += multiplier * scores[places.trailing_zeros() as usize];
+            places &= places - 1;
+        }
+        bound.min(env.params.score_bound)
     }
 
     #[inline]
@@ -4468,6 +4537,7 @@ fn gen_classic_place_moves<
         base_perp: 0,
         word_multiplier: 1,
         bound: 0,
+        fixed: 0,
     };
     if rightmost - leftmost < 2 {
         return;
@@ -4556,6 +4626,14 @@ fn gen_classic_place_moves<
     env.base_main = e.base_main;
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
+    env.fixed = e.base_main * e.word_multiplier
+        + e.base_perp
+        + env
+            .params
+            .board_snapshot
+            .game_config
+            .num_played_bonus(e.num_played) as i32
+            * equity::SCALE;
     let len = (rightmost - leftmost) as u8;
     // the playthrough's part, which each subrack's adds to
     let playthrough_part = anagrams::key_part(e.playthrough_key);
@@ -4568,7 +4646,7 @@ fn gen_classic_place_moves<
         Ok((from, upto)) => {
             for i in from as usize..upto as usize {
                 let (si, at) = env.params.span_memo.visits[i];
-                if !visit::<_, _, _, _>(&mut env, &e, len, si as usize, Some(at)) {
+                if !visit::<_, _, _, _>(&mut env, &e, len, si as usize, Some((at, i))) {
                     break;
                 }
             }
@@ -4626,9 +4704,11 @@ fn gen_classic_place_moves<
     }
 
     // a subrack on the span, false once its bound is below the threshold (a
-    // size's subracks fall in leave, so none after it can be); kept_at is the
-    // memo's (the group, or 0 for a subrack with a blank), None on the first
-    // visit, whose key the filter has passed
+    // size's subracks fall in leave, so none after it can be); kept is the
+    // memo's (the group, UNSEEN_GROUP when not looked up yet, or 0 for a
+    // subrack with a blank) with its place in the memo, None on the first
+    // visit, whose key the filter has passed. One whose own tiles cannot reach
+    // the threshold (own_bound) is passed over, its group not looked up.
     #[inline(always)]
     fn visit<
         T: TablePlaces,
@@ -4640,19 +4720,37 @@ fn gen_classic_place_moves<
         e: &Extent,
         len: u8,
         si: usize,
-        kept_at: Option<u32>,
+        kept: Option<(u32, usize)>,
     ) -> bool {
         let subrack = env.params.subracks[si];
         env.bound = env.params.score_bound.saturating_add(subrack.leave_value);
         if env.bound < env.params.threshold {
             return false;
         }
+        env.bound = own_bound(env, subrack.places).saturating_add(subrack.leave_value);
+        let short = env.bound < env.params.threshold;
         let key = e.playthrough_key + subrack.key;
         let source = env.source;
         if subrack.blanks == 0 {
-            let at = match kept_at {
-                Some(at) => at,
+            let at = match kept {
+                Some((at, _)) if at != UNSEEN_GROUP => at,
+                // looked up once a span needs it; one the filter passed in
+                // error stays UNSEEN_GROUP
+                Some((_, i)) => {
+                    if short {
+                        return true;
+                    }
+                    let Some(at) = source.group_at_held(alphagram::Fitted(key), len) else {
+                        return true;
+                    };
+                    env.params.span_memo.visits[i].1 = at;
+                    at
+                }
                 None => {
+                    if short {
+                        env.params.span_memo.visits.push((si as u32, UNSEEN_GROUP));
+                        return true;
+                    }
                     let Some(at) = source.group_at_held(alphagram::Fitted(key), len) else {
                         return true;
                     };
@@ -4660,11 +4758,18 @@ fn gen_classic_place_moves<
                     at
                 }
             };
+            if short {
+                return true;
+            }
+            debug_assert_ne!(at, UNSEEN_GROUP);
             fit_words::<false, _, _, _, _>(env, source.words_of(len, at), subrack.leave_idx, 0, 0);
             return true;
         }
-        if kept_at.is_none() {
+        if kept.is_none() {
             env.params.span_memo.visits.push((si as u32, 0));
+        }
+        if short {
+            return true;
         }
         if subrack.blanks >= 3 {
             // the blanks' letters, on the stack: a subrack holds at most
@@ -5415,6 +5520,8 @@ fn gen_place_moves_at_lean<
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
+            descending_scores: &working_buffer.descending_scores,
+            span_multipliers: &[],
             span_memo: &mut working_buffer.span_memo,
             span_prefix: &[],
             span_lane: SpanLane::new(),
@@ -5481,6 +5588,21 @@ fn gen_place_moves_at<
             ))
         }
         _ => None,
+    };
+    // the kept span's multipliers, best first, for own_bound: none for a
+    // placement no kept span made, or a rack whose tiles' places pass a u32's
+    let span_multipliers: &[(i32, u8)] = if placement.kept_at == NO_KEPT
+        || working_buffer.descending_scores.len() > u32::BITS as usize
+    {
+        &[]
+    } else {
+        let lane_at = if placement.down {
+            dim.rows as usize + placement.lane as usize
+        } else {
+            placement.lane as usize
+        };
+        let at = placement.kept_at as usize;
+        &working_buffer.rcs_lanes[lane_at].multipliers[at..at + placement.num_played as usize]
     };
     // the lane's face values and cross scores, which only the debug walk reads
     // (add_square)
@@ -5576,6 +5698,8 @@ fn gen_place_moves_at<
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
+            descending_scores: &working_buffer.descending_scores,
+            span_multipliers,
             span_memo: &mut working_buffer.span_memo,
             span_prefix: match span_sums {
                 Some((at, _)) => &working_buffer.span_prefix[at..at + strip_len + 1],
@@ -7158,6 +7282,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    kept_at: NO_KEPT,
                 });
             },
         );
@@ -7212,6 +7337,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    kept_at: NO_KEPT,
                 });
             },
         );
@@ -7459,6 +7585,8 @@ fn kurnia_gen_raw_place_moves<
                     threshold: i32::MIN,
                     subracks: &working_buffer.subracks,
                     subracks_by_played: &working_buffer.subracks_by_played,
+                    descending_scores: &working_buffer.descending_scores,
+                    span_multipliers: &[],
                     span_memo: &mut working_buffer.span_memo,
                     span_prefix: &[],
                     span_lane: SpanLane::new(),
@@ -7970,6 +8098,7 @@ fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: 
                 leftmost: span.left,
                 rightmost: span.right,
                 best_possible_equity: bound,
+                kept_at: span.at,
             });
         }
         working_buffer.rcs_lanes[at] = kept;
@@ -8167,6 +8296,7 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    kept_at: NO_KEPT,
                 });
             },
         );
@@ -8230,6 +8360,7 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    kept_at: NO_KEPT,
                 });
             },
         );
