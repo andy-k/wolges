@@ -219,6 +219,12 @@ impl Bag {
                 if remaining_old > 0
                     && rng.random_range(0..remaining_new + remaining_old) >= remaining_new
                 {
+                    // Safety: the merge writes wp in fc..fc + m + n, below
+                    // tiles.len() (fc + n before the m new tiles were placed,
+                    // which, when they did not fit below fc, extended it by m);
+                    // the old tiles it reads are at old_ptr in fc + m..fc + m +
+                    // n, one each, and the new ones at new_base + pick, below
+                    // new_base + m: 0 + m <= fc, or the end after extending.
                     unsafe {
                         *self.tiles.get_unchecked_mut(wp) = *self.tiles.get_unchecked(old_ptr);
                     }
@@ -226,6 +232,12 @@ impl Bag {
                     remaining_old -= 1;
                 } else {
                     let pick = rng.random_range(0..remaining_new);
+                    // Safety: the merge writes wp in fc..fc + m + n, below
+                    // tiles.len() (fc + n before the m new tiles were placed,
+                    // which, when they did not fit below fc, extended it by m);
+                    // the old tiles it reads are at old_ptr in fc + m..fc + m +
+                    // n, one each, and the new ones at new_base + pick, below
+                    // new_base + m: 0 + m <= fc, or the end after extending.
                     unsafe {
                         *self.tiles.get_unchecked_mut(wp) =
                             *self.tiles.get_unchecked(new_base + pick);
@@ -251,12 +263,22 @@ impl Bag {
                     && rng.random_range(0..remaining_new + remaining_old) >= remaining_new
                 {
                     old_ptr -= 1;
+                    // Safety: tiles was resized to final_len + m, the new tiles
+                    // at final_len on; the merge writes wp in fc..final_len
+                    // from the top, reads the old tiles at old_ptr - 1 in
+                    // fc..fc + n, one each, and the new ones at new_base +
+                    // pick, below final_len + m.
                     unsafe {
                         *self.tiles.get_unchecked_mut(wp) = *self.tiles.get_unchecked(old_ptr);
                     }
                     remaining_old -= 1;
                 } else {
                     let pick = rng.random_range(0..remaining_new);
+                    // Safety: tiles was resized to final_len + m, the new tiles
+                    // at final_len on; the merge writes wp in fc..final_len
+                    // from the top, reads the old tiles at old_ptr - 1 in
+                    // fc..fc + n, one each, and the new ones at new_base +
+                    // pick, below final_len + m.
                     unsafe {
                         *self.tiles.get_unchecked_mut(wp) =
                             *self.tiles.get_unchecked(new_base + pick);

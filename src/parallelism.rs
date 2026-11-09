@@ -38,6 +38,9 @@ fn in_its_groups() -> Option<usize> {
     let mut group_count = GetMaximumProcessorGroupCount();
     let mut groups = vec![0u16; usize::from(group_count)];
     // group_count says how many groups fit, and then how many were put there
+    // Safety: GetCurrentProcess's handle needs no closing; group_count is a
+    // live u16, and groups holds group_count u16s, as many as the call may
+    // write.
     let found = unsafe {
         GetProcessGroupAffinity(GetCurrentProcess(), &mut group_count, groups.as_mut_ptr())
     };

@@ -36,8 +36,13 @@ fn with_map<R>(
     Some(r)
 }
 
+// Safety: every method hands its arguments, unchanged, to System's, which keeps
+// GlobalAlloc's contract, and returns what it returns; the counting beside it
+// allocates nothing and cannot unwind.
 unsafe impl GlobalAlloc for Checking {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Safety: the caller's layout, under the contract alloc's caller keeps,
+        // passed through.
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
             with_map(|m| m.insert(p as usize, (layout.size(), layout.align())));
@@ -52,6 +57,8 @@ unsafe impl GlobalAlloc for Checking {
         {
             v.push((size, align, layout.size(), layout.align()));
         }
+        // Safety: a block this allocator (that is, System) gave, with its
+        // layout, as dealloc's caller promises.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

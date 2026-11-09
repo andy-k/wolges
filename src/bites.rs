@@ -31,6 +31,11 @@ impl std::ops::Deref for Bites {
             &self.0[0..self.0[self.0.len() - 1] as usize]
         } else {
             // Heap: turn off msb for actual length.
+            // Safety: the last byte's msb is set only by new's heap arm, which
+            // put in bytes 0..8 the pointer Box::into_raw gave for a boxed
+            // slice of the length in bytes 8..16 (its msb aside); the box is
+            // this value's own until drop, so the bytes are live and unaliased
+            // by any &mut for &self's lifetime.
             unsafe {
                 std::slice::from_raw_parts(
                     u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *const _,
@@ -48,6 +53,9 @@ impl Drop for Bites {
             // Inline: nothing to do.
         } else {
             // Heap: free the pointer.
+            // Safety: the pointer and length are what new's heap arm took from
+            // Box::into_raw for the box this value owns (as in deref), a boxed
+            // slice of u8 by layout, taken back here once, as drop runs once.
             drop(unsafe {
                 Box::from_raw(std::ptr::slice_from_raw_parts_mut(
                     u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut u8,
@@ -82,6 +90,10 @@ impl Clone for Bites {
     fn clone_from(&mut self, source: &Self) {
         if self.0[self.0.len() - 1] & 0x80 != 0 && self.len() == source.len() {
             // Heap, same length.
+            // Safety: the heap bytes are live as in deref, and &mut self makes
+            // this the only borrow of them; source, borrowed at the same time,
+            // is another value, and its bytes are copied over these at the same
+            // length.
             unsafe {
                 std::slice::from_raw_parts_mut(
                     u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut _,

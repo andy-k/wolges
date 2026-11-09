@@ -17,9 +17,14 @@ fn add(n: usize) {
     PEAK.fetch_max(now, Ordering::Relaxed);
 }
 
+// Safety: every method hands its arguments, unchanged, to System's, which keeps
+// GlobalAlloc's contract, and returns what it returns; the counting beside it
+// allocates nothing and cannot unwind.
 unsafe impl GlobalAlloc for Counting {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Safety: the caller's layout, under the contract alloc's caller keeps,
+        // passed through.
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
             add(layout.size());
@@ -29,6 +34,8 @@ unsafe impl GlobalAlloc for Counting {
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // Safety: the caller's layout, under the contract alloc's caller keeps,
+        // passed through.
         let p = unsafe { System.alloc_zeroed(layout) };
         if !p.is_null() {
             add(layout.size());
@@ -38,6 +45,8 @@ unsafe impl GlobalAlloc for Counting {
 
     #[inline]
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        // Safety: a block this allocator (that is, System) gave, with its
+        // layout, as dealloc's caller promises.
         unsafe { System.dealloc(p, layout) };
         NOW.fetch_sub(layout.size(), Ordering::Relaxed);
     }
@@ -46,6 +55,8 @@ unsafe impl GlobalAlloc for Counting {
     #[inline]
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         add(new_size);
+        // Safety: a block System gave with layout, and a new size realloc's
+        // caller vouches for, passed through.
         let q = unsafe { System.realloc(p, layout, new_size) };
         NOW.fetch_sub(
             if q.is_null() { new_size } else { layout.size() },
