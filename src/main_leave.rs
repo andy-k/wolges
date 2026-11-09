@@ -13,8 +13,8 @@ use wolges::infer::{
 use wolges::simmer::CopyState;
 use wolges::{
     alphabet, anagrams, bites, board_layout, build, census, display, equity, error, fash,
-    game_config, game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats,
-    text, win_pct,
+    game_config, game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, racks,
+    stats, text, win_pct,
 };
 
 mod game_args;
@@ -320,6 +320,14 @@ struct Census {
 }
 
 #[derive(clap::Args)]
+struct Racks {
+    #[arg(help = "the leaves")]
+    klv: String,
+    #[arg(help = "the file to write, about 1.6 GB for an English bag of 100 and racks of 7")]
+    out: String,
+}
+
+#[derive(clap::Args)]
 struct Compare {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -333,6 +341,12 @@ struct Compare {
     seed: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "read a full rack's leaves and subracks' order from this file the racks task wrote from the seats' one leaves"
+    )]
+    racks: Option<String>,
     #[arg(
         long,
         value_enum,
@@ -751,6 +765,10 @@ enum Task {
     Census(Census),
     #[command(about = "play game pairs between two seats, each with its own leaves and picker")]
     Compare(Compare),
+    #[command(
+        about = "write every full rack's leaves and subracks' order from these leaves, which compare --racks reads"
+    )]
+    Racks(Racks),
     #[command(about = "combine compare reports by summing their games")]
     CompareCombine(CompareCombine),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
@@ -1004,7 +1022,24 @@ fn run(
             let p0_window = window(a.p0_window, ever_deft(a.p0_picker, a.p0_endgame))?;
             let p1_window = window(a.p1_window, ever_deft(a.p1_picker, a.p1_endgame))?;
             let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
-            let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
+            let (klv0, klv1) = match &a.racks {
+                None => read_klv_pair(&game_config, &a.klv0, &a.klv1)?,
+                Some(racks) => {
+                    // the table is one leaves' own, so both seats read them
+                    if a.klv1 != a.klv0 {
+                        wolges::return_error!(
+                            "--racks reads one table, for seats with the same leaves".to_string()
+                        );
+                    }
+                    let mut klv = read_klv(&game_config, &a.klv0)?;
+                    klv.set_racks(racks::RackTable::read(
+                        &game_config,
+                        &std::fs::read(racks)?,
+                    )?);
+                    let klv = std::sync::Arc::new(klv);
+                    (std::sync::Arc::clone(&klv), klv)
+                }
+            };
             let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
                 && hasty_throughout(a.p1_picker, a.p1_endgame);
             let params = CompareParams {
@@ -1040,6 +1075,14 @@ fn run(
                     compare_seats::<_, _, true, true>(game_config, kwg, klv0, klv1, params)
                 }
             }
+        }
+        Task::Racks(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            let table = racks::RackTable::build(&klv, &game_config, threads)?;
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&a.out)?);
+            table.write(&mut out)?;
+            out.flush()?;
+            Ok(())
         }
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;

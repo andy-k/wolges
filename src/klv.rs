@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, census, equity, error, kwg};
+use super::{bites, census, equity, error, kwg, racks};
 
 const MAX_LETTERS: usize = 64;
 
@@ -43,6 +43,7 @@ pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
     counts: Box<[u32]>,
     leaves: Box<[i32]>, // millipoints, converted from f32 at load time
+    racks: Option<Box<racks::RackTable>>, // every full rack's setup from these leaves, if given
 }
 
 // kwg::Node22
@@ -264,7 +265,21 @@ impl<L: kwg::Node> Klv<L> {
             kwg,
             counts,
             leaves: leaves.into_boxed_slice(),
+            racks: None,
         })
+    }
+
+    // every full rack's setup from these leaves (racks::RackTable::build's, or
+    // a file of one read), which a generation then reads for a full rack in
+    // place of walking the leaves' graph
+    #[inline]
+    pub fn set_racks(&mut self, racks: racks::RackTable) {
+        self.racks = Some(Box::new(racks));
+    }
+
+    #[inline(always)]
+    pub fn racks(&self) -> Option<&racks::RackTable> {
+        self.racks.as_deref()
     }
 
     // the table of no leaves, its one node in this layout
@@ -442,14 +457,11 @@ impl MultiLeaves {
         }
     }
 
+    // the rack's unique tiles and their digits (each its count and its place
+    // value in the leave index): whether the leaves are dense (no more than 1
+    // << 20 of them), how many, and the rack's tiles
     #[inline(always)]
-    pub fn init<L: kwg::Node>(
-        &mut self,
-        rack_tally: &[u8],
-        klv: &Klv<L>,
-        use_klv: bool,
-        adjust_leave_value: AdjustLeave,
-    ) {
+    fn set_digits(&mut self, rack_tally: &[u8]) -> (bool, u32, u8) {
         self.unique_tiles.clear();
         self.digits.clear();
         self.digits.resize(
@@ -479,6 +491,20 @@ impl MultiLeaves {
                 num_tiles_on_rack += count;
             }
         }
+        (dense, place_value, num_tiles_on_rack)
+    }
+
+    // the rack's digits and leaves: each leave walked from the klv's graph
+    // (none when not use_klv), adjusted
+    #[inline(always)]
+    pub fn init<L: kwg::Node>(
+        &mut self,
+        rack_tally: &[u8],
+        klv: &Klv<L>,
+        use_klv: bool,
+        adjust_leave_value: AdjustLeave,
+    ) {
+        let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally);
         self.leave_values.clear();
         self.num_playeds.clear();
         if dense {
@@ -575,6 +601,46 @@ impl MultiLeaves {
                     .for_each(|m| *m = adjust_leave_value.apply(*m));
             }
         }
+    }
+
+    // init's with use_klv and no adjustment, for a rack whose leaves a rack
+    // table holds (racks::RackTable::get's, little-endian i32s by leave index,
+    // as init walked them): the digits as init makes them, the leaves as given,
+    // and each leave index's tiles played, the rack's less those it keeps
+    #[inline(always)]
+    pub fn init_from_leaves(&mut self, rack_tally: &[u8], leaves: &[u8]) {
+        let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally);
+        debug_assert!(dense && place_value as usize * 4 == leaves.len());
+        self.leave_values.clear();
+        self.leave_values.extend(
+            leaves
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|value| i32::from_le_bytes(*value)),
+        );
+        self.num_playeds.clear();
+        self.num_playeds
+            .resize(self.leave_values.len(), num_tiles_on_rack);
+        for &tile in &self.unique_tiles {
+            let MultiLeavesDigit { count, place_value } = self.digits[tile as usize];
+            let place_value = place_value as usize;
+            for i in place_value..place_value * (count as usize + 1) {
+                self.num_playeds[i] = self.num_playeds[i - place_value] - 1;
+            }
+        }
+    }
+
+    // the leaves by leave index, as init made them
+    #[inline(always)]
+    pub fn leave_values(&self) -> &[i32] {
+        &self.leave_values
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn num_playeds(&self) -> &[u8] {
+        &self.num_playeds
     }
 
     #[inline(always)]
@@ -1289,6 +1355,7 @@ mod tests {
             kwg: empty.kwg,
             counts: empty.counts,
             leaves: Box::new([-2_500, 700, 12_345, -9]),
+            racks: None,
         };
         assert_eq!(klv.leave_range(), (-2_500, 12_345));
     }
