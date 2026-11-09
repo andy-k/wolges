@@ -91,8 +91,14 @@ pub fn opening_adjustment(
 }
 
 #[inline]
-pub fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
-    move_generator: &mut movegen::KurniaMoveGenerator,
+pub fn build_sheet_spell_once<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_tiles: &[u8],
     tables: SpellTables<'_, N, L>,
     pool: SpellPool<'_>,
@@ -437,8 +443,15 @@ const GENERATE_EACH_RACK_UPTO_LEAN: usize = 800;
 // arm alone, so that a build that runs only that arm (the wasm) need not carry
 // the other.
 #[inline]
-pub fn weigh_racks_by_generation<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
-    move_generator: &mut movegen::KurniaMoveGenerator,
+pub fn weigh_racks_by_generation<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     is: &InferSheet<'_>,
     pool: &[u8],
@@ -535,8 +548,14 @@ pub fn weigh_racks_by_generation<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
 // best it can score played, floored at 0 when it could be exchanged instead.
 // Playing nothing is no entry at all: weigh_racks weighs a pass itself.
 #[inline]
-pub fn infer_sheet_for<N: kwg::Node, L: kwg::Node>(
-    move_generator: &mut movegen::KurniaMoveGenerator,
+pub fn infer_sheet_for<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_tiles: &[u8],
     tables: SpellTables<'_, N, L>,
     pool: &[u8],
@@ -823,16 +842,22 @@ impl PackedLeaves {
 // holds every unseen tile, whatever they kept), or no rack from the pool could
 // have made the move. The racks are weighed on this many threads.
 #[inline]
-pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
+pub fn kept_leaves<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
-    kept_leaves_impl::<false, _, _>(
+    kept_leaves_impl::<false, _, _, _, JUMPS, ANY_SIDE>(
         tables,
         move_generator,
         board_snapshot,
@@ -846,16 +871,22 @@ pub fn kept_leaves<N: kwg::Node, L: kwg::Node>(
 // as kept_leaves, by the lean arm alone, so that a build that runs only that
 // arm (the wasm) need not carry the other
 #[inline]
-pub fn kept_leaves_lean<N: kwg::Node, L: kwg::Node>(
+pub fn kept_leaves_lean<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
-    kept_leaves_impl::<true, _, _>(
+    kept_leaves_impl::<true, _, _, _, JUMPS, ANY_SIDE>(
         tables,
         move_generator,
         board_snapshot,
@@ -867,16 +898,23 @@ pub fn kept_leaves_lean<N: kwg::Node, L: kwg::Node>(
 }
 
 #[inline(always)]
-fn kept_leaves_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+fn kept_leaves_impl<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
-    let leaves = kept_leaves_packed_impl::<LEAN, _, _>(
+    let leaves = kept_leaves_packed_impl::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
         tables,
         move_generator,
         board_snapshot,
@@ -892,16 +930,22 @@ fn kept_leaves_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
 
 // kept_leaves's leaves, packed, in the same order
 #[inline]
-pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
+pub fn kept_leaves_packed<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<PackedLeaves> {
-    kept_leaves_packed_impl::<false, _, _>(
+    kept_leaves_packed_impl::<false, _, _, _, JUMPS, ANY_SIDE>(
         tables,
         move_generator,
         board_snapshot,
@@ -914,16 +958,22 @@ pub fn kept_leaves_packed<N: kwg::Node, L: kwg::Node>(
 
 // as kept_leaves_packed, by the lean arm alone, as kept_leaves_lean
 #[inline]
-pub fn kept_leaves_packed_lean<N: kwg::Node, L: kwg::Node>(
+pub fn kept_leaves_packed_lean<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
     fuzz: f64,
     threads: usize,
 ) -> error::Returns<PackedLeaves> {
-    kept_leaves_packed_impl::<true, _, _>(
+    kept_leaves_packed_impl::<true, _, _, _, JUMPS, ANY_SIDE>(
         tables,
         move_generator,
         board_snapshot,
@@ -935,9 +985,16 @@ pub fn kept_leaves_packed_lean<N: kwg::Node, L: kwg::Node>(
 }
 
 #[inline]
-fn kept_leaves_packed_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+fn kept_leaves_packed_impl<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
@@ -996,7 +1053,7 @@ fn kept_leaves_packed_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
         GENERATE_EACH_RACK_UPTO_LEAN
     };
     if num_racks <= generate_upto && board_tiles.iter().any(|&tile| tile != 0) {
-        weigh_racks_by_generation::<LEAN, _, _>(
+        weigh_racks_by_generation::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             move_generator,
             board_snapshot,
             &InferSheet {
@@ -1234,9 +1291,15 @@ fn reply_sums(
 // the pool holds no more than a rack, or the mover's draw empties the bag (an
 // endgame, the solver's). The racks are weighed on this many threads.
 #[inline]
-pub fn reply_to<N: kwg::Node, L: kwg::Node>(
+pub fn reply_to<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
     tables: &mut InferTables,
-    move_generator: &mut movegen::KurniaMoveGenerator,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     mover_rack: &[u8],
     kept: &[(Vec<u8>, f64)],

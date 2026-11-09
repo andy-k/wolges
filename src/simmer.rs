@@ -92,7 +92,12 @@ struct KeptLeaves {
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
-pub struct Simmer<R = DefaultRng> {
+pub struct Simmer<
+    R = DefaultRng,
+    G: movegen::LaneBits = u128,
+    const JUMPS: bool = true,
+    const ANY_SIDE: bool = true,
+> {
     initial_game_state: game_state::GameState,
     pub initial_score_spread: i32,
     num_sim_plies: usize,
@@ -107,7 +112,7 @@ pub struct Simmer<R = DefaultRng> {
     plies_played: Vec<PlyPlayed>, // the last rollout's, after its candidate
     reply_equity: Option<equity::Equity>, // the last rollout's ply-1 reply, as reply_to values it
 
-    move_generator: movegen::KurniaMoveGenerator,
+    move_generator: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     rack_tally: Box<[u8]>,
 
     kept: Vec<KeptLeaves>, // a seat's each, the mover's never
@@ -132,6 +137,42 @@ impl Simmer {
 
 impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
     pub fn with_rng(game_config: &game_config::GameConfig, rng: R) -> Self {
+        Self::with_rng_and_generator(
+            game_config,
+            rng,
+            movegen::KurniaMoveGenerator::new(game_config),
+        )
+    }
+}
+
+impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
+    Simmer<DefaultRng, G, JUMPS, ANY_SIDE>
+{
+    // as new, generating by the caller's move generator (the wasm's, in u32)
+    pub fn with_generator(
+        game_config: &game_config::GameConfig,
+        move_generator: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+    ) -> error::Returns<Self> {
+        Ok(Self::with_rng_and_generator(
+            game_config,
+            DefaultRng::try_from_rng(&mut rand::rngs::SysRng)?,
+            move_generator,
+        ))
+    }
+}
+
+impl<
+    R: rand::Rng + SeedableRng + CopyState,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+> Simmer<R, G, JUMPS, ANY_SIDE>
+{
+    fn with_rng_and_generator(
+        game_config: &game_config::GameConfig,
+        rng: R,
+        move_generator: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+    ) -> Self {
         Self {
             initial_game_state: game_state::GameState::new(game_config),
             initial_score_spread: 0,
@@ -148,7 +189,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             plies_played: Vec::new(),
             reply_equity: None,
 
-            move_generator: movegen::KurniaMoveGenerator::new(game_config),
+            move_generator,
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
             kept: Vec::new(),
@@ -170,7 +211,11 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
     // the clone's generator starts fixed: reseed it before it draws.
     #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
-        let mut clone = Self::with_rng(game_config, R::seed_from_u64(0));
+        let mut clone = Self::with_rng_and_generator(
+            game_config,
+            R::seed_from_u64(0),
+            movegen::KurniaMoveGenerator::new_in(game_config),
+        );
         clone.prepare(
             game_config,
             &self.initial_game_state,
@@ -1373,8 +1418,8 @@ mod tests {
 
     // the move a whole generation keeps for the side to move
     #[inline]
-    fn whole_reply(
-        generator: &mut movegen::KurniaMoveGenerator,
+    fn whole_reply<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>(
+        generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         game_config: &game_config::GameConfig,
         kwg: &kwg::Kwg<kwg::Node24>,
         arm_tables: &anagrams::ArmTables,
