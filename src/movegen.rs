@@ -3075,6 +3075,7 @@ struct SpanMemoSlot {
     len: u8,
     from: u32,
     upto: u32,
+    cut_bound: i32, // i32::MAX when the visits were not cut
 }
 
 impl SpanMemoSlot {
@@ -3086,6 +3087,7 @@ impl SpanMemoSlot {
             len: 0,
             from: 0,
             upto: 0,
+            cut_bound: 0,
         }
     }
 }
@@ -3115,7 +3117,7 @@ impl SpanMemo {
     }
 
     #[inline(always)]
-    fn find(&self, key: u128, len: u8) -> Result<(u32, u32), usize> {
+    fn find(&self, key: u128, len: u8, bound: i32) -> Result<(u32, u32), usize> {
         let mask = self.slots.len() - 1;
         let mut at = (anagrams::key_hash(key) ^ len as u64) as usize & mask;
         loop {
@@ -3124,6 +3126,11 @@ impl SpanMemo {
                 return Err(at);
             }
             if slot.key == key && slot.len == len {
+                // visits cut at a lower score bound than this span's may lack
+                // subracks it needs
+                if bound > slot.cut_bound {
+                    return Err(at);
+                }
                 return Ok((slot.from, slot.upto));
             }
             at = (at + 1) & mask;
@@ -3131,7 +3138,7 @@ impl SpanMemo {
     }
 
     #[inline(always)]
-    fn keep(&mut self, at: usize, key: u128, len: u8, from: u32) {
+    fn keep(&mut self, at: usize, key: u128, len: u8, from: u32, cut_bound: i32) {
         debug_assert!(self.visits.len() <= u32::MAX as usize);
         self.slots[at] = SpanMemoSlot {
             key,
@@ -3139,6 +3146,7 @@ impl SpanMemo {
             len,
             from,
             upto: self.visits.len() as u32,
+            cut_bound,
         };
     }
 }
@@ -3638,7 +3646,11 @@ fn gen_classic_place_moves<
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
     let len = (rightmost - leftmost) as u8;
-    match env.params.span_memo.find(e.playthrough_key, len) {
+    match env
+        .params
+        .span_memo
+        .find(e.playthrough_key, len, env.params.score_bound)
+    {
         Ok((from, upto)) => {
             for i in from as usize..upto as usize {
                 let (si, at) = env.params.span_memo.visits[i];
@@ -3657,6 +3669,7 @@ fn gen_classic_place_moves<
             // and those with a blank are visited in order
             let width = u64::BITS as usize;
             let mut base = from;
+            let mut cut_at = i32::MAX;
             'runs: while base < upto {
                 let end = (base + width).min(upto);
                 let mut may = 0u64;
@@ -3679,17 +3692,19 @@ fn gen_classic_place_moves<
                     let si = base + may.trailing_zeros() as usize;
                     may &= may - 1;
                     if !visit(&mut env, &e, len, si, None) {
+                        cut_at = env.params.score_bound;
                         break 'runs;
                     }
                 }
                 if cut < end {
+                    cut_at = env.params.score_bound;
                     break;
                 }
                 base = end;
             }
             env.params
                 .span_memo
-                .keep(at, e.playthrough_key, len, kept_from);
+                .keep(at, e.playthrough_key, len, kept_from, cut_at);
         }
     }
 
@@ -6016,12 +6031,13 @@ fn kurnia_gen_place_moves_iter_lean<
 
 const PLACEMENT_BUCKETS: usize = 64;
 
-// range b is pairs[starts[b]..starts[b + 1]].
+// range b is pairs[starts[b]..starts[b + 1]]; tops[b] is its highest equity.
 #[inline]
 fn bucket_by_equity(
     pairs: &mut Vec<(i32, u32)>,
     scratch: &mut Vec<(i32, u32)>,
     starts: &mut [u32; PLACEMENT_BUCKETS + 1],
+    tops: &mut [i32; PLACEMENT_BUCKETS],
 ) {
     let mut min = i32::MAX;
     let mut max = i32::MIN;
@@ -6034,8 +6050,11 @@ fn bucket_by_equity(
         (u32::BITS - range.leading_zeros()).saturating_sub(PLACEMENT_BUCKETS.trailing_zeros());
     let bucket = |equity: i32| (equity.abs_diff(min) >> shift) as usize;
     *starts = [0; PLACEMENT_BUCKETS + 1];
+    *tops = [i32::MIN; PLACEMENT_BUCKETS];
     for &(equity, _) in pairs.iter() {
-        starts[bucket(equity) + 1] += 1;
+        let b = bucket(equity);
+        starts[b + 1] += 1;
+        tops[b] = tops[b].max(equity);
     }
     for b in 0..PLACEMENT_BUCKETS {
         starts[b + 1] += starts[b];
@@ -6050,24 +6069,6 @@ fn bucket_by_equity(
         next[b] += 1;
     }
     std::mem::swap(pairs, scratch);
-}
-
-#[inline]
-fn sort_next_range(
-    pairs: &mut [(i32, u32)],
-    starts: &[u32; PLACEMENT_BUCKETS + 1],
-    bucket: &mut usize,
-) -> usize {
-    let len = pairs.len();
-    while *bucket > 0 {
-        *bucket -= 1;
-        let from = starts[*bucket] as usize;
-        if from < len {
-            pairs[from..].sort_unstable_by_key(|&(equity, _)| equity);
-            return from;
-        }
-    }
-    0
 }
 
 #[inline]
@@ -6313,27 +6314,51 @@ fn kurnia_gen_place_moves_iter<
             .map(|(i, p)| (p.best_possible_equity, i as u32)),
     );
     let mut starts = [0u32; PLACEMENT_BUCKETS + 1];
+    let mut tops = [i32::MIN; PLACEMENT_BUCKETS];
     let mut bucket = PLACEMENT_BUCKETS;
-    let mut sorted_from = 0;
+    // where the bucket being popped starts; the buckets are popped highest
+    // first, each in no order, since the threshold only rises: a placement it
+    // refuses is passed over, and the walk ends at a bucket whose highest
+    // equity it refuses
+    let mut bucket_from = usize::MAX;
     if !want_raw {
         bucket_by_equity(
             &mut placement_order,
             &mut working_buffer.placement_scratch,
             &mut starts,
+            &mut tops,
         );
-        sorted_from = sort_next_range(&mut placement_order, &starts, &mut bucket);
+        bucket_from = placement_order.len();
     }
     working_buffer.span_memo.start_turn(found_placements.len());
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    std::iter::from_fn(move || match working_buffer.placement_order.pop() {
-        Some((equity, idx)) => {
+    std::iter::from_fn(move || {
+        loop {
             let len = working_buffer.placement_order.len();
-            if len == sorted_from && len != 0 {
-                sorted_from =
-                    sort_next_range(&mut working_buffer.placement_order, &starts, &mut bucket);
+            if len == bucket_from {
+                while bucket > 0 {
+                    bucket -= 1;
+                    if (starts[bucket] as usize) < len {
+                        break;
+                    }
+                }
+                bucket_from = starts[bucket] as usize;
+                if len == 0 || !can_accept(tops[bucket]) {
+                    working_buffer.placement_order.clear();
+                    return None;
+                }
             }
-            if can_accept(equity) {
+            let (equity, idx) = working_buffer.placement_order.pop()?;
+            if !can_accept(equity) {
+                if want_raw {
+                    // fuse the iterator
+                    working_buffer.placement_order.clear();
+                    return None;
+                }
+                continue;
+            }
+            {
                 let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at(GenPlaceMovesAtParams {
                     runs: (),
@@ -6367,14 +6392,9 @@ fn kurnia_gen_place_moves_iter<
                             found_place_move(down, lane, idx, word, score, leave_value)
                         },
                 });
-                Some(())
-            } else {
-                // fuse the iterator
-                working_buffer.placement_order.clear();
-                None
+                return Some(());
             }
         }
-        None => None,
     })
 }
 
