@@ -890,6 +890,7 @@ impl<G: LaneBits> WorkingBuffer<G> {
             self.rack_tally[*tile as usize] += 1;
             self.rack_bits |= 1u64 << tile;
         }
+        self.jumbled.forget();
         let board_layout = board_snapshot.game_config.board_layout();
         let fixed;
         let dim = if D != 0 {
@@ -5147,11 +5148,15 @@ fn gen_classic_place_moves<
     }
 }
 
-// rack multisets completing a word with one set of forced letters, by size
+// rack multisets completing a word with one set of forced letters, by size:
+// each set of forced letters a generation meets is walked once, its lists kept
+// in by_size from the start kept beside its letters, for the generation's other
+// spans with the same letters
 #[derive(Clone)]
 struct JumbledMultisets {
     multisets: Vec<u8>,
     by_size: Vec<Vec<u32>>,
+    kept: Vec<([u8; MAX_ALPHABET_LEN], u32)>,
     current: Vec<u8>,
 }
 
@@ -5161,20 +5166,35 @@ impl JumbledMultisets {
         Self {
             multisets: Vec::new(),
             by_size: Vec::new(),
+            kept: Vec::new(),
             current: Vec::new(),
         }
     }
 
+    // a new generation's rack: no set of forced letters is kept
     #[inline(always)]
-    fn clear(&mut self, max_size: usize) {
+    fn forget(&mut self) {
         self.multisets.clear();
-        if self.by_size.len() <= max_size {
-            self.by_size.resize_with(max_size + 1, Vec::new);
+        self.kept.clear();
+    }
+
+    // the start in by_size of the lists for these forced letters, and whether
+    // they are kept already; if not, they are made empty for the walk
+    #[inline(always)]
+    fn find(&mut self, forced: &[u8; MAX_ALPHABET_LEN], max_size: usize) -> (usize, bool) {
+        if let Some(&(_, start)) = self.kept.iter().find(|(letters, _)| letters == forced) {
+            return (start as usize, true);
         }
-        for entries in self.by_size[..=max_size].iter_mut() {
+        let start = self.kept.len() * (max_size + 1);
+        if self.by_size.len() < start + max_size + 1 {
+            self.by_size.resize_with(start + max_size + 1, Vec::new);
+        }
+        for entries in self.by_size[start..=start + max_size].iter_mut() {
             entries.clear();
         }
+        self.kept.push((*forced, start as u32));
         self.current.clear();
+        (start, false)
     }
 }
 
@@ -5213,6 +5233,7 @@ fn gen_jumbled_place_moves<
         forced: &'a [u8; MAX_ALPHABET_LEN],
         rack_tally: &'a [u8],
         max_size: u8,
+        start: usize, // the lists' start in out.by_size
         out: &'a mut JumbledMultisets,
     }
 
@@ -5226,7 +5247,7 @@ fn gen_jumbled_place_moves<
     ) {
         if letter >= c.alphabet_len {
             if size != 0 && c.kwg[p].accepts() {
-                c.out.by_size[size as usize].push(c.out.multisets.len() as u32);
+                c.out.by_size[c.start + size as usize].push(c.out.multisets.len() as u32);
                 c.out.multisets.extend_from_slice(&c.out.current);
             }
             return;
@@ -5426,9 +5447,10 @@ fn gen_jumbled_place_moves<
     let num_max_played = params.num_max_played;
     let pass_leave_idx = params.multi_leaves.pass_leave_idx();
     let mut forced = [0u8; MAX_ALPHABET_LEN];
-    // the multisets are collected again only when the forced letters change
+    // the multisets are looked up again only when the forced letters change
     let mut forced_epoch = 0u32;
     let mut collected_epoch = u32::MAX;
+    let mut lists_start = 0usize;
     let mut env = Env {
         params,
         alphabet,
@@ -5483,21 +5505,26 @@ fn gen_jumbled_place_moves<
                     && (idx_r + 1 >= rightmost || env.params.board_strip[idx_r as usize + 1] == 0)
                 {
                     if collected_epoch != forced_epoch {
-                        env.params.jumbled.clear(num_max_played as usize);
-                        collect_multisets(
-                            &mut Collect {
-                                kwg: env.params.board_snapshot.kwg,
-                                alphabet_len,
-                                forced: &forced,
-                                rack_tally: env.params.rack_tally,
-                                max_size: num_max_played,
-                                out: env.params.jumbled,
-                            },
-                            0,
-                            1,
-                            env.params.rack_tally[0],
-                            0,
-                        );
+                        let (start, kept) =
+                            env.params.jumbled.find(&forced, num_max_played as usize);
+                        if !kept {
+                            collect_multisets(
+                                &mut Collect {
+                                    kwg: env.params.board_snapshot.kwg,
+                                    alphabet_len,
+                                    forced: &forced,
+                                    rack_tally: env.params.rack_tally,
+                                    max_size: num_max_played,
+                                    start,
+                                    out: env.params.jumbled,
+                                },
+                                0,
+                                1,
+                                env.params.rack_tally[0],
+                                0,
+                            );
+                        }
+                        lists_start = start;
                         collected_epoch = forced_epoch;
                     }
                     env.idx_left = idx_l;
@@ -5515,8 +5542,9 @@ fn gen_jumbled_place_moves<
                     let mut base = 0i32;
                     let mut weighed = false;
                     env.square_bounded = false;
-                    for which in 0..env.params.jumbled.by_size[num_played as usize].len() {
-                        let at = env.params.jumbled.by_size[num_played as usize][which] as usize;
+                    let list = lists_start + num_played as usize;
+                    for which in 0..env.params.jumbled.by_size[list].len() {
+                        let at = env.params.jumbled.by_size[list][which] as usize;
                         if boundable && env.params.threshold != i32::MIN {
                             if !weighed {
                                 let mut word_multiplier = 1i32;
