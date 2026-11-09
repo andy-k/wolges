@@ -24,6 +24,8 @@ pub struct StaticAlphabet {
     same_score_tile: Box<[u8]>,
     same_score_tile_bits: Box<[u64]>,
     tiles_by_descending_scores: Box<[u8]>,
+    scores: [i8; 256], // by a tile's byte, a blank's (bit 7) the blank tile's
+    scaled_scores: [i32; 256], // the scores scaled as equity's, by the same bytes
 }
 
 #[derive(Clone)]
@@ -63,6 +65,17 @@ impl Alphabet {
                     .push(same_score_tile_bits[same_score_tile[i as usize] as usize]);
             }
         }
+        // each byte's score: a tile's own, a blank's (bit 7 set) the blank
+        // tile's, and 0 past the alphabet
+        let mut scores = [0i8; 256];
+        let mut scaled_scores = [0i32; 256];
+        for byte in 0..256 {
+            let tile = if byte & 0x80 != 0 { 0 } else { byte };
+            if let Some(tile) = tiles.get(tile) {
+                scores[byte] = tile.score;
+                scaled_scores[byte] = tile.scaled_score as i32;
+            }
+        }
         let mut tiles_by_descending_scores = Box::from_iter(0..num_letters);
         tiles_by_descending_scores.sort_unstable_by(|&a, &b| {
             tiles[b as usize]
@@ -80,6 +93,8 @@ impl Alphabet {
             same_score_tile_bits: same_score_tile_bits.into_boxed_slice(),
             tiles_by_descending_scores,
             tiles,
+            scores,
+            scaled_scores,
         })
     }
 
@@ -190,12 +205,18 @@ impl Alphabet {
 
     #[inline(always)]
     pub fn score(&self, idx: u8) -> i8 {
-        self.get(idx & !((idx as i8) >> 7) as u8).score
+        debug_assert!(idx & 0x80 != 0 || idx < self.len());
+        match self {
+            Alphabet::Static(x) => x.scores[idx as usize],
+        }
     }
 
     #[inline(always)]
     pub fn scaled_score(&self, idx: u8) -> i32 {
-        self.get(idx & !((idx as i8) >> 7) as u8).scaled_score as i32
+        debug_assert!(idx & 0x80 != 0 || idx < self.len());
+        match self {
+            Alphabet::Static(x) => x.scaled_scores[idx as usize],
+        }
     }
 
     #[inline(always)]
