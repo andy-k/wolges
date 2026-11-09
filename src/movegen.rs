@@ -4205,16 +4205,17 @@ fn build_subracks<P: alphagram::KeyPlaces>(
     (order, spare): (&mut Vec<u64>, &mut Vec<Subrack>),
     given: Option<&[u8]>,
 ) {
-    walk_subracks(multi_leaves, places, rack_tally, first_places, subracks);
-    spare.clear();
+    // walked into spare and copied over in order, so neither vector trades its
+    // capacity for the other's
+    walk_subracks(multi_leaves, places, rack_tally, first_places, spare);
+    subracks.clear();
     match given {
-        Some(given) => spare.extend(given.iter().map(|&at| subracks[at as usize])),
+        Some(given) => subracks.extend(given.iter().map(|&at| spare[at as usize])),
         None => {
-            sort_subracks(subracks, order);
-            spare.extend(order.iter().map(|&k| subracks[(k & 0xffffff) as usize]));
+            sort_subracks(spare, order);
+            subracks.extend(order.iter().map(|&k| spare[(k & 0xffffff) as usize]));
         }
     }
-    std::mem::swap(subracks, spare);
     let num_tiles_on_rack = rack_tally
         .iter()
         .map(|&count| count as usize)
