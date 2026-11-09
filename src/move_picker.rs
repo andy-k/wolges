@@ -328,6 +328,31 @@ fn limit_surviving_candidates(
     }
 }
 
+// whether a decision builds its late graph, the graph of the words the board
+// can still take. The build costs in proportion to the words it keeps (they
+// grow fast with the bag, more so with a blank to place) while the graph saves
+// in proportion to the rollouts the budget runs. On one thread the two meet
+// where the bag holds 25 - 3000 / (budget + 200) tiles, the budget in
+// iterations, or seven fewer while a blank is off the board. That is where they
+// met over classic games in ten lexicons on both boards with racks of seven to
+// nine tiles, jumbled games too. A decision over threads pays for the build
+// alone while its threads share the saving, so it builds only while the bag
+// holds a rack's worth at most.
+#[inline]
+fn late_graph_pays(
+    bag: usize,
+    blank_off_board: bool,
+    budget: u64,
+    threads: usize,
+    rack_size: u8,
+) -> bool {
+    if threads > 1 {
+        return bag <= rack_size as usize;
+    }
+    let blank_shift = if blank_off_board { 7.0 } else { 0.0 };
+    bag as f64 <= 25.0 - 3000.0 / (budget as f64 + 200.0) - blank_shift
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
@@ -1819,11 +1844,23 @@ impl<
         );
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
-        // late in the game, with a rack's worth of tiles or fewer in the bag,
-        // the rollouts walk a graph of the words the board can still take,
-        // whatever comes to the racks; the generator keeps nothing of a graph
-        // it walked before
-        let late = game_state.bag.len() <= self.game_config.rack_size() as usize;
+        // late in the game, when it pays, the rollouts walk a graph of the
+        // words the board can still take, whatever comes to the racks; the
+        // generator keeps nothing of a graph it walked before
+        #[cfg(not(target_family = "wasm"))]
+        let threads = self.sim_threads;
+        #[cfg(target_family = "wasm")]
+        let threads = 1;
+        let blanks_on_board = (game_state.board_tiles.iter())
+            .filter(|&&tile| tile & 0x80 != 0)
+            .count();
+        let late = late_graph_pays(
+            game_state.bag.len(),
+            blanks_on_board < self.game_config.alphabet().freq(0) as usize,
+            self.num_sim_iters,
+            threads,
+            self.game_config.rack_size(),
+        );
         if late || self.late_graph.is_some() {
             self.simmer.reset_for_another_kwg();
         }
@@ -2528,6 +2565,92 @@ mod tests {
         // a block taken in out of its turn is refused
         let (block, rows) = stale.unwrap();
         assert!(blocked.absorb_block(&block, &rows).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_late_graph_pays_by_the_budget_and_the_blanks_and_over_threads_by_the_rack() {
+        // on one thread the bag it pays at rises with the budget toward 25
+        // tiles, seven fewer while a blank is off the board
+        for (budget, most) in [(16, 11), (100, 15), (1000, 22), (1_000_000, 24)] {
+            assert!(late_graph_pays(most, false, budget, 1, 7), "{budget}");
+            assert!(!late_graph_pays(most + 1, false, budget, 1, 7), "{budget}");
+            assert!(late_graph_pays(most - 7, true, budget, 1, 7), "{budget}");
+            assert!(!late_graph_pays(most - 6, true, budget, 1, 7), "{budget}");
+        }
+        // over threads, a rack's worth at most, whatever the budget
+        for budget in [16, 1000, 1_000_000] {
+            assert!(late_graph_pays(7, true, budget, 4, 7), "{budget}");
+            assert!(late_graph_pays(9, false, budget, 2, 9), "{budget}");
+            assert!(!late_graph_pays(8, false, budget, 4, 7), "{budget}");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_decision_past_a_racks_worth_rolls_out_on_the_late_graph_as_on_the_whole() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
+        // twelve tiles in the bag: past a rack's worth, at a bag where a
+        // decision of 1000 iterations on one thread builds its graph
+        let bag = game_state.bag.as_slice()[..12].to_vec();
+        game_state.bag.set_from_iter(bag);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        gen_simmer_candidates(
+            &mut move_filter::GenMoves::Unfiltered,
+            &mut move_generator,
+            &board_snapshot,
+            &game_state.current_player().rack,
+            0,
+            SIMMER_FIELD,
+            &mut Vec::new(),
+        );
+        assert!(move_generator.plays.len() > 2);
+        let decide = |sim_threads| {
+            let mut simmer = Simmer::<_, _, true>::new(
+                &game_config,
+                &kwg,
+                &arm_tables,
+                &klv,
+                SimmerParams {
+                    num_sim_iters: 1000,
+                    num_sim_plies: 2,
+                    sim_threads,
+                    win_pct_table: None,
+                    quiet: true,
+                },
+            )
+            .unwrap();
+            simmer.reseed(11);
+            simmer
+                .begin_decision(&move_generator, &game_state, 32, &[])
+                .unwrap();
+            simmer
+        };
+        let alone = decide(1);
+        let shared = decide(2);
+        assert!(alone.late_graph.is_some());
+        assert!(shared.late_graph.is_none());
+        // the rows do not depend on the threads, so the late graph's are the
+        // whole graph's
+        assert_eq!(
+            alone.leaderboard(usize::MAX),
+            shared.leaderboard(usize::MAX)
+        );
     }
 
     #[test]
