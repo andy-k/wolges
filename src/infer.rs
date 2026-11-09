@@ -135,7 +135,8 @@ pub fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
     };
-    move_generator.gen_census_sheet(
+    // the snapshot holds no tables, so the lean arm alone runs it
+    move_generator.gen_census_sheet_lean(
         &params,
         movegen::PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], _score: i32| {
             n_cand += 1;

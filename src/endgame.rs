@@ -941,9 +941,11 @@ type ProgressFn = Box<dyn FnMut(&Progress) -> error::Returns<()>>;
 
 // the raw moves of rack on the rows and columns in the masks, as the search
 // generates them: with no exchange made, a pass a candidate, and on the default
-// arm each walk along a run stopping at its last candidate
+// arm each walk along a run stopping at its last candidate. A solver made lean
+// generates by the lean arm alone, so that a build that runs only that arm (the
+// wasm) need not carry the other.
 #[inline(always)]
-fn gen_raw_lanes<N: kwg::Node, L: kwg::Node>(
+fn gen_raw_lanes<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
     generator: &mut movegen::KurniaMoveGenerator,
     run_letter_bits: Option<&[u64]>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
@@ -952,21 +954,61 @@ fn gen_raw_lanes<N: kwg::Node, L: kwg::Node>(
     cols: u128,
 ) {
     match run_letter_bits {
-        Some(run_letter_bits) => generator.gen_moves_raw_lanes_unsorted_by_runs(
+        Some(run_letter_bits) => generator.gen_moves_raw_lanes_unsorted_by_runs::<LEAN, _, _>(
             run_letter_bits,
             board_snapshot,
             rack,
             rows,
             cols,
         ),
-        None => generator.gen_moves_raw_lanes_unsorted(
+        None => {
+            if LEAN {
+                generator.gen_moves_raw_lanes_unsorted_lean(
+                    board_snapshot,
+                    rack,
+                    0, // TODO: use game_state to track this
+                    movegen::PassPolicy::AsACandidate,
+                    rows,
+                    cols,
+                )
+            } else {
+                generator.gen_moves_raw_lanes_unsorted(
+                    board_snapshot,
+                    rack,
+                    0, // TODO: use game_state to track this
+                    movegen::PassPolicy::AsACandidate,
+                    rows,
+                    cols,
+                )
+            }
+        }
+    }
+}
+
+// the raw moves of rack, every lane; by the lean arm alone when lean, as
+// gen_raw_lanes
+#[inline(always)]
+fn gen_raw_all<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &'a movegen::BoardSnapshot<'a, N, L>,
+    rack: &'a [u8],
+    num_exchanges_by_this_player: i16,
+    pass_policy: movegen::PassPolicy,
+) {
+    if LEAN {
+        generator.gen_moves_raw_all_unsorted_lean(
             board_snapshot,
             rack,
-            0, // TODO: use game_state to track this
-            movegen::PassPolicy::AsACandidate,
-            rows,
-            cols,
-        ),
+            num_exchanges_by_this_player,
+            pass_policy,
+        )
+    } else {
+        generator.gen_moves_raw_all_unsorted(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+        )
     }
 }
 
@@ -981,8 +1023,9 @@ pub struct KeptTable {
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
 // Its fields are private and never replaced, and its table moves only through
-// swap_tables, which refuses a solver of another game or lexicon.
-pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
+// swap_tables, which refuses a solver of another game or lexicon. A lean one
+// generates by the lean arm alone (gen_raw_lanes).
+pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool = false> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
     arm_tables: &'a anagrams::ArmTables,
@@ -993,7 +1036,7 @@ pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
     work_buffer: WorkBuffer,
 }
 
-impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
+impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, LEAN> {
     pub fn new(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
@@ -1216,7 +1259,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
         // timed only while something listens
         let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
-        gen_raw_lanes(
+        gen_raw_lanes::<LEAN, _, _>(
             &mut work_buffer.movegen,
             work_buffer.run_letter_bits.as_deref(),
             &movegen::BoardSnapshot {
@@ -1313,7 +1356,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         if walks {
             // timed only while something listens
             let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
-            gen_raw_lanes(
+            gen_raw_lanes::<LEAN, _, _>(
                 &mut work_buffer.movegen,
                 work_buffer.run_letter_bits.as_deref(),
                 &movegen::BoardSnapshot {
@@ -2462,7 +2505,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
 
-        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
+        let mut sub = EndgameSolver::<N, L, LEAN>::new(gc, kwg, arm_tables)?;
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
 
@@ -2511,7 +2554,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // valued before answers at once, and one a limit stopped goes on at the
     // move it stopped at
     fn one_in_bag_minimax(
-        search: &mut OneInBag<'_, 'a, N, L>,
+        search: &mut OneInBag<'_, 'a, N, L, LEAN>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         turn: OneInBagTurn,
@@ -2554,7 +2597,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // from the start-th on, best the best so far; a limit that stops it leaves
     // where in the pass line
     fn one_in_bag_minimax_from(
-        search: &mut OneInBag<'_, 'a, N, L>,
+        search: &mut OneInBag<'_, 'a, N, L, LEAN>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         key: [u8; 5],
@@ -2572,7 +2615,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             rack_lengths: search.arm_tables.rack_lengths(),
             klv: search.klv,
         };
-        search.mg.gen_moves_raw_all_unsorted(
+        gen_raw_all::<LEAN, _, _>(
+            search.mg,
             &snapshot,
             &racks[mover as usize],
             0,
@@ -2663,7 +2707,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     // them, and whether all were exact
     #[inline(always)]
     fn stopped_at(
-        search: &mut OneInBag<'_, 'a, N, L>,
+        search: &mut OneInBag<'_, 'a, N, L, LEAN>,
         key: [u8; 5],
         valued: usize,
         best: f32,
@@ -2678,7 +2722,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     fn one_in_bag_minimax_ex(
-        search: &mut OneInBag<'_, 'a, N, L>,
+        search: &mut OneInBag<'_, 'a, N, L, LEAN>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         turn: OneInBagTurn,
@@ -2715,7 +2759,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             rack_lengths: search.arm_tables.rack_lengths(),
             klv: search.klv,
         };
-        search.mg.gen_moves_raw_all_unsorted(
+        gen_raw_all::<LEAN, _, _>(
+            search.mg,
             &snapshot,
             &racks[mover as usize],
             0,
@@ -2925,7 +2970,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.progress.take(),
             self.work_buffer.clock,
         );
-        let mut sub = EndgameSolver::<N, L>::new(gc, self.kwg, self.arm_tables)?;
+        let mut sub = EndgameSolver::<N, L, LEAN>::new(gc, self.kwg, self.arm_tables)?;
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -2988,7 +3033,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             // the moves are the same whatever the split: they read only the
             // board, the mover's rack, and how many tiles the bag holds
             let (opp_rack, bag, _) = &splits[0];
-            state.moves = in_bag_moves(gc, kwg, arm_tables, &klv, &mut mg, &at(opp_rack, bag));
+            state.moves =
+                in_bag_moves::<LEAN, _, _>(gc, kwg, arm_tables, &klv, &mut mg, &at(opp_rack, bag));
             state.order = (0..state.moves.len()).collect();
             if deepens {
                 state.order.sort_unstable_by_key(|&i| {
@@ -3165,43 +3211,44 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         // split's), with the value, the chance to win, whether it was exact, and
         // the time it took; and whether a limit stopped it
         type Share = (Vec<(usize, f64, f64, bool, std::time::Duration)>, bool);
-        let work =
-            |search: &mut BagSearch<'_, '_, N, L>, limits: &BagLimits| -> error::Returns<Share> {
-                let mut mine = Vec::new();
-                while !stop.load(Relaxed) {
-                    let Some(&task) = taking.get(next.fetch_add(1, Relaxed)) else {
-                        break;
-                    };
-                    let (m, s) = (task / num_splits, task % num_splits);
-                    limits
-                        .moves
-                        .set(Some((moves_valued.load(Relaxed), order.len())));
-                    limits
-                        .may_stop
-                        .set(deepens && (answered || moves_valued.load(Relaxed) > 0));
-                    search.exact = true;
-                    let play = &moves[order[base + m]];
-                    let began = limits.t0.elapsed();
-                    match value_root_split(search, &splits[s], at, play, score_diff) {
-                        Ok((value, win)) => {
-                            let took = limits.t0.elapsed().saturating_sub(began);
-                            mine.push((task, value, win, search.exact, took));
-                            if unvalued[m].fetch_sub(1, Relaxed) == 1 {
-                                moves_valued.fetch_add(1, Relaxed);
-                            }
-                        }
-                        Err(_) if limits.stopped.get() => {
-                            stop.store(true, Relaxed);
-                            return Ok((mine, true));
-                        }
-                        Err(e) => {
-                            stop.store(true, Relaxed);
-                            return Err(e);
+        let work = |search: &mut BagSearch<'_, '_, N, L, LEAN>,
+                    limits: &BagLimits|
+         -> error::Returns<Share> {
+            let mut mine = Vec::new();
+            while !stop.load(Relaxed) {
+                let Some(&task) = taking.get(next.fetch_add(1, Relaxed)) else {
+                    break;
+                };
+                let (m, s) = (task / num_splits, task % num_splits);
+                limits
+                    .moves
+                    .set(Some((moves_valued.load(Relaxed), order.len())));
+                limits
+                    .may_stop
+                    .set(deepens && (answered || moves_valued.load(Relaxed) > 0));
+                search.exact = true;
+                let play = &moves[order[base + m]];
+                let began = limits.t0.elapsed();
+                match value_root_split(search, &splits[s], at, play, score_diff) {
+                    Ok((value, win)) => {
+                        let took = limits.t0.elapsed().saturating_sub(began);
+                        mine.push((task, value, win, search.exact, took));
+                        if unvalued[m].fetch_sub(1, Relaxed) == 1 {
+                            moves_valued.fetch_add(1, Relaxed);
                         }
                     }
+                    Err(_) if limits.stopped.get() => {
+                        stop.store(true, Relaxed);
+                        return Ok((mine, true));
+                    }
+                    Err(e) => {
+                        stop.store(true, Relaxed);
+                        return Err(e);
+                    }
                 }
-                Ok((mine, false))
-            };
+            }
+            Ok((mine, false))
+        };
         let valued = &state.searched;
         // each other thread's table as the pass before left it
         let mut kept = std::mem::take(&mut state.tables);
@@ -3211,7 +3258,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .map(|table| {
                     let work = &work;
                     s.spawn(move || {
-                        let mut own = match EndgameSolver::<N, L>::new(gc, kwg, arm_tables) {
+                        let mut own = match EndgameSolver::<N, L, LEAN>::new(gc, kwg, arm_tables) {
                             Ok(own) => own,
                             Err(e) => return (Err(e), table),
                         };
@@ -3384,7 +3431,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             .filter(|&(_, &c)| c != 0)
             .map(|(t, &c)| (t as u8, c as u32))
             .collect();
-        let mut sub = EndgameSolver::<N, L>::new(self.game_config, self.kwg, self.arm_tables)?;
+        let mut sub =
+            EndgameSolver::<N, L, LEAN>::new(self.game_config, self.kwg, self.arm_tables)?;
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -3444,7 +3492,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
         let deepens = limits.deepens();
         if state.moves.is_empty() {
-            mg.gen_moves_raw_all_unsorted(
+            gen_raw_all::<LEAN, _, _>(
+                &mut mg,
                 &movegen::BoardSnapshot {
                     board_tiles: board,
                     game_config: gc,
@@ -3915,8 +3964,8 @@ impl PegBagProgress {
 
 // a move's value with tiles in the bag over the splits, and its chance to win,
 // each from the mover's lead before it
-fn value_root_move<N: kwg::Node, L: kwg::Node>(
-    search: &mut BagSearch<'_, '_, N, L>,
+fn value_root_move<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    search: &mut BagSearch<'_, '_, N, L, LEAN>,
     splits: &[(Vec<u8>, Vec<u8>, u64)],
     at: &impl Fn(&[u8], &[u8]) -> InBag,
     play: &movegen::Play,
@@ -3932,8 +3981,8 @@ fn value_root_move<N: kwg::Node, L: kwg::Node>(
 // a move's value with tiles in the bag in one split, and its chance to win
 // there, from the mover's lead before it, under the search's model
 #[inline(always)]
-fn value_root_split<N: kwg::Node, L: kwg::Node>(
-    search: &mut BagSearch<'_, '_, N, L>,
+fn value_root_split<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    search: &mut BagSearch<'_, '_, N, L, LEAN>,
     (opp_rack, bag, _): &(Vec<u8>, Vec<u8>, u64),
     at: &impl Fn(&[u8], &[u8]) -> InBag,
     play: &movegen::Play,
@@ -4104,12 +4153,12 @@ struct OneInBagTurn {
 }
 
 // the one-in-bag search's fixed parts, carried down its recursion
-struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
+struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> {
     gc: &'s game_config::GameConfig,
     kwg: &'s kwg::Kwg<N>,
     arm_tables: &'s anagrams::ArmTables,
     klv: &'s klv::Klv<L>,
-    sub: &'s mut EndgameSolver<'a, N, L>,
+    sub: &'s mut EndgameSolver<'a, N, L, LEAN>,
     mg: &'s mut movegen::KurniaMoveGenerator,
     memo: BagTable<f32>,
     limits: &'s BagLimits,
@@ -4490,7 +4539,7 @@ impl InfoSet {
 // the moves at a position with tiles in the bag, in the order a tie between
 // them goes to the first: the pass, the placements as the generator finds them,
 // then the exchanges the bag allows, by how many tiles, then by tile
-fn in_bag_moves<N: kwg::Node, L: kwg::Node>(
+fn in_bag_moves<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
     gc: &game_config::GameConfig,
     kwg: &kwg::Kwg<N>,
     arm_tables: &anagrams::ArmTables,
@@ -4500,7 +4549,7 @@ fn in_bag_moves<N: kwg::Node, L: kwg::Node>(
 ) -> Vec<movegen::Play> {
     let mover = pos.mover as usize;
     let (rack, made) = (&pos.racks[mover], pos.exchanges[mover]);
-    moves_of(
+    moves_of::<LEAN, _, _>(
         mg,
         &movegen::BoardSnapshot {
             board_tiles: &pos.board,
@@ -4518,7 +4567,7 @@ fn in_bag_moves<N: kwg::Node, L: kwg::Node>(
 
 // in_bag_moves's moves on the snapshot's board for this rack, the mover having
 // exchanged made times, with bag_len tiles in the bag
-fn moves_of<N: kwg::Node, L: kwg::Node>(
+fn moves_of<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
     mg: &mut movegen::KurniaMoveGenerator,
     snapshot: &movegen::BoardSnapshot<'_, N, L>,
     rack: &[u8],
@@ -4529,7 +4578,13 @@ fn moves_of<N: kwg::Node, L: kwg::Node>(
     let mut moves = vec![movegen::Play::Exchange {
         tiles: [][..].into(),
     }];
-    mg.gen_moves_raw_all_unsorted(snapshot, rack, made, movegen::PassPolicy::OnlyWhenForced);
+    gen_raw_all::<LEAN, _, _>(
+        mg,
+        snapshot,
+        rack,
+        made,
+        movegen::PassPolicy::OnlyWhenForced,
+    );
     moves.extend(
         (mg.plays.iter())
             .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
@@ -4802,12 +4857,12 @@ impl BagValued {
 // a move's value is what it scores less the next mover's value over what the
 // draw may bring, each draw weighed by the deals that give it. Once a placement
 // empties the bag, sub solves the endgame. What it carries down
-struct BagSearch<'s, 'a, N: kwg::Node, L: kwg::Node> {
+struct BagSearch<'s, 'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> {
     gc: &'s game_config::GameConfig,
     kwg: &'s kwg::Kwg<N>,
     arm_tables: &'s anagrams::ArmTables,
     klv: &'s klv::Klv<L>,
-    sub: &'s mut EndgameSolver<'a, N, L>,
+    sub: &'s mut EndgameSolver<'a, N, L, LEAN>,
     mg: &'s mut movegen::KurniaMoveGenerator,
     valued: &'s BagValued,
     limits: &'s BagLimits,
@@ -4815,7 +4870,7 @@ struct BagSearch<'s, 'a, N: kwg::Node, L: kwg::Node> {
     exact: bool, // cleared by an endgame a limit cut short
 }
 
-impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
+impl<N: kwg::Node, L: kwg::Node, const LEAN: bool> BagSearch<'_, '_, N, L, LEAN> {
     // a position's value to its mover: the most any move gets them, a tie going
     // to the move first in in_bag_moves's order. The move a shallower pass
     // found best goes first, then the placements, highest score first; once one
@@ -4860,7 +4915,8 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         first: Option<movegen::Play>,
     ) -> error::Returns<(f64, movegen::Play)> {
         let was_exact = std::mem::replace(&mut self.exact, true);
-        let mut moves = in_bag_moves(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
+        let mut moves =
+            in_bag_moves::<LEAN, _, _>(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
         let bag_len = pos.bag_len();
         let mut asked = (0..moves.len()).collect::<Vec<_>>();
         asked.sort_by_key(|&i| match &moves[i] {
@@ -4973,8 +5029,14 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         let play = match first {
             Some(play) if empties(&play) => play,
             _ => {
-                let moves =
-                    in_bag_moves(self.gc, self.kwg, self.arm_tables, self.klv, self.mg, pos);
+                let moves = in_bag_moves::<LEAN, _, _>(
+                    self.gc,
+                    self.kwg,
+                    self.arm_tables,
+                    self.klv,
+                    self.mg,
+                    pos,
+                );
                 let Some(play) =
                     (moves.into_iter().filter(empties)).max_by_key(|play| match play {
                         movegen::Play::Place { score, .. } => *score,
@@ -5226,7 +5288,7 @@ impl<N: kwg::Node, L: kwg::Node> BagSearch<'_, '_, N, L> {
         let was_exact = std::mem::replace(&mut self.exact, true);
         let made = info.exchanges[info.mover as usize];
         let (gc, kwg, arm_tables, klv) = (self.gc, self.kwg, self.arm_tables, self.klv);
-        let mut moves = moves_of(
+        let mut moves = moves_of::<LEAN, _, _>(
             self.mg,
             &movegen::BoardSnapshot {
                 board_tiles: &info.board,
@@ -11171,7 +11233,8 @@ mod tests {
             return value;
         }
         let mut value = f64::NEG_INFINITY;
-        for play in super::in_bag_moves(r.gc, r.kwg, r.arm_tables, r.klv, r.mg, pos) {
+        for play in super::in_bag_moves::<false, _, _>(r.gc, r.kwg, r.arm_tables, r.klv, r.mg, pos)
+        {
             value = value.max(bag_reference_move(r, pos, &play));
         }
         r.known.insert(key, value);
@@ -11323,7 +11386,7 @@ mod tests {
             return value;
         }
         let made = info.exchanges[info.mover as usize];
-        let moves = super::moves_of(
+        let moves = super::moves_of::<false, _, _>(
             r.mg,
             &movegen::BoardSnapshot {
                 board_tiles: &info.board,
