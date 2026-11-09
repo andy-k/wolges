@@ -4039,7 +4039,11 @@ pub(crate) fn subrack_order(
     order.extend(keys.iter().map(|&key| (key & 0xffffff) as u8));
 }
 
-// a rack's subracks in build_subracks's walk of them, each with its leave
+// a rack's subracks in build_subracks's walk of them, each with its leave: the
+// rack's tiles in order, each one's count kept running from none to all, the
+// last tile's turning fastest, so a step keeps one more of the last tile with
+// room and none of each after it, and moves its key, the key's part (key_part
+// adds up), the leave's index, the tiles played, and the blanks by place values
 #[inline]
 fn walk_subracks<P: alphagram::KeyPlaces>(
     multi_leaves: &klv::MultiLeaves,
@@ -4047,80 +4051,76 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
     rack_tally: &[u8],
     subracks: &mut Vec<Subrack>,
 ) {
-    struct Tiles<'a, P> {
-        places: P,
-        multi_leaves: &'a klv::MultiLeaves,
-        of: &'a [(u8, u8, u32, u128)],
-    }
-    fn rec<P: alphagram::KeyPlaces>(
-        tiles: &Tiles<'_, P>,
-        i: usize,
-        idx: u32,
-        key: u128,
-        played: u8,
-        blanks: u8,
-        out: &mut Vec<Subrack>,
-    ) {
-        if i == tiles.of.len() {
-            debug_assert!(tiles.places.holds(
-                key,
-                &[alphagram::Nibble::MAX_COUNT; alphagram::Nibble::TILES]
-            ));
-            out.push(Subrack {
-                key,
-                part: anagrams::key_part(key),
-                leave_idx: idx,
-                leave_value: tiles.multi_leaves.leave_value(idx),
-                num_played: played,
-                blanks,
-            });
-            return;
-        }
-        let (tile, count, place_value, key_place_value) = tiles.of[i];
-        for kept in 0..=count {
-            let taken = count - kept;
-            rec(
-                tiles,
-                i + 1,
-                idx + kept as u32 * place_value,
-                key + taken as u128 * key_place_value,
-                played + taken,
-                blanks + if tile == 0 { taken } else { 0 },
-                out,
-            );
-        }
-    }
-    subracks.clear();
-    let mut tiles = [(0u8, 0u8, 0u32, 0u128); MAX_ALPHABET_LEN];
+    // each tile on the rack: its count; its place values in the leave's index,
+    // in the key (none for the blank), and in the key's part; and whether it is
+    // the blank
+    let mut tiles = [(0u8, 0u32, 0u128, 0u128, 0u8); MAX_ALPHABET_LEN];
+    let mut kept = [0u8; MAX_ALPHABET_LEN];
     let mut n = 0;
+    let (mut key, mut part, mut played, mut blanks) = (0u128, 0u128, 0u8, 0u8);
     for (tile, &count) in rack_tally.iter().enumerate() {
         if count != 0 {
+            let blank = (tile == 0) as u8;
+            let key_place_value = if tile == 0 {
+                0
+            } else {
+                places.place_value(tile as u8)
+            };
+            let part_place_value = anagrams::key_part(key_place_value);
             tiles[n] = (
-                tile as u8,
                 count,
                 multi_leaves.place_value(tile as u8),
-                if tile == 0 {
-                    0
-                } else {
-                    places.place_value(tile as u8)
-                },
+                key_place_value,
+                part_place_value,
+                blank,
             );
+            key += count as u128 * key_place_value;
+            part = part.wrapping_add(part_place_value.wrapping_mul(count as u128));
+            played += count;
+            blanks += blank * count;
             n += 1;
         }
     }
-    rec(
-        &Tiles {
-            places,
-            multi_leaves,
-            of: &tiles[..n],
-        },
-        0,
-        0,
-        0,
-        0,
-        0,
-        subracks,
-    );
+    subracks.clear();
+    let mut idx = 0u32;
+    loop {
+        debug_assert!(places.holds(
+            key,
+            &[alphagram::Nibble::MAX_COUNT; alphagram::Nibble::TILES]
+        ));
+        debug_assert_eq!(part, anagrams::key_part(key));
+        subracks.push(Subrack {
+            key,
+            part,
+            leave_idx: idx,
+            leave_value: multi_leaves.leave_value(idx),
+            num_played: played,
+            blanks,
+        });
+        let mut i = n;
+        loop {
+            if i == 0 {
+                return;
+            }
+            i -= 1;
+            let (count, place_value, key_place_value, part_place_value, blank) = tiles[i];
+            if kept[i] < count {
+                kept[i] += 1;
+                idx += place_value;
+                key -= key_place_value;
+                part = part.wrapping_sub(part_place_value);
+                played -= 1;
+                blanks -= blank;
+                break;
+            }
+            kept[i] = 0;
+            idx -= count as u32 * place_value;
+            key += count as u128 * key_place_value;
+            part = part.wrapping_add(part_place_value.wrapping_mul(count as u128));
+            played += count;
+            blanks += blank * count;
+        }
+    }
 }
 
 // a rack's subracks in sort_subracks's order, by played their starts: sorted,
