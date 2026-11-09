@@ -457,6 +457,8 @@ struct WorkingBuffer {
     span_prefix: Box<[SpanPrefix]>, // r*(c+1), then c*(r+1): each lane's sums
     span_lanes: Box<[SpanLane]>,    // rows + cols, across lanes first
     span_turn: u32,                 // the generation's, for span_lanes
+    exist_memo: Box<[ExistSlot]>,   // key check answers, made at first use
+    exist_turn: u32,                // the generation's, for exist_memo
     anchor_left_bounds: Vec<i32>,   // per lean placement, two blocks by left edge
     bounds_at: usize,               // the popped lean placement's block, or usize::MAX
     used_letters_tally: Vec<u8>,
@@ -536,6 +538,8 @@ impl Clone for WorkingBuffer {
             span_prefix: self.span_prefix.clone(),
             span_lanes: self.span_lanes.clone(),
             span_turn: self.span_turn,
+            exist_memo: self.exist_memo.clone(),
+            exist_turn: self.exist_turn,
             anchor_left_bounds: self.anchor_left_bounds.clone(),
             bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
@@ -623,6 +627,8 @@ impl Clone for WorkingBuffer {
         self.span_prefix.clone_from(&source.span_prefix);
         self.span_lanes.clone_from(&source.span_lanes);
         self.span_turn = source.span_turn;
+        self.exist_memo.clone_from(&source.exist_memo);
+        self.exist_turn = source.exist_turn;
         self.anchor_left_bounds
             .clone_from(&source.anchor_left_bounds);
         self.bounds_at = source.bounds_at;
@@ -745,6 +751,8 @@ impl WorkingBuffer {
             span_lanes: vec![SpanLane::new(); dim.rows as usize + dim.cols as usize]
                 .into_boxed_slice(),
             span_turn: 0,
+            exist_memo: Box::new([]),
+            exist_turn: 0,
             anchor_left_bounds: Vec::new(),
             bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
@@ -1535,27 +1543,74 @@ impl SpanCheck for () {
     }
 }
 
-// a span that plays the whole rack through board tiles holds a word only if the
-// key filter holds the rack's key plus the tiles it crosses
-#[derive(Clone, Copy)]
-struct FullRack<'a> {
+// a span through board tiles holds a word only if the key filter holds some
+// subrack of its size plus the tiles it crosses; the answer kept a generation
+// by (the crossed tiles' key, the tiles played). Asked only of a span that
+// plays min_played tiles or more: a shorter span nearly always holds a word, so
+// its probes would cost more than they save.
+struct KeyCheck<'a> {
     source: &'a anagrams::Anagrams,
-    key: u128,
-    len: u8,
+    subracks: &'a [Subrack],
+    by_played: &'a [u32],
     prefix: &'a [SpanPrefix], // the lane's
+    turn: u32,
+    memo: &'a mut [ExistSlot],
+    min_played: u8, // EXIST_MIN_PLAYED, or the whole rack when it holds fewer
 }
 
-impl SpanCheck for Option<FullRack<'_>> {
+const EXIST_MEMO_SLOTS: usize = 4096;
+const EXIST_MIN_PLAYED: u8 = 6;
+
+#[derive(Clone, Copy)]
+struct ExistSlot {
+    key: u128,
+    turn: u32,
+    played: u8,
+    held: bool,
+}
+
+impl ExistSlot {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            key: 0,
+            turn: 0,
+            played: 0,
+            held: false,
+        }
+    }
+}
+
+impl SpanCheck for Option<KeyCheck<'_>> {
     #[inline(always)]
     fn refuses(&mut self, idx_left: i8, idx_right: i8, num_played: u8) -> bool {
-        match self {
-            Some(full) if num_played == full.len => {
-                let crossed =
-                    full.prefix[idx_right as usize].key - full.prefix[idx_left as usize].key;
-                !full.source.may_hold(alphagram::Fitted(full.key + crossed))
-            }
-            _ => false,
+        let Some(check) = self.as_mut() else {
+            return false;
+        };
+        if num_played < check.min_played {
+            return false;
         }
+        let crossed = check.prefix[idx_right as usize].key - check.prefix[idx_left as usize].key;
+        let at =
+            (anagrams::key_hash(crossed) ^ num_played as u64) as usize & (EXIST_MEMO_SLOTS - 1);
+        let slot = &mut check.memo[at];
+        if slot.turn != check.turn || slot.key != crossed || slot.played != num_played {
+            let from = check.by_played[num_played as usize] as usize;
+            let upto = check.by_played[num_played as usize + 1] as usize;
+            let mut held = false;
+            for subrack in &check.subracks[from..upto] {
+                held |= check
+                    .source
+                    .may_hold(alphagram::Fitted(crossed + subrack.key));
+            }
+            *slot = ExistSlot {
+                key: crossed,
+                turn: check.turn,
+                played: num_played,
+                held,
+            };
+        }
+        !slot.held
     }
 }
 
@@ -1669,17 +1724,17 @@ fn feasible_lengths_of_subracks(
     found
 }
 
-// the whole rack's key, and the lane's span sums filled for it, when a span
-// through board tiles that plays the whole rack can be refused by the key
-// filter at shadow time: the unblanked classic game under the tables
+// the lane's span sums filled, when a span through board tiles can be refused
+// by the key filter at shadow time (KeyCheck): the unblanked classic game under
+// the tables, whose memo is made at its first use
 #[inline(always)]
-fn fill_full_rack<'a, N: kwg::Node, L: kwg::Node>(
+fn fill_key_check<'a, N: kwg::Node, L: kwg::Node>(
     working_buffer: &mut WorkingBuffer,
     board_snapshot: &BoardSnapshot<'a, N, L>,
     dim: &matrix::Dim,
     down: bool,
     lane: i8,
-) -> Option<(&'a anagrams::Anagrams, u128, u8, usize)> {
+) -> Option<(&'a anagrams::Anagrams, usize)> {
     let source = board_snapshot.anagrams?;
     if !matches!(
         board_snapshot.game_config.game_rules(),
@@ -1689,14 +1744,12 @@ fn fill_full_rack<'a, N: kwg::Node, L: kwg::Node>(
     {
         return None;
     }
-    let n = working_buffer.num_tiles_on_rack as usize;
-    let from = working_buffer.subracks_by_played[n] as usize;
-    // a rack without a blank has one subrack of its own size: itself
-    debug_assert_eq!(working_buffer.subracks_by_played[n + 1] as usize - from, 1);
-    let key = working_buffer.subracks[from].key;
+    if working_buffer.exist_memo.is_empty() {
+        working_buffer.exist_memo = vec![ExistSlot::new(); EXIST_MEMO_SLOTS].into_boxed_slice();
+    }
     let (at, _) =
         working_buffer.fill_span_lane(board_snapshot.board_tiles, dim, source.layout(), down, lane);
-    Some((source, key, n as u8, at))
+    Some((source, at))
 }
 
 #[inline]
@@ -6044,6 +6097,14 @@ fn kurnia_gen_place_moves_iter<
     let dim = board_layout.dim();
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
+    // the key check's answers are asked afresh each generation of this arm, and
+    // its memo cleared when the generation number wraps
+    working_buffer.exist_turn = working_buffer.exist_turn.wrapping_add(1);
+    if working_buffer.exist_turn == 0 {
+        working_buffer.exist_memo.fill(ExistSlot::new());
+        working_buffer.exist_turn = 1;
+    }
+    let min_played = EXIST_MIN_PLAYED.min(num_max_played);
 
     let area = (dim.rows as isize * dim.cols as isize) as usize;
     let dirty_rows = working_buffer.dirty_rows;
@@ -6124,7 +6185,7 @@ fn kurnia_gen_place_moves_iter<
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
-        let full = fill_full_rack(working_buffer, board_snapshot, dim, false, row);
+        let check = fill_key_check(working_buffer, board_snapshot, dim, false, row);
         gen_place_placements(
             &mut GenPlacePlacementsParams {
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
@@ -6157,11 +6218,14 @@ fn kurnia_gen_place_moves_iter<
                 per_span: true,
                 left_bounds: &mut working_buffer.anchor_left_bounds,
                 bounds_stride,
-                check: full.map(|(source, key, len, at)| FullRack {
+                check: check.map(|(source, at)| KeyCheck {
                     source,
-                    key,
-                    len,
+                    subracks: &working_buffer.subracks,
+                    by_played: &working_buffer.subracks_by_played,
                     prefix: &working_buffer.span_prefix[at..at + dim.cols as usize + 1],
+                    turn: working_buffer.exist_turn,
+                    memo: &mut working_buffer.exist_memo,
+                    min_played,
                 }),
             },
             true,
@@ -6185,7 +6249,7 @@ fn kurnia_gen_place_moves_iter<
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
-        let full = fill_full_rack(working_buffer, board_snapshot, dim, true, col);
+        let check = fill_key_check(working_buffer, board_snapshot, dim, true, col);
         gen_place_placements(
             &mut GenPlacePlacementsParams {
                 board_strip: &working_buffer.transposed_board_tiles
@@ -6217,11 +6281,14 @@ fn kurnia_gen_place_moves_iter<
                 per_span: true,
                 left_bounds: &mut working_buffer.anchor_left_bounds,
                 bounds_stride,
-                check: full.map(|(source, key, len, at)| FullRack {
+                check: check.map(|(source, at)| KeyCheck {
                     source,
-                    key,
-                    len,
+                    subracks: &working_buffer.subracks,
+                    by_played: &working_buffer.subracks_by_played,
                     prefix: &working_buffer.span_prefix[at..at + dim.rows as usize + 1],
+                    turn: working_buffer.exist_turn,
+                    memo: &mut working_buffer.exist_memo,
+                    min_played,
                 }),
             },
             false,
