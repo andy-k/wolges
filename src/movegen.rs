@@ -3404,6 +3404,10 @@ fn leave_value_of<L: kwg::Node>(
 // what a walk along a run of the word graph's nodes knows of the tiles ahead of
 // it in the run
 trait RunLetters: Copy {
+    // whether from knows every run's tiles, so a walk takes a node's tiles in
+    // ascending order whatever the graph's order
+    const KNOWN: bool;
+
     // whether the run from node p on may hold a tile in candidates
     fn may_hold(self, p: i32, candidates: u64) -> bool;
 
@@ -3415,6 +3419,8 @@ trait RunLetters: Copy {
 
 // nothing, so every run may
 impl RunLetters for () {
+    const KNOWN: bool = false;
+
     #[inline(always)]
     fn may_hold(self, _p: i32, _candidates: u64) -> bool {
         true
@@ -3428,6 +3434,8 @@ impl RunLetters for () {
 
 // by node, the tiles from it to the end of its run (kwg::Kwg::compute_letter_bits)
 impl RunLetters for &[u64] {
+    const KNOWN: bool = true;
+
     #[inline(always)]
     fn may_hold(self, p: i32, candidates: u64) -> bool {
         self[p as usize] & candidates != 0
@@ -8346,6 +8354,23 @@ fn kurnia_gen_raw_place_moves<
         .rack_size()
         .min(working_buffer.num_tiles_on_rack);
     lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
+    // a rack of one tile under classic rules, whose every play places that tile
+    // alone: the plays the cross sets give, in the walk's order where the walk
+    // takes a node's tiles ascending
+    if R::KNOWN
+        && num_max_played == 1
+        && working_buffer.num_tiles_on_rack == 1
+        && matches!(game_config.game_rules(), game_config::GameRules::Classic)
+        && !working_buffer.is_census
+    {
+        kurnia_gen_raw_one_tile_moves(
+            board_snapshot,
+            working_buffer,
+            multi_leaves,
+            found_place_move,
+        );
+        return;
+    }
     let feasible_lengths = feasible_word_lengths::<false>(
         board_snapshot.anagrams,
         board_snapshot.rack_lengths,
@@ -8510,6 +8535,184 @@ fn kurnia_gen_raw_place_moves<
         }
     }
     working_buffer.raw_anchors = anchors;
+}
+
+// kurnia_gen_raw_place_moves's moves for a rack of one tile, with no walk: a
+// tile placed alone makes at most one word across and one down, and its
+// square's cross set each way says which letters make that way's word, bit 0
+// whether a tile is beside it that way. They come as that walk finds them when
+// it takes a node's tiles ascending: lane by lane, each lane's runs of tiles
+// from the left, a run's square after it (unless it is the one square between
+// two runs, which the next run's walk takes) and then its square before it,
+// whose word takes in a run just beyond. A down lane plays only a square no
+// tile is beside across: the across lane plays the others
+#[inline]
+fn kurnia_gen_raw_one_tile_moves<
+    'a,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer<G>,
+    multi_leaves: &'a klv::MultiLeaves,
+    mut found_place_move: FoundPlaceMove,
+) {
+    let game_config = board_snapshot.game_config;
+    let alphabet = game_config.alphabet();
+    let dim = game_config.board_layout().dim();
+    let (rows, cols) = (dim.rows as usize, dim.cols as usize);
+    let Some(tile) = working_buffer
+        .rack_tally
+        .iter()
+        .position(|&count| count != 0)
+    else {
+        return;
+    };
+    let tile = tile as u8;
+    // the letters the tile may be (a blank, any), its value before its square's
+    // multiplier, and the leave once it is played, as the walk has them
+    let (letters, value, blank_bit) = if tile == 0 {
+        (
+            (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
+            alphabet.scaled_score(0),
+            0x80,
+        )
+    } else {
+        (1u64 << tile, alphabet.score(tile) as i32 * equity::SCALE, 0)
+    };
+    working_buffer.rack_tally[tile as usize] -= 1;
+    let leave_value = leave_value_of(
+        multi_leaves,
+        board_snapshot.klv,
+        &working_buffer.rack_tally,
+        multi_leaves
+            .pass_leave_idx()
+            .wrapping_sub(multi_leaves.place_value(tile)),
+        working_buffer.num_tiles_in_bag,
+        working_buffer.play_out_bonus,
+        alphabet,
+    );
+    working_buffer.rack_tally[tile as usize] += 1;
+    let bonus = game_config.num_played_bonus(1) as i32 * equity::SCALE;
+    for at in (0..rows + cols).rev() {
+        let down = at >= rows;
+        let lane = if down { at - rows } else { at };
+        if (if down {
+            working_buffer.lane_cols
+        } else {
+            working_buffer.lane_rows
+        }) & (G::from(1) << lane as u32)
+            == G::from(0)
+        {
+            continue;
+        }
+        let len = if down { rows } else { cols };
+        let start = lane * len;
+        let end = start + len;
+        // the lane's strips, and by square the cross sets the other way, which
+        // say the letters that make the lane's word there
+        let (board_strip, cross_set_strip, cross_set_buffer_strip, words_cross_sets, stride) =
+            if down {
+                (
+                    &working_buffer.transposed_board_tiles[start..end],
+                    &working_buffer.cross_set_for_down_plays[start..end],
+                    &working_buffer.cross_set_buffer_for_across_plays[start..end],
+                    &working_buffer.cross_set_for_across_plays[lane..],
+                    cols,
+                )
+            } else {
+                (
+                    &board_snapshot.board_tiles[start..end],
+                    &working_buffer.cross_set_for_across_plays[start..end],
+                    &working_buffer.cross_set_buffer_for_down_plays[start..end],
+                    &working_buffer.cross_set_for_down_plays[lane..],
+                    rows,
+                )
+            };
+        let (word_multipliers, tile_multipliers, face_values) = if down {
+            (
+                &working_buffer.remaining_word_multipliers_for_down_plays[start..end],
+                &working_buffer.remaining_tile_multipliers_for_down_plays[start..end],
+                &working_buffer.face_value_scores_for_down_plays[start..end],
+            )
+        } else {
+            (
+                &working_buffer.remaining_word_multipliers_for_across_plays[start..end],
+                &working_buffer.remaining_tile_multipliers_for_across_plays[start..end],
+                &working_buffer.face_value_scores_for_across_plays[start..end],
+            )
+        };
+        let (perpendicular_word_multipliers, perpendicular_scores) = if down {
+            (
+                &working_buffer.perpendicular_word_multipliers_for_down_plays[start..end],
+                &working_buffer.perpendicular_scores_for_down_plays[start..end],
+            )
+        } else {
+            (
+                &working_buffer.perpendicular_word_multipliers_for_across_plays[start..end],
+                &working_buffer.perpendicular_scores_for_across_plays[start..end],
+            )
+        };
+        let word_buffer = if down {
+            &mut working_buffer.word_buffer_for_down_plays[start..end]
+        } else {
+            &mut working_buffer.word_buffer_for_across_plays[start..end]
+        };
+        // the plays on square idx of the word from word_start to word_end, its
+        // board tiles' face values summed
+        let mut play_at = |idx: usize, word_start: usize, word_end: usize, face: i32| {
+            let bits = cross_set_strip[idx].bits;
+            if bits == 1 || (down && bits != 0) {
+                return;
+            }
+            let mut fits =
+                words_cross_sets[idx * stride].bits & letters & if bits == 0 { !0 } else { bits };
+            let tile_value = value * tile_multipliers[idx] as i32;
+            let score = (face + tile_value) * word_multipliers[idx] as i32
+                + perpendicular_scores[idx]
+                + tile_value * perpendicular_word_multipliers[idx] as i32
+                + bonus;
+            while fits != 0 {
+                let letter = fits.trailing_zeros() as u8;
+                fits &= fits - 1;
+                word_buffer[idx] = letter | blank_bit;
+                found_place_move(
+                    down,
+                    lane as i8,
+                    word_start as i8,
+                    &word_buffer[word_start..word_end],
+                    score,
+                    leave_value,
+                );
+            }
+        };
+        let mut idx = 0;
+        while idx < len {
+            if board_strip[idx] == 0 {
+                idx += 1;
+                continue;
+            }
+            let run_start = idx;
+            while idx < len && board_strip[idx] != 0 {
+                idx += 1;
+            }
+            let run_face = cross_set_buffer_strip[run_start].score;
+            if idx < len && (idx + 1 == len || board_strip[idx + 1] == 0) {
+                play_at(idx, run_start, idx + 1, run_face);
+            }
+            if run_start > 0 {
+                let mut word_start = run_start - 1;
+                let mut face = run_face;
+                while word_start > 0 && board_strip[word_start - 1] != 0 {
+                    word_start -= 1;
+                    face += face_values[word_start];
+                }
+                play_at(run_start - 1, word_start, idx, face);
+            }
+        }
+    }
 }
 
 const PLACEMENT_BUCKETS: usize = 64;
@@ -10520,6 +10723,110 @@ mod tests {
                     assert_eq!(walked, stopped, "{fen}");
                     assert!(!walked.is_empty(), "{fen} generated nothing at all");
                 }
+            }
+        }
+    }
+
+    // a rack of one tile, generated from the cross sets where the walk would
+    // take a node's tiles ascending, plays what the walk finds, in its order,
+    // with its scores, on any lanes
+    #[inline]
+    #[test]
+    fn a_lone_tile_plays_what_the_walk_finds_in_its_order() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let fifteen = [
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
+            "15/15/15/15/15/15/15/3CAT1EAT5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/2CAT2EAT5/15/15/15/15/15/15/15",
+            "CARE11/15/15/15/15/15/15/15/15/15/15/15/15/15/11CARE",
+            "A14/R14/T14/15/15/15/15/15/15/15/15/15/14c/14a/14t",
+            "15/15/15/15/15/15/4cArE7/4A10/4N10/4EAT8/15/15/15/15/15",
+        ];
+        let twenty_one = [
+            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
+            "CAT1EAT14/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/17CARE",
+        ];
+        let racks = ["A", "C", "E", "N", "R", "S", "T", "Z", "?"];
+        let masks = [
+            (!0u128, !0u128),
+            (1 << 7, 0),
+            (0, 1 << 6),
+            ((1 << 7) | (1 << 10), (1 << 6) | (1 << 9)),
+        ];
+        for (gc, boards) in [
+            (game_config::make_english_game_config(), &fifteen[..]),
+            (
+                game_config::make_super_english_game_config(),
+                &twenty_one[..],
+            ),
+        ] {
+            let kwg = sweep_kwg_covering(&gc);
+            let run_letter_bits = kwg.compute_letter_bits().letter_bits;
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            for fen in boards {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                let mut placed = 0;
+                for rack in racks {
+                    let rack = parse_test_rack(gc.alphabet(), rack);
+                    for (rows, cols) in masks {
+                        let plays = |g: &KurniaMoveGenerator| {
+                            g.plays
+                                .iter()
+                                .map(|p| match &p.play {
+                                    Play::Place { score, .. } => {
+                                        format!("{} {score}\n", p.play.fmt(&board_snapshot))
+                                    }
+                                    Play::Exchange { .. } => {
+                                        format!("{}\n", p.play.fmt(&board_snapshot))
+                                    }
+                                })
+                                .collect::<String>()
+                        };
+                        let mut walker = KurniaMoveGenerator::new(&gc);
+                        walker.gen_moves_raw_lanes_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            0,
+                            PassPolicy::AsACandidate,
+                            rows,
+                            cols,
+                        );
+                        let walked = plays(&walker);
+                        placed += walker
+                            .plays
+                            .iter()
+                            .filter(|p| matches!(p.play, Play::Place { .. }))
+                            .count();
+                        // on a fresh generator, and on the walker's, whose
+                        // cross sets the walk left
+                        let mut fresh = KurniaMoveGenerator::new(&gc);
+                        for move_generator in [&mut fresh, &mut walker] {
+                            move_generator.gen_moves_raw_lanes_unsorted_by_runs(
+                                &run_letter_bits,
+                                &board_snapshot,
+                                &rack,
+                                rows,
+                                cols,
+                            );
+                            assert_eq!(
+                                walked,
+                                plays(move_generator),
+                                "{fen}, rows {rows:#x}, columns {cols:#x}"
+                            );
+                        }
+                    }
+                }
+                assert!(placed > 0, "{fen} placed no lone tile");
             }
         }
     }
