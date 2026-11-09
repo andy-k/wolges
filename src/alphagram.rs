@@ -89,6 +89,12 @@ impl KeyLayout {
         self.max_count[tile as usize]
     }
 
+    // the most of each tile a key counts, by tile
+    #[inline(always)]
+    pub fn max_counts(&self) -> &[u8] {
+        &self.max_count
+    }
+
     #[inline(always)]
     pub fn count_in(&self, key: u128, tile: u8) -> u8 {
         let width = u8::BITS - self.max_count[tile as usize].leading_zeros();
@@ -151,6 +157,90 @@ impl KeyLayout {
             key += 1u128 << self.shift[tile as usize];
         }
         Some(key)
+    }
+}
+
+// a tile's place in a key as the generator's hot loops add it, its count in a
+// key as they read it, whether a key holds no tile past its most, and a tile's
+// most: by a packed layout a table read, by nibbles a shift, whose counts, the
+// most of each tile, a caller gives
+pub trait KeyPlaces: Copy {
+    fn place_value(self, tile: u8) -> u128;
+    fn count_in(self, key: u128, tile: u8) -> u8;
+    fn holds(self, key: u128, counts: &[u8]) -> bool;
+    fn max_count(self, tile: u8, counts: &[u8]) -> u8;
+}
+
+// four bits a tile, tile t's count at bit 4t
+#[derive(Clone, Copy)]
+pub struct Nibble;
+
+impl Nibble {
+    // the tiles a key holds four bits each
+    pub const TILES: usize = KeyLayout::BITS as usize / 4;
+    // the most of a tile four bits count
+    pub const MAX_COUNT: u8 = 15;
+
+    // a word's key, or none if it holds a tile past its most (counts, by tile)
+    #[inline(always)]
+    pub fn key_of(counts: &[u8], word: &[u8]) -> Option<u128> {
+        let mut seen = [0u8; Self::TILES];
+        let mut key = 0u128;
+        for &tile in word {
+            let count = seen.get_mut(tile as usize)?;
+            *count += 1;
+            if tile == 0 || *count > *counts.get(tile as usize)? {
+                return None;
+            }
+            key += Nibble.place_value(tile);
+        }
+        Some(key)
+    }
+}
+
+impl KeyPlaces for Nibble {
+    #[inline(always)]
+    fn place_value(self, tile: u8) -> u128 {
+        1u128 << (tile << 2)
+    }
+
+    #[inline(always)]
+    fn count_in(self, key: u128, tile: u8) -> u8 {
+        (key >> (tile << 2)) as u8 & 0xf
+    }
+
+    // every nibble, a tile's or not, no more than its tile's most
+    #[inline(always)]
+    fn holds(self, key: u128, counts: &[u8]) -> bool {
+        (0..Nibble::TILES)
+            .all(|tile| (key >> (tile << 2)) as u8 & 0xf <= counts.get(tile).copied().unwrap_or(0))
+    }
+
+    #[inline(always)]
+    fn max_count(self, tile: u8, counts: &[u8]) -> u8 {
+        counts[tile as usize]
+    }
+}
+
+impl KeyPlaces for &KeyLayout {
+    #[inline(always)]
+    fn place_value(self, tile: u8) -> u128 {
+        KeyLayout::place_value(self, tile)
+    }
+
+    #[inline(always)]
+    fn count_in(self, key: u128, tile: u8) -> u8 {
+        KeyLayout::count_in(self, key, tile)
+    }
+
+    #[inline(always)]
+    fn holds(self, key: u128, _counts: &[u8]) -> bool {
+        KeyLayout::holds(self, key)
+    }
+
+    #[inline(always)]
+    fn max_count(self, tile: u8, _counts: &[u8]) -> u8 {
+        KeyLayout::max_count(self, tile)
     }
 }
 
@@ -294,5 +384,45 @@ mod tests {
         assert!(!wide.matches(&super_english, 15));
         assert_eq!(wide.max_count(5), 21);
         assert_eq!(KeyLayout::of(&super_english, 15).unwrap().max_count(5), 15);
+    }
+
+    #[test]
+    #[inline]
+    fn a_nibble_key_counts_each_tile_in_four_bits() {
+        // a word's nibble key counts each tile as the layout's key does, tile
+        // t's count at bit 4t; a word past a tile's most, a blank, or a tile
+        // the counts do not hold has no key
+        let english = crate::alphabet::make_english_alphabet();
+        let layout = KeyLayout::of(&english, 15).unwrap();
+        let counts = layout.max_counts();
+        assert_eq!(Nibble::key_of(counts, &[1, 2, 3]), Some(0x1110));
+        assert_eq!(Nibble.place_value(26), 1u128 << 104);
+        let words: [&[u8]; 4] = [
+            &[1, 2, 3, 1, 20],
+            &[5; 14],
+            &[26, 26, 26],
+            &[19, 1, 20, 9, 18, 5, 19],
+        ];
+        for word in words {
+            let key = Nibble::key_of(counts, word).unwrap();
+            assert!(Nibble.holds(key, counts));
+            assert_eq!(
+                key,
+                word.iter()
+                    .map(|&tile| Nibble.place_value(tile))
+                    .sum::<u128>()
+            );
+            let packed = layout.key_of(word).unwrap();
+            for tile in 1..english.len() {
+                assert_eq!(Nibble.count_in(key, tile), layout.count_in(packed, tile));
+            }
+        }
+        assert_eq!(Nibble.max_count(5, counts), 14);
+        assert!(Nibble::key_of(counts, &[5; 15]).is_none());
+        assert!(Nibble::key_of(counts, &[26, 26, 26, 26]).is_none());
+        assert!(Nibble::key_of(counts, &[0]).is_none());
+        assert!(Nibble::key_of(counts, &[27]).is_none());
+        assert!(!Nibble.holds(4 * Nibble.place_value(26), counts));
+        assert!(!Nibble.holds(Nibble.place_value(0), counts));
     }
 }
