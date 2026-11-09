@@ -784,15 +784,13 @@ impl WorkingBuffer {
         !want_raw
             && !self.is_census
             && self.anagrams_fit_config
-            && self.rack_tally[0] <= 2
             && !self.subracks.is_empty()
             && layout
                 .is_some_and(|layout| layout.covers(board_snapshot.game_config.alphabet(), extent))
     }
 
     // the anagrams a jumbled turn reads its multisets and cross sets from by
-    // key: where they fit the game and init built the subracks, for a rack of
-    // at most two blanks as turn_is_supported takes for the classic table
+    // key: where they fit the game and init built the subracks
     #[inline]
     fn jumbled_keys<'a, N: kwg::Node, L: kwg::Node>(
         &self,
@@ -800,9 +798,9 @@ impl WorkingBuffer {
     ) -> Option<&'a anagrams::Anagrams> {
         match board_snapshot.game_config.game_rules() {
             game_config::GameRules::Classic => None,
-            game_config::GameRules::Jumbled => board_snapshot.anagrams.filter(|_| {
-                self.anagrams_fit_config && self.rack_tally[0] <= 2 && !self.subracks.is_empty()
-            }),
+            game_config::GameRules::Jumbled => board_snapshot
+                .anagrams
+                .filter(|_| self.anagrams_fit_config && !self.subracks.is_empty()),
         }
     }
 
@@ -3744,6 +3742,14 @@ fn gen_classic_place_moves<
         if kept_at.is_none() {
             env.params.span_memo.visits.push((si as u32, 0));
         }
+        if subrack.blanks >= 3 {
+            // the blanks' letters, on the stack: a subrack holds at most
+            // u8::MAX of them
+            let mut letters = [0u8; u8::MAX as usize];
+            let letters = &mut letters[..subrack.blanks as usize];
+            visit_blanks(env, e, len, subrack.leave_idx, key, letters, 0);
+            return true;
+        }
         if subrack.blanks >= 2 {
             let key_holds = env.layout.holds(key);
             let mut first = e.blank_ok & !1;
@@ -3771,6 +3777,162 @@ fn gen_classic_place_moves<
             fit_words_apart(env, found, subrack.leave_idx, tile, 0);
         });
         true
+    }
+
+    // a subrack of three blanks or more: the letters of all but the last blank,
+    // each no less than the one before and within what a word holds, then the
+    // last blank's by the blanked table, no less than the one before it, so
+    // each set of letters is found once
+    #[cold]
+    fn visit_blanks<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        e: &Extent,
+        len: u8,
+        leave_idx: u32,
+        key: u128,
+        letters: &mut [u8],
+        chosen: usize,
+    ) {
+        let source = env.source;
+        let least = if chosen == 0 { 1 } else { letters[chosen - 1] };
+        if chosen + 1 == letters.len() {
+            source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
+                if tile < least {
+                    return;
+                }
+                letters[chosen] = tile;
+                fit_words_blanks(env, source.words_at(at), leave_idx, letters);
+            });
+            return;
+        }
+        let mut bits = e.blank_ok & !((1u64 << least) - 1);
+        while bits != 0 {
+            let letter = bits.trailing_zeros() as u8;
+            bits &= bits - 1;
+            let next = key + env.layout.place_value(letter);
+            // past what a word holds of the letter, no word (and on the third
+            // arm's keys no exact key)
+            if !env.layout.holds(next) {
+                continue;
+            }
+            letters[chosen] = letter;
+            visit_blanks(env, e, len, leave_idx, next, letters, chosen + 1);
+        }
+    }
+
+    // fit_words for a subrack of three blanks or more, letters ascending: each
+    // found word with a blank on a square of each letter, the squares of one
+    // letter's blanks ascending, so each set of squares is played once
+    #[cold]
+    fn fit_words_blanks<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        found: alphagram::Words<'_>,
+        leave_idx: u32,
+        letters: &[u8],
+    ) {
+        let len = (env.right - env.left) as u8;
+        let left = env.left as usize;
+        debug_assert_eq!(found.len, len);
+        for word in found.iter() {
+            let allowed = &env.params.allowed_strip[left..left + len as usize];
+            let mut fits = 1u64;
+            for (&a, &c) in allowed.iter().zip(word) {
+                fits &= a >> c;
+            }
+            if fits & 1 == 0 {
+                continue;
+            }
+            let mut main_score = env.base_main;
+            let mut perpendicular_cumulative_score = env.base_perp;
+            for (i, &c) in word.iter().enumerate() {
+                let pos = left + i;
+                if env.params.board_strip[pos] != 0 {
+                    continue;
+                }
+                let tile_value = env.alphabet.score(c) as i32
+                    * equity::SCALE
+                    * env.params.remaining_tile_multipliers_strip[pos] as i32;
+                main_score += tile_value;
+                perpendicular_cumulative_score +=
+                    tile_value * env.params.perpendicular_word_multipliers_strip[pos] as i32;
+                env.params.word_strip_buffer[pos] = c;
+            }
+            let score = main_score * env.word_multiplier
+                + perpendicular_cumulative_score
+                + env
+                    .params
+                    .board_snapshot
+                    .game_config
+                    .num_played_bonus(env.num_played) as i32
+                    * equity::SCALE;
+            let leave_value = leave_value_of(
+                env.params.multi_leaves,
+                env.params.board_snapshot.klv,
+                env.params.rack_tally,
+                leave_idx,
+                env.params.num_tiles_in_bag,
+                env.params.play_out_bonus,
+                env.alphabet,
+            );
+            place_blanks(env, word, letters, 0, 0, score, leave_value);
+        }
+    }
+
+    // the blanks from the i-th letter on put on the word's squares, a letter's
+    // from square from on when it repeats the letter before, then the play
+    #[cold]
+    fn place_blanks<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        word: &[u8],
+        letters: &[u8],
+        i: usize,
+        from: usize,
+        score: i32,
+        leave_value: i32,
+    ) {
+        if i == letters.len() {
+            debug_assert!(
+                score + leave_value <= env.bound,
+                "found {} when the bound for {} tiles was {}",
+                score + leave_value,
+                env.num_played,
+                env.bound,
+            );
+            env.params.threshold = (env.params.callback)(
+                env.left,
+                &env.params.word_strip_buffer[env.left as usize..env.right as usize],
+                score,
+                leave_value,
+            );
+            return;
+        }
+        let letter = letters[i];
+        let start = if i > 0 && letters[i - 1] == letter {
+            from
+        } else {
+            0
+        };
+        let left = env.left as usize;
+        let blank_value = env.alphabet.scaled_score(0);
+        let real_value = env.alphabet.score(letter) as i32 * equity::SCALE;
+        for (j, &c) in word.iter().enumerate().skip(start) {
+            let pos = left + j;
+            if c != letter || env.params.board_strip[pos] != 0 {
+                continue;
+            }
+            let delta = (blank_value - real_value)
+                * env.params.remaining_tile_multipliers_strip[pos] as i32;
+            let blanked = score
+                + delta * env.word_multiplier
+                + delta * env.params.perpendicular_word_multipliers_strip[pos] as i32;
+            env.params.word_strip_buffer[pos] = c | 0x80;
+            place_blanks(env, word, letters, i + 1, j + 1, blanked, leave_value);
+            env.params.word_strip_buffer[pos] = c;
+        }
     }
 }
 
@@ -3908,6 +4070,42 @@ fn gen_jumbled_place_moves<
                 }
             }
         }
+        // what a subrack of three blanks or more looks its multisets up with
+        struct MoreBlanks<'m> {
+            anagrams: &'m anagrams::Anagrams,
+            layout: &'m alphagram::KeyLayout,
+            alphabet_len: u8,
+            forced_key: u128,
+            len: u8,
+            size: u8,
+            out: &'m mut JumbledMultisets,
+        }
+        // the letters of all but the last of blanks blanks, ascending from
+        // least and within what a word holds, then the last's by the blanked
+        // table, no less than the one before it, so each multiset is kept once
+        fn more_blanks(more: &mut MoreBlanks<'_>, played: u128, least: u8, blanks: u8) {
+            if blanks == 1 {
+                let (layout, size) = (more.layout, more.size);
+                let out = &mut *more.out;
+                more.anagrams.blank_groups(
+                    alphagram::Fitted(more.forced_key + played),
+                    more.len,
+                    !1,
+                    |tile, _| {
+                        if tile >= least {
+                            keep(layout, played + layout.place_value(tile), size, out);
+                        }
+                    },
+                );
+                return;
+            }
+            for letter in least..more.alphabet_len {
+                let next = played + more.layout.place_value(letter);
+                if more.layout.holds(more.forced_key + next) {
+                    more_blanks(more, next, letter, blanks - 1);
+                }
+            }
+        }
         let layout = anagrams.layout();
         let mut forced_key = 0u128;
         let mut forced_len = 0u8;
@@ -3931,6 +4129,18 @@ fn gen_jumbled_place_moves<
                     1 => anagrams.blank_groups(alphagram::Fitted(key), len, !1, |tile, _| {
                         keep(layout, subrack.key + layout.place_value(tile), size, out);
                     }),
+                    blanks @ 3.. => {
+                        let mut more = MoreBlanks {
+                            anagrams,
+                            layout,
+                            alphabet_len,
+                            forced_key,
+                            len,
+                            size,
+                            out: &mut *out,
+                        };
+                        more_blanks(&mut more, subrack.key, 1, blanks);
+                    }
                     _ => {
                         for l1 in 1..alphabet_len {
                             if layout.count_in(key, l1) >= layout.max_count(l1) {
@@ -8194,9 +8404,11 @@ mod tests {
             for fen in boards {
                 let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
                 // the last two need both blanks for one letter: TART, TREAT
-                for rack in SWEEP_RACKS.iter().chain(&["??AR", "??ERA"]) {
+                for rack in SWEEP_RACKS
+                    .iter()
+                    .chain(&["??AR", "??ERA", "???AT", "????E"])
+                {
                     let rack = parse_test_rack(gc.alphabet(), rack);
-                    let few_blanks = rack.iter().filter(|&&tile| tile == 0).count() <= 2;
                     let mut made = Vec::new();
                     for anagrams in [None, Some(&held)] {
                         let board_snapshot = BoardSnapshot {
@@ -8233,7 +8445,7 @@ mod tests {
                                 .working_buffer
                                 .jumbled_keys(&board_snapshot)
                                 .is_some(),
-                            anagrams.is_some() && few_blanks,
+                            anagrams.is_some(),
                         );
                         let params = GenMovesParams {
                             board_snapshot: &board_snapshot,
@@ -8999,6 +9211,46 @@ mod tests {
             let found = place_plays(&mut reused, &by_other, &rack, false);
             assert_eq!(found, want, "lean {lean}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn racks_of_three_blanks_or_more_play_by_the_tables_as_by_the_walk() {
+        // super english deals four blanks: a rack of three or four plays by the
+        // tables what the lean arm's walk finds, on an empty board and on one
+        // with tiles
+        let gc = game_config::make_super_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let with_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        assert!(matches!(with_tables, anagrams::ArmTables::Anagrams(_)));
+        let lean = anagrams::ArmTables::build(&kwg, &gc, true).unwrap();
+        assert!(matches!(lean, anagrams::ArmTables::RackLengths(_)));
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let mut played = 0;
+        for fen in [
+            "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
+            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
+        ] {
+            let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+            for rack in ["???AE", "????A", "?ANTS??", "???"] {
+                let rack = parse_test_rack(gc.alphabet(), rack);
+                let [by_tables, by_walk] = [&with_tables, &lean].map(|tables| BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: tables.anagrams(),
+                    rack_lengths: tables.rack_lengths(),
+                    klv: &klv,
+                });
+                let want = place_plays(&mut KurniaMoveGenerator::new(&gc), &by_walk, &rack, false);
+                let found =
+                    place_plays(&mut KurniaMoveGenerator::new(&gc), &by_tables, &rack, false);
+                assert_eq!(found, want, "{fen} {rack:?}");
+                played += usize::from(!want.is_empty());
+            }
+        }
+        assert!(played > 0, "nothing was played");
     }
 
     #[inline]
