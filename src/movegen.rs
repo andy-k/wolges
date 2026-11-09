@@ -409,6 +409,35 @@ impl ShadowScores {
     }
 }
 
+// the nibble-keyed instance's spans of a lane, kept until its inputs change:
+// found by the shadow pass with every letter on hand without limit, so they are
+// every span a rack can have; each with what of its bound needs no rack
+// (rcs_placements)
+#[derive(Clone, Default)]
+struct RcsLane {
+    valid: bool,
+    tiles: Vec<u8>,
+    cross_bits: Vec<u64>,
+    word_multipliers: Vec<i8>,
+    tile_multipliers: Vec<i8>,
+    perpendicular_word_multipliers: Vec<i8>,
+    perpendicular_scores: Vec<i32>,
+    spans: Vec<RcsSpan>,
+    multipliers: Vec<(i32, u8)>, // each span's empty squares' with the square, descending, from its at
+}
+
+#[derive(Clone, Copy)]
+struct RcsSpan {
+    anchor: i8,
+    left: i8,
+    right: i8,
+    num_played: u8,
+    crossed: bool, // it holds a board tile
+    hooked: u64,   // its empty squares a cross word reaches, a bit each
+    fixed: i32, // its board tiles' scores times its word multiplier, plus its cross words' board scores
+    at: u32,
+}
+
 // WorkingBuffer can only be reused for the same game_config and kwg.
 // (The kwg is partially cached in cached_cross_set.)
 // WorkingBuffer can also be reset for reuse with another kwg by calling
@@ -462,6 +491,7 @@ struct WorkingBuffer {
     subracks_spare: Vec<Subrack>,
     found_placements: Vec<PossiblePlacement>,
     raw_anchors: Vec<(i8, i8, i8)>, // a lane's anchors, raw: (anchor, leftmost, rightmost)
+    rcs_lanes: Vec<RcsLane>,        // with nibble keys, rows then columns
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
     span_memo: SpanMemo,
@@ -547,6 +577,7 @@ impl Clone for WorkingBuffer {
             subracks_spare: self.subracks_spare.clone(),
             found_placements: self.found_placements.clone(),
             raw_anchors: self.raw_anchors.clone(),
+            rcs_lanes: self.rcs_lanes.clone(),
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
             span_memo: self.span_memo.clone(),
@@ -640,6 +671,7 @@ impl Clone for WorkingBuffer {
         self.subracks_spare.clone_from(&source.subracks_spare);
         self.found_placements.clone_from(&source.found_placements);
         self.raw_anchors.clone_from(&source.raw_anchors);
+        self.rcs_lanes.clone_from(&source.rcs_lanes);
         self.placement_order.clone_from(&source.placement_order);
         self.placement_scratch.clone_from(&source.placement_scratch);
         self.span_memo.clone_from(&source.span_memo);
@@ -762,6 +794,7 @@ impl WorkingBuffer {
             subracks_spare: Vec::new(),
             found_placements: Vec::new(),
             raw_anchors: Vec::new(),
+            rcs_lanes: Vec::new(),
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
             span_memo: SpanMemo::new(),
@@ -7338,6 +7371,389 @@ fn bucket_by_equity<T: TablePlaces>(
     std::mem::swap(pairs, scratch);
 }
 
+// a lane's spans as the shadow pass finds them with every letter on hand
+// without limit, in its order: gen_place_placements_impl_u16's anchors and
+// walks, with what the rack decides taken out (no square refuses a letter but a
+// dead one, no count runs out, and no bound is made), each span's fixed part
+// and multipliers (rcs_placements) recorded instead
+struct RcsGeometry<'a> {
+    kept: &'a mut RcsLane,
+    multi_jumps: &'a [MultiJump],
+    tiles: &'a [u8],
+    cross_sets: &'a [CrossSet],
+    word_multipliers: &'a [i8],
+    tile_multipliers: &'a [i8],
+    perpendicular_word_multipliers: &'a [i8],
+    perpendicular_scores: &'a [i32],
+    single_tile_plays: bool,
+    num_max_played: u8,
+}
+
+// a walk's state from its anchor: the board tiles' scores, the cross words',
+// the word multiplier, the empty squares taken (a bit each) and how many, and
+// whether a board tile is in it
+#[derive(Clone, Copy)]
+struct RcsWalk {
+    board_score: i32,
+    cross_score: i32,
+    word_multiplier: i32,
+    placed: u64,
+    num_played: u8,
+    crossed: bool,
+}
+
+impl RcsGeometry<'_> {
+    #[inline(always)]
+    fn record(&mut self, walk: &RcsWalk, anchor: i8, left: i8, right: i8) {
+        let at = self.kept.multipliers.len();
+        let mut placed = walk.placed;
+        let mut hooked = 0u64;
+        while placed != 0 {
+            let idx = placed.trailing_zeros() as usize;
+            placed &= placed - 1;
+            self.kept.multipliers.push((
+                self.tile_multipliers[idx] as i32
+                    * (walk.word_multiplier + self.perpendicular_word_multipliers[idx] as i32),
+                idx as u8,
+            ));
+            if self.cross_sets[idx].bits & 1 != 0 {
+                hooked |= 1 << idx;
+            }
+        }
+        self.kept.multipliers[at..]
+            .sort_unstable_by_key(|&(multiplier, _)| std::cmp::Reverse(multiplier));
+        self.kept.spans.push(RcsSpan {
+            anchor,
+            left,
+            right,
+            num_played: walk.num_played,
+            crossed: walk.crossed,
+            hooked,
+            fixed: walk.board_score * walk.word_multiplier + walk.cross_score,
+            at: at as u32,
+        });
+    }
+
+    // the square idx taken by a tile: false for a dead one (the walk ends)
+    #[inline(always)]
+    fn take(&self, walk: &mut RcsWalk, is_unique: &mut bool, idx: i8) -> bool {
+        let bits = self.cross_sets[idx as usize].bits;
+        if bits & 1 == 0 {
+            *is_unique = true;
+        } else if bits == 1 {
+            return false;
+        }
+        walk.cross_score += self.perpendicular_scores[idx as usize];
+        walk.placed |= 1 << idx;
+        walk.num_played += 1;
+        walk.word_multiplier *= self.word_multipliers[idx as usize] as i32;
+        true
+    }
+
+    #[inline(always)]
+    fn right(
+        &mut self,
+        mut walk: RcsWalk,
+        mut is_unique: bool,
+        anchor: i8,
+        idx_left: i8,
+        rightmost: i8,
+    ) {
+        let mut idx = anchor + 1;
+        loop {
+            if idx < rightmost {
+                let multi_jump = &self.multi_jumps[idx as usize];
+                walk.board_score += multi_jump.right_score;
+                walk.crossed |= multi_jump.right_idx != idx;
+                idx = multi_jump.right_idx;
+            }
+            if idx > anchor + 1 && walk.num_played > !is_unique as u8 && idx - idx_left >= 2 {
+                self.record(&walk, anchor, idx_left, idx);
+            }
+            if walk.num_played >= self.num_max_played || idx >= rightmost {
+                break;
+            }
+            if !self.take(&mut walk, &mut is_unique, idx) {
+                break;
+            }
+            idx += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn from(&mut self, anchor: i8, leftmost: i8, rightmost: i8) {
+        let mut walk = RcsWalk {
+            board_score: 0,
+            cross_score: 0,
+            word_multiplier: 1,
+            placed: 0,
+            num_played: 0,
+            crossed: false,
+        };
+        let mut is_unique = self.single_tile_plays;
+        let mut idx = anchor;
+        loop {
+            if idx >= leftmost {
+                let multi_jump = &self.multi_jumps[idx as usize];
+                walk.board_score += multi_jump.left_score;
+                walk.crossed |= multi_jump.left_idx != idx;
+                idx = multi_jump.left_idx;
+            }
+            if walk.num_played > !is_unique as u8 && anchor - idx >= 2 {
+                self.record(&walk, anchor, idx + 1, anchor + 1);
+            }
+            if walk.num_played >= self.num_max_played {
+                break;
+            }
+            if idx < anchor {
+                self.right(walk, is_unique, anchor, idx + 1, rightmost);
+            }
+            if idx < leftmost || !self.take(&mut walk, &mut is_unique, idx) {
+                break;
+            }
+            idx -= 1;
+        }
+    }
+
+    // the shadow pass's anchors, in its order
+    #[inline]
+    fn find(&mut self) {
+        let mut leftmost = self.tiles.len() as i8;
+        loop {
+            let mut rightmost = leftmost;
+            while leftmost > 0 && self.tiles[leftmost as usize - 1] == 0 {
+                leftmost -= 1;
+            }
+            if leftmost > 0 {
+                self.from(leftmost - 1, 0, rightmost);
+            }
+            {
+                let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8;
+                for anchor in (leftmost..rightmost).rev() {
+                    let bits = self.cross_sets[anchor as usize].bits;
+                    if bits != 0 {
+                        if rightmost - leftmost < 2 {
+                            break;
+                        }
+                        if bits != 1 {
+                            self.from(anchor, leftmost, rightmost);
+                        }
+                        rightmost = anchor;
+                    }
+                }
+            }
+            loop {
+                leftmost -= 1;
+                if leftmost <= 1 {
+                    return;
+                }
+                if self.tiles[leftmost as usize] == 0 {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// the nibble-keyed instance's placements of a turn, a span each, by span bounds
+// that need no shadow pass: a lane's spans and what of each bound needs no rack
+// are kept in rcs_lanes until the lane's inputs change, then found by the
+// shadow pass with every letter on hand without limit; a span the rack can fill
+// (no crossing square fits none of its tiles, unless it holds a blank) is
+// bounded by its fixed part, the rack's best scores on its multipliers, best
+// first, and the best leave of the tiles it plays. No play scores more: its
+// tiles on any of the span's squares score at most the best on the best. The
+// span lengths a rack's tiles cannot fill alone and the key check are asked as
+// the shadow pass asks them.
+#[inline]
+fn rcs_placements<const D: usize, W: LaneBits, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &BoardSnapshot<'_, N, L>,
+    working_buffer: &mut WorkingBuffer,
+    dim: &matrix::Dim,
+    num_max_played: u8,
+    feasible_lengths: u64,
+    min_played: u8,
+    found_placements: &mut Vec<PossiblePlacement>,
+) {
+    let alphabet = board_snapshot.game_config.alphabet();
+    let rack_size = board_snapshot.game_config.rack_size() as usize;
+    let num_lanes = dim.rows as usize + dim.cols as usize;
+    if working_buffer.rcs_lanes.len() != num_lanes {
+        working_buffer.rcs_lanes.clear();
+        working_buffer
+            .rcs_lanes
+            .resize(num_lanes, RcsLane::default());
+    }
+    let rack_bits = working_buffer.rack_bits;
+    for at in 0..num_lanes {
+        let down = at >= dim.rows as usize;
+        let lane = if down { at - dim.rows as usize } else { at } as i8;
+        let in_lanes = if down {
+            working_buffer.lane_cols
+        } else {
+            working_buffer.lane_rows
+        } & (1 << lane);
+        if in_lanes == 0 {
+            continue;
+        }
+        let len = if down { dim.rows } else { dim.cols } as usize;
+        let start = lane as usize * len;
+        let end = start + len;
+        let check =
+            fill_key_check::<D, W, T, _, _>(working_buffer, board_snapshot, dim, down, lane);
+        let mut kept = std::mem::take(&mut working_buffer.rcs_lanes[at]);
+        let tiles = if down {
+            &working_buffer.transposed_board_tiles[start..end]
+        } else {
+            &board_snapshot.board_tiles[start..end]
+        };
+        let cross_sets = if down {
+            &working_buffer.cross_set_for_down_plays[start..end]
+        } else {
+            &working_buffer.cross_set_for_across_plays[start..end]
+        };
+        let (word_multipliers, tile_multipliers, perpendicular_word_multipliers) = if down {
+            (
+                &working_buffer.remaining_word_multipliers_for_down_plays[start..end],
+                &working_buffer.remaining_tile_multipliers_for_down_plays[start..end],
+                &working_buffer.perpendicular_word_multipliers_for_down_plays[start..end],
+            )
+        } else {
+            (
+                &working_buffer.remaining_word_multipliers_for_across_plays[start..end],
+                &working_buffer.remaining_tile_multipliers_for_across_plays[start..end],
+                &working_buffer.perpendicular_word_multipliers_for_across_plays[start..end],
+            )
+        };
+        let perpendicular_scores = if down {
+            &working_buffer.perpendicular_scores_for_down_plays[start..end]
+        } else {
+            &working_buffer.perpendicular_scores_for_across_plays[start..end]
+        };
+        if !(kept.valid
+            && kept.tiles == tiles
+            && kept.word_multipliers == word_multipliers
+            && kept.tile_multipliers == tile_multipliers
+            && kept.perpendicular_word_multipliers == perpendicular_word_multipliers
+            && kept.perpendicular_scores == perpendicular_scores
+            && kept
+                .cross_bits
+                .iter()
+                .zip(cross_sets)
+                .all(|(&bits, cross_set)| bits == cross_set.bits))
+        {
+            // every span any rack has, as the shadow pass finds them with every
+            // letter on hand and no count running out
+            working_buffer.lane_scaffold[at].refresh::<D>(
+                alphabet,
+                tiles,
+                word_multipliers,
+                tile_multipliers,
+                perpendicular_word_multipliers,
+            );
+            kept.spans.clear();
+            kept.multipliers.clear();
+            RcsGeometry {
+                kept: &mut kept,
+                multi_jumps: &working_buffer.lane_scaffold[at].multi_jumps,
+                tiles,
+                cross_sets,
+                word_multipliers,
+                tile_multipliers,
+                perpendicular_word_multipliers,
+                perpendicular_scores,
+                single_tile_plays: !down,
+                num_max_played: rack_size as u8,
+            }
+            .find();
+            kept.tiles.clear();
+            kept.tiles.extend_from_slice(tiles);
+            kept.cross_bits.clear();
+            kept.cross_bits
+                .extend(cross_sets.iter().map(|cross_set| cross_set.bits));
+            kept.word_multipliers.clear();
+            kept.word_multipliers.extend_from_slice(word_multipliers);
+            kept.tile_multipliers.clear();
+            kept.tile_multipliers.extend_from_slice(tile_multipliers);
+            kept.perpendicular_word_multipliers.clear();
+            kept.perpendicular_word_multipliers
+                .extend_from_slice(perpendicular_word_multipliers);
+            kept.perpendicular_scores.clear();
+            kept.perpendicular_scores
+                .extend_from_slice(perpendicular_scores);
+            kept.valid = true;
+        }
+        // the crossing squares none of the rack's tiles fit (with a blank on
+        // hand, none: a cross set's bit 0 is the blank's), and each crossing
+        // square's cap, the best score of the rack's tiles that fit it (a
+        // square no cross word reaches takes any tile)
+        let mut unfillable = 0u64;
+        let mut caps = [i32::MAX; u64::BITS as usize];
+        for (idx, cross_set) in cross_sets.iter().enumerate() {
+            if cross_set.bits & 1 == 0 {
+                continue;
+            }
+            let mut fits = cross_set.bits & rack_bits;
+            if fits == 0 {
+                unfillable |= 1 << idx;
+                continue;
+            }
+            let mut cap = 0i32;
+            while fits != 0 {
+                let tile = fits.trailing_zeros() as u8;
+                fits &= fits - 1;
+                cap = cap.max(alphabet.scaled_score(tile));
+            }
+            caps[idx] = cap;
+        }
+        let mut check = check.map(|(source, prefix_at)| KeyCheck {
+            source,
+            subracks: &working_buffer.subracks,
+            by_played: &working_buffer.subracks_by_played,
+            prefix: &working_buffer.span_prefix[prefix_at..prefix_at + len + 1],
+            turn: working_buffer.exist_turn,
+            memo: &mut working_buffer.exist_memo,
+            min_played,
+        });
+        let descending_scores = &working_buffer.descending_scores;
+        let best_leave_values = &working_buffer.best_leave_values;
+        for span in &kept.spans {
+            if span.num_played > num_max_played
+                || span.hooked & unfillable != 0
+                || (!span.crossed && feasible_lengths & 1 << span.num_played == 0)
+                || (span.crossed && check.refuses(span.left, span.right, span.num_played))
+            {
+                continue;
+            }
+            // by Abel's sum, the multipliers' steps (each >= 0) times the least
+            // of the rack's best scores and the squares' caps so far
+            let multipliers =
+                &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
+            let mut bound = span.fixed + best_leave_values[span.num_played as usize];
+            let mut best_scores = 0i32;
+            let mut capped = 0i32;
+            for (j, (&score, &(multiplier, idx))) in
+                descending_scores.iter().zip(multipliers).enumerate()
+            {
+                best_scores += score;
+                capped = capped.saturating_add(caps[idx as usize]);
+                let next = multipliers.get(j + 1).map_or(0, |&(m, _)| m);
+                bound += (multiplier - next) * best_scores.min(capped);
+            }
+            found_placements.push(PossiblePlacement {
+                num_played: span.num_played,
+                down,
+                lane,
+                anchor: span.anchor,
+                leftmost: span.left,
+                rightmost: span.right,
+                best_possible_equity: bound,
+            });
+        }
+        working_buffer.rcs_lanes[at] = kept;
+    }
+}
+
 #[inline]
 fn kurnia_gen_place_moves_iter<
     'a,
@@ -7457,8 +7873,19 @@ fn kurnia_gen_place_moves_iter<
     placement_order.clear();
     let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
     working_buffer.anchor_left_bounds.clear();
+    if T::NIBBLES {
+        rcs_placements::<D, W, T, _, _>(
+            board_snapshot,
+            working_buffer,
+            dim,
+            num_max_played,
+            feasible_lengths,
+            min_played,
+            &mut found_placements,
+        );
+    }
     for row in 0..dim.rows {
-        if working_buffer.lane_rows & (1 << row) == 0 {
+        if T::NIBBLES || working_buffer.lane_rows & (1 << row) == 0 {
             continue;
         }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
@@ -7523,7 +7950,7 @@ fn kurnia_gen_place_moves_iter<
         );
     }
     for col in 0..dim.cols {
-        if working_buffer.lane_cols & (1 << col) == 0 {
+        if T::NIBBLES || working_buffer.lane_cols & (1 << col) == 0 {
             continue;
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -10346,6 +10773,136 @@ mod tests {
             }
         }
         assert_eq!(compared, 3 * (tiles.len() + 1));
+    }
+
+    #[test]
+    #[inline]
+    fn the_kept_spans_are_the_shadow_passs() {
+        // the spans kept for a lane under nibble keys are those the shadow pass
+        // finds with every letter on hand without limit, in its order, lane by
+        // lane as tiles go down a board of 15
+        let gc = game_config::make_english_game_config();
+        let dim = gc.board_layout().dim();
+        let kwg = test_kwg(&gc);
+        let nibbles = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let rack = parse_test_rack(gc.alphabet(), "AEST");
+        let rack_size = gc.rack_size();
+        let every_letter = u64::MAX >> (u64::BITS - gc.alphabet().len() as u32);
+        let zeros = vec![0i32; rack_size as usize + 1];
+        let tiles = (0..15)
+            .map(|i| (i, ((i as i32 * 7 + 3) % 15) as i8))
+            .collect::<Vec<_>>();
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let mut generator = KurniaMoveGenerator::new(&gc);
+        let mut spans = 0;
+        for step in 0..=tiles.len() {
+            if step > 0 {
+                let (row, col) = tiles[step - 1];
+                board_tiles[dim.at_row_col(row, col)] = rack[(step - 1) % rack.len()];
+            }
+            let snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: nibbles.anagrams(),
+                rack_lengths: nibbles.rack_lengths(),
+                klv: &klv,
+            };
+            // the generation leaves the board's cross sets and multipliers
+            place_plays(&mut generator, &snapshot, &rack, false);
+            let wb = &mut generator.working_buffer;
+            for at in 0..30 {
+                let down = at >= 15;
+                let start = (at % 15) * 15;
+                let end = start + 15;
+                let lane_tiles = if down {
+                    wb.transposed_board_tiles[start..end].to_vec()
+                } else {
+                    board_tiles[start..end].to_vec()
+                };
+                let (cross_sets, word_multipliers, tile_multipliers) = if down {
+                    (
+                        &wb.cross_set_for_down_plays[start..end],
+                        &wb.remaining_word_multipliers_for_down_plays[start..end],
+                        &wb.remaining_tile_multipliers_for_down_plays[start..end],
+                    )
+                } else {
+                    (
+                        &wb.cross_set_for_across_plays[start..end],
+                        &wb.remaining_word_multipliers_for_across_plays[start..end],
+                        &wb.remaining_tile_multipliers_for_across_plays[start..end],
+                    )
+                };
+                let (perpendicular_word_multipliers, perpendicular_scores) = if down {
+                    (
+                        &wb.perpendicular_word_multipliers_for_down_plays[start..end],
+                        &wb.perpendicular_scores_for_down_plays[start..end],
+                    )
+                } else {
+                    (
+                        &wb.perpendicular_word_multipliers_for_across_plays[start..end],
+                        &wb.perpendicular_scores_for_across_plays[start..end],
+                    )
+                };
+                let mut found = Vec::new();
+                let mut without_limit = [u8::MAX; MAX_ALPHABET_LEN];
+                shadow_lane::<15, u16, _, _>(
+                    &mut GenPlacePlacementsParams {
+                        board_strip: &lane_tiles,
+                        alphabet: gc.alphabet(),
+                        rack_tally: &mut without_limit,
+                        used_tile_scores_shadowl: &mut wb.used_tile_scores_shadowl,
+                        used_tile_scores_shadowr: &mut wb.used_tile_scores_shadowr,
+                        cross_set_strip: cross_sets,
+                        remaining_word_multipliers_strip: word_multipliers,
+                        remaining_tile_multipliers_strip: tile_multipliers,
+                        perpendicular_word_multipliers_strip: perpendicular_word_multipliers,
+                        perpendicular_scores_strip: perpendicular_scores,
+                        rack_bits: every_letter,
+                        feasible_lengths: !0,
+                        descending_scores: &zeros[..rack_size as usize],
+                        lane_scaffold: &mut wb.lane_scaffold[at],
+                        best_leave_values: &zeros,
+                        num_max_played: rack_size,
+                        rack_tally_shadowl: &mut wb.rack_tally_shadowl,
+                        rack_tally_shadowr: &mut wb.rack_tally_shadowr,
+                        span_out: &mut wb.span_out,
+                        per_span: true,
+                        left_bounds: &mut wb.anchor_left_bounds,
+                        bounds_stride: 16,
+                        check: (),
+                    },
+                    !down,
+                    false,
+                    |anchor: i8, left: i8, right: i8, _bound: i32, num_played: u8| {
+                        found.push((anchor, left, right, num_played));
+                    },
+                );
+                let mut kept = RcsLane::default();
+                RcsGeometry {
+                    kept: &mut kept,
+                    multi_jumps: &wb.lane_scaffold[at].multi_jumps,
+                    tiles: &lane_tiles,
+                    cross_sets,
+                    word_multipliers,
+                    tile_multipliers,
+                    perpendicular_word_multipliers,
+                    perpendicular_scores,
+                    single_tile_plays: !down,
+                    num_max_played: rack_size,
+                }
+                .find();
+                let kept_spans = kept
+                    .spans
+                    .iter()
+                    .map(|span| (span.anchor, span.left, span.right, span.num_played))
+                    .collect::<Vec<_>>();
+                assert_eq!(kept_spans, found, "step {step}, lane {at}");
+                spans += found.len();
+            }
+        }
+        assert!(spans > 0);
     }
 
     #[test]
