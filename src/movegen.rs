@@ -6440,6 +6440,42 @@ impl KurniaMoveGenerator {
     }
 }
 
+// what a generator holds of the board it last generated on, each part brought
+// up to date lane by lane from the board before: kept to put back when the
+// generator comes back to that board (each of a sim's rollouts starts from the
+// same one), so its next generation brings up only the lanes since changed
+#[derive(Default)]
+pub struct BoardState {
+    board_tiles: Box<[u8]>,
+    transposed_board_tiles: Box<[u8]>,
+    counts: (u16, i32, u16, i32), // tiles and face values, now and as kept
+    cross_sets: [Box<[CrossSet]>; 2], // across plays', then down plays'
+    cached_cross_sets: [Box<[CachedCrossSet]>; 2],
+    cross_set_buffers: [Box<[CrossSetComputation]>; 2],
+    word_multipliers: [Box<[i8]>; 2],
+    tile_multipliers: [Box<[i8]>; 2],
+    face_values: [Box<[i32]>; 2],
+    perpendicular_word_multipliers: [Box<[i8]>; 2],
+    perpendicular_scores: [Box<[i32]>; 2],
+}
+
+impl BoardState {
+    // whether it is a generator's state on these board tiles
+    #[inline(always)]
+    pub fn is_of(&self, board_tiles: &[u8]) -> bool {
+        *self.board_tiles == *board_tiles
+    }
+}
+
+#[inline(always)]
+fn copy_board_part<T: Clone>(to: &mut Box<[T]>, from: &[T]) {
+    if to.len() == from.len() {
+        to.clone_from_slice(from);
+    } else {
+        *to = from.into();
+    }
+}
+
 impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G, JUMPS, ANY_SIDE> {
     // a generator whose sets of rows and of columns are G; a board with more
     // rows or columns than G holds is refused
@@ -6474,6 +6510,155 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
     #[inline(always)]
     pub fn num_tiles_in_bag(&self) -> i16 {
         self.working_buffer.num_tiles_in_bag
+    }
+
+    // keeps what the generator holds of the board it last generated on
+    #[inline]
+    pub fn save_board_state(&self, state: &mut BoardState) {
+        let w = &self.working_buffer;
+        copy_board_part(&mut state.board_tiles, &w.prev_board_tiles);
+        copy_board_part(&mut state.transposed_board_tiles, &w.transposed_board_tiles);
+        state.counts = (
+            w.num_tiles_on_board,
+            w.board_tile_score,
+            w.prev_tile_count,
+            w.prev_tile_score,
+        );
+        copy_board_part(&mut state.cross_sets[0], &w.cross_set_for_across_plays);
+        copy_board_part(&mut state.cross_sets[1], &w.cross_set_for_down_plays);
+        copy_board_part(
+            &mut state.cached_cross_sets[0],
+            &w.cached_cross_set_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.cached_cross_sets[1],
+            &w.cached_cross_set_for_down_plays,
+        );
+        copy_board_part(
+            &mut state.cross_set_buffers[0],
+            &w.cross_set_buffer_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.cross_set_buffers[1],
+            &w.cross_set_buffer_for_down_plays,
+        );
+        copy_board_part(
+            &mut state.word_multipliers[0],
+            &w.remaining_word_multipliers_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.word_multipliers[1],
+            &w.remaining_word_multipliers_for_down_plays,
+        );
+        copy_board_part(
+            &mut state.tile_multipliers[0],
+            &w.remaining_tile_multipliers_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.tile_multipliers[1],
+            &w.remaining_tile_multipliers_for_down_plays,
+        );
+        copy_board_part(
+            &mut state.face_values[0],
+            &w.face_value_scores_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.face_values[1],
+            &w.face_value_scores_for_down_plays,
+        );
+        copy_board_part(
+            &mut state.perpendicular_word_multipliers[0],
+            &w.perpendicular_word_multipliers_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.perpendicular_word_multipliers[1],
+            &w.perpendicular_word_multipliers_for_down_plays,
+        );
+        copy_board_part(
+            &mut state.perpendicular_scores[0],
+            &w.perpendicular_scores_for_across_plays,
+        );
+        copy_board_part(
+            &mut state.perpendicular_scores[1],
+            &w.perpendicular_scores_for_down_plays,
+        );
+    }
+
+    // puts back what save_board_state kept, for a generator of the same game;
+    // its next generation then brings up only the lanes where its board differs
+    // from the kept one
+    #[inline]
+    pub fn restore_board_state(&mut self, state: &BoardState) {
+        let w = &mut self.working_buffer;
+        if state.board_tiles.len() != w.prev_board_tiles.len() {
+            return;
+        }
+        copy_board_part(&mut w.prev_board_tiles, &state.board_tiles);
+        copy_board_part(&mut w.transposed_board_tiles, &state.transposed_board_tiles);
+        (
+            w.num_tiles_on_board,
+            w.board_tile_score,
+            w.prev_tile_count,
+            w.prev_tile_score,
+        ) = state.counts;
+        copy_board_part(&mut w.cross_set_for_across_plays, &state.cross_sets[0]);
+        copy_board_part(&mut w.cross_set_for_down_plays, &state.cross_sets[1]);
+        copy_board_part(
+            &mut w.cached_cross_set_for_across_plays,
+            &state.cached_cross_sets[0],
+        );
+        copy_board_part(
+            &mut w.cached_cross_set_for_down_plays,
+            &state.cached_cross_sets[1],
+        );
+        copy_board_part(
+            &mut w.cross_set_buffer_for_across_plays,
+            &state.cross_set_buffers[0],
+        );
+        copy_board_part(
+            &mut w.cross_set_buffer_for_down_plays,
+            &state.cross_set_buffers[1],
+        );
+        copy_board_part(
+            &mut w.remaining_word_multipliers_for_across_plays,
+            &state.word_multipliers[0],
+        );
+        copy_board_part(
+            &mut w.remaining_word_multipliers_for_down_plays,
+            &state.word_multipliers[1],
+        );
+        copy_board_part(
+            &mut w.remaining_tile_multipliers_for_across_plays,
+            &state.tile_multipliers[0],
+        );
+        copy_board_part(
+            &mut w.remaining_tile_multipliers_for_down_plays,
+            &state.tile_multipliers[1],
+        );
+        copy_board_part(
+            &mut w.face_value_scores_for_across_plays,
+            &state.face_values[0],
+        );
+        copy_board_part(
+            &mut w.face_value_scores_for_down_plays,
+            &state.face_values[1],
+        );
+        copy_board_part(
+            &mut w.perpendicular_word_multipliers_for_across_plays,
+            &state.perpendicular_word_multipliers[0],
+        );
+        copy_board_part(
+            &mut w.perpendicular_word_multipliers_for_down_plays,
+            &state.perpendicular_word_multipliers[1],
+        );
+        copy_board_part(
+            &mut w.perpendicular_scores_for_across_plays,
+            &state.perpendicular_scores[0],
+        );
+        copy_board_part(
+            &mut w.perpendicular_scores_for_down_plays,
+            &state.perpendicular_scores[1],
+        );
     }
 
     // call this before passing a different kwg.
