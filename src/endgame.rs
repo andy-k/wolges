@@ -8298,6 +8298,123 @@ mod tests {
         assert!(words_checked > 0);
     }
 
+    // on boards of random moves, each rack drawn from the tiles not on the
+    // board makes the same moves, scored and in the same order, on the graph of
+    // the words the board can still take with its own tables of either arm as
+    // on the whole graph with the whole graph's tables
+    #[test]
+    #[inline]
+    fn the_graph_a_board_can_still_take_generates_as_the_whole() {
+        let gc = game_config::make_english_game_config();
+        let alphabet = gc.alphabet();
+        let dim = gc.board_layout().dim();
+        let rack_size = gc.rack_size() as usize;
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &crossing_word_list(),
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut whole_generator = movegen::KurniaMoveGenerator::new(&gc);
+        let mut board_generator = movegen::KurniaMoveGenerator::new(&gc);
+        let mut seed = 3u64;
+        let mut compared = 0;
+        for lean in [false, true] {
+            let whole_tables = anagrams::ArmTables::build(&kwg, &gc, lean).unwrap();
+            for _ in 0..6 {
+                let mut board = vec![0u8; dim.rows as usize * dim.cols as usize];
+                let mut left = (0..alphabet.len())
+                    .flat_map(|tile| std::iter::repeat_n(tile, alphabet.freq(tile) as usize))
+                    .collect::<Vec<_>>();
+                for _ in 0..12 {
+                    let mut words = Vec::<bites::Bites>::new();
+                    movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                        &movegen::BoardSnapshot {
+                            board_tiles: &board,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        |word: &[u8]| words.push(word.into()),
+                    );
+                    let board_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+                        &build::build_for_game(&gc, &words).unwrap(),
+                    )
+                    .unwrap();
+                    let board_tables = anagrams::ArmTables::build(&board_kwg, &gc, lean).unwrap();
+                    board_generator.reset_for_another_kwg();
+                    let mut moved = false;
+                    for _ in 0..3 {
+                        let mut rack = Vec::new();
+                        while rack.len() < rack_size && !left.is_empty() {
+                            let at = (splitmix64(&mut seed) % left.len() as u64) as usize;
+                            rack.push(left.swap_remove(at));
+                        }
+                        for (generator, graph, tables) in [
+                            (&mut whole_generator, &kwg, &whole_tables),
+                            (&mut board_generator, &board_kwg, &board_tables),
+                        ] {
+                            generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot: &movegen::BoardSnapshot {
+                                    board_tiles: &board,
+                                    game_config: &gc,
+                                    kwg: graph,
+                                    anagrams: tables.anagrams(),
+                                    rack_lengths: tables.rack_lengths(),
+                                    klv: &klv,
+                                },
+                                rack: &rack,
+                                max_gen: usize::MAX,
+                                num_exchanges_by_this_player: 0,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            });
+                        }
+                        assert!(
+                            whole_generator.plays == board_generator.plays,
+                            "lean={lean}"
+                        );
+                        compared += 1;
+                        // the game goes on by the rack's first move that places
+                        // tiles, if it has one
+                        let first =
+                            whole_generator
+                                .plays
+                                .iter()
+                                .find_map(|valued| match &valued.play {
+                                    movegen::Play::Place {
+                                        down,
+                                        lane,
+                                        idx,
+                                        word,
+                                        ..
+                                    } => Some((*down, *lane, *idx, word.clone())),
+                                    movegen::Play::Exchange { .. } => None,
+                                });
+                        if let (false, Some((down, lane, idx, word))) = (moved, first) {
+                            apply_place(&gc, &mut board, &mut rack, down, lane, idx, &word);
+                            moved = true;
+                        }
+                        left.extend(rack);
+                    }
+                    if !moved {
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(compared > 0);
+    }
+
     // a graph with runs turned round (each node keeping its arc; only runs no
     // arc enters past their first node, as the builder shares a run's tail, so
     // the same words) has runs that do not ascend; the solver walks it without

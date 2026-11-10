@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, error, fash};
+use super::{bites, error, fash, game_config};
 
 // Unconfirmed entries.
 // Memory wastage notes:
@@ -1100,11 +1100,71 @@ pub fn build_big(
     do_build::<2>(build_content, build_layout, build_order, machine_words)
 }
 
+// the graph a game of this config generates on, of these words in ascending
+// order: a gaddawg under classic rules, under jumbled ones a dawg of their
+// alphagrams
+#[inline]
+pub fn build_for_game(
+    game_config: &game_config::GameConfig,
+    machine_words: &[bites::Bites],
+) -> error::Returns<bites::Bites> {
+    match game_config.game_rules() {
+        game_config::GameRules::Classic => build_big(
+            BuildContent::Gaddawg,
+            BuildLayout::Wolges,
+            BuildOrder::Sorted,
+            machine_words,
+        ),
+        game_config::GameRules::Jumbled => build_big(
+            BuildContent::DawgOnly,
+            BuildLayout::Wolges,
+            BuildOrder::Sorted,
+            &make_alphagrams(machine_words),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::alphabet;
     use crate::kwg::{self, Node};
+
+    #[test]
+    #[inline]
+    fn a_game_graph_matches_the_game_rules() {
+        let classic = game_config::make_english_game_config();
+        let jumbled = game_config::make_jumbled_english_game_config();
+        let reader = alphabet::AlphabetReader::new_for_words(classic.alphabet());
+        let mut buf = Vec::new();
+        reader.set_word("DOG", &mut buf).unwrap();
+        let word: bites::Bites = buf[..].into();
+        let mut sorted_buf = buf.clone();
+        sorted_buf.sort_unstable();
+        let sorted: bites::Bites = sorted_buf[..].into();
+
+        assert_ne!(word, sorted);
+        let words = [word.clone()];
+
+        let present = |kwg: &kwg::Kwg<kwg::Node24>, w: &[u8]| {
+            let counts = kwg.count_dawg_words_alloc().unwrap();
+            kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
+        };
+
+        let classic_kwg =
+            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build_for_game(&classic, &words).unwrap())
+                .unwrap();
+
+        assert!(present(&classic_kwg, &word));
+        assert!(!present(&classic_kwg, &sorted));
+
+        let jumbled_kwg =
+            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build_for_game(&jumbled, &words).unwrap())
+                .unwrap();
+
+        assert!(present(&jumbled_kwg, &sorted));
+        assert!(!present(&jumbled_kwg, &word));
+    }
 
     fn collect_dawg_words<N: kwg::Node>(
         kwg: &kwg::Kwg<N>,

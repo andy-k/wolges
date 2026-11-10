@@ -2,8 +2,8 @@
 
 use super::zone::{Footprint, SQUARE_WORDS, Squares, footprint, zone_lanes};
 use super::{
-    anagrams, equity, error, fash, game_config, game_state, glance, infer, klv, kwg, move_filter,
-    movegen, simmer, stats, win_pct,
+    anagrams, bites, build, equity, error, fash, game_config, game_state, glance, infer, klv, kwg,
+    move_filter, movegen, simmer, stats, win_pct,
 };
 use rand::SeedableRng;
 use std::io::Write;
@@ -359,6 +359,7 @@ pub struct Simmer<
     decision_t0: Option<std::time::Instant>, // set only when not quiet
     ticked: u64,
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
+    late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
 }
 
 // the opponent's last move and the board before it, from which a sim infers
@@ -462,6 +463,7 @@ impl<
             decision_t0: None,
             ticked: 0,
             infer: None,
+            late_graph: None,
         }
     }
 
@@ -1527,15 +1529,27 @@ impl<
             self.simmer.reseed(mix(self.decision_seed, sim_iter));
             self.simmer.prepare_iteration();
             for candidate in candidates.iter_mut() {
-                let (value, sim_spread, win_prob) = rollout_objective(
-                    &mut self.simmer,
-                    self.game_config,
-                    self.kwg,
-                    self.arm_tables,
-                    self.klv,
-                    &move_generator.plays[candidate.play_index].play,
-                    self.win_pct_table,
-                )?;
+                let play = &move_generator.plays[candidate.play_index].play;
+                let (value, sim_spread, win_prob) = match &self.late_graph {
+                    Some((kwg, arm_tables)) => rollout_objective(
+                        &mut self.simmer,
+                        self.game_config,
+                        kwg,
+                        arm_tables,
+                        self.klv,
+                        play,
+                        self.win_pct_table,
+                    )?,
+                    None => rollout_objective(
+                        &mut self.simmer,
+                        self.game_config,
+                        self.kwg,
+                        self.arm_tables,
+                        self.klv,
+                        play,
+                        self.win_pct_table,
+                    )?,
+                };
                 candidate.stats.update(value);
                 candidate.objectives.push(value);
                 if OBSERVE {
@@ -1622,15 +1636,27 @@ impl<
             simmer.reseed(mix(self.decision_seed, sim_iter));
             simmer.prepare_iteration();
             for &play_index in plays {
-                let (value, sim_spread, win_prob) = rollout_objective(
-                    &mut simmer,
-                    self.game_config,
-                    self.kwg,
-                    self.arm_tables,
-                    self.klv,
-                    &move_generator.plays[play_index].play,
-                    self.win_pct_table,
-                )?;
+                let play = &move_generator.plays[play_index].play;
+                let (value, sim_spread, win_prob) = match &self.late_graph {
+                    Some((kwg, arm_tables)) => rollout_objective(
+                        &mut simmer,
+                        self.game_config,
+                        kwg,
+                        arm_tables,
+                        self.klv,
+                        play,
+                        self.win_pct_table,
+                    )?,
+                    None => rollout_objective(
+                        &mut simmer,
+                        self.game_config,
+                        self.kwg,
+                        self.arm_tables,
+                        self.klv,
+                        play,
+                        self.win_pct_table,
+                    )?,
+                };
                 rows.objective.push(value);
                 if OBSERVE {
                     rows.equity.push(simmer::spread_points(sim_spread));
@@ -1793,6 +1819,45 @@ impl<
         );
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
+        // late in the game, with a rack's worth of tiles or fewer in the bag,
+        // the rollouts walk a graph of the words the board can still take,
+        // whatever comes to the racks; the generator keeps nothing of a graph
+        // it walked before
+        let late = game_state.bag.len() <= self.game_config.rack_size() as usize;
+        if late || self.late_graph.is_some() {
+            self.simmer.reset_for_another_kwg();
+        }
+        self.late_graph = if late {
+            let mut words = Vec::<bites::Bites>::new();
+            movegen::KurniaMoveGenerator::new(self.game_config).gen_remaining_words(
+                &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: self.game_config,
+                    kwg: self.kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: self.klv,
+                },
+                |word: &[u8]| words.push(word.into()),
+            );
+            let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build::build_for_game(
+                self.game_config,
+                &words,
+            )?)?;
+            // tables of the arm the given ones are of
+            let arm_tables = match self.arm_tables {
+                anagrams::ArmTables::Anagrams(_) => {
+                    anagrams::ArmTables::build(&kwg, self.game_config, false)?
+                }
+                anagrams::ArmTables::RackLengths(_) => {
+                    anagrams::ArmTables::build(&kwg, self.game_config, true)?
+                }
+                anagrams::ArmTables::None => anagrams::ArmTables::None,
+            };
+            Some((kwg, arm_tables))
+        } else {
+            None
+        };
         self.candidates = self.take_candidates(move_generator.plays.len());
         self.next_stream_id = self.candidates.len() as u64;
         self.retired.clear();
