@@ -3404,10 +3404,6 @@ fn leave_value_of<L: kwg::Node>(
 // what a walk along a run of the word graph's nodes knows of the tiles ahead of
 // it in the run
 trait RunLetters: Copy {
-    // whether from knows every run's tiles, so a walk takes a node's tiles in
-    // ascending order whatever the graph's order
-    const KNOWN: bool;
-
     // whether the run from node p on may hold a tile in candidates
     fn may_hold(self, p: i32, candidates: u64) -> bool;
 
@@ -3419,8 +3415,6 @@ trait RunLetters: Copy {
 
 // nothing, so every run may
 impl RunLetters for () {
-    const KNOWN: bool = false;
-
     #[inline(always)]
     fn may_hold(self, _p: i32, _candidates: u64) -> bool {
         true
@@ -3434,8 +3428,6 @@ impl RunLetters for () {
 
 // by node, the tiles from it to the end of its run (kwg::Kwg::compute_letter_bits)
 impl RunLetters for &[u64] {
-    const KNOWN: bool = true;
-
     #[inline(always)]
     fn may_hold(self, p: i32, candidates: u64) -> bool {
         self[p as usize] & candidates != 0
@@ -7002,18 +6994,37 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 }
                 threshold.get().raw()
             };
-        for _ in kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
-            runs: (),
-            board_snapshot: params.board_snapshot,
-            working_buffer,
-            multi_leaves: &multi_leaves,
-            found_place_move,
-            can_accept: |best_possible_equity: i32| {
-                threshold.get() <= equity::Equity::new(best_possible_equity)
-            },
-            current_threshold: || threshold.get().raw(),
-        }) {
-            breathe().await;
+        // a rack of one tile under classic rules has its plays from the cross
+        // sets, with no walk
+        if working_buffer.num_tiles_on_rack == 1
+            && matches!(
+                params.board_snapshot.game_config.game_rules(),
+                game_config::GameRules::Classic
+            )
+        {
+            lean_cross_sets::<0, _, _, _>(params.board_snapshot, working_buffer);
+            kurnia_gen_one_tile_moves(
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                found_place_move,
+            );
+        } else {
+            for _ in
+                kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
+                    runs: (),
+                    board_snapshot: params.board_snapshot,
+                    working_buffer,
+                    multi_leaves: &multi_leaves,
+                    found_place_move,
+                    can_accept: |best_possible_equity: i32| {
+                        threshold.get() <= equity::Equity::new(best_possible_equity)
+                    },
+                    current_threshold: || threshold.get().raw(),
+                })
+            {
+                breathe().await;
+            }
         }
         kurnia_gen_exchange_moves(
             params.board_snapshot,
@@ -7274,7 +7285,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
     // by nibbles for its instance (a classic game on a square board of side D,
     // u16 lane sets), else by its tables' layout (any board). A turn the tables
     // do not play (a census sheet, a game its tables do not fit, a rack its
-    // subracks do not hold) is handed back before anything is generated, with
+    // subracks do not hold, or a rack of one tile, which the lean arm plays
+    // from the cross sets) is handed back before anything is generated, with
     // the predicates, for the lean arm.
     #[inline]
     fn gen_moves_tables<
@@ -7294,7 +7306,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         equity_predicate: EquityPredicate<'e>,
         steer: Option<&Steer<'_>>,
     ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
-        if self.working_buffer.is_census {
+        if self.working_buffer.is_census || params.rack.len() == 1 {
             return Some((place_move_predicate, equity_predicate));
         }
         self.plays.clear();
@@ -7708,6 +7720,22 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             None
         };
         match runs {
+            // a rack of one tile under classic rules has its plays from the
+            // cross sets, with no walk
+            _ if working_buffer.num_tiles_on_rack == 1
+                && matches!(
+                    params.board_snapshot.game_config.game_rules(),
+                    game_config::GameRules::Classic
+                ) =>
+            {
+                lean_cross_sets::<D, _, _, _>(params.board_snapshot, working_buffer);
+                kurnia_gen_one_tile_moves(
+                    params.board_snapshot,
+                    working_buffer,
+                    &multi_leaves,
+                    found_place_move,
+                );
+            }
             Some(runs) => {
                 for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _>(
                     KurniaIterParams {
@@ -8355,15 +8383,12 @@ fn kurnia_gen_raw_place_moves<
         .min(working_buffer.num_tiles_on_rack);
     lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
     // a rack of one tile under classic rules, whose every play places that tile
-    // alone: the plays the cross sets give, in the walk's order where the walk
-    // takes a node's tiles ascending
-    if R::KNOWN
-        && num_max_played == 1
-        && working_buffer.num_tiles_on_rack == 1
+    // alone: the plays the cross sets give, in the walk's order where the
+    // graph's runs ascend
+    if working_buffer.num_tiles_on_rack == 1
         && matches!(game_config.game_rules(), game_config::GameRules::Classic)
-        && !working_buffer.is_census
     {
-        kurnia_gen_raw_one_tile_moves(
+        kurnia_gen_one_tile_moves(
             board_snapshot,
             working_buffer,
             multi_leaves,
@@ -8537,17 +8562,19 @@ fn kurnia_gen_raw_place_moves<
     working_buffer.raw_anchors = anchors;
 }
 
-// kurnia_gen_raw_place_moves's moves for a rack of one tile, with no walk: a
-// tile placed alone makes at most one word across and one down, and its
-// square's cross set each way says which letters make that way's word, bit 0
-// whether a tile is beside it that way. They come as that walk finds them when
-// it takes a node's tiles ascending: lane by lane, each lane's runs of tiles
-// from the left, a run's square after it (unless it is the one square between
-// two runs, which the next run's walk takes) and then its square before it,
-// whose word takes in a run just beyond. A down lane plays only a square no
-// tile is beside across: the across lane plays the others
+// the moves of a rack of one tile, on the lanes in working_buffer's masks, with
+// no walk: a tile placed alone makes at most one word across and one down, and
+// its square's cross set each way says which letters make that way's word (bit
+// 0, whether a tile is beside it that way) and what that way's tiles beside it
+// score at face value. They come as the raw walk finds them where the graph's
+// runs ascend: lane by lane, each lane's runs of tiles from the left, a run's
+// square after it (unless it is the one square between two runs, which the next
+// run's walk takes) and then its square before it, whose word takes in a run
+// just beyond. A down lane plays only a square no tile is beside across: the
+// across lane plays the others. As in the walk, a play under the threshold
+// found_place_move last returned is not offered
 #[inline]
-fn kurnia_gen_raw_one_tile_moves<
+fn kurnia_gen_one_tile_moves<
     'a,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
@@ -8596,6 +8623,7 @@ fn kurnia_gen_raw_one_tile_moves<
     );
     working_buffer.rack_tally[tile as usize] += 1;
     let bonus = game_config.num_played_bonus(1) as i32 * equity::SCALE;
+    let mut threshold = i32::MIN;
     for at in (0..rows + cols).rev() {
         let down = at >= rows;
         let lane = if down { at - rows } else { at };
@@ -8612,36 +8640,32 @@ fn kurnia_gen_raw_one_tile_moves<
         let start = lane * len;
         let end = start + len;
         // the lane's strips, and by square the cross sets the other way, which
-        // say the letters that make the lane's word there
-        let (board_strip, cross_set_strip, cross_set_buffer_strip, words_cross_sets, stride) =
-            if down {
-                (
-                    &working_buffer.transposed_board_tiles[start..end],
-                    &working_buffer.cross_set_for_down_plays[start..end],
-                    &working_buffer.cross_set_buffer_for_across_plays[start..end],
-                    &working_buffer.cross_set_for_across_plays[lane..],
-                    cols,
-                )
-            } else {
-                (
-                    &board_snapshot.board_tiles[start..end],
-                    &working_buffer.cross_set_for_across_plays[start..end],
-                    &working_buffer.cross_set_buffer_for_down_plays[start..end],
-                    &working_buffer.cross_set_for_down_plays[lane..],
-                    rows,
-                )
-            };
-        let (word_multipliers, tile_multipliers, face_values) = if down {
+        // say the letters that make the lane's word there and what its tiles
+        // score
+        let (board_strip, cross_set_strip, words_cross_sets, stride) = if down {
+            (
+                &working_buffer.transposed_board_tiles[start..end],
+                &working_buffer.cross_set_for_down_plays[start..end],
+                &working_buffer.cross_set_for_across_plays[lane..],
+                cols,
+            )
+        } else {
+            (
+                &board_snapshot.board_tiles[start..end],
+                &working_buffer.cross_set_for_across_plays[start..end],
+                &working_buffer.cross_set_for_down_plays[lane..],
+                rows,
+            )
+        };
+        let (word_multipliers, tile_multipliers) = if down {
             (
                 &working_buffer.remaining_word_multipliers_for_down_plays[start..end],
                 &working_buffer.remaining_tile_multipliers_for_down_plays[start..end],
-                &working_buffer.face_value_scores_for_down_plays[start..end],
             )
         } else {
             (
                 &working_buffer.remaining_word_multipliers_for_across_plays[start..end],
                 &working_buffer.remaining_tile_multipliers_for_across_plays[start..end],
-                &working_buffer.face_value_scores_for_across_plays[start..end],
             )
         };
         let (perpendicular_word_multipliers, perpendicular_scores) = if down {
@@ -8660,25 +8684,27 @@ fn kurnia_gen_raw_one_tile_moves<
         } else {
             &mut working_buffer.word_buffer_for_across_plays[start..end]
         };
-        // the plays on square idx of the word from word_start to word_end, its
-        // board tiles' face values summed
-        let mut play_at = |idx: usize, word_start: usize, word_end: usize, face: i32| {
+        // the plays on square idx of the word from word_start to word_end
+        let mut play_at = |idx: usize, word_start: usize, word_end: usize| {
             let bits = cross_set_strip[idx].bits;
             if bits == 1 || (down && bits != 0) {
                 return;
             }
-            let mut fits =
-                words_cross_sets[idx * stride].bits & letters & if bits == 0 { !0 } else { bits };
+            let words = &words_cross_sets[idx * stride];
+            let mut fits = words.bits & letters & if bits == 0 { !0 } else { bits };
             let tile_value = value * tile_multipliers[idx] as i32;
-            let score = (face + tile_value) * word_multipliers[idx] as i32
+            let score = (words.score + tile_value) * word_multipliers[idx] as i32
                 + perpendicular_scores[idx]
                 + tile_value * perpendicular_word_multipliers[idx] as i32
                 + bonus;
             while fits != 0 {
                 let letter = fits.trailing_zeros() as u8;
                 fits &= fits - 1;
+                if score + leave_value < threshold {
+                    continue;
+                }
                 word_buffer[idx] = letter | blank_bit;
-                found_place_move(
+                threshold = found_place_move(
                     down,
                     lane as i8,
                     word_start as i8,
@@ -8698,18 +8724,15 @@ fn kurnia_gen_raw_one_tile_moves<
             while idx < len && board_strip[idx] != 0 {
                 idx += 1;
             }
-            let run_face = cross_set_buffer_strip[run_start].score;
             if idx < len && (idx + 1 == len || board_strip[idx + 1] == 0) {
-                play_at(idx, run_start, idx + 1, run_face);
+                play_at(idx, run_start, idx + 1);
             }
             if run_start > 0 {
                 let mut word_start = run_start - 1;
-                let mut face = run_face;
                 while word_start > 0 && board_strip[word_start - 1] != 0 {
                     word_start -= 1;
-                    face += face_values[word_start];
                 }
-                play_at(run_start - 1, word_start, idx, face);
+                play_at(run_start - 1, word_start, idx);
             }
         }
     }
@@ -10727,12 +10750,28 @@ mod tests {
         }
     }
 
-    // a rack of one tile, generated from the cross sets where the walk would
-    // take a node's tiles ascending, plays what the walk finds, in its order,
-    // with its scores, on any lanes
+    // a rack of one tile, its plays from the cross sets, plays what the walk
+    // finds, with its scores, on any lanes, in every generation: raw (with the
+    // run letters or without), by the lean arm, and by the tables, on a fresh
+    // generator and on one whose cross sets a walk left. The walk is of the
+    // tile beside a Z, which no word here holds, so it plays the tile alone
     #[inline]
     #[test]
-    fn a_lone_tile_plays_what_the_walk_finds_in_its_order() {
+    fn a_lone_tile_plays_what_the_walk_finds() {
+        fn params<'a, N: kwg::Node, L: kwg::Node>(
+            board_snapshot: &'a BoardSnapshot<'a, N, L>,
+            rack: &'a [u8],
+            max_gen: usize,
+        ) -> GenMovesParams<'a, N, L> {
+            GenMovesParams {
+                board_snapshot,
+                rack,
+                max_gen,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            }
+        }
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let fifteen = [
             "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
@@ -10764,65 +10803,142 @@ mod tests {
         ] {
             let kwg = sweep_kwg_covering(&gc);
             let run_letter_bits = kwg.compute_letter_bits().letter_bits;
+            let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+                .unwrap()
+                .unwrap();
+            let dead = parse_test_rack(gc.alphabet(), "Z");
             let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
             for fen in boards {
                 let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
-                let board_snapshot = BoardSnapshot {
-                    board_tiles: &board_tiles,
-                    game_config: &gc,
-                    kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                };
                 let mut placed = 0;
-                for rack in racks {
-                    let rack = parse_test_rack(gc.alphabet(), rack);
-                    for (rows, cols) in masks {
-                        let plays = |g: &KurniaMoveGenerator| {
-                            g.plays
-                                .iter()
-                                .map(|p| match &p.play {
-                                    Play::Place { score, .. } => {
-                                        format!("{} {score}\n", p.play.fmt(&board_snapshot))
-                                    }
-                                    Play::Exchange { .. } => {
-                                        format!("{}\n", p.play.fmt(&board_snapshot))
-                                    }
-                                })
-                                .collect::<String>()
-                        };
-                        let mut walker = KurniaMoveGenerator::new(&gc);
-                        walker.gen_moves_raw_lanes_unsorted(
-                            &board_snapshot,
-                            &rack,
-                            0,
-                            PassPolicy::AsACandidate,
-                            rows,
-                            cols,
-                        );
-                        let walked = plays(&walker);
-                        placed += walker
+                for anagrams in [None, Some(&held)] {
+                    let board_snapshot = BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams,
+                        rack_lengths: None,
+                        klv: &klv,
+                    };
+                    // the place plays with their scores, sorted
+                    let places = |g: &KurniaMoveGenerator| {
+                        let mut lines = g
                             .plays
                             .iter()
-                            .filter(|p| matches!(p.play, Play::Place { .. }))
-                            .count();
-                        // on a fresh generator, and on the walker's, whose
-                        // cross sets the walk left
-                        let mut fresh = KurniaMoveGenerator::new(&gc);
-                        for move_generator in [&mut fresh, &mut walker] {
-                            move_generator.gen_moves_raw_lanes_unsorted_by_runs(
-                                &run_letter_bits,
+                            .filter_map(|p| match &p.play {
+                                Play::Place { score, .. } => {
+                                    Some(format!("{} {score}", p.play.fmt(&board_snapshot)))
+                                }
+                                Play::Exchange { .. } => None,
+                            })
+                            .collect::<Vec<_>>();
+                        lines.sort_unstable();
+                        lines
+                    };
+                    for rack in racks {
+                        let lone = parse_test_rack(gc.alphabet(), rack);
+                        let mut beside = [&lone[..], &dead[..]].concat();
+                        beside.sort_unstable();
+                        for (rows, cols) in masks {
+                            let at = format!(
+                                "{fen}, rack {rack}, tables {}, rows {rows:#x}, columns {cols:#x}",
+                                anagrams.is_some()
+                            );
+                            let mut walker = KurniaMoveGenerator::new(&gc);
+                            walker.gen_moves_raw_lanes_unsorted(
                                 &board_snapshot,
-                                &rack,
+                                &beside,
+                                0,
+                                PassPolicy::AsACandidate,
                                 rows,
                                 cols,
                             );
-                            assert_eq!(
-                                walked,
-                                plays(move_generator),
-                                "{fen}, rows {rows:#x}, columns {cols:#x}"
+                            let walked = places(&walker);
+                            placed += walked.len();
+                            walker.gen_moves_unfiltered_lanes(
+                                &params(&board_snapshot, &beside, usize::MAX),
+                                rows,
+                                cols,
                             );
+                            assert_eq!(places(&walker), walked, "{at}");
+                            walker.gen_moves_unfiltered_lanes_lean(
+                                &params(&board_snapshot, &beside, usize::MAX),
+                                rows,
+                                cols,
+                            );
+                            assert_eq!(places(&walker), walked, "{at}");
+                            let mut fresh = KurniaMoveGenerator::new(&gc);
+                            for move_generator in [&mut fresh, &mut walker] {
+                                move_generator.gen_moves_raw_lanes_unsorted_by_runs(
+                                    &run_letter_bits,
+                                    &board_snapshot,
+                                    &lone,
+                                    rows,
+                                    cols,
+                                );
+                                assert_eq!(places(move_generator), walked, "{at}");
+                                move_generator.gen_moves_raw_lanes_unsorted(
+                                    &board_snapshot,
+                                    &lone,
+                                    0,
+                                    PassPolicy::AsACandidate,
+                                    rows,
+                                    cols,
+                                );
+                                assert_eq!(places(move_generator), walked, "{at}");
+                                for lean in [false, true] {
+                                    let generate = |g: &mut KurniaMoveGenerator, max_gen: usize| {
+                                        let params = params(&board_snapshot, &lone, max_gen);
+                                        if lean {
+                                            g.gen_moves_unfiltered_lanes_lean(&params, rows, cols);
+                                        } else {
+                                            g.gen_moves_unfiltered_lanes(&params, rows, cols);
+                                        }
+                                        g.plays
+                                            .iter()
+                                            .map(|p| (p.equity, p.play.clone()))
+                                            .collect::<Vec<_>>()
+                                    };
+                                    let all = generate(move_generator, usize::MAX);
+                                    assert_eq!(places(move_generator), walked, "{at}");
+                                    // the best few, under a threshold that
+                                    // rises as they come
+                                    for max_gen in [1, 3] {
+                                        let best = generate(move_generator, max_gen);
+                                        assert!(
+                                            best.iter().eq(all.iter().take(max_gen)),
+                                            "{at}, at most {max_gen}"
+                                        );
+                                    }
+                                    // the async lean arm's, on every lane
+                                    if lean && (rows, cols) == (!0, !0) {
+                                        let params = params(&board_snapshot, &lone, usize::MAX);
+                                        {
+                                            let mut fut = std::pin::pin!(
+                                                move_generator.gen_moves_filtered_async_lean(
+                                                    &params,
+                                                    PlacePredicate::AcceptAll,
+                                                    klv::AdjustLeave::Identity,
+                                                    EquityPredicate::AcceptAll,
+                                                    || std::future::ready(()),
+                                                )
+                                            );
+                                            let mut cx = std::task::Context::from_waker(
+                                                std::task::Waker::noop(),
+                                            );
+                                            while fut.as_mut().poll(&mut cx).is_pending() {}
+                                        }
+                                        assert!(
+                                            move_generator
+                                                .plays
+                                                .iter()
+                                                .map(|p| (p.equity, p.play.clone()))
+                                                .eq(all.iter().cloned()),
+                                            "{at}, async"
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                 }
