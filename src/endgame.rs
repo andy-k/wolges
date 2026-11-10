@@ -8089,6 +8089,215 @@ mod tests {
         }
     }
 
+    // the commonest letters, A, E, I, N, O, R, and T
+    const CROSSING_LETTERS: [u8; 7] = [1, 5, 9, 14, 15, 18, 20];
+
+    // a word list of strings of the commonest letters, two to four long, about
+    // one in four of them chosen at random, so a board of random moves crosses
+    // itself often and its lines take few of the letters
+    #[inline]
+    fn crossing_word_list() -> Vec<bites::Bites> {
+        let letters = CROSSING_LETTERS;
+        let mut seed = 0u64;
+        let mut words = Vec::<bites::Bites>::new();
+        for len in 2..=4 {
+            for index in 0..letters.len().pow(len) {
+                if splitmix64(&mut seed).is_multiple_of(4) {
+                    let word = (0..len)
+                        .map(|place| letters[index / letters.len().pow(place) % letters.len()])
+                        .collect::<Vec<_>>();
+                    words.push(word[..].into());
+                }
+            }
+        }
+        words.sort_unstable();
+        words
+    }
+
+    // a move placing tiles: down or across, its lane, its first square, and its
+    // tiles, 0 where it plays through one on the board
+    type PlayAt<'w> = (bool, i8, i8, &'w [u8]);
+
+    // the words a move made, read on the board after it: its own along its line
+    // and each across it through a tile it placed, of two letters or more
+    fn words_made(
+        gc: &game_config::GameConfig,
+        board: &[u8],
+        (down, lane, idx, word): PlayAt<'_>,
+    ) -> Vec<Vec<u8>> {
+        let dim = gc.board_layout().dim();
+        let run = |down: bool, lane: i8, at: i8| {
+            let strider = dim.lane(down, lane);
+            let mut first = at;
+            while first > 0 && board[strider.at(first - 1)] != 0 {
+                first -= 1;
+            }
+            let mut last = at;
+            while last + 1 < strider.len() && board[strider.at(last + 1)] != 0 {
+                last += 1;
+            }
+            (first..=last)
+                .map(|i| board[strider.at(i)] & 0x7f)
+                .collect::<Vec<_>>()
+        };
+        let mut made = vec![run(down, lane, idx)];
+        for (i, &tile) in (idx..).zip(word) {
+            if tile != 0 {
+                made.push(run(!down, i, lane));
+            }
+        }
+        made.retain(|word| word.len() >= 2);
+        made
+    }
+
+    // the word prune keeps every word a later move can make, however the tiles
+    // not on the board come to the racks: on boards of random moves, crowded
+    // now and then by tiles of letters no word holds, and along lines of random
+    // moves from each, every word that every move of each rack drawn from the
+    // tiles left makes (its own and each across it) is one the prune of the
+    // line's first board keeps; and the prune gives each word once, in
+    // ascending order
+    #[test]
+    #[inline]
+    fn the_word_prune_keeps_every_word_a_later_move_makes() {
+        let gc = game_config::make_english_game_config();
+        let alphabet = gc.alphabet();
+        let dim = gc.board_layout().dim();
+        let rack_size = gc.rack_size() as usize;
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &crossing_word_list(),
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let mut seed = 1u64;
+        let mut random = move |n: usize| (splitmix64(&mut seed) % n as u64) as usize;
+        // a rack drawn from the tiles left, its every move, and the board after
+        // one of them chosen at random with the rack's other tiles put back;
+        // None when the rack has no move
+        let mut step = |board: &mut Vec<u8>,
+                        left: &mut Vec<u8>,
+                        each_move: &mut dyn FnMut(&[u8], PlayAt<'_>)|
+         -> Option<()> {
+            let mut rack = Vec::new();
+            while rack.len() < rack_size && !left.is_empty() {
+                rack.push(left.swap_remove(random(left.len())));
+            }
+            mg.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: board,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            let places = (mg.plays.iter())
+                .filter_map(|valued| match &valued.play {
+                    movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        ..
+                    } => Some((*down, *lane, *idx, word.clone())),
+                    movegen::Play::Exchange { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            for (down, lane, idx, word) in &places {
+                let mut after = board.clone();
+                apply_place(&gc, &mut after, &mut rack.clone(), *down, *lane, *idx, word);
+                each_move(&after, (*down, *lane, *idx, &word[..]));
+            }
+            let chosen = (!places.is_empty()).then(|| {
+                let (down, lane, idx, word) = &places[random(places.len())];
+                apply_place(&gc, board, &mut rack, *down, *lane, *idx, word);
+            });
+            left.extend(rack);
+            chosen
+        };
+        let mut scatter = 2u64;
+        let mut words_checked = 0;
+        for _ in 0..60 {
+            let mut board = vec![0u8; dim.rows as usize * dim.cols as usize];
+            let mut left = (0..alphabet.len())
+                .flat_map(|tile| std::iter::repeat_n(tile, alphabet.freq(tile) as usize))
+                .collect::<Vec<_>>();
+            for turn in 0..30 {
+                // after a few moves, tiles of letters no word holds put on
+                // random empty squares: a crowded board, the squares beside
+                // them taking nothing
+                for _ in 0..if turn % 4 == 0 && turn > 0 {
+                    splitmix64(&mut scatter) % 31
+                } else {
+                    0
+                } {
+                    let blockers = (0..left.len())
+                        .filter(|&at| left[at] != 0 && !CROSSING_LETTERS.contains(&left[at]))
+                        .collect::<Vec<_>>();
+                    let empty = (0..board.len())
+                        .filter(|&at| board[at] == 0)
+                        .collect::<Vec<_>>();
+                    if blockers.is_empty() || empty.is_empty() {
+                        break;
+                    }
+                    let pick =
+                        |n: usize, scatter: &mut u64| (splitmix64(scatter) % n as u64) as usize;
+                    let tile = left.swap_remove(blockers[pick(blockers.len(), &mut scatter)]);
+                    board[empty[pick(empty.len(), &mut scatter)]] = tile;
+                }
+                let mut kept = Vec::<bites::Bites>::new();
+                movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                    &movegen::BoardSnapshot {
+                        board_tiles: &board,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    },
+                    |word: &[u8]| kept.push(word.into()),
+                );
+                assert!(kept.windows(2).all(|pair| pair[0] < pair[1]));
+                for _ in 0..3 {
+                    let (mut line_board, mut line_left) = (board.clone(), left.clone());
+                    for _ in 0..6 {
+                        let moved = step(&mut line_board, &mut line_left, &mut |after, play| {
+                            for word in words_made(&gc, after, play) {
+                                assert!(
+                                    kept.binary_search_by(|k| k[..].cmp(&word)).is_ok(),
+                                    "{word:?} made on {after:?}"
+                                );
+                                words_checked += 1;
+                            }
+                        });
+                        if moved.is_none() {
+                            break;
+                        }
+                    }
+                }
+                if step(&mut board, &mut left, &mut |_, _| {}).is_none() {
+                    break;
+                }
+            }
+        }
+        assert!(words_checked > 0);
+    }
+
     // a graph with runs turned round (each node keeping its arc; only runs no
     // arc enters past their first node, as the builder shares a run's tail, so
     // the same words) has runs that do not ascend; the solver walks it without

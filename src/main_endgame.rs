@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, anagrams, bites, build, display, endgame, equity, error, fash, game_config,
-    game_state, klv, kwg, movegen, notation, parallelism, play_scorer, text,
+    alphabet, anagrams, bites, build, display, endgame, equity, error, game_config, game_state,
+    klv, kwg, movegen, notation, parallelism, play_scorer, text,
 };
 
 mod endgame_watch;
@@ -412,7 +412,7 @@ fn run_batch<N: kwg::Node>(
                 .map_err(|e| error::new(format!("line {line_index}: {e}")))?;
         }
 
-        let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+        let mut vec_of_words = Vec::<bites::Bites>::new();
         move_generator.gen_remaining_words(
             &movegen::BoardSnapshot {
                 board_tiles: &board_tiles,
@@ -422,12 +422,8 @@ fn run_batch<N: kwg::Node>(
                 rack_lengths: None,
                 klv: &empty_klv,
             },
-            |word: &[u8]| {
-                set_of_words.insert(word.into());
-            },
+            |word: &[u8]| vec_of_words.push(word.into()),
         );
-        let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
-        vec_of_words.sort_unstable();
         let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
         let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
         let arm_tables = solver_tables(&smaller_kwg, &game_config, solving.lean)?;
@@ -1552,7 +1548,7 @@ fn solve_position<N: kwg::Node>(
 
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     // these always allocate for now.
-    let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+    let mut vec_of_words = Vec::<bites::Bites>::new();
     move_generator.gen_remaining_words(
         &movegen::BoardSnapshot {
             board_tiles: &board_tiles,
@@ -1562,17 +1558,13 @@ fn solve_position<N: kwg::Node>(
             rack_lengths: None,
             klv: &klv::Klv::<kwg::Node24>::empty()?,
         },
-        |word: &[u8]| {
-            set_of_words.insert(word.into());
-        },
+        |word: &[u8]| vec_of_words.push(word.into()),
     );
     writeln!(
         std::io::stdout(),
         "word_prune: {} words",
-        set_of_words.len()
+        vec_of_words.len()
     )?;
-    let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
-    vec_of_words.sort_unstable();
     let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
     writeln!(
         std::io::stdout(),

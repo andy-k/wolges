@@ -7859,7 +7859,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         );
     }
 
-    // found_word may be called multiple times for the same word.
+    // each word the board can still take, whatever the racks and the bag hold:
+    // found_word is called once for each, in ascending order
     #[inline(always)]
     pub fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -9431,33 +9432,31 @@ fn kurnia_gen_place_moves_iter<
     )
 }
 
-struct GenRemainingConnectedWordsParams<'a, N: kwg::Node> {
-    board_strip: &'a [u8],
-    rack_tally: &'a mut [u8],
-    word_strip_buffer: &'a mut [u8],
+// a line of the board as the word prune walks it: its tiles, a blank's letter
+// with 0x80 set and 0 where empty, and by square the letters a word along it
+// may put there, a bit (1 << letter) each
+struct PruneLine<'a, N: kwg::Node> {
     kwg: &'a kwg::Kwg<N>,
+    tiles: &'a [u8],
+    takes: &'a [u64],
+    available: &'a mut [u8], // the tiles not on the board, a blank at 0
+    letters: &'a mut [u8],   // the line's letters as the walk placed them
+    seen: &'a mut [u64],     // by square, the letters of the words found on it
+    found: &'a mut Vec<u8>,  // each word found: its length, then its letters
 }
 
-#[inline]
-fn gen_remaining_connected_words<
-    'a,
-    FoundWord: 'a + FnMut(&[u8]),
-    FoundSpace: 'a + FnMut(u8),
-    N: kwg::Node,
->(
-    params: &'a mut GenRemainingConnectedWordsParams<'a, N>,
-    found_word: FoundWord,
-    mut found_space: FoundSpace,
-) {
-    params
-        .word_strip_buffer
-        .iter_mut()
-        .zip(params.board_strip.iter().map(|x| x & 0x7f))
-        .for_each(|(m, v)| *m = v);
+// every word the line can take that holds one of its tiles at least, its empty
+// squares filled from the tiles not on the board, a blank as any letter, each
+// with a letter the square takes: each place a word fits adds it to found, and
+// its letters on the empty squares to seen
+fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
+    for (letter, &tile) in line.letters.iter_mut().zip(line.tiles) {
+        *letter = tile & 0x7f;
+    }
+    line.seen.fill(0);
 
-    struct Env<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node> {
-        params: &'a mut GenRemainingConnectedWordsParams<'a, N>,
-        found_word: FoundWord,
+    struct Env<'a, 'b, N: kwg::Node> {
+        line: &'b mut PruneLine<'a, N>,
         anchor: i8,
         rightmost: i8,
         num_played: i8,
@@ -9465,32 +9464,48 @@ fn gen_remaining_connected_words<
     }
 
     #[inline(always)]
-    fn record<FoundWord: FnMut(&[u8]), N: kwg::Node>(
-        env: &mut Env<'_, FoundWord, N>,
-        idx_left: i8,
-        idx_right: i8,
-    ) {
-        (env.found_word)(&env.params.word_strip_buffer[idx_left as usize..idx_right as usize]);
+    fn record<N: kwg::Node>(env: &mut Env<'_, '_, N>, idx_left: i8, idx_right: i8) {
+        let line = &mut *env.line;
+        let span = idx_left as usize..idx_right as usize;
+        line.found.push(span.len() as u8);
+        line.found.extend_from_slice(&line.letters[span.clone()]);
+        for idx in span {
+            if line.tiles[idx] == 0 {
+                line.seen[idx] |= 1 << line.letters[idx];
+            }
+        }
     }
 
-    fn play_right<FoundWord: FnMut(&[u8]), N: kwg::Node>(
-        env: &mut Env<'_, FoundWord, N>,
-        mut p: i32,
-        mut idx: i8,
-    ) {
+    // the tally a letter put on the empty square at idx comes from: its own
+    // tile's, else a blank's; None when the square does not take it or neither
+    // is left
+    #[inline(always)]
+    fn take_from<N: kwg::Node>(line: &PruneLine<'_, N>, idx: i8, tile: u8) -> Option<usize> {
+        if tile == 0 || line.takes[idx as usize] & (1 << tile) == 0 {
+            None
+        } else if line.available[tile as usize] > 0 {
+            Some(tile as usize)
+        } else if line.available[0] > 0 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    fn play_right<N: kwg::Node>(env: &mut Env<'_, '_, N>, mut p: i32, mut idx: i8) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
-            let b = env.params.board_strip[idx as usize];
+            let b = env.line.tiles[idx as usize];
             if b == 0 {
                 break;
             }
-            p = env.params.kwg.seek(p, b & 0x7f);
+            p = env.line.kwg.seek(p, b & 0x7f);
             if p <= 0 {
                 return;
             }
             idx += 1;
         }
-        let node = env.params.kwg[p];
+        let node = env.line.kwg[p];
         if idx > env.anchor + 1 && idx - env.idx_left >= 2 && node.accepts() {
             record(env, env.idx_left, idx);
         }
@@ -9501,18 +9516,14 @@ fn gen_remaining_connected_words<
                 return;
             }
             loop {
-                let node = env.params.kwg[p];
+                let node = env.line.kwg[p];
                 let tile = node.tile();
-                if env.params.rack_tally[tile as usize] > 0 {
-                    env.params.rack_tally[tile as usize] -= 1;
-                    env.params.word_strip_buffer[idx as usize] = tile;
+                if let Some(from) = take_from(env.line, idx, tile) {
+                    env.line.available[from] -= 1;
+                    // not blanked for kwg.
+                    env.line.letters[idx as usize] = tile;
                     play_right(env, p, idx + 1);
-                    env.params.rack_tally[tile as usize] += 1;
-                } else if env.params.rack_tally[0] > 0 {
-                    env.params.rack_tally[0] -= 1;
-                    env.params.word_strip_buffer[idx as usize] = tile; // not blanked for kwg.
-                    play_right(env, p, idx + 1);
-                    env.params.rack_tally[0] += 1;
+                    env.line.available[from] += 1;
                 }
                 if node.is_end() {
                     break;
@@ -9522,24 +9533,20 @@ fn gen_remaining_connected_words<
         }
     }
 
-    fn play_left<FoundWord: FnMut(&[u8]), N: kwg::Node>(
-        env: &mut Env<'_, FoundWord, N>,
-        mut p: i32,
-        mut idx: i8,
-    ) {
+    fn play_left<N: kwg::Node>(env: &mut Env<'_, '_, N>, mut p: i32, mut idx: i8) {
         // tail-recurse placing current sequence of tiles
         while idx >= 0 {
-            let b = env.params.board_strip[idx as usize];
+            let b = env.line.tiles[idx as usize];
             if b == 0 {
                 break;
             }
-            p = env.params.kwg.seek(p, b & 0x7f);
+            p = env.line.kwg.seek(p, b & 0x7f);
             if p <= 0 {
                 return;
             }
             idx -= 1;
         }
-        let mut node = env.params.kwg[p];
+        let mut node = env.line.kwg[p];
         if env.num_played > 0 && env.anchor - idx >= 2 && node.accepts() {
             record(env, idx + 1, env.anchor + 1);
         }
@@ -9551,7 +9558,7 @@ fn gen_remaining_connected_words<
 
         let mut turnaround_p = p;
         loop {
-            node = env.params.kwg[turnaround_p];
+            node = env.line.kwg[turnaround_p];
             if node.tile() == 0 {
                 // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
                 env.idx_left = idx + 1;
@@ -9569,24 +9576,16 @@ fn gen_remaining_connected_words<
 
         if idx >= 0 {
             loop {
-                let node = env.params.kwg[p];
+                let node = env.line.kwg[p];
                 let tile = node.tile();
-                if tile != 0 {
-                    if env.params.rack_tally[tile as usize] > 0 {
-                        env.params.rack_tally[tile as usize] -= 1;
-                        env.num_played += 1;
-                        env.params.word_strip_buffer[idx as usize] = tile;
-                        play_left(env, p, idx - 1);
-                        env.num_played -= 1;
-                        env.params.rack_tally[tile as usize] += 1;
-                    } else if env.params.rack_tally[0] > 0 {
-                        env.params.rack_tally[0] -= 1;
-                        env.num_played += 1;
-                        env.params.word_strip_buffer[idx as usize] = tile; // not blanked for kwg.
-                        play_left(env, p, idx - 1);
-                        env.num_played -= 1;
-                        env.params.rack_tally[0] += 1;
-                    }
+                if let Some(from) = take_from(env.line, idx, tile) {
+                    env.line.available[from] -= 1;
+                    env.num_played += 1;
+                    // not blanked for kwg.
+                    env.line.letters[idx as usize] = tile;
+                    play_left(env, p, idx - 1);
+                    env.num_played -= 1;
+                    env.line.available[from] += 1;
                 }
                 if node.is_end() {
                     break;
@@ -9596,10 +9595,9 @@ fn gen_remaining_connected_words<
         }
     }
 
-    let strider_len = params.board_strip.len();
+    let strider_len = line.tiles.len();
     let mut env = Env {
-        params,
-        found_word,
+        line,
         anchor: 0,
         rightmost: 0,
         num_played: 0,
@@ -9608,21 +9606,20 @@ fn gen_remaining_connected_words<
     let mut leftmost = strider_len as i8; // processed up to here
     loop {
         env.rightmost = leftmost;
-        while leftmost > 0 && env.params.board_strip[leftmost as usize - 1] == 0 {
+        while leftmost > 0 && env.line.tiles[leftmost as usize - 1] == 0 {
             leftmost -= 1;
         }
-        found_space((env.rightmost - leftmost - ((leftmost > 0) as i8)).max(0) as u8); // leftmost>0 requires gap from next word.
         if leftmost > 0 {
             // board[leftmost - 1] is a tile.
             env.anchor = leftmost - 1;
             // board[anchor + 1] is empty or off-board, board[anchor] has a tile.
             let mut p = 1;
-            while leftmost > 0 && env.params.board_strip[leftmost as usize - 1] != 0 {
+            while leftmost > 0 && env.line.tiles[leftmost as usize - 1] != 0 {
                 leftmost -= 1;
                 p = env
-                    .params
+                    .line
                     .kwg
-                    .seek(p, env.params.board_strip[leftmost as usize] & 0x7f);
+                    .seek(p, env.line.tiles[leftmost as usize] & 0x7f);
             }
             // board[leftmost] has a tile, board[leftmost - 1] is empty or off-board.
             if p >= 0 {
@@ -9637,78 +9634,156 @@ fn gen_remaining_connected_words<
             break;
         }
     }
-    env.params.word_strip_buffer.iter_mut().for_each(|m| *m = 0);
 }
 
-struct GenRemainingUnconnectedWordsParams<'a, N: kwg::Node> {
-    rack_tally: &'a mut [u8],
-    word_vec: &'a mut Vec<u8>,
+// the letters that, between the tiles before them along a line and those after,
+// make a run of tiles some word holds: those the gaddag leads to from its root
+// by the tiles after reversed, then the letter, then the tiles before reversed;
+// a bit (1 << letter) each
+fn letters_between<N: kwg::Node>(kwg: &kwg::Kwg<N>, before: &[u8], after: &[u8]) -> u64 {
+    let mut p = 1;
+    for &tile in after.iter().rev() {
+        p = kwg.seek(p, tile & 0x7f);
+        if p <= 0 {
+            return 0;
+        }
+    }
+    let mut q = kwg[p].arc_index();
+    if q <= 0 {
+        return 0;
+    }
+    let mut letters = 0;
+    loop {
+        let node = kwg[q];
+        let tile = node.tile();
+        if tile != 0
+            && (before.iter().rev())
+                .try_fold(q, |p, &tile| {
+                    Some(kwg.seek(p, tile & 0x7f)).filter(|&p| p > 0)
+                })
+                .is_some()
+        {
+            letters |= 1 << tile;
+        }
+        if node.is_end() {
+            break;
+        }
+        q += 1;
+    }
+    letters
+}
+
+// the walk of lone_words: by depth and letter, the shapes that take the letter
+// at that depth, a bit each in chunks words
+struct LoneWalk<'a, N: kwg::Node> {
     kwg: &'a kwg::Kwg<N>,
-    max_len: usize,
+    available: &'a mut [u8], // the tiles not on the board, a blank at 0
+    fits: &'a [u64],
+    alphabet_len: usize,
+    chunks: usize,
+    longest: usize,
+    active: &'a mut [u64], // by depth, the shapes the word so far fits
+    word: &'a mut Vec<u8>,
+    found: &'a mut Vec<u8>, // the words found, each its length then its letters
 }
 
-#[inline]
-fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node>(
-    params: &'a mut GenRemainingUnconnectedWordsParams<'a, N>,
-    found_word: FoundWord,
+fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: usize) {
+    let fits = walk.fits;
+    let chunks = walk.chunks;
+    loop {
+        let node = walk.kwg[p];
+        let tile = node.tile() as usize;
+        let from = if walk.available[tile] > 0 { tile } else { 0 };
+        if walk.available[from] > 0 {
+            let fit = &fits[(depth * walk.alphabet_len + tile) * chunks..][..chunks];
+            let (now, next) = walk.active[depth * chunks..].split_at_mut(chunks);
+            let mut any = 0;
+            for ((next, &now), &fit) in next.iter_mut().zip(now.iter()).zip(fit) {
+                *next = now & fit;
+                any |= *next;
+            }
+            if any != 0 {
+                walk.available[from] -= 1;
+                walk.word.push(tile as u8);
+                if depth > 0 && node.accepts() {
+                    walk.found.push(walk.word.len() as u8);
+                    walk.found.extend_from_slice(walk.word);
+                }
+                let next_p = node.arc_index();
+                if next_p != 0 && depth + 1 < walk.longest {
+                    walk_lone_words(walk, next_p, depth + 1);
+                }
+                walk.word.pop();
+                walk.available[from] += 1;
+            }
+        }
+        if node.is_end() {
+            break;
+        }
+        p += 1;
+    }
+}
+
+// the words of two letters or more the tiles not on the board spell alone, a
+// blank as any letter, that fit a shape from its first square on: a shape is a
+// run of squares of takes, (first, len), and the longest comes first. Each word
+// is added to found once, in ascending order
+fn lone_words<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    available: &mut [u8],
+    takes: &[u64],
+    shapes: &[(usize, usize)],
+    found: &mut Vec<u8>,
 ) {
-    params.word_vec.clear();
-    params.word_vec.reserve(params.max_len);
-    struct Env<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node> {
-        rack_tally: &'a mut [u8],
-        word_vec: &'a mut Vec<u8>,
-        kwg: &'a kwg::Kwg<N>,
-        max_len: usize,
-        found_word: FoundWord,
+    let root = kwg[0].arc_index();
+    let Some(&(_, longest)) = shapes.first() else {
+        return;
+    };
+    if root == 0 {
+        return;
     }
-    fn iter<FoundWord: FnMut(&[u8]), N: kwg::Node>(env: &mut Env<'_, FoundWord, N>, mut p: i32) {
-        if env.word_vec.len() >= env.max_len {
-            return;
-        }
-        loop {
-            let node = &env.kwg[p];
-            let tile = node.tile();
-            if env.rack_tally[tile as usize] > 0 {
-                env.rack_tally[tile as usize] -= 1;
-                env.word_vec.push(tile);
-                if node.accepts() {
-                    (env.found_word)(env.word_vec);
+    let alphabet_len = available.len();
+    let chunks = shapes.len().div_ceil(64);
+    let mut fits = vec![0u64; longest * alphabet_len * chunks];
+    for (index, &(first, len)) in shapes.iter().enumerate() {
+        for (depth, &letters) in takes[first..first + len].iter().enumerate() {
+            for tile in 1..alphabet_len {
+                if letters & (1 << tile) != 0 {
+                    fits[(depth * alphabet_len + tile) * chunks + index / 64] |= 1 << (index % 64);
                 }
-                let np = node.arc_index();
-                if np != 0 {
-                    iter(env, np);
-                }
-                env.word_vec.pop();
-                env.rack_tally[tile as usize] += 1;
-            } else if env.rack_tally[0] > 0 {
-                env.rack_tally[0] -= 1;
-                env.word_vec.push(tile);
-                if node.accepts() {
-                    (env.found_word)(env.word_vec);
-                }
-                let np = node.arc_index();
-                if np != 0 {
-                    iter(env, np);
-                }
-                env.word_vec.pop();
-                env.rack_tally[0] += 1;
             }
-            if node.is_end() {
-                break;
-            }
-            p += 1;
         }
     }
-    iter(
-        &mut Env {
-            rack_tally: params.rack_tally,
-            word_vec: params.word_vec,
-            kwg: params.kwg,
-            max_len: params.max_len,
-            found_word,
+    let mut active = vec![0u64; (longest + 1) * chunks];
+    for index in 0..shapes.len() {
+        active[index / 64] |= 1 << (index % 64);
+    }
+    walk_lone_words(
+        &mut LoneWalk {
+            kwg,
+            available,
+            fits: &fits,
+            alphabet_len,
+            chunks,
+            longest,
+            active: &mut active,
+            word: &mut Vec::with_capacity(longest),
+            found,
         },
-        params.kwg[0].arc_index(),
+        root,
+        0,
     );
+}
+
+// the words of found, each its length then its letters
+#[inline(always)]
+fn words_in(mut found: &[u8]) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        let (&len, rest) = found.split_first()?;
+        let (word, rest) = rest.split_at(len as usize);
+        found = rest;
+        Some(word)
+    })
 }
 
 // under jumbled rules a word's tiles lie on the board in any order, and the
@@ -9848,18 +9923,35 @@ fn gen_remaining_jumbled_words<
             }
         }
     }
-    gen_remaining_unconnected_words(
-        &mut GenRemainingUnconnectedWordsParams {
-            kwg: board_snapshot.kwg,
-            rack_tally: &mut working_buffer.used_letters_tally, // intentional.
-            word_vec: &mut working_buffer.exchange_buffer,      // intentional.
-            max_len: dim.rows.max(dim.cols) as usize,
-        },
-        &mut found_word,
+    let longest = dim.rows.max(dim.cols) as usize;
+    let mut lone = Vec::new();
+    lone_words(
+        board_snapshot.kwg,
+        &mut working_buffer.used_letters_tally,
+        &vec![!1; longest],
+        &[(0, longest)],
+        &mut lone,
     );
+    words_in(&lone).for_each(found_word);
 }
 
-// found_word may be called multiple times for the same word.
+// each word of found once, in ascending order
+#[inline(always)]
+fn each_word_once(mut found: Vec<&[u8]>, found_word: impl FnMut(&[u8])) {
+    found.sort_unstable();
+    found.dedup();
+    found.into_iter().for_each(found_word);
+}
+
+// each word the board can still take: the tiles on it stay, and those not on
+// it, a blank as any letter, may fill its empty squares however they come to
+// the racks. found_word is called once for each, in ascending order. A word
+// along a line holds one of its tiles, and that line's walk from its tiles
+// finds it; else it lies in a run of empty squares beside no tile along the
+// line. Whenever a letter is put beside a tile, it makes a word with that tile
+// along the line they share; so a square takes, for a word the other way, only
+// the letters the words along that line put on it. Each line is walked again
+// until nothing it reads changes, and its words are those of its last walk.
 #[inline]
 fn gen_remaining_words<
     'a,
@@ -9870,7 +9962,7 @@ fn gen_remaining_words<
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G>,
-    mut found_word: FoundWord,
+    found_word: FoundWord,
 ) {
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
@@ -9894,50 +9986,168 @@ fn gen_remaining_words<
         }
     }
     if let game_config::GameRules::Jumbled = game_config.game_rules() {
-        gen_remaining_jumbled_words(board_snapshot, working_buffer, found_word);
+        let mut found = Vec::new();
+        gen_remaining_jumbled_words(board_snapshot, working_buffer, |word: &[u8]| {
+            found.push(word.len() as u8);
+            found.extend_from_slice(word);
+        });
+        each_word_once(words_in(&found).collect(), found_word);
         return;
     }
-    let mut max_space_len = 0;
-    let mut found_space = |space_len: u8| max_space_len = max_space_len.max(space_len);
-    for row in 0..dim.rows {
-        let strip_range_start = (row as isize * dim.cols as isize) as usize;
-        let strip_range_end = strip_range_start + dim.cols as usize;
-        gen_remaining_connected_words(
-            &mut GenRemainingConnectedWordsParams {
-                board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                rack_tally: &mut working_buffer.used_letters_tally, // intentional.
-                word_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
-                    [strip_range_start..strip_range_end],
-                kwg: board_snapshot.kwg,
-            },
-            &mut found_word,
-            &mut found_space,
-        );
+    let rows = dim.rows as usize;
+    let cols = dim.cols as usize;
+    let area = rows * cols;
+    let board_tiles = &board_snapshot.board_tiles[..area];
+    let transposed_board_tiles = &working_buffer.transposed_board_tiles[..area];
+    let available = &mut working_buffer.used_letters_tally[..];
+    // the rows, then the columns: where a line's squares start in takes (an
+    // across word's squares row by row, then a down word's column by column),
+    // and how many it has
+    let line_at = |line: usize| {
+        if line < rows {
+            (line * cols, cols)
+        } else {
+            (area + (line - rows) * rows, rows)
+        }
+    };
+    let tiles_at = |start: usize, len: usize| {
+        if start < area {
+            &board_tiles[start..start + len]
+        } else {
+            &transposed_board_tiles[start - area..start - area + len]
+        }
+    };
+    let lines = rows + cols;
+    // by square, the letters a word across may put there, then those of a word
+    // down, a bit (1 << letter) each
+    let mut takes = vec![!1u64; 2 * area];
+    let has_tiles = (0..lines)
+        .map(|line| {
+            let (start, len) = line_at(line);
+            tiles_at(start, len).iter().any(|&tile| tile != 0)
+        })
+        .collect::<Vec<_>>();
+    let mut to_walk = has_tiles.clone();
+    // by line, the words of its last walk, each its length then its letters
+    let mut words = vec![Vec::new(); lines];
+    let mut letters = vec![0u8; rows.max(cols)];
+    let mut seen = vec![0u64; rows.max(cols)];
+    // whether a square of a line is empty and beside one of its tiles
+    let beside = |tiles: &[u8], idx: usize| {
+        tiles[idx] == 0
+            && ((idx > 0 && tiles[idx - 1] != 0) || (idx + 1 < tiles.len() && tiles[idx + 1] != 0))
+    };
+    // where in takes a square of a line keeps the letters a word the other way
+    // may put there, and that word's line
+    let across = |line: usize, idx: usize| {
+        if line < rows {
+            (area + idx * rows + line, rows + idx)
+        } else {
+            (idx * cols + line - rows, idx)
+        }
+    };
+    // to begin with, a square beside a tile takes, for a word the other way,
+    // only letters that make a run some word holds with the tiles beside it
+    for line in 0..lines {
+        let (start, len) = line_at(line);
+        let tiles = tiles_at(start, len);
+        for idx in 0..len {
+            if beside(tiles, idx) {
+                let first = idx
+                    - (tiles[..idx].iter().rev())
+                        .take_while(|&&tile| tile != 0)
+                        .count();
+                let last = idx
+                    + 1
+                    + (tiles[idx + 1..].iter())
+                        .take_while(|&&tile| tile != 0)
+                        .count();
+                takes[across(line, idx).0] &= letters_between(
+                    board_snapshot.kwg,
+                    &tiles[first..idx],
+                    &tiles[idx + 1..last],
+                );
+            }
+        }
     }
-    for col in 0..dim.cols {
-        let strip_range_start = (col as isize * dim.rows as isize) as usize;
-        let strip_range_end = strip_range_start + dim.rows as usize;
-        gen_remaining_connected_words(
-            &mut GenRemainingConnectedWordsParams {
-                board_strip: &working_buffer.transposed_board_tiles
-                    [strip_range_start..strip_range_end],
-                rack_tally: &mut working_buffer.used_letters_tally, // intentional.
-                word_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
-                    [strip_range_start..strip_range_end],
+    loop {
+        let mut walked = false;
+        for line in 0..lines {
+            if !to_walk[line] {
+                continue;
+            }
+            to_walk[line] = false;
+            walked = true;
+            let (start, len) = line_at(line);
+            let tiles = tiles_at(start, len);
+            words[line].clear();
+            prune_line(&mut PruneLine {
                 kwg: board_snapshot.kwg,
-            },
-            &mut found_word,
-            &mut found_space,
-        );
+                tiles,
+                takes: &takes[start..start + len],
+                available,
+                letters: &mut letters[..len],
+                seen: &mut seen[..len],
+                found: &mut words[line],
+            });
+            for (idx, &letters_seen) in seen[..len].iter().enumerate() {
+                if !beside(tiles, idx) {
+                    continue;
+                }
+                let (square, other) = across(line, idx);
+                let narrowed = takes[square] & letters_seen;
+                if narrowed != takes[square] {
+                    takes[square] = narrowed;
+                    to_walk[other] |= has_tiles[other];
+                }
+            }
+        }
+        if !walked {
+            break;
+        }
     }
-    gen_remaining_unconnected_words(
-        &mut GenRemainingUnconnectedWordsParams {
-            kwg: board_snapshot.kwg,
-            rack_tally: &mut working_buffer.used_letters_tally, // intentional.
-            word_vec: &mut working_buffer.exchange_buffer,      // intentional.
-            max_len: max_space_len as usize,
-        },
-        &mut found_word,
+    // where a word of the tiles not on the board alone may lie: from each
+    // square of a run of a line's empty squares that are beside no tile along
+    // it and take some letter, to the run's end; the longest first, each kept
+    // only when no shape kept before it takes every letter it takes
+    let mut shapes = Vec::new();
+    for line in 0..lines {
+        let (start, len) = line_at(line);
+        let tiles = tiles_at(start, len);
+        let free = |idx: usize| {
+            tiles[idx] == 0
+                && (idx == 0 || tiles[idx - 1] == 0)
+                && (idx + 1 == len || tiles[idx + 1] == 0)
+                && takes[start + idx] != 0
+        };
+        let mut idx = 0;
+        while idx < len {
+            let run = (idx..len).take_while(|&at| free(at)).count();
+            for first in idx..(idx + run).saturating_sub(1) {
+                shapes.push((start + first, idx + run - first));
+            }
+            idx += run + 1;
+        }
+    }
+    shapes.sort_unstable_by_key(|&(_, len)| std::cmp::Reverse(len));
+    let mut kept = Vec::<(usize, usize)>::new();
+    for &(first, len) in &shapes {
+        let shape = &takes[first..first + len];
+        if !kept.iter().any(|&(other, _)| {
+            (shape.iter().zip(&takes[other..])).all(|(&letters, &others)| letters & !others == 0)
+        }) {
+            kept.push((first, len));
+        }
+    }
+    let mut lone = Vec::new();
+    lone_words(board_snapshot.kwg, available, &takes, &kept, &mut lone);
+    each_word_once(
+        words
+            .iter()
+            .flat_map(|found| words_in(found))
+            .chain(words_in(&lone))
+            .collect(),
+        found_word,
     );
 }
 
