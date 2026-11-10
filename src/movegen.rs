@@ -73,6 +73,10 @@ type PlaceMoveFn<'a> = &'a mut dyn FnMut(bool, i8, i8, &[u8], i32) -> bool;
 
 type EquityFn<'a> = &'a mut dyn FnMut(equity::Equity, &Play) -> bool;
 
+// a generation's found_place_move behind a dyn: handed a play as a walk finds
+// it, it hands back the threshold
+type FoundPlaceMoveFn<'a> = &'a mut dyn FnMut(bool, i8, i8, &[u8], i32, i32) -> i32;
+
 pub enum EquityPredicate<'a> {
     AcceptAll,
     RejectAll,
@@ -6843,7 +6847,36 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         // the copy for any side in G, or (a generator with none: the wasm's)
         // the copy compiled for the board's side
         let dim = board_snapshot.game_config.board_layout().dim();
-        if ANY_SIDE {
+        if working_buffer.num_tiles_on_board == 0 {
+            if ANY_SIDE {
+                gen_empty_board_place_moves::<0, _, _, _, _, _>(
+                    runs,
+                    board_snapshot,
+                    working_buffer,
+                    &multi_leaves,
+                    i32::MIN,
+                    found_place_move,
+                );
+            } else if dim.rows == 15 {
+                gen_empty_board_place_moves::<15, _, _, _, _, _>(
+                    runs,
+                    board_snapshot,
+                    working_buffer,
+                    &multi_leaves,
+                    i32::MIN,
+                    found_place_move,
+                );
+            } else {
+                gen_empty_board_place_moves::<21, _, _, _, _, _>(
+                    runs,
+                    board_snapshot,
+                    working_buffer,
+                    &multi_leaves,
+                    i32::MIN,
+                    found_place_move,
+                );
+            }
+        } else if ANY_SIDE {
             kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _>(
                 runs,
                 board_snapshot,
@@ -6915,8 +6948,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             return;
         }
 
-        let alphabet = params.board_snapshot.game_config.alphabet();
-        let board_layout = params.board_snapshot.game_config.board_layout();
         let max_gen = params.max_gen;
 
         let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
@@ -6961,35 +6992,17 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             params.dynamic_leaves,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
-        let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
+        // an empty board's leave value comes with the opening's penalty
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate.test(down, lane, idx, word, score) {
-                    let other_adjustments = if num_tiles_on_board == 0 {
-                        (idx..)
-                            .zip(word)
-                            .filter(|&(ref i, &tile)| {
-                                tile != 0
-                                    && alphabet.is_vowel(tile)
-                                    && if down {
-                                        board_layout.danger_star_down(*i)
-                                    } else {
-                                        board_layout.danger_star_across(*i)
-                                    }
-                            })
-                            .count() as i32
-                            * -equity::OPENING_HOTSPOT_PENALTY
-                    } else {
-                        0
-                    };
-                    let equity = equity::Equity::new(score + leave_value + other_adjustments);
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
                         max_gen,
-                        equity,
+                        equity::Equity::new(score + leave_value),
                         || Play::Place {
                             down,
                             lane,
@@ -7010,6 +7023,16 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 &multi_leaves,
                 found_place_move,
             );
+        } else if working_buffer.num_tiles_on_board == 0 {
+            gen_empty_board_place_moves::<0, _, _, _, _, _>(
+                (),
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                threshold.get().raw(),
+                found_place_move,
+            );
+            breathe().await;
         } else {
             for _ in
                 kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
@@ -7655,8 +7678,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             return;
         }
 
-        let alphabet = params.board_snapshot.game_config.alphabet();
-        let board_layout = params.board_snapshot.game_config.board_layout();
         let max_gen = params.max_gen;
 
         let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
@@ -7701,35 +7722,17 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             params.dynamic_leaves,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
-        let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
+        // an empty board's leave value comes with the opening's penalty
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate.test(down, lane, idx, word, score) {
-                    let other_adjustments = if num_tiles_on_board == 0 {
-                        (idx..)
-                            .zip(word)
-                            .filter(|&(ref i, &tile)| {
-                                tile != 0
-                                    && alphabet.is_vowel(tile)
-                                    && if down {
-                                        board_layout.danger_star_down(*i)
-                                    } else {
-                                        board_layout.danger_star_across(*i)
-                                    }
-                            })
-                            .count() as i32
-                            * -equity::OPENING_HOTSPOT_PENALTY
-                    } else {
-                        0
-                    };
-                    let equity = equity::Equity::new(score + leave_value + other_adjustments);
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
                         max_gen,
-                        equity,
+                        equity::Equity::new(score + leave_value),
                         || Play::Place {
                             down,
                             lane,
@@ -7756,6 +7759,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         } else {
             None
         };
+        let empty = working_buffer.num_tiles_on_board == 0;
         match runs {
             // a rack of one tile has its plays from the cross sets, with no
             // walk
@@ -7768,6 +7772,22 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     found_place_move,
                 );
             }
+            Some(runs) if empty => gen_empty_board_place_moves::<D, _, _, _, _, _>(
+                runs,
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                current_threshold(),
+                found_place_move,
+            ),
+            None if empty => gen_empty_board_place_moves::<D, _, _, _, _, _>(
+                (),
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                current_threshold(),
+                found_place_move,
+            ),
             Some(runs) => {
                 for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _>(
                     KurniaIterParams {
@@ -8148,6 +8168,516 @@ fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node, G: LaneBits>(
         working_buffer.prev_tile_score = working_buffer.board_tile_score;
     }
     working_buffer.init_after_cross_sets::<D, _, _>(board_snapshot, dirty_cols, dirty_rows);
+}
+
+// the opening's penalty for each vowel a play on an empty board puts on one of
+// the layout's danger squares (one beside a premium square of a lane next to
+// the star's)
+#[inline(always)]
+fn hotspot_penalty(game_config: &game_config::GameConfig, down: bool, idx: i8, word: &[u8]) -> i32 {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    (idx..)
+        .zip(word)
+        .filter(|&(i, &tile)| {
+            tile != 0
+                && alphabet.is_vowel(tile)
+                && if down {
+                    board_layout.danger_star_down(i)
+                } else {
+                    board_layout.danger_star_across(i)
+                }
+        })
+        .count() as i32
+        * -equity::OPENING_HOTSPOT_PENALTY
+}
+
+// a lane through the star of an empty board: its way and number; the star's
+// place along it and its length; its squares a tile may take (a bit each) and
+// their premiums
+#[derive(Clone, Copy)]
+struct StarLane<'a> {
+    down: bool,
+    lane: i8,
+    star: i8,
+    len: i8,
+    open: u128,
+    word_multipliers: &'a [i8],
+    tile_multipliers: &'a [i8],
+}
+
+// a jumbled game's place moves on an empty board: the span filler's on each
+// lane through the star given (its way, its number, the star's place along it),
+// as the walk finds the star's anchor there, from the lane's start to its end
+// (a square that takes no tile stops it as it stops the walk); found_place_move
+// is handed each leave value with the opening's penalty. One copy serves every
+// generation, by the dyn callback.
+#[inline(never)]
+fn walk_jumbled_star_lanes<'a, N: kwg::Node, L: kwg::Node, G: LaneBits>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer<G>,
+    multi_leaves: &'a klv::MultiLeaves,
+    lanes: [Option<(bool, i8, i8)>; 2],
+    threshold: i32,
+    found_place_move: FoundPlaceMoveFn<'_>,
+) {
+    let game_config = board_snapshot.game_config;
+    let dim = game_config.board_layout().dim();
+    let num_max_played = game_config
+        .rack_size()
+        .min(working_buffer.num_tiles_on_rack);
+    let mut threshold = threshold;
+    for (down, lane, anchor) in lanes.into_iter().flatten() {
+        let len = if down { dim.rows } else { dim.cols } as usize;
+        let start = lane as usize * len;
+        let end = start + len;
+        let first_threshold = threshold;
+        let mut callback = |idx: i8, word: &[u8], score: i32, leave_value: i32| {
+            threshold = found_place_move(
+                down,
+                lane,
+                idx,
+                word,
+                score,
+                leave_value + hotspot_penalty(game_config, down, idx, word),
+            );
+            threshold
+        };
+        gen_jumbled_place_moves(
+            &mut GenPlaceMovesParams {
+                board_snapshot,
+                board_strip: if down {
+                    &working_buffer.transposed_board_tiles[start..end]
+                } else {
+                    &board_snapshot.board_tiles[start..end]
+                },
+                cross_set_strip: if down {
+                    &working_buffer.cross_set_for_down_plays[start..end]
+                } else {
+                    &working_buffer.cross_set_for_across_plays[start..end]
+                },
+                cross_set_buffer_strip: if down {
+                    &working_buffer.cross_set_buffer_for_across_plays[start..end]
+                } else {
+                    &working_buffer.cross_set_buffer_for_down_plays[start..end]
+                },
+                remaining_word_multipliers_strip: if down {
+                    &working_buffer.remaining_word_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.remaining_word_multipliers_for_across_plays[start..end]
+                },
+                remaining_tile_multipliers_strip: if down {
+                    &working_buffer.remaining_tile_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.remaining_tile_multipliers_for_across_plays[start..end]
+                },
+                face_value_scores_strip: if down {
+                    &working_buffer.face_value_scores_for_down_plays[start..end]
+                } else {
+                    &working_buffer.face_value_scores_for_across_plays[start..end]
+                },
+                perpendicular_word_multipliers_strip: if down {
+                    &working_buffer.perpendicular_word_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.perpendicular_word_multipliers_for_across_plays[start..end]
+                },
+                perpendicular_scores_strip: if down {
+                    &working_buffer.perpendicular_scores_for_down_plays[start..end]
+                } else {
+                    &working_buffer.perpendicular_scores_for_across_plays[start..end]
+                },
+                rack_tally: &mut working_buffer.rack_tally,
+                rack_bits: working_buffer.rack_bits,
+                word_strip_buffer: if down {
+                    &mut working_buffer.word_buffer_for_down_plays[start..end]
+                } else {
+                    &mut working_buffer.word_buffer_for_across_plays[start..end]
+                },
+                num_max_played,
+                anchor,
+                leftmost: 0,
+                rightmost: len as i8,
+                callback: &mut callback as &mut dyn FnMut(i8, &[u8], i32, i32) -> i32,
+                multi_leaves,
+                num_tiles_in_bag: working_buffer.num_tiles_in_bag,
+                play_out_bonus: working_buffer.play_out_bonus,
+                jumbled: &mut working_buffer.jumbled,
+                is_census: working_buffer.is_census,
+                threshold: first_threshold,
+                best_leave_values: &working_buffer.best_leave_values,
+            },
+            !down,
+        );
+    }
+}
+
+// an empty board's place moves, made without the walk, which reads every lane
+// to find plays on the star's alone: on the lanes through the star the masks
+// hold, across its row and, where the layout is not the same both ways, down
+// its column. Each word the rack spells is read from the dawg once (a real tile
+// before a blank for each letter, as the walk takes them) and laid on every run
+// of open squares over the star, scored from the premiums; a play under the
+// threshold is not offered. A census spells each word as the walk does; a
+// jumbled game's lanes are filled by the walk's span filler. The cross sets are
+// made first, as the walk makes them, for the generation after; the opening's
+// penalty comes with each leave value found_place_move is given.
+#[inline(always)]
+fn gen_empty_board_place_moves<
+    'a,
+    const D: usize,
+    R: RunLetters,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+>(
+    runs: R,
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer<G>,
+    multi_leaves: &'a klv::MultiLeaves,
+    threshold: i32,
+    mut found_place_move: FoundPlaceMove,
+) {
+    lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
+    gen_empty_board_place_moves_made(
+        runs,
+        board_snapshot,
+        working_buffer,
+        multi_leaves,
+        threshold,
+        &mut found_place_move,
+    );
+}
+
+// gen_empty_board_place_moves once the cross sets are made, one copy for every
+// generation, by the dyn callback
+#[inline(never)]
+fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Node, G: LaneBits>(
+    runs: R,
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer<G>,
+    multi_leaves: &'a klv::MultiLeaves,
+    threshold: i32,
+    found_place_move: FoundPlaceMoveFn<'_>,
+) {
+    let game_config = board_snapshot.game_config;
+    let board_layout = game_config.board_layout();
+    let dim = board_layout.dim();
+    let star_row = board_layout.star_row();
+    let star_col = board_layout.star_col();
+    // each lane a play may take: its way, its number, the star's place along it
+    let lanes = [
+        (working_buffer.lane_rows & (G::from(1) << star_row as u32) != G::from(0))
+            .then_some((false, star_row, star_col)),
+        (!board_layout.is_symmetric()
+            && working_buffer.lane_cols & (G::from(1) << star_col as u32) != G::from(0))
+        .then_some((true, star_col, star_row)),
+    ];
+    if matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+        return walk_jumbled_star_lanes(
+            board_snapshot,
+            working_buffer,
+            multi_leaves,
+            lanes,
+            threshold,
+            found_place_move,
+        );
+    }
+    let num_max_played = game_config
+        .rack_size()
+        .min(working_buffer.num_tiles_on_rack);
+
+    struct Env<'a, R: RunLetters, N: kwg::Node, L: kwg::Node> {
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        alphabet: &'a alphabet::Alphabet,
+        multi_leaves: &'a klv::MultiLeaves,
+        rack_tally: &'a mut [u8],
+        rack_bits: u64,
+        letter_bits: u64,
+        max_len: usize,
+        num_tiles_in_bag: i16,
+        play_out_bonus: i32,
+        lanes: [Option<StarLane<'a>>; 2],
+        word: [u8; 128],         // its tiles, a blank's with 0x80
+        tile_values: [i32; 128], // each tile's face value, scaled as a score
+        threshold: i32,
+        found_place_move: FoundPlaceMoveFn<'a>,
+        runs: R, // a walk along a run stops where these leave it no candidate
+    }
+
+    // the word of len tiles at each place it may take; a census's, scored and
+    // valued as nothing, spelled at each place as the walk spells it there: a
+    // letter's real tiles on its squares the walk takes first (the star's,
+    // those to its left from the nearest, then those to its right), its blanks
+    // on the rest
+    #[inline(always)]
+    fn lay<const SPELL_ONCE: bool, R: RunLetters, N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, R, N, L>,
+        len: usize,
+        leave_idx: u32,
+    ) {
+        if SPELL_ONCE {
+            let game_config = env.board_snapshot.game_config;
+            let squares = (1u128 << len) - 1;
+            // the letters the blanks stand for (a word holds no more of them
+            // than its tiles)
+            let mut blanked = [0u8; 128];
+            let mut num_blanked = 0;
+            for &tile in &env.word[..len] {
+                blanked[num_blanked] = tile & 0x7f;
+                num_blanked += (tile & 0x80 != 0) as usize;
+            }
+            let mut spelled = [0u8; 128];
+            for (to, &tile) in spelled.iter_mut().zip(&env.word[..len]) {
+                *to = tile & 0x7f;
+            }
+            for lane in env.lanes.into_iter().flatten() {
+                let first = (lane.star as isize + 1 - len as isize).max(0);
+                let last = (lane.star as isize).min(lane.len as isize - len as isize);
+                for start in first..=last {
+                    if (lane.open >> start) & squares != squares {
+                        continue;
+                    }
+                    let start = start as usize;
+                    let word = &mut spelled[..len];
+                    if num_blanked != 0 {
+                        for tile in word.iter_mut() {
+                            *tile &= 0x7f;
+                        }
+                        // the squares the walk takes last, first
+                        let star = lane.star as usize - start;
+                        let mut left = blanked;
+                        let mut num_left = num_blanked;
+                        for i in (star + 1..len).rev().chain(0..=star) {
+                            if num_left == 0 {
+                                break;
+                            }
+                            if let Some(j) = left[..num_left].iter().position(|&b| b == word[i]) {
+                                num_left -= 1;
+                                left[j] = left[num_left];
+                                word[i] |= 0x80;
+                            }
+                        }
+                    }
+                    let word = &spelled[..len];
+                    env.threshold = (env.found_place_move)(
+                        lane.down,
+                        lane.lane,
+                        start as i8,
+                        word,
+                        0,
+                        hotspot_penalty(game_config, lane.down, start as i8, word),
+                    );
+                }
+            }
+            return;
+        }
+        let leave_value = leave_value_of(
+            env.multi_leaves,
+            env.board_snapshot.klv,
+            env.rack_tally,
+            leave_idx,
+            env.num_tiles_in_bag,
+            env.play_out_bonus,
+            env.alphabet,
+        );
+        let game_config = env.board_snapshot.game_config;
+        let bonus = game_config.num_played_bonus(len as u8) as i32 * equity::SCALE;
+        let squares = (1u128 << len) - 1;
+        for lane in env.lanes.into_iter().flatten() {
+            let first = (lane.star as isize + 1 - len as isize).max(0);
+            let last = (lane.star as isize).min(lane.len as isize - len as isize);
+            for start in first..=last {
+                if (lane.open >> start) & squares != squares {
+                    continue;
+                }
+                let start = start as usize;
+                let mut main_score = 0i32;
+                let mut word_multiplier = 1i32;
+                for i in 0..len {
+                    main_score += env.tile_values[i] * lane.tile_multipliers[start + i] as i32;
+                    word_multiplier *= lane.word_multipliers[start + i] as i32;
+                }
+                let score = main_score * word_multiplier + bonus;
+                if score + leave_value < env.threshold {
+                    continue;
+                }
+                let word = &env.word[..len];
+                env.threshold = (env.found_place_move)(
+                    lane.down,
+                    lane.lane,
+                    start as i8,
+                    word,
+                    score,
+                    leave_value + hotspot_penalty(game_config, lane.down, start as i8, word),
+                );
+            }
+        }
+    }
+
+    // the words from the run of nodes at p, with depth tiles before them; a
+    // census's each once, a blank taken only for a letter the rack has run out
+    // of, as the walk takes it
+    fn walk<const SPELL_ONCE: bool, R: RunLetters, N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, R, N, L>,
+        mut p: i32,
+        depth: usize,
+        leave_idx: u32,
+    ) {
+        let mut candidates = if env.rack_tally[0] > 0 {
+            env.letter_bits
+        } else {
+            env.rack_bits & !1
+        };
+        if candidates == 0 || !env.runs.may_hold(p, candidates) {
+            return;
+        }
+        // a candidate tile at node p of the run, a real one before a blank
+        macro_rules! visit {
+            ($node:expr, $tile:expr) => {{
+                let (node, tile) = ($node, $tile);
+                let len = depth + 1;
+                let next = if len < env.max_len {
+                    node.arc_index()
+                } else {
+                    0
+                };
+                env.board_snapshot.kwg.prefetch(next);
+                if env.rack_tally[tile as usize] > 0 {
+                    env.rack_tally[tile as usize] -= 1;
+                    let spent = (1u64 << tile) * (env.rack_tally[tile as usize] == 0) as u64;
+                    env.rack_bits ^= spent;
+                    env.word[depth] = tile;
+                    env.tile_values[depth] = env.alphabet.score(tile) as i32 * equity::SCALE;
+                    let leave_idx = leave_idx.wrapping_sub(env.multi_leaves.place_value(tile));
+                    if len >= 2 && node.accepts() {
+                        lay::<SPELL_ONCE, _, _, _>(env, len, leave_idx);
+                    }
+                    if next > 0 {
+                        walk::<SPELL_ONCE, _, _, _>(env, next, len, leave_idx);
+                    }
+                    env.rack_bits ^= spent;
+                    env.rack_tally[tile as usize] += 1;
+                }
+                if env.rack_tally[0] > 0 && (!SPELL_ONCE || env.rack_tally[tile as usize] == 0) {
+                    env.rack_tally[0] -= 1;
+                    env.word[depth] = tile | 0x80;
+                    env.tile_values[depth] = env.alphabet.scaled_score(0);
+                    let leave_idx = leave_idx.wrapping_sub(env.multi_leaves.place_value(0));
+                    if len >= 2 && node.accepts() {
+                        lay::<SPELL_ONCE, _, _, _>(env, len, leave_idx);
+                    }
+                    if next > 0 {
+                        walk::<SPELL_ONCE, _, _, _>(env, next, len, leave_idx);
+                    }
+                    env.rack_tally[0] += 1;
+                }
+            }};
+        }
+        match env.runs.from(p) {
+            // the run's tiles known: each candidate's node is the count of the
+            // run's tiles below it past p
+            Some(run) => {
+                let mut hits = run & candidates;
+                while hits != 0 {
+                    let tile = hits.trailing_zeros() as u8;
+                    hits &= hits - 1;
+                    let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
+                    let node = env.board_snapshot.kwg[at];
+                    debug_assert_eq!(node.tile(), tile);
+                    visit!(node, tile);
+                }
+            }
+            None => loop {
+                let node = env.board_snapshot.kwg[p];
+                let tile = node.tile();
+                let bit = 1u64 << tile;
+                if candidates & bit != 0 {
+                    candidates ^= bit;
+                    visit!(node, tile);
+                    if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates))
+                    {
+                        break;
+                    }
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            },
+        }
+    }
+
+    // each lane's squares, those a tile may take as the walk's cross sets mark
+    // them (a punctured one takes none)
+    let lanes = lanes.map(|taken| {
+        taken.map(|(down, lane, star)| {
+            let len = if down { dim.rows } else { dim.cols };
+            let start = lane as usize * len as usize;
+            let end = start + len as usize;
+            let cross_sets = if down {
+                &working_buffer.cross_set_for_down_plays[start..end]
+            } else {
+                &working_buffer.cross_set_for_across_plays[start..end]
+            };
+            let mut open = 0u128;
+            for (i, cross_set) in cross_sets.iter().enumerate() {
+                open |= ((cross_set.bits != 1) as u128) << i;
+            }
+            StarLane {
+                down,
+                lane,
+                star,
+                len,
+                open,
+                word_multipliers: if down {
+                    &working_buffer.remaining_word_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.remaining_word_multipliers_for_across_plays[start..end]
+                },
+                tile_multipliers: if down {
+                    &working_buffer.remaining_tile_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.remaining_tile_multipliers_for_across_plays[start..end]
+                },
+            }
+        })
+    });
+    let longest = lanes
+        .iter()
+        .flatten()
+        .map(|lane| lane.len)
+        .max()
+        .unwrap_or(0);
+    let max_len = (num_max_played as usize).min(longest as usize);
+    let root = board_snapshot.kwg[0].arc_index();
+    if max_len < 2 || root <= 0 {
+        return;
+    }
+    let alphabet = game_config.alphabet();
+    let is_census = working_buffer.is_census;
+    let env = &mut Env {
+        board_snapshot,
+        alphabet,
+        multi_leaves,
+        rack_tally: &mut working_buffer.rack_tally,
+        rack_bits: working_buffer.rack_bits,
+        letter_bits: (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
+        max_len,
+        num_tiles_in_bag: working_buffer.num_tiles_in_bag,
+        play_out_bonus: working_buffer.play_out_bonus,
+        lanes,
+        word: [0; 128],
+        tile_values: [0; 128],
+        threshold,
+        found_place_move,
+        runs,
+    };
+    if is_census {
+        walk::<true, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
+    } else {
+        walk::<false, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
+    }
 }
 
 struct KurniaIterParams<
@@ -13465,5 +13995,464 @@ mod tests {
         );
         assert!(plays.contains(&(false, 0, 9, vec![0, 19], 6_000)));
         assert!(plays.contains(&(false, 0, 7, vec![19, 5, 0, 20], 108_000)));
+    }
+
+    // each play as text: its equity, then the play
+    #[inline]
+    fn plays_text(
+        plays: &[ValuedMove],
+        board_snapshot: &BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
+    ) -> Vec<String> {
+        plays
+            .iter()
+            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(board_snapshot)))
+            .collect()
+    }
+
+    // every place move the lean arm's walk finds on a board, its threshold
+    // never rising, each valued as a generation values it (on an empty board
+    // the opening's penalty counted as the walk's callers counted it), sorted
+    // as a generation sorts them; raw, each unvalued, the raw walk's
+    #[inline]
+    fn walked_plays<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>(
+        move_generator: &mut KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+        board_snapshot: &BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
+        rack: &[u8],
+        is_census: bool,
+        raw: bool,
+    ) -> Vec<ValuedMove> {
+        let alphabet = board_snapshot.game_config.alphabet();
+        let board_layout = board_snapshot.game_config.board_layout();
+        let working_buffer = &mut move_generator.working_buffer;
+        working_buffer.is_census = is_census;
+        working_buffer.init::<0, ByLayout, _, _>(
+            board_snapshot,
+            rack,
+            klv::AdjustLeave::Identity,
+            None,
+        );
+        let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
+        let empty = working_buffer.num_tiles_on_board == 0;
+        let mut plays = Vec::new();
+        let found_place_move =
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
+                let other_adjustments = if empty && !raw {
+                    (idx..)
+                        .zip(word)
+                        .filter(|&(i, &tile)| {
+                            tile != 0
+                                && alphabet.is_vowel(tile)
+                                && if down {
+                                    board_layout.danger_star_down(i)
+                                } else {
+                                    board_layout.danger_star_across(i)
+                                }
+                        })
+                        .count() as i32
+                        * -equity::OPENING_HOTSPOT_PENALTY
+                } else {
+                    0
+                };
+                plays.push(ValuedMove {
+                    equity: equity::Equity::new(if raw {
+                        0
+                    } else {
+                        score + leave_value + other_adjustments
+                    }),
+                    play: Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    },
+                });
+                i32::MIN
+            };
+        if raw {
+            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _>(
+                (),
+                board_snapshot,
+                &mut *working_buffer,
+                &multi_leaves,
+                found_place_move,
+            );
+        } else {
+            for _ in
+                kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
+                    runs: (),
+                    board_snapshot,
+                    working_buffer: &mut *working_buffer,
+                    multi_leaves: &multi_leaves,
+                    found_place_move,
+                    can_accept: |_: i32| true,
+                    current_threshold: || i32::MIN,
+                })
+            {}
+        }
+        working_buffer.multi_leaves = multi_leaves;
+        working_buffer.is_census = false;
+        plays.sort_unstable();
+        plays
+    }
+
+    // the place moves of a generation's plays on the lanes in the masks, each
+    // its way, lane, place, tiles, score, and equity, in its order or sorted
+    #[inline]
+    fn place_list(
+        plays: &[ValuedMove],
+        rows: u128,
+        cols: u128,
+        sorted: bool,
+    ) -> Vec<(bool, i8, i8, Vec<u8>, i32, i32)> {
+        let mut out = plays
+            .iter()
+            .filter_map(|p| match &p.play {
+                Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } if ((if *down { cols } else { rows }) >> lane) & 1 != 0 => {
+                    Some((*down, *lane, *idx, word.to_vec(), *score, p.equity.raw()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if sorted {
+            out.sort_unstable();
+        }
+        out
+    }
+
+    // an empty board's moves made without the walk are the walk's: every play,
+    // with its score and its equity (the opening's penalty taken), from every
+    // kind of generation, on boards of 15 and 21, on punctured and uneven ones,
+    // and under jumbled rules, by fresh generators and by one kept from board
+    // to board (the board after an empty one is played as a fresh one plays it)
+    #[test]
+    #[inline]
+    fn an_empty_board_is_played_as_the_walk_plays_it() {
+        let leaves: &[(&[u8], f32)] = &[
+            (&[0], 25.5),
+            (&[0, 5], 30.25),
+            (&[1], 1.5),
+            (&[1, 1], -4.0),
+            (&[5], 2.0),
+            (&[5, 19], 6.125),
+            (&[19], 8.0),
+            (&[20], 0.5),
+            (&[26], -3.75),
+        ];
+        let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(leaves)).unwrap();
+        let configs = [
+            game_config::make_english_game_config(),
+            game_config::make_super_english_game_config(),
+            game_config::make_punctured_english_game_config(),
+            game_config::make_hong_kong_english_game_config(),
+            uneven_game_config(15, 15, 6, 9, false),
+            uneven_game_config(15, 15, 9, 6, true),
+            uneven_game_config(21, 13, 14, 4, false),
+            game_config::make_jumbled_english_game_config(),
+            game_config::make_jumbled_super_english_game_config(),
+        ];
+        let all = !0u128;
+        for (ci, gc) in configs.iter().enumerate() {
+            let jumbled = matches!(gc.game_rules(), game_config::GameRules::Jumbled);
+            let kwg = if jumbled {
+                test_kad(gc, SWEEP_WORDS)
+            } else {
+                sweep_kwg_covering(gc)
+            };
+            let run_letter_bits = kwg.compute_letter_bits().letter_bits;
+            let detected = anagrams::ArmTables::build(&kwg, gc, false).unwrap();
+            let by_layout = anagrams::ArmTables::build_by_layout(&kwg, gc).unwrap();
+            let lean = anagrams::ArmTables::build(&kwg, gc, true).unwrap();
+            let none = anagrams::ArmTables::None;
+            let dim = gc.board_layout().dim();
+            let empty = vec![0u8; (dim.rows as isize * dim.cols as isize) as usize];
+            let star_row = gc.board_layout().star_row();
+            let star_col = gc.board_layout().star_col();
+            // the first config takes every rack under every kind of tables;
+            // another takes some racks under the tables detected or under none.
+            // Under jumbled rules a long rack with a blank has too many
+            // arrangements to list again and again (and the tables are the rack
+            // lengths whatever is asked); a rack of every tile has leaves too
+            // many to be dense
+            let first = ci == 0;
+            let racks = if jumbled {
+                vec!["AEINRST", "CARTONS", "AE", "CAT", "?AT", "C?T", "?A"]
+            } else if gc.rack_size() > 7 {
+                vec!["AEINRSTCS", "?EINRSTCA", "??TANS", "AE", "?A"]
+            } else if first {
+                let mut racks = SWEEP_RACKS.to_vec();
+                racks.push("ABCDEFGHIJKLMNOPQRSTUVWXYZ?");
+                racks
+            } else {
+                vec![
+                    "AEINRST",
+                    "CARTONS",
+                    "?EINRST",
+                    "?AT",
+                    "??TANS",
+                    "AE",
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ?",
+                ]
+            };
+            let arms: &[(&str, &anagrams::ArmTables)] = if jumbled {
+                &[("lean", &lean), ("none", &none)]
+            } else if first {
+                &[
+                    ("detected", &detected),
+                    ("by layout", &by_layout),
+                    ("lean", &lean),
+                    ("none", &none),
+                ]
+            } else {
+                &[("detected", &detected), ("none", &none)]
+            };
+            // the wasm's generator, for the two boards it takes
+            let square = dim.rows == dim.cols && (dim.rows == 15 || dim.rows == 21);
+            let mut kept = KurniaMoveGenerator::new(gc);
+            let mut kept_wasm = KurniaMoveGenerator::<u32, false, false>::try_new(gc).ok();
+            let mut played_on = 0;
+            for (ri, rack) in racks.iter().enumerate() {
+                let rack = parse_test_rack(gc.alphabet(), rack);
+                let walked_snapshot = BoardSnapshot {
+                    board_tiles: &empty,
+                    game_config: gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                let walk = |is_census: bool, raw: bool| {
+                    walked_plays(
+                        &mut KurniaMoveGenerator::new(gc),
+                        &walked_snapshot,
+                        &rack,
+                        is_census,
+                        raw,
+                    )
+                };
+                let walked = walk(false, false);
+                let walked_list = place_list(&walked, all, all, false);
+                let walked_raw = place_list(&walk(false, true), all, all, true);
+                let census = place_list(&walk(true, false), all, all, false);
+                let mut census_calls = census
+                    .iter()
+                    .map(|(down, lane, idx, word, score, _)| {
+                        (*down, *lane, *idx, word.clone(), *score)
+                    })
+                    .collect::<Vec<_>>();
+                census_calls.sort_unstable();
+                if !walked.is_empty() {
+                    played_on += 1;
+                }
+                for &(tname, tables) in arms {
+                    let board_snapshot = BoardSnapshot {
+                        anagrams: tables.anagrams(),
+                        rack_lengths: tables.rack_lengths(),
+                        ..walked_snapshot
+                    };
+                    let params = |max_gen: usize| GenMovesParams {
+                        board_snapshot: &board_snapshot,
+                        rack: &rack,
+                        max_gen,
+                        num_exchanges_by_this_player: i16::MAX,
+                        pass_policy: PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    };
+                    let why = format!("{tname}, rack {ri}");
+                    // a fresh generator at every cap, and raw
+                    let mut fresh = KurniaMoveGenerator::new(gc);
+                    for max_gen in [1, 5, usize::MAX] {
+                        fresh.gen_moves_unfiltered(&params(max_gen));
+                        assert_eq!(
+                            place_list(&fresh.plays, all, all, false),
+                            &walked_list[..walked_list.len().min(max_gen)],
+                            "{why}, fresh, at a cap of {max_gen}"
+                        );
+                    }
+                    let mut fresh = KurniaMoveGenerator::new(gc);
+                    fresh.gen_moves_unfiltered_lean(&params(usize::MAX));
+                    assert_eq!(
+                        place_list(&fresh.plays, all, all, false),
+                        walked_list,
+                        "{why}, fresh, lean"
+                    );
+                    let mut fresh = KurniaMoveGenerator::new(gc);
+                    fresh.gen_moves_raw_all_unsorted(
+                        &board_snapshot,
+                        &rack,
+                        i16::MAX,
+                        PassPolicy::OnlyWhenForced,
+                    );
+                    assert_eq!(
+                        place_list(&fresh.plays, all, all, true),
+                        walked_raw,
+                        "{why}, fresh, raw"
+                    );
+                    // the kept generator, every kind
+                    kept.gen_moves_unfiltered(&params(5));
+                    assert_eq!(
+                        place_list(&kept.plays, all, all, false),
+                        &walked_list[..walked_list.len().min(5)],
+                        "{why}, kept, at a cap of 5"
+                    );
+                    kept.gen_moves_unfiltered_lean(&params(usize::MAX));
+                    assert_eq!(
+                        place_list(&kept.plays, all, all, false),
+                        walked_list,
+                        "{why}, kept, lean"
+                    );
+                    {
+                        let params = params(usize::MAX);
+                        let mut fut = std::pin::pin!(kept.gen_moves_filtered_async_lean(
+                            &params,
+                            PlacePredicate::AcceptAll,
+                            klv::AdjustLeave::Identity,
+                            EquityPredicate::AcceptAll,
+                            || std::future::ready(()),
+                        ));
+                        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                        while fut.as_mut().poll(&mut cx).is_pending() {}
+                    }
+                    assert_eq!(
+                        place_list(&kept.plays, all, all, false),
+                        walked_list,
+                        "{why}, kept, async"
+                    );
+                    kept.gen_moves_raw_lanes_unsorted_by_runs(
+                        &run_letter_bits,
+                        &board_snapshot,
+                        &rack,
+                        all,
+                        all,
+                    );
+                    assert_eq!(
+                        place_list(&kept.plays, all, all, true),
+                        walked_raw,
+                        "{why}, kept, by runs"
+                    );
+                    for (rows, cols) in [
+                        (1u128 << star_row, 0u128),
+                        (0, 1u128 << star_col),
+                        (!(1u128 << star_row), !(1u128 << star_col)),
+                    ] {
+                        kept.gen_moves_raw_lanes_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            i16::MAX,
+                            PassPolicy::OnlyWhenForced,
+                            rows,
+                            cols,
+                        );
+                        let mut want = walked_raw.clone();
+                        want.retain(|(down, lane, ..)| {
+                            ((if *down { cols } else { rows }) >> lane) & 1 != 0
+                        });
+                        assert_eq!(
+                            place_list(&kept.plays, all, all, true),
+                            want,
+                            "{why}, kept, raw, rows {rows:#x}, columns {cols:#x}"
+                        );
+                        kept.gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols);
+                        assert_eq!(
+                            place_list(&kept.plays, all, all, false),
+                            place_list(&walked, rows, cols, false),
+                            "{why}, kept, rows {rows:#x}, columns {cols:#x}"
+                        );
+                    }
+                    // the census's every call, and what it keeps
+                    let mut calls = Vec::new();
+                    kept.gen_census_sheet(
+                        &params(usize::MAX),
+                        PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score| {
+                            calls.push((down, lane, idx, word.to_vec(), score));
+                            true
+                        }),
+                        klv::AdjustLeave::Identity,
+                        EquityPredicate::AcceptAll,
+                    );
+                    calls.sort_unstable();
+                    assert_eq!(calls, census_calls, "{why}, kept, the census's calls");
+                    assert_eq!(
+                        place_list(&kept.plays, all, all, false),
+                        census,
+                        "{why}, kept, the census"
+                    );
+                    if square && let Some(kept_wasm) = kept_wasm.as_mut() {
+                        for max_gen in [1, usize::MAX] {
+                            kept_wasm.gen_moves_unfiltered_lean(&params(max_gen));
+                            assert_eq!(
+                                place_list(&kept_wasm.plays, all, all, false),
+                                &walked_list[..walked_list.len().min(max_gen)],
+                                "{why}, the wasm's, at a cap of {max_gen}"
+                            );
+                        }
+                        kept_wasm.gen_moves_raw_all_unsorted_lean(
+                            &board_snapshot,
+                            &rack,
+                            i16::MAX,
+                            PassPolicy::OnlyWhenForced,
+                        );
+                        assert_eq!(
+                            place_list(&kept_wasm.plays, all, all, true),
+                            walked_raw,
+                            "{why}, the wasm's, raw"
+                        );
+                    }
+                    // the board the best play makes, played by the kept
+                    // generators as by fresh ones, before the next empty one
+                    let Some(ValuedMove {
+                        play:
+                            Play::Place {
+                                down,
+                                lane,
+                                idx,
+                                word,
+                                ..
+                            },
+                        ..
+                    }) = walked.first()
+                    else {
+                        continue;
+                    };
+                    let mut board_tiles = empty.clone();
+                    let strider = dim.lane(*down, *lane);
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
+                        board_tiles[strider.at(i)] = tile;
+                    }
+                    let next_snapshot = BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        ..board_snapshot
+                    };
+                    let next_params = GenMovesParams {
+                        board_snapshot: &next_snapshot,
+                        ..params(usize::MAX)
+                    };
+                    let mut fresh = KurniaMoveGenerator::new(gc);
+                    fresh.gen_moves_unfiltered(&next_params);
+                    kept.gen_moves_unfiltered(&next_params);
+                    assert_eq!(
+                        plays_text(&kept.plays, &next_snapshot),
+                        plays_text(&fresh.plays, &next_snapshot),
+                        "{why}, the board after"
+                    );
+                    if square && let Some(kept_wasm) = kept_wasm.as_mut() {
+                        fresh.gen_moves_unfiltered_lean(&next_params);
+                        kept_wasm.gen_moves_unfiltered_lean(&next_params);
+                        assert_eq!(
+                            plays_text(&kept_wasm.plays, &next_snapshot),
+                            plays_text(&fresh.plays, &next_snapshot),
+                            "{why}, the wasm's, the board after"
+                        );
+                    }
+                }
+            }
+            assert!(played_on > 3, "too few racks played anything");
+        }
     }
 }
