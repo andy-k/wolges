@@ -419,12 +419,28 @@ struct MultiLeavesDigit {
 // num_playeds = [7, ..., 0] (number of tiles played, not kept)
 // leave_values = [[], [E], [EE], [H], [EH], [EEH], ...]
 // = [leave for exch 7, leave for exch 6 keep E, ... leave for pass].
-#[derive(Default)]
 pub struct MultiLeaves {
     unique_tiles: Vec<u8>, // sorted, unique, len() == rack_bits.count_ones()
     digits: Vec<MultiLeavesDigit>, // len() == rack_tally.len()
     leave_values: Vec<i32>, // typically 2**7, can be shorter when duplicates
     num_playeds: Vec<u8>,  // same length as leave_values
+    dense_most: u32,       // the most leaves kept as a table (DENSE_LEAVES_MOST)
+}
+
+// the most leaves a rack's tiles may have for them to be kept as a table, each
+// read by its index; past it, each is walked from the klv when read. A table
+// costs a walk of every leave and the bytes of each (LEAVE_BYTES), so a
+// generator holding few bytes takes a smaller bound (set_dense_most)
+pub const DENSE_LEAVES_MOST: u32 = 1 << 20;
+
+// the bytes a table keeps for each leave: its value and the tiles played
+pub const LEAVE_BYTES: usize = std::mem::size_of::<i32>() + std::mem::size_of::<u8>();
+
+impl Default for MultiLeaves {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Clone for MultiLeaves {
@@ -435,6 +451,7 @@ impl Clone for MultiLeaves {
             digits: self.digits.clone(),
             leave_values: self.leave_values.clone(),
             num_playeds: self.num_playeds.clone(),
+            dense_most: self.dense_most,
         }
     }
 
@@ -444,6 +461,7 @@ impl Clone for MultiLeaves {
         self.digits.clone_from(&source.digits);
         self.leave_values.clone_from(&source.leave_values);
         self.num_playeds.clone_from(&source.num_playeds);
+        self.dense_most = source.dense_most;
     }
 }
 
@@ -454,12 +472,20 @@ impl MultiLeaves {
             digits: Vec::new(),
             leave_values: Vec::new(),
             num_playeds: Vec::new(),
+            dense_most: DENSE_LEAVES_MOST,
         }
     }
 
+    // the most leaves the next racks may have to be kept as a table
+    // (DENSE_LEAVES_MOST until set); the leaves already kept stay
+    #[inline(always)]
+    pub fn set_dense_most(&mut self, dense_most: u32) {
+        self.dense_most = dense_most;
+    }
+
     // the rack's unique tiles and their digits (each its count and its place
-    // value in the leave index): whether the leaves are dense (no more than 1
-    // << 20 of them), how many, and the rack's tiles
+    // value in the leave index): whether the leaves are dense (no more than
+    // dense_most of them), how many, and the rack's tiles
     #[inline(always)]
     fn set_digits(&mut self, rack_tally: &[u8]) -> (bool, u32, u8) {
         // every digit none: the last rack's tiles' put back (the others are
@@ -481,6 +507,7 @@ impl MultiLeaves {
                 },
             );
         }
+        let dense_most = self.dense_most;
         let mut place_value = 1u32;
         let mut num_tiles_on_rack = 0u8;
         let mut dense = true;
@@ -490,7 +517,7 @@ impl MultiLeaves {
                 if dense {
                     self.digits[tile as usize] = MultiLeavesDigit { count, place_value };
                     match place_value.checked_mul(count as u32 + 1) {
-                        Some(v) if v <= (1 << 20) => {
+                        Some(v) if v <= dense_most => {
                             place_value = v;
                         }
                         _ => {
@@ -1271,6 +1298,7 @@ mod tests {
             ],
             leave_values: statics.clone(),
             num_playeds: vec![3, 2, 1, 2, 1, 0],
+            dense_most: DENSE_LEAVES_MOST,
         };
 
         let live_pool = [2u8, 2u8, 1u8]; // A, B, C still drawable
@@ -1336,6 +1364,7 @@ mod tests {
             digits: ml.digits.clone(),
             leave_values: statics.clone(),
             num_playeds: ml.num_playeds.clone(),
+            dense_most: DENSE_LEAVES_MOST,
         };
         short_bag.apply_dynamic_leaves(&replacing, &live_pool, 1);
         let keep_one_a = 1usize; // idx = keptA + 3 * keptB
