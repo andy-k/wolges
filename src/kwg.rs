@@ -323,12 +323,17 @@ impl<N: Node> Kwg<N> {
 
     // whether every run's tiles ascend, each above the one before, as the
     // graphs built here do: then a tile's node in a run is found by counting
-    // the run's tiles below it
+    // the run's tiles below it. A node of no tile, flag, or arc after a run's
+    // end is a gap the layout left between runs, part of none
     #[inline(always)]
     pub fn runs_ascend(&self) -> bool {
-        self.0
-            .windows(2)
-            .all(|pair| pair[0].is_end() || pair[0].tile() < pair[1].tile())
+        self.0.windows(2).all(|pair| {
+            let gap = pair[0].tile() == 0
+                && !pair[0].accepts()
+                && !pair[0].is_end()
+                && pair[0].arc_index() == 0;
+            pair[0].is_end() || gap || pair[0].tile() < pair[1].tile()
+        })
     }
 
     // by node, the tiles from it to the end of its run: compute_letter_bits's
@@ -748,6 +753,50 @@ mod tests {
         let at = (0..kwg.0.len() - 1).find(|&i| !kwg.0[i].is_end()).unwrap();
         let (a, b) = (kwg.0[at], kwg.0[at + 1]);
         let mut nodes = kwg.0.to_vec();
+        nodes[at] =
+            Node22::new(Node22::pack(b.tile(), b.accepts(), a.is_end(), b.arc_index()).unwrap());
+        nodes[at + 1] =
+            Node22::new(Node22::pack(a.tile(), a.accepts(), b.is_end(), a.arc_index()).unwrap());
+        assert!(!Kwg(nodes.into_boxed_slice()).runs_ascend());
+    }
+
+    // gaps between runs, nodes of no tile, flag, or arc that no arc enters, as
+    // the layout leaves where a run does not fit, leave a graph's runs
+    // ascending and its words the same; past them a swapped run still does not
+    // ascend
+    #[test]
+    #[inline]
+    fn gaps_between_runs_leave_them_ascending() {
+        let gc = game_config::make_english_game_config();
+        let words = ["SEAT", "TEA", "EATS", "ETAS"];
+        let kwg = graph_of(&gc, &words);
+        let end = (2..kwg.0.len()).find(|&i| kwg.0[i].is_end()).unwrap();
+        // two gaps after that run's end, every arc past them moved on
+        let mut nodes = (kwg.0.iter())
+            .map(|node| {
+                let arc = node.arc_index();
+                let arc = if arc as usize > end { arc + 2 } else { arc };
+                Node22::new(Node22::pack(node.tile(), node.accepts(), node.is_end(), arc).unwrap())
+            })
+            .collect::<Vec<_>>();
+        nodes.splice(end + 1..end + 1, [Node22::new(0), Node22::new(0)]);
+        let gapped = Kwg(nodes.clone().into_boxed_slice());
+        assert!(gapped.runs_ascend());
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut buf = Vec::new();
+        let accepts = |graph: &Kwg<Node22>, word: &[u8]| {
+            let p =
+                (word.iter()).try_fold(0, |p, &tile| Some(graph.seek(p, tile)).filter(|&p| p > 0));
+            p.is_some_and(|p| graph[p].accepts())
+        };
+        for word in words.iter().chain(&["SEA", "EAST", "TEAS"]) {
+            reader.set_word(word, &mut buf).unwrap();
+            assert_eq!(accepts(&gapped, &buf), accepts(&kwg, &buf), "{word}");
+        }
+        let at = (end + 3..nodes.len() - 1)
+            .find(|&i| !nodes[i].is_end())
+            .unwrap();
+        let (a, b) = (nodes[at], nodes[at + 1]);
         nodes[at] =
             Node22::new(Node22::pack(b.tile(), b.accepts(), a.is_end(), b.arc_index()).unwrap());
         nodes[at + 1] =
