@@ -3,7 +3,9 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{anagrams, display, equity, error, fash, game_config, infer, klv, kwg, movegen, zone};
+use super::{
+    anagrams, display, equity, error, fash, game_config, infer, klv, kwg, matrix, movegen, zone,
+};
 use std::io::Write;
 
 // how many nodes the search visits between looks at the clock and the memory,
@@ -598,6 +600,570 @@ struct Siblings {
     moves: Vec<(movegen::Play, u8)>, // each with the tiles it places
 }
 
+// 128-bit FNV-1a's offset basis and prime:
+// http://www.isthe.com/chongo/tech/comp/fnv/index.html
+const FNV128_BASIS: u128 = 0x6c62272e07bb014262b821756295c58d;
+const FNV128_PRIME: u128 = (1 << 88) + 0x13b;
+
+// a lane's key, its rack aside: whether the board is empty, the lane, each
+// square's tile, or for an empty one the tiles beside it across the lane; so
+// two lanes with one key take the same moves from the same rack. By 128-bit
+// FNV-1a
+#[inline(always)]
+fn lane_key(
+    board_tiles: &[u8],
+    dim: &matrix::Dim,
+    board_empty: bool,
+    down: bool,
+    lane: i8,
+) -> u128 {
+    let mut key = FNV128_BASIS;
+    let mut mix = |byte: u8| key = (key ^ byte as u128).wrapping_mul(FNV128_PRIME);
+    mix(board_empty as u8);
+    mix(down as u8);
+    mix(lane as u8);
+    let strider = dim.lane(down, lane);
+    for i in 0..strider.len() {
+        let tile = board_tiles[strider.at(i)];
+        mix(tile);
+        if tile == 0 {
+            let across = dim.lane(!down, i);
+            for step in [-1i8, 1] {
+                let mut at = lane + step;
+                while at >= 0 && at < across.len() && board_tiles[across.at(at)] != 0 {
+                    mix(board_tiles[across.at(at)]);
+                    at += step;
+                }
+                mix(0xff);
+            }
+        }
+    }
+    key
+}
+
+// a placement's tiles, or a rack's, in a pool's places (LanePool::places): a
+// count each in four bits, NIBBLE_MOST at most
+type Tiles = u64;
+
+// the most a nibble counts below its top bit, which fits lifts
+const NIBBLE_MOST: usize = 7;
+
+// whether a rack's tiles hold need's: with each of the rack's counts lifted by
+// eight, need's taken away leaves at least eight in each where the rack has
+// enough, borrowing from no other count
+#[inline(always)]
+fn fits(held: Tiles, need: Tiles) -> bool {
+    const LIFT: Tiles = Tiles::MAX / 15 * 8;
+    ((held | LIFT) - need) & LIFT == LIFT
+}
+
+// the lane keys a pool's doorkeeper holds (LanePool::sighted)
+const SIGHTED: usize = 1 << 16;
+
+// a lane slot's list while its key is not known, and a key table's empty slot
+const NO_LIST: u32 = u32::MAX;
+
+// 128-bit keys, each a hash, to a u32 each other than NO_LIST: an open table
+// whose slots are found by a multiplicative hash of the key's halves, then one
+// after another, kept under half full by doubling
+#[derive(Default)]
+struct KeyTable {
+    keys: Vec<u128>,
+    values: Vec<u32>, // NO_LIST in an empty slot
+    held: usize,
+}
+
+impl KeyTable {
+    #[inline(always)]
+    fn first(&self, key: u128) -> usize {
+        let mixed = (key as u64 ^ (key >> 64) as u64).wrapping_mul(SPLITMIX64_GAMMA);
+        (mixed >> (64 - self.keys.len().trailing_zeros())) as usize
+    }
+
+    #[inline(always)]
+    fn get(&self, key: u128) -> Option<u32> {
+        if self.keys.is_empty() {
+            return None;
+        }
+        let mask = self.keys.len() - 1;
+        let mut at = self.first(key);
+        loop {
+            let value = self.values[at];
+            if value == NO_LIST {
+                return None;
+            }
+            if self.keys[at] == key {
+                return Some(value);
+            }
+            at = (at + 1) & mask;
+        }
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, key: u128, value: u32) {
+        if 2 * (self.held + 1) > self.keys.len() {
+            self.grow();
+        }
+        let mask = self.keys.len() - 1;
+        let mut at = self.first(key);
+        while self.values[at] != NO_LIST && self.keys[at] != key {
+            at = (at + 1) & mask;
+        }
+        self.held += (self.values[at] == NO_LIST) as usize;
+        self.keys[at] = key;
+        self.values[at] = value;
+    }
+
+    fn grow(&mut self) {
+        let size = (2 * self.keys.len()).max(1 << 10);
+        let keys = std::mem::replace(&mut self.keys, vec![0; size]);
+        let values = std::mem::replace(&mut self.values, vec![NO_LIST; size]);
+        self.held = 0;
+        for (key, value) in keys.into_iter().zip(values) {
+            if value != NO_LIST {
+                self.insert(key, value);
+            }
+        }
+    }
+
+    // the bytes it holds
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        self.keys.capacity() * std::mem::size_of::<u128>()
+            + self.values.capacity() * std::mem::size_of::<u32>()
+    }
+}
+
+// whether every tile of a sorted rack is in a sorted pool, as many times
+#[inline(always)]
+fn within(rack: &[u8], pool: &[u8]) -> bool {
+    let mut at = 0;
+    rack.iter().all(|&tile| {
+        while at < pool.len() && pool[at] < tile {
+            at += 1;
+        }
+        let found = at < pool.len() && pool[at] == tile;
+        at += 1;
+        found
+    })
+}
+
+// a move hashed into a list's key, eight bytes of it at a time, by FNV-1a's
+// step on 128 bits (as lane_key)
+#[inline(always)]
+fn mix_move(key: u128, play: &movegen::Play) -> u128 {
+    let movegen::Play::Place {
+        down,
+        lane,
+        idx,
+        word,
+        score,
+    } = play
+    else {
+        return key;
+    };
+    let mix = |key: u128, part: u64| (key ^ part as u128).wrapping_mul(FNV128_PRIME);
+    let head = (*score as u32 as u64) << 32
+        | (word.len() as u64) << 24
+        | (*idx as u8 as u64) << 16
+        | (*lane as u8 as u64) << 8
+        | *down as u64;
+    word.chunks(8).fold(mix(key, head), |key, chunk| {
+        let mut bytes = [0u8; 8];
+        bytes[..chunk.len()].copy_from_slice(chunk);
+        mix(key, u64::from_le_bytes(bytes))
+    })
+}
+
+// the tiles a search with tiles in the bag deals from (its LanePool's pool):
+// every one off the board at its root, sorted, the mover's among them (also
+// sorted); and the bytes each of its pools may hold
+#[derive(Clone, Default, PartialEq)]
+struct Deal {
+    pool: Vec<u8>,
+    mover: Vec<u8>,
+    budget: usize,
+}
+
+// the share of the memory limit a search's lane pools may hold, one over this,
+// split alike among its threads
+const POOL_SHARE: usize = 8;
+
+// the pool's version of a lane's moves, for a search with tiles in the bag:
+// made with the pool from the lane's tiles with its cross sets alone, every
+// tile off the board at the search's root, placing no more tiles than a rack
+// holds; so they hold for every endgame inside it, both players sharing them. A
+// lane key met twice has its moves as a list of ids into one table, each move
+// kept once, grouped by the tiles they place; a list made again is kept once. A
+// rack takes each group its tiles hold. The slots (the rows', then the
+// columns') hold the position searched's keys with their lists; a move placed
+// makes its zone's stale, taking it back puts them back. Past its budget, every
+// list is let go
+struct LanePool {
+    deal: Deal,                      // its pool, none outside such a search
+    most: usize,                     // the most tiles a rack holds
+    places: [u8; 256],               // each tile's nibble; 0xff off the pool
+    moves: Vec<(movegen::Play, u8)>, // each move kept, with the tiles it places
+    known: Vec<KeyTable>,            // each slot's moves' ids, by their hashes
+    keys: KeyTable,                  // each lane key's list
+    contents: KeyTable,              // each list, by its moves' hashes
+    lists: Vec<[u32; 3]>,            // each list's groups and first entry
+    needs: Vec<Tiles>,               // each group's tiles
+    ends: Vec<u32>,                  // the place past each group's last entry
+    entries: Vec<u32>,               // the groups' moves' ids
+    slot_keys: Vec<u128>,
+    slot_lists: Vec<u32>,         // NO_LIST where the key is not known
+    undo: Vec<(u16, u128, u32)>,  // stale slots as they were
+    marks: Vec<u32>,              // each placed move's start in undo
+    fresh: Vec<u16>,              // a generation's slots with no list yet
+    by_slot: Vec<u32>,            // a walk's moves, slot by slot
+    starts: Vec<u32>,             // where each slot's moves end in by_slot
+    hashes: Vec<u128>,            // a slot's moves' hashes, as walked
+    sorting: Vec<(Tiles, u32)>,   // a new list's moves by their tiles
+    scans: Vec<(u32, Tiles)>,     // each slot's list and rack last fetched
+    ranges: Vec<Vec<(u32, u32)>>, // and the entries that fetch took
+    seen: Vec<u64>,               // lane keys walked once, a tag each
+}
+
+impl Default for LanePool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LanePool {
+    fn new() -> Self {
+        Self {
+            deal: Deal::default(),
+            most: 0,
+            places: [0xff; 256],
+            moves: Vec::new(),
+            known: Vec::new(),
+            keys: KeyTable::default(),
+            contents: KeyTable::default(),
+            lists: Vec::new(),
+            needs: Vec::new(),
+            ends: Vec::new(),
+            entries: Vec::new(),
+            slot_keys: Vec::new(),
+            slot_lists: Vec::new(),
+            undo: Vec::new(),
+            marks: Vec::new(),
+            fresh: Vec::new(),
+            by_slot: Vec::new(),
+            starts: Vec::new(),
+            hashes: Vec::new(),
+            sorting: Vec::new(),
+            scans: Vec::new(),
+            ranges: Vec::new(),
+            seen: Vec::new(),
+        }
+    }
+
+    // whether a lane key no list has was walked before: a key's first walk is
+    // the rack's and its second the pool's, so a lane met once makes no list
+    #[inline(always)]
+    fn sighted(&mut self, key: u128) -> bool {
+        if self.seen.is_empty() {
+            self.seen = vec![0; SIGHTED];
+        }
+        let mixed = (key as u64).wrapping_mul(SPLITMIX64_GAMMA);
+        let at = (mixed >> (64 - SIGHTED.trailing_zeros())) as usize;
+        let tag = (key >> 64) as u64 | 1;
+        if self.seen[at] == tag {
+            true
+        } else {
+            self.seen[at] = tag;
+            false
+        }
+    }
+
+    // the bytes its lists hold
+    fn bytes(&self) -> usize {
+        fn of<T>(v: &Vec<T>) -> usize {
+            v.capacity() * std::mem::size_of::<T>()
+        }
+        of(&self.moves)
+            + (self.known.iter()).map(KeyTable::bytes).sum::<usize>()
+            + self.keys.bytes()
+            + self.contents.bytes()
+            + of(&self.lists)
+            + of(&self.needs)
+            + of(&self.ends)
+            + of(&self.entries)
+    }
+
+    // every list and move let go, the pool kept, each slot stale
+    fn let_go(&mut self) {
+        self.moves = Vec::new();
+        self.known = Vec::new();
+        self.keys = KeyTable::default();
+        self.contents = KeyTable::default();
+        self.lists = Vec::new();
+        self.needs = Vec::new();
+        self.ends = Vec::new();
+        self.entries = Vec::new();
+        self.slot_lists.fill(NO_LIST);
+        self.scans.fill((NO_LIST, 0));
+        for undone in self.undo.iter_mut() {
+            undone.2 = NO_LIST;
+        }
+    }
+
+    // whether a walk's moves on the fresh slots fit within the memory limit and
+    // the pool's budget; the room left must hold whatever must grow for them
+    // (at most as many groups and entries as moves, each move new to its slot),
+    // within the budget. The ids are u32 whatever the memory allows, so the
+    // moves, groups, entries, and lists they number must stay below NO_LIST
+    #[inline(always)]
+    fn room_for(&self, memory_limit: Option<MemoryLimit>, moves: usize, lanes: usize) -> bool {
+        let below = |len: usize, more: usize| len + more < NO_LIST as usize;
+        if !(below(self.moves.len(), moves)
+            && below(self.ends.len(), moves)
+            && below(self.entries.len(), moves)
+            && below(self.lists.len(), lanes))
+        {
+            return false;
+        }
+        let Some(limit) = memory_limit else {
+            return true;
+        };
+        fn growth<T>(v: &Vec<T>, more: usize) -> usize {
+            if v.len() + more <= v.capacity() {
+                0
+            } else {
+                ((2 * v.capacity()).max(v.len() + more) + v.capacity()) * std::mem::size_of::<T>()
+            }
+        }
+        let table = |table: &KeyTable, more: usize| {
+            if 2 * (table.held + more) > table.keys.len() {
+                3 * table.bytes().max(1 << 14)
+            } else {
+                0
+            }
+        };
+        let known: usize = (self.fresh.iter())
+            .map(|&slot| match self.known.get(slot as usize) {
+                Some(known) => table(known, moves),
+                None => table(&KeyTable::default(), moves),
+            })
+            .sum();
+        let needed = growth(&self.moves, moves)
+            + growth(&self.needs, moves)
+            + growth(&self.ends, moves)
+            + growth(&self.entries, moves)
+            + growth(&self.lists, lanes)
+            + table(&self.keys, lanes)
+            + table(&self.contents, lanes)
+            + known;
+        needed < limit.room() && self.bytes() + needed <= self.deal.budget
+    }
+
+    // the deal of a search; no pool when it holds more kinds than Tiles has
+    // nibbles, or a rack more tiles than a nibble counts
+    fn set_pool(&mut self, deal: &Deal, most: usize) {
+        self.most = most;
+        if self.deal != *deal {
+            self.deal.clone_from(deal);
+            self.places = [0xff; 256];
+            let mut kinds = 0u32;
+            for &tile in &deal.pool {
+                let place = &mut self.places[tile as usize];
+                if *place == 0xff {
+                    *place = kinds as u8;
+                    kinds += 1;
+                }
+            }
+            if kinds > Tiles::BITS / 4 || most > NIBBLE_MOST || deal.mover.len() > most {
+                self.deal.pool.clear();
+            }
+            self.let_go();
+        }
+    }
+
+    // a rack's tiles, each of them in the pool
+    #[inline(always)]
+    fn held_by(&self, rack: &[u8]) -> Tiles {
+        (rack.iter())
+            .map(|&tile| 1 << (4 * self.places[tile as usize] as u32))
+            .sum()
+    }
+
+    // every slot stale, the position searched set afresh
+    #[inline(always)]
+    fn reset_slots(&mut self, slots: usize) {
+        self.slot_keys.resize(slots, 0);
+        self.slot_lists.clear();
+        self.slot_lists.resize(slots, NO_LIST);
+        self.scans.resize(slots, (NO_LIST, 0));
+        self.ranges.resize_with(slots, Vec::new);
+        self.undo.clear();
+        self.marks.clear();
+    }
+
+    // a move about to be placed: its zone's slots kept, then made stale
+    #[inline(always)]
+    fn stale(&mut self, rows: u128, cols: u128, num_rows: usize) {
+        self.marks.push(self.undo.len() as u32);
+        for (mut lanes, base) in [(rows, 0), (cols, num_rows)] {
+            while lanes != 0 {
+                let slot = base + lanes.trailing_zeros() as usize;
+                lanes &= lanes - 1;
+                self.undo
+                    .push((slot as u16, self.slot_keys[slot], self.slot_lists[slot]));
+                self.slot_lists[slot] = NO_LIST;
+            }
+        }
+    }
+
+    // a move taken back: its zone's slots as they were
+    #[inline(always)]
+    fn unstale(&mut self) {
+        let Some(mark) = self.marks.pop() else {
+            return;
+        };
+        for &(slot, key, list) in &self.undo[mark as usize..] {
+            self.slot_keys[slot as usize] = key;
+            self.slot_lists[slot as usize] = list;
+        }
+        self.undo.truncate(mark as usize);
+    }
+
+    // a walk's moves on the fresh slots made their lists, then keyed: a slot's
+    // moves as walked found by their hashes among the lists made before, else
+    // grouped by the tiles they place, each move found in the table, else put
+    // in it; false, every list let go, where the memory limit has no room for
+    // them
+    fn record(
+        &mut self,
+        plays: &[movegen::ValuedMove],
+        memory_limit: Option<MemoryLimit>,
+        num_rows: usize,
+    ) -> bool {
+        if !self.room_for(memory_limit, plays.len(), self.fresh.len()) {
+            self.let_go();
+            return false;
+        }
+        let Self {
+            places,
+            moves,
+            known,
+            keys,
+            contents,
+            lists,
+            needs,
+            ends,
+            entries,
+            slot_keys,
+            slot_lists,
+            fresh,
+            by_slot,
+            starts,
+            hashes,
+            sorting,
+            ..
+        } = self;
+        moves.reserve(plays.len());
+        needs.reserve(plays.len());
+        ends.reserve(plays.len());
+        entries.reserve(plays.len());
+        lists.reserve(fresh.len());
+        known.resize_with(slot_lists.len(), KeyTable::default);
+        let slot_of = |play: &movegen::Play| match play {
+            movegen::Play::Place { down, lane, .. } => {
+                Some(if *down { num_rows } else { 0 } + *lane as usize)
+            }
+            movegen::Play::Exchange { .. } => None,
+        };
+        // the moves slot by slot, each slot's as walked: counted, then each put
+        // before the next one of its slot, last first
+        starts.clear();
+        starts.resize(slot_lists.len() + 1, 0);
+        for valued in plays.iter() {
+            if let Some(slot) = slot_of(&valued.play) {
+                starts[slot + 1] += 1;
+            }
+        }
+        for slot in 0..slot_lists.len() {
+            starts[slot + 1] += starts[slot];
+        }
+        let placing = starts[slot_lists.len()] as usize;
+        by_slot.clear();
+        by_slot.resize(placing, 0);
+        for (i, valued) in plays.iter().enumerate().rev() {
+            if let Some(slot) = slot_of(&valued.play) {
+                starts[slot + 1] -= 1;
+                by_slot[starts[slot + 1] as usize] = i as u32;
+            }
+        }
+        for &slot in fresh.iter() {
+            let slot = slot as usize;
+            let begin = starts[slot + 1] as usize;
+            let end = starts.get(slot + 2).map_or(placing, |&end| end as usize);
+            hashes.clear();
+            let mut key = FNV128_BASIS;
+            for &i in &by_slot[begin..end] {
+                let hash = mix_move(FNV128_BASIS, &plays[i as usize].play);
+                hashes.push(hash);
+                key = (key ^ hash).wrapping_mul(FNV128_PRIME);
+            }
+            let list = match contents.get(key) {
+                Some(list) => list,
+                None => {
+                    sorting.clear();
+                    for (k, &i) in by_slot[begin..end].iter().enumerate() {
+                        if let movegen::Play::Place { word, .. } = &plays[i as usize].play {
+                            let need: Tiles = (word.iter())
+                                .filter(|&&tile| tile != 0)
+                                .map(|&tile| 1 << (4 * places[held_tile(tile) as usize] as u32))
+                                .sum();
+                            sorting.push((need, k as u32));
+                        }
+                    }
+                    sorting.sort_unstable();
+                    let (first_group, first_entry) = (needs.len(), entries.len());
+                    for &(need, k) in sorting.iter() {
+                        if needs.len() == first_group || needs[needs.len() - 1] != need {
+                            if needs.len() > first_group {
+                                ends.push(entries.len() as u32);
+                            }
+                            needs.push(need);
+                        }
+                        let hash = hashes[k as usize];
+                        let id = match known[slot].get(hash) {
+                            Some(id) => id,
+                            None => {
+                                let id = moves.len() as u32;
+                                let play = &plays[by_slot[begin + k as usize] as usize].play;
+                                let placed = match play {
+                                    movegen::Play::Place { word, .. } => {
+                                        word.iter().filter(|&&tile| tile != 0).count()
+                                    }
+                                    movegen::Play::Exchange { .. } => 0,
+                                };
+                                moves.push((play.clone(), placed as u8));
+                                known[slot].insert(hash, id);
+                                id
+                            }
+                        };
+                        entries.push(id);
+                    }
+                    if needs.len() > first_group {
+                        ends.push(entries.len() as u32);
+                    }
+                    let list = lists.len() as u32;
+                    lists.push([first_group as u32, needs.len() as u32, first_entry as u32]);
+                    contents.insert(key, list);
+                    list
+                }
+            };
+            keys.insert(slot_keys[slot], list);
+            slot_lists[slot] = list;
+        }
+        true
+    }
+}
+
 // the sorted rack's slots a placement plays, as bits: of each tile's slots, the
 // first ones, or with last the last ones. Two moves, one by first slots and one
 // by last, fit the rack together when their bits do not overlap
@@ -739,6 +1305,8 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     generated: u64,        // the lists generated, each list's serial
     serials: Vec<u64>,     // the serial of each ply's list
     siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
+    lane_pool: LanePool,
+    pool_walker: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // LanePool's walks
     #[cfg(test)]
     copied: usize, // the lanes copied from an earlier reply's list
     table: Table,
@@ -795,6 +1363,8 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             generated: 0,
             serials: Vec::new(),
             siblings: Vec::new(),
+            lane_pool: LanePool::new(),
+            pool_walker: None,
             #[cfg(test)]
             copied: 0,
             table: Table::new(),
@@ -1366,6 +1936,10 @@ impl<
             }
             work_buffer.rack_scores[player] = alphabet.scaled_rack_score(rack);
         }
+        if !work_buffer.lane_pool.deal.pool.is_empty() {
+            let dim = self.game_config.board_layout().dim();
+            (work_buffer.lane_pool).reset_slots(dim.rows as usize + dim.cols as usize);
+        }
     }
 
     // the scoreless turns before the position to solve, as its search starts:
@@ -1412,6 +1986,11 @@ impl<
             ..
         } = play
         {
+            if !self.work_buffer.lane_pool.deal.pool.is_empty() {
+                let (rows, cols) = self.zone_lanes(play);
+                let num_rows = self.game_config.board_layout().dim().rows as usize;
+                self.work_buffer.lane_pool.stale(rows, cols, num_rows);
+            }
             let strider = self.game_config.board_layout().dim().lane(*down, *lane);
             let alphabet = self.game_config.alphabet();
             let work_buffer = &mut self.work_buffer;
@@ -1459,6 +2038,9 @@ impl<
                     rack.insert(at, held);
                     work_buffer.rack_scores[player_idx as usize] += alphabet.scaled_score(held);
                 }
+            }
+            if !work_buffer.lane_pool.deal.pool.is_empty() {
+                work_buffer.lane_pool.unstale();
             }
         }
     }
@@ -1619,7 +2201,103 @@ impl<
         }
         let (walk_rows, walk_cols) = (rows & !copy_rows, cols & !copy_cols);
         let walks = walk_rows != 0 || walk_cols != 0;
-        if walks {
+        // inside a search with tiles in the bag (LanePool), each lane to walk
+        // takes its moves from its key's list, the pool's walk made into one
+        // the second time the key is met (the first is the rack's walk); where
+        // the memory limit or the pool's budget leaves no room for a list,
+        // every lane is walked with the rack, as outside one. The lean arm
+        // pools nothing, so its builds carry no pool
+        let mut pooled = !LEAN && walks && {
+            let rack = &work_buffer.racks[player_idx as usize];
+            let lane_pool = &work_buffer.lane_pool;
+            !lane_pool.deal.pool.is_empty()
+                && rack.len() <= lane_pool.most
+                && within(rack, &lane_pool.deal.pool)
+        };
+        let (mut rack_rows, mut rack_cols) = (0u128, 0u128);
+        if pooled {
+            let dim = self.game_config.board_layout().dim();
+            let num_rows = dim.rows as usize;
+            let lane_pool = &mut work_buffer.lane_pool;
+            let board = &work_buffer.board_tiles[..];
+            let board_empty = || !board.iter().any(|&tile| tile != 0);
+            lane_pool.fresh.clear();
+            for (mask, lanes, base, down) in [
+                (walk_rows, dim.rows, 0, false),
+                (walk_cols, dim.cols, num_rows, true),
+            ] {
+                for lane in 0..lanes {
+                    if mask >> lane & 1 == 0 {
+                        continue;
+                    }
+                    let slot = base + lane as usize;
+                    if lane_pool.slot_lists[slot] != NO_LIST {
+                        debug_assert!(
+                            lane_pool.slot_keys[slot]
+                                == lane_key(board, dim, board_empty(), down, lane)
+                        );
+                        continue;
+                    }
+                    let key = lane_key(board, dim, board_empty(), down, lane);
+                    lane_pool.slot_keys[slot] = key;
+                    match lane_pool.keys.get(key) {
+                        Some(list) => lane_pool.slot_lists[slot] = list,
+                        None if lane_pool.sighted(key) => lane_pool.fresh.push(slot as u16),
+                        None if down => rack_cols |= 1 << lane,
+                        None => rack_rows |= 1 << lane,
+                    }
+                }
+            }
+            if !lane_pool.fresh.is_empty() {
+                let (mut new_rows, mut new_cols) = (0u128, 0u128);
+                for &slot in &lane_pool.fresh {
+                    if (slot as usize) < num_rows {
+                        new_rows |= 1 << slot;
+                    } else {
+                        new_cols |= 1 << (slot as usize - num_rows);
+                    }
+                }
+                // timed only while something listens
+                let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
+                // its walks' rack is the whole pool, so its leaves' table is
+                // held to the pool's budget, and to the bound others keep
+                let budget = lane_pool.deal.budget;
+                let walker = (work_buffer.pool_walker).get_or_insert_with(|| {
+                    let mut walker = movegen::KurniaMoveGenerator::new_in(self.game_config);
+                    walker.set_dense_leaves_most(
+                        (budget / klv::LEAVE_BYTES).min(klv::DENSE_LEAVES_MOST as usize) as u32,
+                    );
+                    walker
+                });
+                gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                    walker,
+                    work_buffer.run_letter_bits.as_deref(),
+                    &movegen::BoardSnapshot {
+                        board_tiles: board,
+                        game_config: self.game_config,
+                        kwg: self.kwg,
+                        anagrams: self.arm_tables.anagrams(),
+                        rack_lengths: self.arm_tables.rack_lengths(),
+                        klv: &self.klv,
+                    },
+                    &lane_pool.deal.pool,
+                    new_rows,
+                    new_cols,
+                );
+                if let Some(t1) = t1 {
+                    work_buffer.dur_movegen += t1.elapsed();
+                }
+                pooled = lane_pool.record(&walker.plays, work_buffer.memory_limit, num_rows);
+            }
+        }
+        // the lanes met once, walked with the rack
+        let racked = pooled && (rack_rows != 0 || rack_cols != 0);
+        if (!pooled && walks) || racked {
+            let (rack_walk_rows, rack_walk_cols) = if pooled {
+                (rack_rows, rack_cols)
+            } else {
+                (walk_rows, walk_cols)
+            };
             // timed only while something listens
             let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
             gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
@@ -1634,8 +2312,8 @@ impl<
                     klv: &self.klv,
                 },
                 &work_buffer.racks[player_idx as usize],
-                walk_rows,
-                walk_cols,
+                rack_walk_rows,
+                rack_walk_cols,
             );
             if let Some(t1) = t1 {
                 work_buffer.dur_movegen += t1.elapsed();
@@ -1675,7 +2353,84 @@ impl<
         // the lanes walked that only the move two plies up changed are kept for
         // the later replies to the same list
         let (keep_rows, keep_cols) = (only_rows & !copy_rows, only_cols & !copy_cols);
-        if walks {
+        #[cfg(debug_assertions)]
+        let mut from_pool = Vec::new();
+        #[cfg(debug_assertions)]
+        let as_tuple = |play: &movegen::Play| match play {
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => Some((*down, *lane, *idx, word[..].to_vec(), *score)),
+            movegen::Play::Exchange { .. } => None,
+        };
+        if pooled {
+            // each walked lane's list: the groups whose tiles the rack holds,
+            // found again only when the list differs from the last fetch's, or
+            // the rack's tiles do
+            let held = work_buffer.lane_pool.held_by(rack);
+            let LanePool {
+                lists,
+                needs,
+                ends,
+                entries,
+                moves,
+                slot_lists,
+                scans,
+                ranges,
+                ..
+            } = &mut work_buffer.lane_pool;
+            let dim = self.game_config.board_layout().dim();
+            let num_rows = dim.rows as usize;
+            for (mask, lanes, base, keep_mask) in [
+                (walk_rows & !rack_rows, dim.rows, 0, keep_rows),
+                (walk_cols & !rack_cols, dim.cols, num_rows, keep_cols),
+            ] {
+                for lane in 0..lanes {
+                    if mask >> lane & 1 == 0 {
+                        continue;
+                    }
+                    let keep = keep_mask >> lane & 1 != 0;
+                    let slot = base + lane as usize;
+                    let list = slot_lists[slot];
+                    let taken = &mut ranges[slot];
+                    if scans[slot] != (list, held) {
+                        scans[slot] = (list, held);
+                        taken.clear();
+                        let [first, last, mut from] = lists[list as usize];
+                        for group in first as usize..last as usize {
+                            let end = ends[group];
+                            if fits(held, needs[group]) {
+                                match taken.last_mut() {
+                                    Some(range) if range.1 == from => range.1 = end,
+                                    _ => taken.push((from, end)),
+                                }
+                            }
+                            from = end;
+                        }
+                    }
+                    for &(from, end) in taken.iter() {
+                        for &id in &entries[from as usize..end as usize] {
+                            let (play, placed) = &moves[id as usize];
+                            let movegen::Play::Place { word, .. } = play else {
+                                continue;
+                            };
+                            let uses =
+                                (slots.as_ref()).map_or(0, |slots| slots.places(word, false));
+                            push(play, uses, *placed as usize);
+                            if keep {
+                                siblings.moves.push((play.clone(), *placed));
+                            }
+                            #[cfg(debug_assertions)]
+                            from_pool.extend(as_tuple(play));
+                        }
+                    }
+                }
+            }
+        }
+        if (!pooled && walks) || racked {
             for valued in work_buffer.movegen.plays.iter() {
                 if let movegen::Play::Place {
                     down, lane, word, ..
@@ -1702,8 +2457,42 @@ impl<
                     if (if *down { keep_cols } else { keep_rows }) >> lane & 1 != 0 {
                         siblings.moves.push((valued.play.clone(), placed));
                     }
+                    #[cfg(debug_assertions)]
+                    from_pool.extend(as_tuple(&valued.play));
                 }
             }
+        }
+        // a debug build walks a pooled list's lanes with the rack again, for
+        // the same moves
+        #[cfg(debug_assertions)]
+        if pooled {
+            gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                &mut work_buffer.movegen,
+                work_buffer.run_letter_bits.as_deref(),
+                &movegen::BoardSnapshot {
+                    board_tiles: &work_buffer.board_tiles,
+                    game_config: self.game_config,
+                    kwg: self.kwg,
+                    anagrams: self.arm_tables.anagrams(),
+                    rack_lengths: self.arm_tables.rack_lengths(),
+                    klv: &self.klv,
+                },
+                rack,
+                walk_rows,
+                walk_cols,
+            );
+            let mut walked = (work_buffer.movegen.plays.iter())
+                .filter_map(|valued| as_tuple(&valued.play))
+                .collect::<Vec<_>>();
+            from_pool.sort_unstable();
+            walked.sort_unstable();
+            assert!(
+                from_pool == walked,
+                "a lane's pool moves differ from its walk: {} against {}; rack {rack:?}; pool {:?}",
+                from_pool.len(),
+                walked.len(),
+                work_buffer.lane_pool.deal.pool
+            );
         }
         siblings.rows |= keep_rows;
         siblings.cols |= keep_cols;
@@ -3033,6 +3822,15 @@ impl<
         Ok(())
     }
 
+    // swap lane pools with sub to lend one or take it back (LanePool)
+    #[inline(always)]
+    fn swap_lanes(&mut self, sub: &mut Self) {
+        std::mem::swap(
+            &mut sub.work_buffer.lane_pool,
+            &mut self.work_buffer.lane_pool,
+        );
+    }
+
     // the table taken out, an empty one left in its place, for a caller that
     // keeps it apart from any solver between solves (a wasm32 page keeps it in
     // a handle, as it can keep no solver)
@@ -3144,6 +3942,9 @@ impl<
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
+        if !LEAN {
+            self.swap_lanes(&mut sub);
+        }
         let mut search = OneInBag {
             gc,
             kwg,
@@ -3172,6 +3973,9 @@ impl<
         };
         *exact &= search.exact;
         self.swap_tables(&mut sub)?;
+        if !LEAN {
+            self.swap_lanes(&mut sub);
+        }
         Ok(to_equity(value?))
     }
 
@@ -3510,6 +4314,45 @@ impl<
         Ok(best)
     }
 
+    // a search with tiles in the bag pools every tile off the board at its root
+    // (the mover's rack and the unseen ones): each endgame inside it, whatever
+    // the deal, takes its lanes' moves from the same lists (LanePool), each of
+    // its threads' pools held to its share of the memory limit (POOL_SHARE)
+    fn pool_lanes(
+        &mut self,
+        mover_rack: &[u8],
+        unseen_tally: &[u8],
+        memory_limit: Option<MemoryLimit>,
+        threads: usize,
+    ) {
+        // the lean arm, whose builds hold little memory (the wasm's), pools
+        // nothing: each lane is walked with the rack
+        if LEAN {
+            return;
+        }
+        let mut mover = mover_rack.to_vec();
+        mover.sort_unstable();
+        let mut pool = mover.clone();
+        for (tile, &count) in unseen_tally.iter().enumerate() {
+            pool.extend(std::iter::repeat_n(tile as u8, count as usize));
+        }
+        pool.sort_unstable();
+        let budget = memory_limit.map_or(usize::MAX, |limit| {
+            limit.bytes / (POOL_SHARE * threads.max(1))
+        });
+        self.pool_lanes_as(&Deal {
+            pool,
+            mover,
+            budget,
+        });
+    }
+
+    // the same pool as another solver's (its deal)
+    fn pool_lanes_as(&mut self, deal: &Deal) {
+        let most = self.game_config.rack_size() as usize;
+        self.work_buffer.lane_pool.set_pool(deal, most);
+    }
+
     #[inline]
     pub fn solve_peg_one_in_bag(
         &mut self,
@@ -3544,11 +4387,16 @@ impl<
             self.work_buffer.clock,
         );
 
+        // the search's lane pool, kept with its progress between solves
+        std::mem::swap(&mut self.work_buffer.lane_pool, &mut progress.lanes);
+        let memory = limits.memory;
+        self.pool_lanes(&progress.mover_rack, &progress.unseen_tally, memory, 1);
         let result = if one_in_bag_exchange_legal(gc) {
             self.peg_clairvoyant_aggregate(progress, &limits)
         } else {
             self.peg_committed_no_exchange(progress, &limits)
         };
+        std::mem::swap(&mut self.work_buffer.lane_pool, &mut progress.lanes);
         self.work_buffer.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
         progress.nodes += limits.nodes.get();
@@ -3606,7 +4454,19 @@ impl<
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
+        // the search's lane pool, kept with its progress between solves
+        std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
+        let position = &progress.position;
+        // a wasm build has no threads (peg_bag_by)
+        let threads = if cfg!(target_family = "wasm") {
+            1
+        } else {
+            progress.threads
+        };
+        let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
+        sub.pool_lanes(rack, unseen, limits.memory, threads);
         let result = Self::peg_bag_by(&mut sub, progress, self.scoreless, &limits);
+        std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
         self.swap_tables(&mut sub)?;
         self.work_buffer.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
@@ -3643,6 +4503,7 @@ impl<
             state,
             endgames: _,
             nodes: _,
+            lanes: _,
         } = progress;
         let mover = position.mover;
         // the position after a split, its mover to move
@@ -3941,12 +4802,15 @@ impl<
         };
         let valued = &state.searched;
         let hand_overs = &hand_overs[..];
-        // each other thread's table as the pass before left it
+        let deal = &sub.work_buffer.lane_pool.deal.clone();
+        // each other thread's table and lane pool as the pass before left them
         let mut kept = std::mem::take(&mut state.tables);
         kept.resize_with(threads - 1, || None);
-        let (shares, kept) = std::thread::scope(|s| {
-            let handles = (kept.into_iter())
-                .map(|table| {
+        let mut pools = std::mem::take(&mut state.lanes);
+        pools.resize_with(threads - 1, LanePool::new);
+        let (shares, kept, pools) = std::thread::scope(|s| {
+            let handles = (kept.into_iter().zip(pools))
+                .map(|(table, lanes)| {
                     let work = &work;
                     s.spawn(move || {
                         let mut own =
@@ -3957,12 +4821,16 @@ impl<
                                 movegen::KurniaMoveGenerator::new_in(gc),
                             ) {
                                 Ok(own) => own,
-                                Err(e) => return (Err(e), table),
+                                Err(e) => return (Err(e), table, lanes),
                             };
                         if let Some(table) = table {
                             // made by a solver of this game and lexicon, so
                             // taken
                             let _ = own.give_table(table);
+                        }
+                        own.work_buffer.lane_pool = lanes;
+                        if !LEAN {
+                            own.pool_lanes_as(deal);
                         }
                         let mut mg = movegen::KurniaMoveGenerator::new_in(gc);
                         let share = klv::Klv::<L>::empty().and_then(|klv| {
@@ -3983,7 +4851,8 @@ impl<
                             };
                             work(&mut search, &limits)
                         });
-                        (share, Some(own.take_table()))
+                        let lanes = std::mem::take(&mut own.work_buffer.lane_pool);
+                        (share, Some(own.take_table()), lanes)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -4005,15 +4874,17 @@ impl<
                 };
                 work(&mut search, limits)
             });
-            let (mut shares, mut kept) = (vec![mine], Vec::new());
+            let (mut shares, mut kept, mut pools) = (vec![mine], Vec::new(), Vec::new());
             for handle in handles {
-                let (share, table) = handle.join().unwrap();
+                let (share, table, lanes) = handle.join().unwrap();
                 shares.push(share);
                 kept.push(table);
+                pools.push(lanes);
             }
-            (shares, kept)
+            (shares, kept, pools)
         });
         state.tables = kept;
+        state.lanes = pools;
         let mut stopped = false;
         let mut found = vec![None; tasks];
         for share in shares {
@@ -4141,6 +5012,9 @@ impl<
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
+        if !LEAN {
+            self.swap_lanes(&mut sub);
+        }
         let result = Self::peg_committed_by(
             &mut sub,
             &PegPosition {
@@ -4155,6 +5029,9 @@ impl<
             &mut progress.committed,
         );
         self.swap_tables(&mut sub)?;
+        if !LEAN {
+            self.swap_lanes(&mut sub);
+        }
         result
     }
 
@@ -4450,6 +5327,7 @@ pub struct PegProgress {
     clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
     endgames: u64,                  // the endgames its solves searched
     nodes: u64,                     // their nodes
+    lanes: LanePool,                // its endgames' lane pool
 }
 
 impl PegProgress {
@@ -4473,6 +5351,7 @@ impl PegProgress {
             clairvoyant: None,
             endgames: 0,
             nodes: 0,
+            lanes: LanePool::new(),
         }
     }
 
@@ -4604,6 +5483,7 @@ pub struct PegBagProgress {
     state: PegBagState,
     endgames: u64,
     nodes: u64,
+    lanes: LanePool, // the lane pool of its endgames on the thread solving it
 }
 
 impl PegBagProgress {
@@ -4641,6 +5521,7 @@ impl PegBagProgress {
             state: Default::default(),
             endgames: 0,
             nodes: 0,
+            lanes: LanePool::new(),
         })
     }
 
@@ -4759,9 +5640,9 @@ struct PegBagRoot<'r, At: Fn(&[u8], &[u8]) -> InBag + Sync> {
 // value, each one's latest value, the time each of its splits took on threads
 // in the latest pass to value it, and those the pass has valued; whether all
 // the pass's endgames were exact, and its depth; what the search has valued
-// below the moves, and the table each thread but the calling one left; the best
-// move of the deepest pass that valued every move, with that depth, and that
-// pass's values; and whether that answer is final
+// below the moves; the table and lane pool each thread but the calling one
+// left; the best move of the deepest pass that valued every move, with that
+// depth, and that pass's values; and whether that answer is final
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -4774,6 +5655,7 @@ struct PegBagState {
     depth: i8,
     searched: BagValued,
     tables: Vec<Option<KeptTable>>,
+    lanes: Vec<LanePool>,
     answer: Option<(usize, i8)>,
     answered: Vec<Option<PegBagValue>>,
     done: bool,
@@ -9649,6 +10531,52 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_peg_search_whose_lane_pool_has_no_room_answers_as_one_with_room() {
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let gc = game_config::make_english_game_config();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        // a limit no solve reaches, its pool's share too small for any list
+        let no_room = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: super::POOL_SHARE,
+                held: || 0,
+            }),
+        };
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[8] = 1; // H
+        unseen_tally[20] = 1; // T
+        for &x in &tiles {
+            for &y in &tiles {
+                let mover_rack = [x, y];
+                let solve = |limits: &super::Limits| {
+                    peg_solve_counted(
+                        &gc,
+                        &kwg,
+                        &arm_tables,
+                        &board,
+                        &mover_rack,
+                        &unseen_tally,
+                        limits,
+                    )
+                };
+                let (full, _) = solve(&super::Limits::NONE);
+                let (tight, _) = solve(&no_room);
+                assert_eq!(tight.hypotheses, full.hypotheses);
+                assert_eq!(tight.win_pct, full.win_pct);
+                assert_eq!(tight.expected_margin, full.expected_margin);
+                assert!(same_peg_move(&tight.best_move, &full.best_move));
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
     fn a_peg_search_out_of_time_values_one_move_and_answers_with_it() {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
@@ -11874,6 +12802,37 @@ mod tests {
             exchanges: [0, 0],
             model: super::PegModel::RandomDraws,
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_pool_gives_a_rack_no_deal_holds_every_move_the_walk_does() {
+        // both B are ours, but the opponent, blind to our tiles, may picture
+        // one in the bag and draw it: a rack of B with three unseen tiles,
+        // which can play BATH below AT making AH; the pool must give such a
+        // rack every move the walk does, which a debug build checks lane by
+        // lane, and a few thousand positions reach such racks
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[1] = 2; // A
+        unseen_tally[8] = 1; // H
+        unseen_tally[19] = 1; // S
+        unseen_tally[20] = 2; // T
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut position = bag_position(&board, &[2, 2], &unseen_tally, 2, equity::Equity::ZERO);
+        position.model = super::PegModel::InfoSets;
+        let few = super::Limits {
+            time: None,
+            states: Some(20_000),
+            memory: None,
+        };
+        let result = egs.solve_peg(position, &few).unwrap().unwrap();
+        assert!(!result.moves.is_empty());
     }
 
     #[test]
