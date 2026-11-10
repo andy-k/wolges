@@ -7184,6 +7184,41 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
+        // a census whose equity predicate rejects every play keeps none, and
+        // its predicates take scores alone, so it reads no leave: its walk
+        // reads the empty klv and keeps no leaves' table, however many tiles it
+        // walks
+        let no_leaves = matches!(equity_predicate, EquityPredicate::RejectAll);
+        let empty = no_leaves.then(klv::Klv::<L>::empty).and_then(Result::ok);
+        let snapshot;
+        let without_leaves;
+        let params = match &empty {
+            Some(empty) => {
+                let board_snapshot = params.board_snapshot;
+                snapshot = BoardSnapshot {
+                    board_tiles: board_snapshot.board_tiles,
+                    game_config: board_snapshot.game_config,
+                    kwg: board_snapshot.kwg,
+                    anagrams: board_snapshot.anagrams,
+                    rack_lengths: board_snapshot.rack_lengths,
+                    klv: empty,
+                };
+                without_leaves = GenMovesParams {
+                    board_snapshot: &snapshot,
+                    rack: params.rack,
+                    max_gen: params.max_gen,
+                    num_exchanges_by_this_player: params.num_exchanges_by_this_player,
+                    pass_policy: params.pass_policy,
+                    dynamic_leaves: None,
+                };
+                &without_leaves
+            }
+            None => params,
+        };
+        let dense_most = self.working_buffer.multi_leaves.dense_most();
+        if no_leaves {
+            self.working_buffer.multi_leaves.set_dense_most(0);
+        }
         self.working_buffer.is_census = true;
         self.gen_moves_filtered_lean_by_side(
             params,
@@ -7192,6 +7227,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             equity_predicate,
         );
         self.working_buffer.is_census = false;
+        self.working_buffer.multi_leaves.set_dense_most(dense_most);
     }
 
     #[inline(always)]

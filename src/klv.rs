@@ -483,6 +483,12 @@ impl MultiLeaves {
         self.dense_most = dense_most;
     }
 
+    // the most leaves a rack's tiles may have to be kept as a table
+    #[inline(always)]
+    pub fn dense_most(&self) -> u32 {
+        self.dense_most
+    }
+
     // the rack's unique tiles and their digits (each its count and its place
     // value in the leave index): whether the leaves are dense (no more than
     // dense_most of them), how many, and the rack's tiles
