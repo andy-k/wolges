@@ -2,6 +2,7 @@
 
 use super::{
     alphabet, alphagram, anagrams, bites, display, equity, error, game_config, klv, kwg, matrix,
+    play_scorer,
 };
 use alphagram::KeyPlaces as _;
 
@@ -6301,6 +6302,100 @@ pub struct GenMovesParams<'a, N: kwg::Node, L: kwg::Node> {
     pub dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
 }
 
+// a census of a board: for each multiset of tiles a play places, keyed as the
+// table walk keys a subrack (by nibbles or by the tables' layout), the best
+// score of such a play in each lane (rows first, then columns; NO_PLAY where it
+// has none). Each multiset is given a slot once, as it is first found: the
+// slots are found again by their keys in an open table, each slot's best scores
+// lying together, a lane each.
+pub struct LaneCensus {
+    nibbles: bool,
+    lanes: usize,
+    shift: u32,      // 64 less the bits of the slots' count
+    keys: Vec<u128>, // a slot's, or 0 (a play places tiles, so no key is 0)
+    best: Vec<i32>,  // a slot's lanes, lanes a slot
+    used: usize,
+}
+
+// a lane's best score in a census where a multiset has no play there, low
+// enough that a leave added to it stays below any play's
+const NO_PLAY: i32 = i32::MIN / 2;
+
+impl LaneCensus {
+    #[inline(always)]
+    fn new(nibbles: bool, lanes: usize) -> Self {
+        const SLOTS: usize = 1 << 10;
+        Self {
+            nibbles,
+            lanes,
+            shift: 64 - SLOTS.trailing_zeros(),
+            keys: vec![0; SLOTS],
+            best: vec![NO_PLAY; SLOTS * lanes],
+            used: 0,
+        }
+    }
+
+    // the slot holding key, or the empty one it would go in
+    #[inline(always)]
+    fn slot_of(&self, key: u128) -> usize {
+        let mask = self.keys.len() - 1;
+        let mut at = (alphagram::mixed(key) >> self.shift) as usize;
+        while self.keys[at] != key && self.keys[at] != 0 {
+            at = (at + 1) & mask;
+        }
+        at
+    }
+
+    // the best scores, a lane each, of the multiset of key, if it has a play
+    #[inline(always)]
+    fn lanes_of(&self, key: u128) -> Option<&[i32]> {
+        let at = self.slot_of(key);
+        (self.keys[at] == key).then(|| &self.best[at * self.lanes..(at + 1) * self.lanes])
+    }
+
+    #[inline(always)]
+    fn add(&mut self, key: u128, lane_id: u8, score: i32) {
+        if (self.used + 1) * 2 > self.keys.len() {
+            self.grow();
+        }
+        let at = self.slot_of(key);
+        if self.keys[at] == 0 {
+            self.keys[at] = key;
+            self.used += 1;
+        }
+        let best = &mut self.best[at * self.lanes + lane_id as usize];
+        *best = (*best).max(score);
+    }
+
+    // twice the slots, each multiset moved to its slot there
+    #[inline(never)]
+    fn grow(&mut self) {
+        let slots = self.keys.len() * 2;
+        let keys = std::mem::replace(&mut self.keys, vec![0; slots]);
+        let best = std::mem::replace(&mut self.best, vec![NO_PLAY; slots * self.lanes]);
+        self.shift -= 1;
+        for (from, &key) in keys.iter().enumerate() {
+            if key != 0 {
+                let at = self.slot_of(key);
+                self.keys[at] = key;
+                self.best[at * self.lanes..(at + 1) * self.lanes]
+                    .copy_from_slice(&best[from * self.lanes..(from + 1) * self.lanes]);
+            }
+        }
+    }
+}
+
+// a census of the board a generation is steered by, and the lanes changed since
+// it was taken: those are generated as ever; of the others, only those whose
+// best equity for the rack (the census's best score of a subrack there plus its
+// leave) is the best of theirs, for a rack without a blank while tiles remain
+// in the bag
+pub struct Steer<'a> {
+    pub census: &'a LaneCensus,
+    pub touched_rows: u128,
+    pub touched_cols: u128,
+}
+
 // KurniaMoveGenerator can only be reused for the same game_config and kwg.
 // (Refer to note at WorkingBuffer.)
 // This is not enforced.
@@ -6808,6 +6903,74 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         )
     }
 
+    // the census of a board over the tiles of pool (no blank among them), by
+    // the lean arm's census walk: each play of them of at most a rack's tiles
+    // is scored (the walk scores none), its tiles keyed as the anagram tables
+    // key a subrack, and its best score kept lane by lane
+    #[inline]
+    pub fn lane_census<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        anagrams: &anagrams::Anagrams,
+        pool: &[u8],
+    ) -> LaneCensus {
+        let nibbles = anagrams.nibble_side().is_some();
+        let layout = anagrams.layout();
+        let dim = board_snapshot.game_config.board_layout().dim();
+        let rows = dim.rows as u8;
+        let rack_size = board_snapshot.game_config.rack_size() as usize;
+        let mut deltas = Vec::new();
+        let mut census = LaneCensus::new(nibbles, dim.rows as usize + dim.cols as usize);
+        let snapshot = BoardSnapshot {
+            board_tiles: board_snapshot.board_tiles,
+            game_config: board_snapshot.game_config,
+            kwg: board_snapshot.kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: board_snapshot.klv,
+        };
+        let params = GenMovesParams {
+            board_snapshot: &snapshot,
+            rack: pool,
+            max_gen: 1,
+            num_exchanges_by_this_player: i16::MAX,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        self.gen_census_sheet_impl(
+            &params,
+            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], _score: i32| {
+                if word.iter().filter(|&&tile| tile != 0).count() <= rack_size {
+                    let key = word
+                        .iter()
+                        .filter(|&&tile| tile != 0)
+                        .map(|&tile| {
+                            if nibbles {
+                                alphagram::Nibble.place_value(tile)
+                            } else {
+                                layout.place_value(tile)
+                            }
+                        })
+                        .sum::<u128>();
+                    let score = play_scorer::score_and_blank_deltas(
+                        &snapshot,
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        &mut deltas,
+                    );
+                    let lane_id = if down { rows + lane as u8 } else { lane as u8 };
+                    census.add(key, lane_id, score);
+                }
+                false
+            }),
+            klv::AdjustLeave::Identity,
+            EquityPredicate::RejectAll,
+        );
+        census
+    }
+
     #[inline(always)]
     fn gen_census_sheet_impl<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -6834,6 +6997,25 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
     ) {
+        self.gen_moves_filtered_steered(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+            None,
+        );
+    }
+
+    // as gen_moves_filtered, the tables' generation steered when steer is some
+    #[inline(always)]
+    fn gen_moves_filtered_steered<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'_>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'_>,
+        steer: Option<&Steer<'_>>,
+    ) {
         // the generation by the tables (keyed by nibbles where they are, else
         // by their layout); a turn it hands back, or a game with no anagrams,
         // is the lean arm's
@@ -6844,6 +7026,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     place_move_predicate,
                     adjust_leave_value,
                     equity_predicate,
+                    steer,
                 ),
             // keyed by the tables' layout, compiled for a 15 by 15 board, a 21
             // by 21 one, else for any
@@ -6858,6 +7041,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     place_move_predicate,
                     adjust_leave_value,
                     equity_predicate,
+                    steer,
                 )
             }
             Some(_)
@@ -6871,6 +7055,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     place_move_predicate,
                     adjust_leave_value,
                     equity_predicate,
+                    steer,
                 )
             }
             Some(_) => self.gen_moves_tables::<0, u128, ByLayout, _, _>(
@@ -6878,6 +7063,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 place_move_predicate,
                 adjust_leave_value,
                 equity_predicate,
+                steer,
             ),
             None => Some((place_move_predicate, equity_predicate)),
         };
@@ -6913,6 +7099,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         mut place_move_predicate: PlacePredicate<'p>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'e>,
+        steer: Option<&Steer<'_>>,
     ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
         if self.working_buffer.is_census {
             return Some((place_move_predicate, equity_predicate));
@@ -7039,10 +7226,63 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 }
                 threshold.get().raw()
             };
+        // steered (Steer): the lanes the walk may take narrowed to those
+        // touched and those of the others whose best equity is the best
+        let lanes_before = (working_buffer.lane_rows, working_buffer.lane_cols);
+        if let Some(steer) = steer
+            && steer.census.nibbles == T::NIBBLES
+            && working_buffer.rack_tally[0] == 0
+            && working_buffer.num_tiles_in_bag > 0
+            && multi_leaves.is_dense()
+        {
+            let rows = dim.rows as usize;
+            let num_lanes = steer.census.lanes;
+            let mut bounds = [NO_PLAY; 256];
+            let bound = &mut bounds[..num_lanes];
+            for subrack in working_buffer.subracks.iter() {
+                if subrack.num_played != 0
+                    && let Some(best) = steer.census.lanes_of(subrack.key)
+                {
+                    let leave = subrack.leave_value;
+                    for (b, &score) in bound.iter_mut().zip(best) {
+                        *b = (*b).max(score + leave);
+                    }
+                }
+            }
+            let (allowed_rows, allowed_cols) = lanes_before;
+            let untouched = |lane: usize| {
+                if lane < rows {
+                    allowed_rows & (G::from(1) << lane as u32) != G::from(0)
+                        && (steer.touched_rows >> lane) & 1 == 0
+                } else {
+                    let col = lane - rows;
+                    allowed_cols & (G::from(1) << col as u32) != G::from(0)
+                        && (steer.touched_cols >> col) & 1 == 0
+                }
+            };
+            let top = (0..num_lanes)
+                .filter(|&lane| untouched(lane))
+                .map(|lane| bound[lane])
+                .max()
+                .unwrap_or(NO_PLAY);
+            let mut keep_rows = G::of_u128(steer.touched_rows);
+            let mut keep_cols = G::of_u128(steer.touched_cols);
+            if top > NO_PLAY / 2 {
+                for lane in (0..num_lanes).filter(|&lane| bound[lane] == top && untouched(lane)) {
+                    if lane < rows {
+                        keep_rows |= G::from(1) << lane as u32;
+                    } else {
+                        keep_cols |= G::from(1) << (lane - rows) as u32;
+                    }
+                }
+            }
+            working_buffer.lane_rows = allowed_rows & keep_rows;
+            working_buffer.lane_cols = allowed_cols & keep_cols;
+        }
         for _ in kurnia_gen_place_moves_iter::<D, W, T, _, _, _, _, _, _>(KurniaIterParams {
             runs: (),
             board_snapshot: params.board_snapshot,
-            working_buffer,
+            working_buffer: &mut *working_buffer,
             multi_leaves: &multi_leaves,
             found_place_move,
             can_accept: |best_possible_equity: i32| {
@@ -7050,6 +7290,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             },
             current_threshold: || threshold.get().raw(),
         }) {}
+        (working_buffer.lane_rows, working_buffer.lane_cols) = lanes_before;
         // with the threshold above the best an exchange can be, push_move would
         // turn each one away
         if threshold.get()
@@ -7366,6 +7607,28 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_unfiltered(params);
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
+    }
+
+    // as gen_moves_unfiltered_lanes, steered by a census of the board (Steer)
+    #[inline(always)]
+    pub fn gen_moves_unfiltered_lanes_steered<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        rows: u128,
+        cols: u128,
+        steer: &Steer<'_>,
+    ) {
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
+        self.gen_moves_filtered_steered(
+            params,
+            PlacePredicate::AcceptAll,
+            klv::AdjustLeave::Identity,
+            EquityPredicate::AcceptAll,
+            Some(steer),
+        );
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
     }
@@ -11671,6 +11934,75 @@ mod tests {
             }
         }
         assert_eq!(compared, 3 * (tiles.len() + 1));
+    }
+
+    #[test]
+    #[inline]
+    fn a_steered_generation_keeps_the_whole_ones_best() {
+        // a board's census over a pool, then racks of that pool: steered by it,
+        // with no lane touched or some, a generation keeps the move the whole
+        // one keeps, by nibble keys and by layout keys alike
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let nibbles = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let layout = anagrams::ArmTables::build_by_layout(&kwg, &gc).unwrap();
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let placed = parse_test_rack(gc.alphabet(), "AEST");
+        for i in 0..15 {
+            let at = gc
+                .board_layout()
+                .dim()
+                .at_row_col(i, ((i as i32 * 7 + 3) % 15) as i8);
+            board_tiles[at] = placed[i as usize % placed.len()];
+        }
+        let pool = parse_test_rack(gc.alphabet(), "AAEEIILNORSST");
+        let racks = ["AEILNST", "AEORSST", "EIINORS", "AALNST", "EIOS"]
+            .map(|r| parse_test_rack(gc.alphabet(), r));
+        let touched = [(0u128, 0u128), (1 << 7, 0), (0b1010, 1 << 3)];
+        let mut compared = 0;
+        for tables in [&nibbles, &layout] {
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: tables.anagrams(),
+                rack_lengths: tables.rack_lengths(),
+                klv: &klv,
+            };
+            let mut whole = KurniaMoveGenerator::new(&gc);
+            let mut steered = KurniaMoveGenerator::new(&gc);
+            let census = steered.lane_census(&board_snapshot, tables.anagrams().unwrap(), &pool);
+            for rack in &racks {
+                let params = GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack,
+                    max_gen: 1,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                };
+                whole.gen_moves_unfiltered(&params);
+                for &(touched_rows, touched_cols) in &touched {
+                    steered.gen_moves_unfiltered_lanes_steered(
+                        &params,
+                        !0,
+                        !0,
+                        &Steer {
+                            census: &census,
+                            touched_rows,
+                            touched_cols,
+                        },
+                    );
+                    assert!(
+                        steered.plays[0].play == whole.plays[0].play,
+                        "rack {rack:?}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 2 * 5 * 3);
     }
 
     #[test]

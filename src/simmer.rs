@@ -122,8 +122,30 @@ pub struct Simmer<
     lane_cols_taken: u128,
     lanes_exhausted: bool, // whether the lanes left hold no play
 
+    census: std::sync::Arc<SharedCensus>, // the preparation's, its clones' too
+    census_taken: Option<TakenCensus>,    // this simmer's, once taken
+
     rng: R,
 }
+
+// the most tiles off the start board, blanks aside, a census is taken over
+const CENSUS_MAX_POOL: usize = 32;
+
+// the rollouts of a preparation that run before its census is taken: the census
+// pays for itself only over more than about as many
+const CENSUS_AFTER: u64 = 1024;
+
+// a preparation's census (take_census), shared by the simmer and its clones,
+// and the rollouts they have run of it while it is not taken; each keeps its
+// own hold of it once it has it, so the lock is taken only to find it
+#[derive(Default)]
+struct SharedCensus {
+    rollouts: std::sync::atomic::AtomicU64,
+    taken: std::sync::Mutex<Option<TakenCensus>>,
+}
+
+// a taken census, or none where the start board has none
+type TakenCensus = std::sync::Arc<Option<movegen::LaneCensus>>;
 
 impl Simmer {
     // The other methods must be called with the same game_config.
@@ -199,6 +221,9 @@ impl<
             lane_cols_taken: 0,
             lanes_exhausted: false,
 
+            census: Default::default(),
+            census_taken: None,
+
             rng,
         }
     }
@@ -225,6 +250,9 @@ impl<
         );
         clone.kept.clone_from(&self.kept);
         clone.opponents_pass = self.opponents_pass;
+        // one census a preparation, whichever of its clones takes it
+        clone.census = self.census.clone();
+        clone.census_taken.clone_from(&self.census_taken);
         clone
     }
 
@@ -292,6 +320,61 @@ impl<
                 .unwrap_or(0);
         self.wants_win_prob = report_win_prob;
         self.set_num_sim_plies(game_config, num_sim_plies);
+        self.census = Default::default();
+        self.census_taken = None;
+    }
+
+    // the start board's census over its tiles off it but the blanks, taken once
+    // a preparation by the default arm's rollout that comes after CENSUS_AFTER
+    // of them (of this simmer or of any clone prepared_clone made from it,
+    // which share it): in a classic game where they number at most
+    // CENSUS_MAX_POOL, when the arm has its tables. The later rollouts' plies,
+    // and their replies at ply 1 on the start board, read from it each lane's
+    // best equity for the rack, and need not generate those that cannot win.
+    fn take_census<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+    ) -> Option<movegen::LaneCensus> {
+        let anagrams = arm_tables.anagrams()?;
+        if !matches!(game_config.game_rules(), game_config::GameRules::Classic) {
+            return None;
+        }
+        let alphabet = game_config.alphabet();
+        let mut off_board = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        for &tile in self.initial_game_state.board_tiles.iter() {
+            if tile != 0 {
+                let tile = if tile & 0x80 != 0 { 0 } else { tile };
+                off_board[tile as usize] = off_board[tile as usize].saturating_sub(1);
+            }
+        }
+        let num_off_board = off_board[1..].iter().map(|&n| n as usize).sum::<usize>();
+        if num_off_board == 0 || num_off_board > CENSUS_MAX_POOL {
+            return None;
+        }
+        // no play places more of a tile than a rack holds
+        let rack_size = game_config.rack_size();
+        let pool = (1..alphabet.len())
+            .flat_map(|tile| {
+                std::iter::repeat_n(tile, off_board[tile as usize].min(rack_size) as usize)
+            })
+            .collect::<Vec<_>>();
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &self.initial_game_state.board_tiles,
+            game_config,
+            kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv,
+        };
+        Some(
+            self.move_generator
+                .lane_census(&board_snapshot, anagrams, &pool),
+        )
     }
 
     // the plies each rollout plays past its candidate from the next one on
@@ -478,6 +561,33 @@ impl<
         };
         let mut forced_passes = 0;
         let mut ply = 0;
+        if !LEAN
+            && self.census_taken.is_none()
+            && self
+                .census
+                .rollouts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                >= CENSUS_AFTER
+        {
+            let shared = self.census.clone();
+            let mut taken = shared
+                .taken
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if taken.is_none() {
+                *taken = Some(std::sync::Arc::new(self.take_census(
+                    game_config,
+                    kwg,
+                    arm_tables,
+                    klv,
+                )));
+            }
+            self.census_taken.clone_from(&taken);
+        }
+        let held = self.census_taken.clone();
+        let census = held.as_deref().and_then(Option::as_ref);
+        // the lanes this rollout's plays have touched since the start board
+        let mut touched = (0u128, 0u128);
         while (ply <= self.num_sim_plies || self.game_state.bag.is_empty())
             && (forced_passes < seats_moving
                 || game_config.num_passes_to_end() != 0
@@ -502,6 +612,7 @@ impl<
                     arm_tables,
                     klv,
                     candidate_play,
+                    census,
                 );
                 self.reply_equity = Some(reply.equity);
                 next_play = reply.play;
@@ -521,12 +632,33 @@ impl<
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 };
-                if LEAN {
-                    self.move_generator.gen_moves_unfiltered_lean(params);
-                } else {
-                    self.move_generator.gen_moves_unfiltered(params);
+                match census {
+                    Some(census) => self.move_generator.gen_moves_unfiltered_lanes_steered(
+                        params,
+                        !0,
+                        !0,
+                        &movegen::Steer {
+                            census,
+                            touched_rows: touched.0,
+                            touched_cols: touched.1,
+                        },
+                    ),
+                    None => {
+                        if LEAN {
+                            self.move_generator.gen_moves_unfiltered_lean(params);
+                        } else {
+                            self.move_generator.gen_moves_unfiltered(params);
+                        }
+                    }
                 }
                 next_play.clone_from(&self.move_generator.plays[0].play);
+            }
+            if census.is_some() {
+                let dim = game_config.board_layout().dim();
+                let footprint = zone::footprint(dim, &self.game_state.board_tiles, &next_play);
+                let (rows, cols) = zone::zone_lanes(dim, &footprint.zone);
+                touched.0 |= rows;
+                touched.1 |= cols;
             }
             if ply > 0 {
                 self.plies_played.push(match &next_play {
@@ -610,6 +742,7 @@ impl<
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
+        census: Option<&movegen::LaneCensus>,
     ) -> movegen::ValuedMove {
         let dim = game_config.board_layout().dim();
         let (rows, cols) = zone::zone_lanes(
@@ -638,10 +771,24 @@ impl<
                 dynamic_leaves: None,
             };
             let (rows, cols) = (!self.lane_rows_taken, !self.lane_cols_taken);
-            if LEAN {
-                (self.move_generator).gen_moves_unfiltered_lanes_lean(params, rows, cols);
-            } else {
-                (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols);
+            match census {
+                Some(census) => self.move_generator.gen_moves_unfiltered_lanes_steered(
+                    params,
+                    rows,
+                    cols,
+                    &movegen::Steer {
+                        census,
+                        touched_rows: 0,
+                        touched_cols: 0,
+                    },
+                ),
+                None => {
+                    if LEAN {
+                        (self.move_generator).gen_moves_unfiltered_lanes_lean(params, rows, cols);
+                    } else {
+                        (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols);
+                    }
+                }
             }
             match self.move_generator.plays[0].play {
                 movegen::Play::Place { down, lane, .. } => {
@@ -1527,6 +1674,7 @@ mod tests {
                     &arm_tables,
                     &klv,
                     candidate,
+                    None,
                 );
                 let want = whole_reply(
                     &mut whole,
