@@ -6580,6 +6580,20 @@ impl<
     const ANY_SIDE: bool,
 > BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>
 {
+    // whether a limit has passed, read at each position the search values once
+    // it may stop: a line of scoreless turns, as exchanges make with seven or
+    // more in the bag, starts no endgame, the one other place a limit is read
+    // (solve_in_bag_below), so the search would run on past its time there.
+    // An error, with stopped set
+    #[inline(always)]
+    fn stop_at_a_limit(&self) -> error::Returns<()> {
+        if self.limits.may_stop.get() && self.limits.passed(&self.sub.work_buffer.table) {
+            self.limits.stopped.set(true);
+            return Err("a limit stopped the search".into());
+        }
+        Ok(())
+    }
+
     // a position's value to its mover: the most any move gets them, a tie going
     // to the move first in in_bag_moves's order. The move a shallower pass
     // found best goes first, then the placements, highest score first; once one
@@ -6623,6 +6637,7 @@ impl<
         key: u64,
         first: Option<movegen::Play>,
     ) -> error::Returns<(f64, movegen::Play)> {
+        self.stop_at_a_limit()?;
         let was_exact = std::mem::replace(&mut self.exact, true);
         let mut moves = in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             self.gc,
@@ -7000,6 +7015,7 @@ impl<
             Some(BagEntry::First(play)) => Some(play.clone()),
             None => None,
         };
+        self.stop_at_a_limit()?;
         let was_exact = std::mem::replace(&mut self.exact, true);
         let made = info.exchanges[info.mover as usize];
         let (gc, kwg, arm_tables, klv) = (self.gc, self.kwg, self.arm_tables, self.klv);
@@ -12833,6 +12849,47 @@ mod tests {
         };
         let result = egs.solve_peg(position, &few).unwrap().unwrap();
         assert!(!result.moves.is_empty());
+    }
+
+    #[test]
+    #[inline]
+    fn a_search_with_seven_in_the_bag_keeps_its_time_through_exchanges() {
+        // seven in the bag makes exchanges legal, and a line of exchanges ends
+        // on scoreless turns without an endgame, where the search read its
+        // clock: once the first move had a value, such a search ran on past
+        // its time. Our B has three placements and every other tile, ours and
+        // unseen, none, so the first move is valued at once (the opponent
+        // holds one tile, the bag the other seven) and the exchanges after it
+        // must stop at the time
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [3, 4, 5, 6, 7, 9, 11, 13] {
+            unseen_tally[tile] = 1; // C D E F G I K M
+        }
+        let rack = [2, 10, 17, 22, 23, 24, 26]; // B J Q V W X Z
+        let limits = super::Limits {
+            time: Some(std::time::Duration::from_millis(16)),
+            states: None,
+            memory: None,
+        };
+        for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut position = bag_position(&board, &rack, &unseen_tally, 7, equity::Equity::ZERO);
+            position.model = model;
+            let t0 = std::time::Instant::now();
+            let result = egs.solve_peg(position, &limits).unwrap().unwrap();
+            let took = t0.elapsed();
+            assert!(
+                took < std::time::Duration::from_secs(5),
+                "a search of 16 ms took {took:?}"
+            );
+            assert!(!result.exact);
+        }
     }
 
     #[test]
