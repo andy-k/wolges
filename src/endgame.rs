@@ -7191,6 +7191,8 @@ impl<
         other: &[u8],
         bag: &[u8],
     ) -> error::Returns<(f64, Option<f64>)> {
+        // read at each split, as info_split does
+        self.stop_at_a_limit()?;
         if let movegen::Play::Place { word, score, .. } = play
             && word.iter().filter(|&&tile| tile != 0).count() >= info.bag_len
         {
@@ -7224,6 +7226,10 @@ impl<
         other: &[u8],
         bag: &[u8],
     ) -> error::Returns<(f64, f64)> {
+        // read at each split: a blind choice values every move over every
+        // split, and one that ends the game (an exchange with the scoreless
+        // turns at the count, its draws averaged) visits no position at all
+        self.stop_at_a_limit()?;
         let lead = info.lead as f64;
         let theirs =
             |board: Vec<u8>, sees: &[u8], bag_len, passes, zeros, answering, exchanges, lead| {
