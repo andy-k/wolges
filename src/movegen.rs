@@ -9944,19 +9944,21 @@ fn rcs_placements<
                 continue;
             }
             // by Abel's sum, the multipliers' steps (each >= 0) times the least
-            // of the rack's best scores and the squares' caps so far
+            // of the rack's best scores and the squares' caps so far: summed
+            // the other way, each multiplier times what its square adds to that
+            // least (which never falls), the same sum with no look ahead
             let multipliers =
                 &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
             let mut bound = span.fixed + best_leave_values[span.num_played as usize];
             let mut best_scores = 0i32;
             let mut capped = 0i32;
-            for (j, (&score, &(multiplier, idx))) in
-                descending_scores.iter().zip(multipliers).enumerate()
-            {
+            let mut least = 0i32;
+            for (&score, &(multiplier, idx)) in descending_scores.iter().zip(multipliers) {
                 best_scores += score;
                 capped = capped.saturating_add(caps[idx as usize]);
-                let next = multipliers.get(j + 1).map_or(0, |&(m, _)| m);
-                bound += (multiplier - next) * best_scores.min(capped);
+                let next_least = best_scores.min(capped);
+                bound += multiplier * (next_least - least);
+                least = next_least;
             }
             found_placements.push(PossiblePlacement {
                 num_played: span.num_played,
