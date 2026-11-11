@@ -6604,6 +6604,10 @@ impl<
     // if so (endgame_below); a pass or another placement is valued only if a
     // bound leaves it room to be the best (cannot_beat)
     fn node(&mut self, pos: &InBag) -> error::Returns<f64> {
+        // read even where the position has its value: a node may visit a
+        // great many valued ones, each exchange times each draw, between two
+        // it searches
+        self.stop_at_a_limit()?;
         let key = pos.key();
         let first = match self.valued.shard(key).nodes.get(key) {
             Some(&BagEntry::Valued(value, _, exact)) => {
@@ -7008,6 +7012,8 @@ impl<
     // margins of the moves at the best chance alone, a split whose margin the
     // chance's search left unfound solved whole
     fn info_value(&mut self, info: &InfoSet) -> error::Returns<(f64, f64)> {
+        // read even where the info set has its value, as node does
+        self.stop_at_a_limit()?;
         let key = info.key();
         let first = match self.valued.shard(key).infos.get(key) {
             Some(&BagEntry::Valued(value, _, exact)) => {
@@ -7017,7 +7023,6 @@ impl<
             Some(BagEntry::First(play)) => Some(play.clone()),
             None => None,
         };
-        self.stop_at_a_limit()?;
         let was_exact = std::mem::replace(&mut self.exact, true);
         let made = info.exchanges[info.mover as usize];
         let (gc, kwg, arm_tables, klv) = (self.gc, self.kwg, self.arm_tables, self.klv);
