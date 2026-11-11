@@ -433,6 +433,30 @@ impl ShadowScores {
     }
 }
 
+// a square a walk took: its multiplier under the walk's word multiplier in the
+// high half, the square in the low byte, as one word, so that each is written
+// and read whole (as a pair of an i32 and a u8 it was two stores, and the wide
+// loads that copy a list or shift it read them back only after they landed)
+#[derive(Clone, Copy, Default)]
+struct Taken(u64);
+
+impl Taken {
+    #[inline(always)]
+    fn new(multiplier: i32, idx: u8) -> Self {
+        Self((multiplier as u32 as u64) << 32 | idx as u64)
+    }
+
+    #[inline(always)]
+    fn multiplier(self) -> i32 {
+        (self.0 >> 32) as u32 as i32
+    }
+
+    #[inline(always)]
+    fn idx(self) -> usize {
+        self.0 as u8 as usize
+    }
+}
+
 // the table walk's spans of a lane, kept until its inputs change: found by the
 // shadow pass with every letter on hand without limit, so they are every span a
 // rack can have; each with what of its bound needs no rack (rcs_placements)
@@ -448,7 +472,7 @@ struct RcsLane {
     jumps: Vec<MultiJump>, // over its runs of tiles (fill_multi_jumps)
     hooks: u64,            // its empty squares a cross word reaches, a bit each
     spans: Vec<RcsSpan>,
-    multipliers: Vec<(i32, u8)>, // each span's empty squares' with the square, descending, from its at
+    multipliers: Vec<Taken>, // each span's empty squares' with the square, descending, from its at
 }
 
 #[derive(Clone, Copy)]
@@ -3392,8 +3416,8 @@ struct TableWalkParams<
     threshold: i32,
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
-    descending_scores: &'a [i32],      // the rack's, as WorkingBuffer's
-    span_multipliers: &'a [(i32, u8)], // its kept span's (own_bound), or none
+    descending_scores: &'a [i32],  // the rack's, as WorkingBuffer's
+    span_multipliers: &'a [Taken], // its kept span's (own_bound), or none
     span_memo: &'a mut SpanMemo,
     span_prefix: &'a [SpanPrefix], // the lane's
     span_empty: u128,              // the lane's empty squares, a bit each
@@ -4486,8 +4510,8 @@ fn gen_classic_place_moves<
         debug_assert_eq!(places.count_ones() as usize, multipliers.len());
         let scores = env.params.descending_scores;
         let mut bound = env.fixed;
-        for &(multiplier, _) in multipliers {
-            bound += multiplier * scores[places.trailing_zeros() as usize];
+        for &taken in multipliers {
+            bound += taken.multiplier() * scores[places.trailing_zeros() as usize];
             places &= places - 1;
         }
         bound.min(env.params.score_bound)
@@ -5944,7 +5968,7 @@ fn gen_place_moves_at<
     );
     // the kept span's multipliers, best first, for own_bound: none for a
     // placement no kept span made, or a rack whose tiles' places pass a u32's
-    let span_multipliers: &[(i32, u8)] = if placement.kept_at == NO_KEPT
+    let span_multipliers: &[Taken] = if placement.kept_at == NO_KEPT
         || working_buffer.descending_scores.len() > u32::BITS as usize
     {
         &[]
@@ -9445,8 +9469,8 @@ fn same_lane<const D: usize, T: Copy + PartialEq>(kept: &[T], lane: &[T]) -> boo
 // walk's (the left walk's it starts from, then its own); and the lane's empty
 // squares a cross word reaches, a bit each
 struct RcsLists {
-    left: [(i32, u8); u64::BITS as usize],
-    right: [(i32, u8); u64::BITS as usize],
+    left: [Taken; u64::BITS as usize],
+    right: [Taken; u64::BITS as usize],
     hooks: u64,
 }
 
@@ -9454,8 +9478,8 @@ impl RcsLists {
     #[inline(always)]
     fn new() -> Self {
         Self {
-            left: [(0, 0); u64::BITS as usize],
-            right: [(0, 0); u64::BITS as usize],
+            left: [Taken::default(); u64::BITS as usize],
+            right: [Taken::default(); u64::BITS as usize],
             hooks: 0,
         }
     }
@@ -9467,7 +9491,7 @@ impl RcsGeometry<'_> {
     fn record(
         &mut self,
         walk: &RcsWalk,
-        list: &[(i32, u8)],
+        list: &[Taken],
         hooks: u64,
         anchor: i8,
         left: i8,
@@ -9503,7 +9527,7 @@ impl RcsGeometry<'_> {
     #[inline(always)]
     fn list_took(
         &self,
-        list: &mut [(i32, u8); u64::BITS as usize],
+        list: &mut [Taken; u64::BITS as usize],
         walk: &RcsWalk,
         word_multiplier: i32,
         idx: i8,
@@ -9518,18 +9542,18 @@ impl RcsGeometry<'_> {
             for entry in &mut list[..n] {
                 let i = placed.trailing_zeros() as usize;
                 placed &= placed - 1;
-                *entry = (multiplier_of(i), i as u8);
+                *entry = Taken::new(multiplier_of(i), i as u8);
             }
-            list[..n].sort_unstable_by_key(|&(multiplier, _)| std::cmp::Reverse(multiplier));
+            list[..n].sort_unstable_by_key(|taken| std::cmp::Reverse(taken.multiplier()));
             return;
         }
         let multiplier = multiplier_of(idx as usize);
         let mut j = n - 1;
-        while j > 0 && list[j - 1].0 < multiplier {
+        while j > 0 && list[j - 1].multiplier() < multiplier {
             list[j] = list[j - 1];
             j -= 1;
         }
-        list[j] = (multiplier, idx as u8);
+        list[j] = Taken::new(multiplier, idx as u8);
     }
 
     // the square idx taken by a tile: false for a dead one (the walk ends)
@@ -9953,11 +9977,11 @@ fn rcs_placements<
             let mut best_scores = 0i32;
             let mut capped = 0i32;
             let mut least = 0i32;
-            for (&score, &(multiplier, idx)) in descending_scores.iter().zip(multipliers) {
+            for (&score, &taken) in descending_scores.iter().zip(multipliers) {
                 best_scores += score;
-                capped = capped.saturating_add(caps[idx as usize]);
+                capped = capped.saturating_add(caps[taken.idx()]);
                 let next_least = best_scores.min(capped);
-                bound += multiplier * (next_least - least);
+                bound += taken.multiplier() * (next_least - least);
                 least = next_least;
             }
             found_placements.push(PossiblePlacement {
