@@ -3738,7 +3738,13 @@ impl<
             self.work_buffer.clock,
         );
         let mut exact = true;
-        let value = self.one_in_bag(player_idx, bag_tile, &limits, &mut exact);
+        let value = self.one_in_bag(
+            player_idx,
+            bag_tile,
+            &limits,
+            &mut exact,
+            &mut BagTable::default(),
+        );
         self.work_buffer.progress = limits.progress.take();
         value
     }
@@ -3912,14 +3918,15 @@ impl<
         ]
     }
 
-    // the one-in-bag value within the limits; an endgame inside it that a limit
-    // cut short clears exact
+    // the one-in-bag value within the limits, the positions valued kept in memo;
+    // an endgame inside it that a limit cut short clears exact
     fn one_in_bag(
         &mut self,
         player_idx: u8,
         bag_tile: u8,
         limits: &BagLimits,
         exact: &mut bool,
+        memo: &mut BagTable<f32>,
     ) -> error::Returns<equity::Equity> {
         let gc = self.game_config;
         let kwg = self.kwg;
@@ -3952,7 +3959,7 @@ impl<
             klv: &klv,
             sub: &mut sub,
             mg: &mut mg,
-            memo: BagTable::default(),
+            memo: std::mem::take(memo),
             limits,
             exact: true,
             line: None,
@@ -3971,6 +3978,7 @@ impl<
         } else {
             Self::one_in_bag_minimax(&mut search, &board, &racks, turn)
         };
+        *memo = std::mem::take(&mut search.memo);
         *exact &= search.exact;
         self.swap_tables(&mut sub)?;
         if !LEAN {
@@ -4158,6 +4166,12 @@ impl<
         racks: &[Vec<u8>; 2],
         turn: OneInBagTurn,
     ) -> error::Returns<f32> {
+        // a line of exchanges starts no endgame, the one other place a limit
+        // is read, so the limits are read at each position, valued or not
+        if search.limits.may_stop.get() && search.limits.passed(&search.sub.work_buffer.table) {
+            search.limits.stopped.set(true);
+            return Err("a limit stopped the search".into());
+        }
         let OneInBagTurn {
             mover,
             bag_tile,
@@ -4918,9 +4932,10 @@ impl<
     }
 
     // the clairvoyant model's search: each tile's value, the mover knowing it.
-    // Deepening, it answers from the deepest pass that valued every tile; a
-    // limit stops it only after the first, and a solve resuming it starts at
-    // the pass after the deepest it holds
+    // Deepening, it answers from the deepest pass that valued every tile, none
+    // before the first did; a limit may stop it anywhere, and a solve resuming
+    // it goes on with the pass under way, the positions it valued kept
+    // (exchange_memo)
     #[inline]
     fn peg_clairvoyant_aggregate(
         &mut self,
@@ -4932,8 +4947,14 @@ impl<
         let mover_rack = &progress.mover_rack[..];
         let unseen_tally = &progress.unseen_tally[..];
         let score_diff = progress.score_diff.raw() as f32;
-        // each tile's value to the pass's depth
-        let pass = |this: &mut Self| -> error::Returns<PegResult> {
+        let exchange_memo = &mut progress.exchange_memo;
+        // each tile's value to the pass's depth, from the positions the pass
+        // has valued already
+        let mut pass = |this: &mut Self| -> error::Returns<PegResult> {
+            if exchange_memo.0 != limits.depth.get() {
+                *exchange_memo = (limits.depth.get(), BagTable::default());
+            }
+            let memo = &mut exchange_memo.1;
             let mut hypotheses: Vec<(u8, u32, equity::Equity)> = Vec::new();
             let mut exact = true;
 
@@ -4953,8 +4974,10 @@ impl<
                 racks[mover as usize] = mover_rack;
                 racks[(mover ^ 1) as usize] = &opp_rack;
                 this.init(board, racks);
-                let v =
-                    this.one_in_bag(mover, bag_tile, limits, &mut exact)?.raw() as f32 + score_diff;
+                let v = this
+                    .one_in_bag(mover, bag_tile, limits, &mut exact, memo)?
+                    .raw() as f32
+                    + score_diff;
                 hypotheses.push((bag_tile, count as u32, to_equity(v)));
             }
             let weighted: Vec<(u32, equity::Equity)> =
@@ -4972,9 +4995,25 @@ impl<
         };
         let deepens = limits.deepens();
         let found = &mut progress.clairvoyant;
+        limits.may_stop.set(deepens);
         if found.is_none() {
             limits.depth.set(if deepens { 1 } else { COMPLETE });
-            *found = Some(pass(self)?);
+            match pass(self) {
+                Ok(first) => *found = Some(first),
+                Err(_) if limits.stopped.get() => {
+                    // stopped before the first pass valued every tile: none yet
+                    return Ok(PegResult {
+                        win_pct: 0.0,
+                        expected_margin: equity::Equity::ZERO,
+                        hypotheses: Vec::new(),
+                        best_move: None,
+                        committed: false,
+                        exact: false,
+                        depth: 0,
+                    });
+                }
+                Err(e) => return Err(e),
+            }
         }
         limits.may_stop.set(true);
         while let Some(result) = found.as_ref().filter(|r| !r.exact && r.depth < COMPLETE) {
@@ -5323,9 +5362,12 @@ pub struct PegProgress {
     score_diff: equity::Equity,
     committed: PegCommitted,
     clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
-    endgames: u64,                  // the endgames its solves searched
-    nodes: u64,                     // their nodes
-    lanes: LanePool,                // its endgames' lane pool
+    // with exchanges legal, the positions the pass under way has valued (and
+    // its depth), kept so a solve a limit stopped goes on from them
+    exchange_memo: (i8, BagTable<f32>),
+    endgames: u64,   // the endgames its solves searched
+    nodes: u64,      // their nodes
+    lanes: LanePool, // its endgames' lane pool
 }
 
 impl PegProgress {
@@ -5347,6 +5389,7 @@ impl PegProgress {
             score_diff,
             committed: Default::default(),
             clairvoyant: None,
+            exchange_memo: (0, BagTable::default()),
             endgames: 0,
             nodes: 0,
             lanes: LanePool::new(),
@@ -10422,6 +10465,13 @@ mod tests {
                     assert!(full.exact, "an unlimited solve is exact");
                     for (i, limits) in [&no_time, &one_state, &no_memory].into_iter().enumerate() {
                         let limited = solve(limits);
+                        if limited.hypotheses.is_empty() {
+                            // stopped before its first pass valued every tile
+                            assert!(!limited.exact && limited.depth == 0);
+                            assert!(limited.best_move.is_none());
+                            cut[i] += 1;
+                            continue;
+                        }
                         assert_eq!(limited.hypotheses.len(), full.hypotheses.len());
                         if limited.exact {
                             assert_eq!(limited.hypotheses, full.hypotheses);
@@ -10679,7 +10729,7 @@ mod tests {
                         .0
                     };
                     let full = solve(&super::Limits::NONE);
-                    // stopped at every point of its passes, the first after
+                    // stopped at every point of its passes, the first too
                     let mut states = 1;
                     while states < 4096 {
                         let got = solve(&super::Limits {
@@ -10687,6 +10737,13 @@ mod tests {
                             states: Some(states),
                             memory: None,
                         });
+                        if got.hypotheses.is_empty() {
+                            // stopped before its first pass valued every tile
+                            assert!(!got.exact && got.depth == 0 && got.best_move.is_none());
+                            stopped += 1;
+                            states = states * 3 / 2 + 1;
+                            continue;
+                        }
                         let weighted: Vec<(u32, equity::Equity)> =
                             got.hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
                         assert_eq!(got.hypotheses.len(), full.hypotheses.len());
@@ -12937,6 +12994,64 @@ mod tests {
             assert!(result.best_move.is_none());
             assert!(result.moves.is_empty());
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_search_with_a_tile_in_the_bag_keeps_its_time_through_exchanges() {
+        // Spanish's rules: an exchange is legal with one tile in the bag, and
+        // twelve scoreless turns end the game, so lines of exchanges, which
+        // start no endgame, run long. Our B has three placements and every
+        // other tile, ours and unseen, none; the search must stop at its time
+        let gc = game_config::Options {
+            preset: "english",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: Some(12),
+            passes_to_end: None,
+            exchange_limit: Some(1),
+            exchanges: None,
+        }
+        .make_game_config(&|_: &str| Err("no files".into()))
+        .unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [3, 4, 5, 6, 7, 9, 11, 13] {
+            unseen_tally[tile] = 1; // C D E F G I K M: the opponent's seven, the bag's one
+        }
+        let rack = [2, 10, 17, 22, 23, 24, 26]; // B J Q V W X Z
+        let limits = super::Limits {
+            time: Some(std::time::Duration::from_millis(16)),
+            states: None,
+            memory: None,
+        };
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let t0 = std::time::Instant::now();
+        let result = egs
+            .solve_peg_one_in_bag(
+                0,
+                &board,
+                &rack,
+                &unseen_tally,
+                equity::Equity::ZERO,
+                &limits,
+            )
+            .unwrap()
+            .unwrap();
+        let took = t0.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "a search of 16 ms took {took:?}"
+        );
+        assert!(!result.exact);
     }
 
     #[test]
