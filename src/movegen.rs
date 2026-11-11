@@ -517,6 +517,11 @@ struct WorkingBuffer<G: LaneBits> {
     found_placements: Vec<PossiblePlacement>,
     raw_anchors: Vec<(i8, i8, i8)>, // a lane's anchors, raw: (anchor, leftmost, rightmost)
     rcs_lanes: Vec<RcsLane>,        // the table walk's, rows then columns
+    board_cols: u8,                 // the board's columns, for restore_board_state's lanes
+    rcs_pending_rows: G,            // rows whose tiles changed since the table walk last looked
+    rcs_pending_cols: G,            // columns whose tiles changed since then
+    rcs_stale_rows: G,              // across lanes whose kept spans may be out of date
+    rcs_stale_cols: G,              // down lanes whose kept spans may be out of date
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
     span_memo: SpanMemo,
@@ -603,6 +608,11 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
             found_placements: self.found_placements.clone(),
             raw_anchors: self.raw_anchors.clone(),
             rcs_lanes: self.rcs_lanes.clone(),
+            board_cols: self.board_cols,
+            rcs_pending_rows: self.rcs_pending_rows,
+            rcs_pending_cols: self.rcs_pending_cols,
+            rcs_stale_rows: self.rcs_stale_rows,
+            rcs_stale_cols: self.rcs_stale_cols,
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
             span_memo: self.span_memo.clone(),
@@ -697,6 +707,11 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
         self.found_placements.clone_from(&source.found_placements);
         self.raw_anchors.clone_from(&source.raw_anchors);
         self.rcs_lanes.clone_from(&source.rcs_lanes);
+        self.board_cols = source.board_cols;
+        self.rcs_pending_rows = source.rcs_pending_rows;
+        self.rcs_pending_cols = source.rcs_pending_cols;
+        self.rcs_stale_rows = source.rcs_stale_rows;
+        self.rcs_stale_cols = source.rcs_stale_cols;
         self.placement_order.clone_from(&source.placement_order);
         self.placement_scratch.clone_from(&source.placement_scratch);
         self.span_memo.clone_from(&source.span_memo);
@@ -820,6 +835,11 @@ impl<G: LaneBits> WorkingBuffer<G> {
             found_placements: Vec::new(),
             raw_anchors: Vec::new(),
             rcs_lanes: Vec::new(),
+            board_cols: dim.cols as u8,
+            rcs_pending_rows: !G::from(0),
+            rcs_pending_cols: !G::from(0),
+            rcs_stale_rows: !G::from(0),
+            rcs_stale_cols: !G::from(0),
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
             span_memo: SpanMemo::new(),
@@ -991,6 +1011,9 @@ impl<G: LaneBits> WorkingBuffer<G> {
         }
         self.dirty_rows = dirty_rows;
         self.dirty_cols = dirty_cols;
+        // kept for the table walk until it looks, whichever arm generates now
+        self.rcs_pending_rows |= dirty_rows;
+        self.rcs_pending_cols |= dirty_cols;
         self.num_tiles_in_bag =
             bag_count_from_board(board_snapshot.game_config, self.num_tiles_on_board);
         let play_out_bonus = if self.num_tiles_in_bag <= 0 {
@@ -6597,6 +6620,21 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         if state.board_tiles.len() != w.prev_board_tiles.len() {
             return;
         }
+        // the rows and columns where the board put back differs from the one
+        // the generator last held: the table walk looks at their lanes again,
+        // its kept spans being of the board it last held
+        let cols = w.board_cols as usize;
+        for (idx, (&held, &kept)) in w
+            .prev_board_tiles
+            .iter()
+            .zip(&state.board_tiles)
+            .enumerate()
+        {
+            if held != kept {
+                w.rcs_pending_rows |= G::from(1) << (idx / cols) as u32;
+                w.rcs_pending_cols |= G::from(1) << (idx % cols) as u32;
+            }
+        }
         copy_board_part(&mut w.prev_board_tiles, &state.board_tiles);
         copy_board_part(&mut w.transposed_board_tiles, &state.transposed_board_tiles);
         (
@@ -9671,6 +9709,65 @@ fn rcs_placements<
             .rcs_lanes
             .resize(num_lanes, RcsLane::default());
     }
+    // the kept lanes the board's changes since the last look may have moved: a
+    // lane whose tiles changed (and with them its multipliers), and one that
+    // crosses a changed strip where its square there no longer reads as kept
+    // (that strip's cross sets, and from them its perpendicular scores and
+    // multipliers, were made again). Every other kept lane keeps its spans
+    // with no look at its inputs
+    let mut stale_rows = working_buffer.rcs_stale_rows;
+    stale_rows |= working_buffer.rcs_pending_rows;
+    let mut stale_cols = working_buffer.rcs_stale_cols;
+    stale_cols |= working_buffer.rcs_pending_cols;
+    {
+        let rows = dim.rows as usize;
+        let cols = dim.cols as usize;
+        let lanes = &working_buffer.rcs_lanes;
+        for col in 0..cols {
+            if working_buffer.rcs_pending_cols & (G::from(1) << col as u32) == G::from(0) {
+                continue;
+            }
+            for (row, kept) in lanes[..rows].iter().enumerate() {
+                let bit = G::from(1) << row as u32;
+                if stale_rows & bit != G::from(0) {
+                    continue;
+                }
+                let idx = row * cols + col;
+                if !kept.valid
+                    || kept.cross_bits[col] != working_buffer.cross_set_for_across_plays[idx].bits
+                    || kept.perpendicular_scores[col]
+                        != working_buffer.perpendicular_scores_for_across_plays[idx]
+                    || kept.perpendicular_word_multipliers[col]
+                        != working_buffer.perpendicular_word_multipliers_for_across_plays[idx]
+                {
+                    stale_rows |= bit;
+                }
+            }
+        }
+        for row in 0..rows {
+            if working_buffer.rcs_pending_rows & (G::from(1) << row as u32) == G::from(0) {
+                continue;
+            }
+            for (col, kept) in lanes[rows..rows + cols].iter().enumerate() {
+                let bit = G::from(1) << col as u32;
+                if stale_cols & bit != G::from(0) {
+                    continue;
+                }
+                let idx = col * rows + row;
+                if !kept.valid
+                    || kept.cross_bits[row] != working_buffer.cross_set_for_down_plays[idx].bits
+                    || kept.perpendicular_scores[row]
+                        != working_buffer.perpendicular_scores_for_down_plays[idx]
+                    || kept.perpendicular_word_multipliers[row]
+                        != working_buffer.perpendicular_word_multipliers_for_down_plays[idx]
+                {
+                    stale_cols |= bit;
+                }
+            }
+        }
+    }
+    working_buffer.rcs_pending_rows = G::from(0);
+    working_buffer.rcs_pending_cols = G::from(0);
     let rack_bits = working_buffer.rack_bits;
     // the rack's tiles (a bit each) and their scores, for the caps
     let mut rack_tiles = [(0u64, 0i32); u64::BITS as usize];
@@ -9745,21 +9842,33 @@ fn rcs_placements<
         } else {
             &working_buffer.perpendicular_scores_for_across_plays[start..end]
         };
-        if !(kept.valid
-            && same_lane::<D, _>(&kept.tiles, tiles)
-            && same_lane::<D, _>(&kept.word_multipliers, word_multipliers)
-            && same_lane::<D, _>(&kept.tile_multipliers, tile_multipliers)
-            && same_lane::<D, _>(
-                &kept.perpendicular_word_multipliers,
-                perpendicular_word_multipliers,
-            )
-            && same_lane::<D, _>(&kept.perpendicular_scores, perpendicular_scores)
-            && kept
-                .cross_bits
-                .iter()
-                .zip(cross_sets)
-                .all(|(&bits, cross_set)| bits == cross_set.bits))
-        {
+        let lane_bit = G::from(1) << lane as u32;
+        let stale = if down { stale_cols } else { stale_rows } & lane_bit != G::from(0);
+        // a lane left unmarked has the inputs its spans were found from
+        debug_assert!(
+            stale
+                || !kept.valid
+                || (same_lane::<D, _>(&kept.tiles, tiles)
+                    && same_lane::<D, _>(&kept.word_multipliers, word_multipliers)
+                    && same_lane::<D, _>(&kept.tile_multipliers, tile_multipliers)
+                    && same_lane::<D, _>(
+                        &kept.perpendicular_word_multipliers,
+                        perpendicular_word_multipliers,
+                    )
+                    && same_lane::<D, _>(&kept.perpendicular_scores, perpendicular_scores)
+                    && kept
+                        .cross_bits
+                        .iter()
+                        .zip(cross_sets)
+                        .all(|(&bits, cross_set)| bits == cross_set.bits)),
+            "a kept lane's inputs changed unmarked"
+        );
+        if stale || !kept.valid {
+            if down {
+                stale_cols = stale_cols & !lane_bit;
+            } else {
+                stale_rows = stale_rows & !lane_bit;
+            }
             // every span any rack has, as the shadow pass finds them with every
             // letter on hand and no count running out
             let mut jumps = std::mem::take(&mut kept.jumps);
@@ -9868,6 +9977,9 @@ fn rcs_placements<
         }
         working_buffer.rcs_lanes[at] = kept;
     }
+    // a lane this turn passed by keeps its mark for the turn that walks it
+    working_buffer.rcs_stale_rows = stale_rows;
+    working_buffer.rcs_stale_cols = stale_cols;
 }
 
 #[inline]
