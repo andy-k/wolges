@@ -1629,7 +1629,10 @@ fn solve_position<N: kwg::Node>(
                      known, each draw averaged over every set of tiles it may bring)"
                 }
             },
-            named(&result.best_move),
+            result.best_move.as_ref().map_or_else(
+                || "none: a limit stopped the search before it valued one".to_string(),
+                named
+            ),
         )?;
         let deals = result
             .hypotheses

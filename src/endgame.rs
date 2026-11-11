@@ -4477,10 +4477,11 @@ impl<
     // the search with tiles in the bag, its endgames solved by sub. Deepening,
     // the first pass values the placements by score, highest first, then the
     // other moves, and each later pass the moves best first by the pass before;
-    // a limit stops it once the first move is valued, and the answer is the
-    // best move of the deepest pass that valued every move, or, the first
-    // stopped, the best of those it valued. A pass keeps what it has valued, so
-    // a solve resuming it goes on at the move it stopped at
+    // a limit may stop it anywhere, and the answer is the best move of the
+    // deepest pass that valued every move, or, the first stopped, the best of
+    // those it valued, none before it valued one. A pass keeps what it has
+    // valued, so a solve resuming it goes on at the move it stopped at, and
+    // the positions it valued below that move stay valued (state.searched)
     fn peg_bag_by(
         sub: &mut Self,
         progress: &mut PegBagProgress,
@@ -4580,9 +4581,7 @@ impl<
                 let mut stopped = false;
                 while let Some(&i) = state.order.get(state.next) {
                     limits.moves.set(Some((state.next, state.order.len())));
-                    limits
-                        .may_stop
-                        .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
+                    limits.may_stop.set(deepens);
                     let mut search = BagSearch {
                         gc,
                         kwg,
@@ -4615,8 +4614,10 @@ impl<
             };
             if stopped {
                 if state.answer.is_none() {
-                    // no pass valued every move: the best of those valued
-                    let best = peg_bag_best(&mut state.reached, &state.valued);
+                    // no pass valued every move: the best of those valued, if
+                    // any
+                    let best = (!state.reached.is_empty())
+                        .then(|| peg_bag_best(&mut state.reached, &state.valued));
                     return Ok(peg_bag_result(&state.moves, &state.valued, best, 0, false));
                 }
                 break;
@@ -4649,7 +4650,7 @@ impl<
         Ok(peg_bag_result(
             &state.moves,
             &state.answered,
-            best,
+            Some(best),
             depth,
             exact,
         ))
@@ -4704,7 +4705,6 @@ impl<
             .collect::<Vec<_>>();
         let moves_valued = AtomicUsize::new(state.reached.len());
         let stop = AtomicBool::new(false);
-        let answered = state.answer.is_some();
         let on_one_clock = limits.on_one_clock();
         let (order, moves) = (&state.order, &state.moves);
         // each task's hand-over (HandOver), and how many tasks that hand the
@@ -4728,9 +4728,7 @@ impl<
                 limits
                     .moves
                     .set(Some((moves_valued.load(Relaxed), order.len())));
-                limits
-                    .may_stop
-                    .set(deepens && (answered || moves_valued.load(Relaxed) > 0));
+                limits.may_stop.set(deepens);
                 search.exact = true;
                 let play = &moves[order[base + m]];
                 let began = limits.t0.elapsed();
@@ -5674,15 +5672,17 @@ struct PegBagValue {
 }
 
 // a search's answer with tiles in the bag: the best move's share of wins, mean
-// margin, and margin in each split; the move; every move the answering pass
-// valued, best first, with its share of wins and mean margin; whether it is
-// exact; and the pass it is of (0 none finished, i8::MAX one to the end)
+// margin, and margin in each split; the move, none if a limit stopped the
+// search before it valued one (the shares and margins then 0 and empty);
+// every move the answering pass valued, best first, with its share of wins and
+// mean margin; whether it is exact; and the pass it is of (0 none finished,
+// i8::MAX one to the end)
 #[derive(Clone)]
 pub struct PegBagResult {
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
     pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
-    pub best_move: movegen::Play,
+    pub best_move: Option<movegen::Play>,
     pub moves: Vec<(movegen::Play, f64, equity::Equity)>,
     pub exact: bool,
     pub depth: i8,
@@ -5702,16 +5702,16 @@ fn peg_bag_best(reached: &mut [usize], valued: &[Option<PegBagValue>]) -> usize 
     best
 }
 
-// the answer from these values: the best move's, and every valued move's, best
-// first as peg_bag_best ranks them
+// the answer from these values: the best move's, if any, and every valued
+// move's, best first as peg_bag_best ranks them
 fn peg_bag_result(
     moves: &[movegen::Play],
     valued: &[Option<PegBagValue>],
-    best: usize,
+    best: Option<usize>,
     depth: i8,
     exact: bool,
 ) -> PegBagResult {
-    let value = valued[best].as_ref().unwrap();
+    let value = best.map(|best| valued[best].as_ref().unwrap());
     let mut listed = (0..moves.len())
         .filter(|&i| valued[i].is_some())
         .collect::<Vec<_>>();
@@ -5722,10 +5722,12 @@ fn peg_bag_result(
             .then(a.cmp(&b))
     });
     PegBagResult {
-        win_pct: value.win,
-        expected_margin: equity::Equity::new(value.marg.round() as i32),
-        hypotheses: value.hyps.clone(),
-        best_move: moves[best].clone(),
+        win_pct: value.map_or(0.0, |value| value.win),
+        expected_margin: value.map_or(equity::Equity::ZERO, |value| {
+            equity::Equity::new(value.marg.round() as i32)
+        }),
+        hypotheses: value.map_or_else(Vec::new, |value| value.hyps.clone()),
+        best_move: best.map(|best| moves[best].clone()),
         moves: (listed.into_iter())
             .map(|i| {
                 let value = valued[i].as_ref().unwrap();
@@ -12894,6 +12896,46 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_search_stops_at_its_time_before_its_first_move_has_a_value() {
+        // nine in the bag: our B plays one tile and draws one, which leaves
+        // eight, so exchanges lie below every move, the first included; a
+        // search that waited for its first move's value before any limit could
+        // stop it ran on past its time. It stops at the time, answering no move
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [3, 4, 5, 6, 7, 9, 11, 13, 14, 15] {
+            unseen_tally[tile] = 1; // C D E F G I K M N O
+        }
+        let rack = [2, 10, 17, 22, 23, 24, 26]; // B J Q V W X Z
+        let limits = super::Limits {
+            time: Some(std::time::Duration::from_millis(16)),
+            states: None,
+            memory: None,
+        };
+        for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut position = bag_position(&board, &rack, &unseen_tally, 9, equity::Equity::ZERO);
+            position.model = model;
+            let t0 = std::time::Instant::now();
+            let result = egs.solve_peg(position, &limits).unwrap().unwrap();
+            let took = t0.elapsed();
+            assert!(
+                took < std::time::Duration::from_secs(5),
+                "a search of 16 ms took {took:?}"
+            );
+            assert!(!result.exact);
+            assert!(result.best_move.is_none());
+            assert!(result.moves.is_empty());
+        }
+    }
+
+    #[test]
+    #[inline]
     fn a_bag_search_of_one_tile_answers_as_the_committed_model() {
         // with one tile in the bag a draw can only be that tile, so the search
         // with tiles in the bag answers as the committed model does: the same
@@ -12951,11 +12993,11 @@ mod tests {
                             match one.best_move {
                                 Some(PegMove::Pass) => assert!(
                                     matches!(&any.best_move,
-                                        movegen::Play::Exchange { tiles } if tiles.is_empty()),
+                                        Some(movegen::Play::Exchange { tiles }) if tiles.is_empty()),
                                     "{case:?}"
                                 ),
                                 Some(PegMove::Place(play)) => {
-                                    assert!(any.best_move == play, "{case:?}")
+                                    assert!(any.best_move == Some(play), "{case:?}")
                                 }
                                 None => unreachable!("the committed model answers a move"),
                             }
@@ -13566,7 +13608,7 @@ mod tests {
                 .unwrap();
             assert!(result.exact);
             assert!(
-                matches!(&result.best_move, movegen::Play::Exchange { tiles } if tiles.is_empty())
+                matches!(&result.best_move, Some(movegen::Play::Exchange { tiles }) if tiles.is_empty())
             );
             assert_eq!(result.moves.len(), 1);
             let mut got = result.hypotheses.clone();
@@ -14155,7 +14197,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(result.exact);
-        assert!(matches!(&result.best_move, movegen::Play::Exchange { tiles } if tiles[..] == [2]));
+        assert!(
+            matches!(&result.best_move, Some(movegen::Play::Exchange { tiles }) if tiles[..] == [2])
+        );
         assert!((result.win_pct - 0.5).abs() < 1e-9);
         assert_eq!(result.expected_margin, e(0));
         let mut hyps = result.hypotheses.clone();
