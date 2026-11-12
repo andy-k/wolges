@@ -7112,24 +7112,33 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 breathe().await;
             }
         }
-        kurnia_gen_exchange_moves(
-            params.board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            params.num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], leave_value: i32| {
-                push_move(
-                    &mut found_moves,
-                    &mut equity_predicate,
-                    &threshold,
-                    max_gen,
-                    equity::Equity::new(leave_value),
-                    || Play::Exchange {
-                        tiles: exchanged_tiles.into(),
-                    },
-                );
-            },
-        );
+        // with the threshold above the best an exchange can be, push_move would
+        // turn each one away
+        if threshold.get()
+            <= best_exchange_equity(
+                params.board_snapshot.game_config,
+                &working_buffer.best_leave_values,
+            )
+        {
+            kurnia_gen_exchange_moves(
+                params.board_snapshot,
+                working_buffer,
+                &multi_leaves,
+                params.num_exchanges_by_this_player,
+                |exchanged_tiles: &[u8], leave_value: i32| {
+                    push_move(
+                        &mut found_moves,
+                        &mut equity_predicate,
+                        &threshold,
+                        max_gen,
+                        equity::Equity::new(leave_value),
+                        || Play::Exchange {
+                            tiles: exchanged_tiles.into(),
+                        },
+                    );
+                },
+            );
+        }
         if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
             push_move(
                 &mut found_moves,
