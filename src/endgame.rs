@@ -1802,6 +1802,19 @@ pub struct KeptTable {
     cadence: u64,                  // its solver's nodes between looks at the clock
 }
 
+impl KeptTable {
+    // the table alone, for a solve of another position: a table's entries are
+    // keyed by the whole position and hold values from it on, so they serve any
+    // root, but a stopped pass and the line read last are the old root's
+    pub fn for_another_root(self) -> Self {
+        Self {
+            stopped: None,
+            line: None,
+            ..self
+        }
+    }
+}
+
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
