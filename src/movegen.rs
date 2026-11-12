@@ -3528,9 +3528,12 @@ impl RunLetters for &[u64] {
     }
 }
 
+// a walk asked for no leaves, as a raw generation asks, keeps no leave index
+// and reads no leave value: the callback is given 0 for the leave
 #[inline]
 fn gen_classic_place_moves_lean<
     'a,
+    const LEAVES: bool,
     R: RunLetters,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
@@ -3567,6 +3570,7 @@ fn gen_classic_place_moves_lean<
     #[inline(always)]
     fn record<
         const SPELL_ONCE: bool,
+        const LEAVES: bool,
         R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
@@ -3589,7 +3593,7 @@ fn gen_classic_place_moves_lean<
                     .num_played_bonus(env.num_played) as i32
                     * equity::SCALE
         };
-        let leave_value = if SPELL_ONCE {
+        let leave_value = if SPELL_ONCE || !LEAVES {
             0
         } else {
             leave_value_of(
@@ -3604,6 +3608,7 @@ fn gen_classic_place_moves_lean<
         };
         debug_assert!(
             SPELL_ONCE
+                || !LEAVES
                 || env.left_bounds.is_empty()
                 || score + leave_value <= env.left_bounds[idx_left as usize]
         );
@@ -3620,6 +3625,7 @@ fn gen_classic_place_moves_lean<
 
     fn play_right<
         const SPELL_ONCE: bool,
+        const LEAVES: bool,
         R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
@@ -3652,7 +3658,7 @@ fn gen_classic_place_moves_lean<
             && idx - env.idx_left >= 2
             && node.accepts()
         {
-            record::<SPELL_ONCE, _, _, _, _>(env, acc, env.idx_left, idx);
+            record::<SPELL_ONCE, LEAVES, _, _, _, _>(env, acc, env.idx_left, idx);
         }
         if env.num_played >= env.params.num_max_played {
             return;
@@ -3706,9 +3712,12 @@ fn gen_classic_place_moves_lean<
                             + perpendicular_score
                             + tile_value * perpendicular_word_multiplier as i32,
                         word_multiplier: new_word_multiplier,
-                        leave_idx: acc
-                            .leave_idx
-                            .wrapping_sub(env.params.multi_leaves.place_value(0)),
+                        leave_idx: if !LEAVES {
+                            0
+                        } else {
+                            acc.leave_idx
+                                .wrapping_sub(env.params.multi_leaves.place_value(0))
+                        },
                     }
                 }
             });
@@ -3723,7 +3732,7 @@ fn gen_classic_place_moves_lean<
                         let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
-                        play_right::<SPELL_ONCE, _, _, _, _>(
+                        play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
                             env,
                             &mut if SPELL_ONCE {
                                 Accumulator {
@@ -3743,9 +3752,12 @@ fn gen_classic_place_moves_lean<
                                         + perpendicular_score
                                         + tile_value * perpendicular_word_multiplier as i32,
                                     word_multiplier: new_word_multiplier,
-                                    leave_idx: acc
-                                        .leave_idx
-                                        .wrapping_sub(env.params.multi_leaves.place_value(tile)),
+                                    leave_idx: if !LEAVES {
+                                        0
+                                    } else {
+                                        acc.leave_idx
+                                            .wrapping_sub(env.params.multi_leaves.place_value(tile))
+                                    },
                                 }
                             },
                             p,
@@ -3760,7 +3772,7 @@ fn gen_classic_place_moves_lean<
                     {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_right::<SPELL_ONCE, _, _, _, _>(
+                        play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
                             env,
                             &mut Accumulator { ..*blank_acc },
                             p,
@@ -3810,6 +3822,7 @@ fn gen_classic_place_moves_lean<
 
     fn play_left<
         const SPELL_ONCE: bool,
+        const LEAVES: bool,
         R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
@@ -3855,7 +3868,7 @@ fn gen_classic_place_moves_lean<
         }
         let mut node = env.params.board_snapshot.kwg[p];
         if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
-            record::<SPELL_ONCE, _, _, _, _>(env, acc, idx + 1, env.params.anchor + 1);
+            record::<SPELL_ONCE, LEAVES, _, _, _, _>(env, acc, idx + 1, env.params.anchor + 1);
         }
         if env.num_played >= env.params.num_max_played {
             return;
@@ -3903,7 +3916,7 @@ fn gen_classic_place_moves_lean<
                 if node.tile() == 0 {
                     // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
                     env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, _, _, _, _>(
+                    play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
                         env,
                         acc,
                         turnaround_p,
@@ -3953,9 +3966,12 @@ fn gen_classic_place_moves_lean<
                         + perpendicular_score
                         + tile_value * perpendicular_word_multiplier as i32,
                     word_multiplier: new_word_multiplier,
-                    leave_idx: acc
-                        .leave_idx
-                        .wrapping_sub(env.params.multi_leaves.place_value(0)),
+                    leave_idx: if !LEAVES {
+                        0
+                    } else {
+                        acc.leave_idx
+                            .wrapping_sub(env.params.multi_leaves.place_value(0))
+                    },
                 }
             }
         });
@@ -3968,7 +3984,7 @@ fn gen_classic_place_moves_lean<
                 if tile == 0 {
                     env.num_played -= 1;
                     env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, _, _, _, _>(
+                    play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
                         env,
                         acc,
                         p,
@@ -3983,7 +3999,7 @@ fn gen_classic_place_moves_lean<
                         let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
-                        play_left::<SPELL_ONCE, _, _, _, _>(
+                        play_left::<SPELL_ONCE, LEAVES, _, _, _, _>(
                             env,
                             &mut if SPELL_ONCE {
                                 Accumulator {
@@ -4003,9 +4019,12 @@ fn gen_classic_place_moves_lean<
                                         + perpendicular_score
                                         + tile_value * perpendicular_word_multiplier as i32,
                                     word_multiplier: new_word_multiplier,
-                                    leave_idx: acc
-                                        .leave_idx
-                                        .wrapping_sub(env.params.multi_leaves.place_value(tile)),
+                                    leave_idx: if !LEAVES {
+                                        0
+                                    } else {
+                                        acc.leave_idx
+                                            .wrapping_sub(env.params.multi_leaves.place_value(tile))
+                                    },
                                 }
                             },
                             p,
@@ -4020,7 +4039,7 @@ fn gen_classic_place_moves_lean<
                     {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_left::<SPELL_ONCE, _, _, _, _>(
+                        play_left::<SPELL_ONCE, LEAVES, _, _, _, _>(
                             env,
                             &mut Accumulator { ..*blank_acc },
                             p,
@@ -4088,9 +4107,9 @@ fn gen_classic_place_moves_lean<
         leave_idx: pass_leave_idx,
     };
     if is_census {
-        play_left::<true, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
+        play_left::<true, LEAVES, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
     } else {
-        play_left::<false, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
+        play_left::<false, LEAVES, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
     }
 }
 
@@ -5783,6 +5802,7 @@ fn gen_jumbled_place_moves<
 #[inline(always)]
 fn gen_place_moves_lean<
     'a,
+    const LEAVES: bool,
     R: RunLetters,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
@@ -5794,9 +5814,12 @@ fn gen_place_moves_lean<
     runs: R,
 ) {
     match params.board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic => {
-            gen_classic_place_moves_lean(params, single_tile_plays, left_bounds, runs)
-        }
+        game_config::GameRules::Classic => gen_classic_place_moves_lean::<LEAVES, _, _, _, _>(
+            params,
+            single_tile_plays,
+            left_bounds,
+            runs,
+        ),
         game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
     }
 }
@@ -5861,7 +5884,7 @@ fn gen_place_moves_at_lean<
     let bounds_at = working_buffer.bounds_at;
     let stride = dim.rows.max(dim.cols) as usize + 1;
     let left_bounds = &working_buffer.anchor_left_bounds[bounds_at..bounds_at + 2 * stride];
-    gen_place_moves_lean(
+    gen_place_moves_lean::<true, _, _, _, _>(
         &mut GenPlaceMovesParams {
             board_snapshot,
             board_strip: if placement.down {
@@ -9410,7 +9433,8 @@ fn kurnia_gen_raw_place_moves<
             &mut working_buffer.word_buffer_for_across_plays[start..end]
         };
         for &(anchor, leftmost, rightmost) in anchors.iter().rev() {
-            gen_place_moves_lean(
+            // a raw generation drops the leave, so the walk need not find it
+            gen_place_moves_lean::<false, _, _, _, _>(
                 &mut GenPlaceMovesParams {
                     board_snapshot,
                     board_strip,
