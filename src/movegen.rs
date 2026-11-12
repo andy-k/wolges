@@ -6991,9 +6991,46 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         working_buffer.multi_leaves = multi_leaves;
     }
 
+    // the best one kept in one slot, more of them in a heap
     #[inline(always)]
     pub async fn gen_moves_filtered_async_lean<
         'a,
+        BreatheFuture: std::future::Future,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'_>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'_>,
+        breathe: impl FnMut() -> BreatheFuture,
+    ) {
+        if params.max_gen == 1 {
+            self.gen_moves_filtered_async_lean_kept::<KeptOne, _, _, _>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+                breathe,
+            )
+            .await
+        } else {
+            self.gen_moves_filtered_async_lean_kept::<KeptHeap, _, _, _>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+                breathe,
+            )
+            .await
+        }
+    }
+
+    #[inline(always)]
+    async fn gen_moves_filtered_async_lean_kept<
+        'a,
+        K: Kept,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
         L: kwg::Node,
@@ -7012,39 +7049,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
 
         let max_gen = params.max_gen;
 
-        let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
+        let mut found_moves = K::from_vec(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
-
-        #[inline(always)]
-        fn push_move<F: FnMut() -> Play>(
-            found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
-            equity_pred: &mut EquityPredicate<'_>,
-            threshold: &std::cell::Cell<equity::Equity>,
-            max_gen: usize,
-            equity: equity::Equity,
-            mut construct_play: F,
-        ) {
-            if found_moves.len() >= max_gen && threshold.get() > equity {
-                return;
-            }
-            let play = construct_play();
-            if equity_pred.test(equity, &play) {
-                if found_moves.len() >= max_gen {
-                    let candidate = ValuedMove { equity, play };
-                    let mut worst = found_moves.peek_mut().unwrap();
-                    if candidate >= *worst {
-                        return;
-                    }
-                    *worst = candidate;
-                } else {
-                    found_moves.push(ValuedMove { equity, play });
-                }
-                if found_moves.len() >= max_gen {
-                    threshold.set(found_moves.peek().unwrap().equity);
-                }
-            }
-        }
 
         let working_buffer = &mut self.working_buffer;
         working_buffer.init::<0, ByLayout, _, _>(
@@ -7059,7 +7066,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate.test(down, lane, idx, word, score) {
-                    push_move(
+                    push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
@@ -7126,7 +7133,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 &multi_leaves,
                 params.num_exchanges_by_this_player,
                 |exchanged_tiles: &[u8], leave_value: i32| {
-                    push_move(
+                    push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
@@ -7140,7 +7147,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             );
         }
         if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
-            push_move(
+            push_kept(
                 &mut found_moves,
                 &mut equity_predicate,
                 &threshold,
@@ -7419,11 +7426,50 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
     // subracks do not hold, or a rack of one tile, which the lean arm plays
     // from the cross sets) is handed back before anything is generated, with
     // the predicates, for the lean arm.
-    #[inline]
+    // the best one kept in one slot, more of them in a heap
+    #[inline(always)]
     fn gen_moves_tables<
         'a,
         'p,
         'e,
+        const D: usize,
+        W: LaneBits,
+        T: TablePlaces,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'p>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'e>,
+        steer: Option<&Steer<'_>>,
+    ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
+        if params.max_gen == 1 {
+            self.gen_moves_tables_kept::<KeptOne, D, W, T, N, L>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+                steer,
+            )
+        } else {
+            self.gen_moves_tables_kept::<KeptHeap, D, W, T, N, L>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+                steer,
+            )
+        }
+    }
+
+    #[inline]
+    fn gen_moves_tables_kept<
+        'a,
+        'p,
+        'e,
+        K: Kept,
         const D: usize,
         W: LaneBits,
         T: TablePlaces,
@@ -7487,39 +7533,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             return Some((place_move_predicate, equity_predicate));
         }
 
-        let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
+        let mut found_moves = K::from_vec(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
-
-        #[inline(always)]
-        fn push_move<F: FnMut() -> Play>(
-            found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
-            equity_pred: &mut EquityPredicate<'_>,
-            threshold: &std::cell::Cell<equity::Equity>,
-            max_gen: usize,
-            equity: equity::Equity,
-            mut construct_play: F,
-        ) {
-            if found_moves.len() >= max_gen && threshold.get() > equity {
-                return;
-            }
-            let play = construct_play();
-            if equity_pred.test(equity, &play) {
-                if found_moves.len() >= max_gen {
-                    let candidate = ValuedMove { equity, play };
-                    let mut worst = found_moves.peek_mut().unwrap();
-                    if candidate >= *worst {
-                        return;
-                    }
-                    *worst = candidate;
-                } else {
-                    found_moves.push(ValuedMove { equity, play });
-                }
-                if found_moves.len() >= max_gen {
-                    threshold.set(found_moves.peek().unwrap().equity);
-                }
-            }
-        }
 
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
@@ -7545,7 +7561,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                         0
                     };
                     let equity = equity::Equity::new(score + leave_value + other_adjustments);
-                    push_move(
+                    push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
@@ -7641,7 +7657,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 &multi_leaves,
                 params.num_exchanges_by_this_player,
                 |exchanged_tiles: &[u8], leave_value: i32| {
-                    push_move(
+                    push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
@@ -7655,7 +7671,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             );
         }
         if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
-            push_move(
+            push_kept(
                 &mut found_moves,
                 &mut equity_predicate,
                 &threshold,
@@ -7736,8 +7752,41 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         )
     }
 
-    #[inline]
+    // the best one kept in one slot, more of them in a heap
+    #[inline(always)]
     fn gen_moves_filtered_impl<'a, const D: usize, W: LaneBits, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'_>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'_>,
+    ) {
+        if params.max_gen == 1 {
+            self.gen_moves_filtered_impl_kept::<KeptOne, D, W, N, L>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+            )
+        } else {
+            self.gen_moves_filtered_impl_kept::<KeptHeap, D, W, N, L>(
+                params,
+                place_move_predicate,
+                adjust_leave_value,
+                equity_predicate,
+            )
+        }
+    }
+
+    #[inline]
+    fn gen_moves_filtered_impl_kept<
+        'a,
+        K: Kept,
+        const D: usize,
+        W: LaneBits,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlacePredicate<'_>,
@@ -7751,39 +7800,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
 
         let max_gen = params.max_gen;
 
-        let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
+        let mut found_moves = K::from_vec(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
-
-        #[inline(always)]
-        fn push_move<F: FnMut() -> Play>(
-            found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
-            equity_pred: &mut EquityPredicate<'_>,
-            threshold: &std::cell::Cell<equity::Equity>,
-            max_gen: usize,
-            equity: equity::Equity,
-            mut construct_play: F,
-        ) {
-            if found_moves.len() >= max_gen && threshold.get() > equity {
-                return;
-            }
-            let play = construct_play();
-            if equity_pred.test(equity, &play) {
-                if found_moves.len() >= max_gen {
-                    let candidate = ValuedMove { equity, play };
-                    let mut worst = found_moves.peek_mut().unwrap();
-                    if candidate >= *worst {
-                        return;
-                    }
-                    *worst = candidate;
-                } else {
-                    found_moves.push(ValuedMove { equity, play });
-                }
-                if found_moves.len() >= max_gen {
-                    threshold.set(found_moves.peek().unwrap().equity);
-                }
-            }
-        }
 
         let working_buffer = &mut self.working_buffer;
         working_buffer.init::<D, ByLayout, _, _>(
@@ -7798,7 +7817,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate.test(down, lane, idx, word, score) {
-                    push_move(
+                    push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
@@ -7900,7 +7919,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 &multi_leaves,
                 params.num_exchanges_by_this_player,
                 |exchanged_tiles: &[u8], leave_value: i32| {
-                    push_move(
+                    push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
@@ -7914,7 +7933,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             );
         }
         if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
-            push_move(
+            push_kept(
                 &mut found_moves,
                 &mut equity_predicate,
                 &threshold,
@@ -8102,6 +8121,138 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         }
         // the next generation computes every cross set again, its own way
         working_buffer.prev_board_tiles.fill(0xff);
+    }
+}
+
+// the moves a capped generation keeps: in a heap, the worst on top; or, for the
+// best one alone, in one slot, with no heap work. Either is made from the
+// generator's list, so its room is reused, and gives the moves back sorted
+trait Kept {
+    fn from_vec(plays: Vec<ValuedMove>) -> Self;
+    fn len(&self) -> usize;
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn push(&mut self, candidate: ValuedMove);
+    // the candidate in place of the worst kept, false if it is no better
+    fn replace_worst(&mut self, candidate: ValuedMove) -> bool;
+    fn worst_equity(&self) -> equity::Equity;
+    fn into_sorted_vec(self) -> Vec<ValuedMove>;
+}
+
+struct KeptHeap(std::collections::BinaryHeap<ValuedMove>);
+
+impl Kept for KeptHeap {
+    #[inline(always)]
+    fn from_vec(plays: Vec<ValuedMove>) -> Self {
+        Self(std::collections::BinaryHeap::from(plays))
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline(always)]
+    fn push(&mut self, candidate: ValuedMove) {
+        self.0.push(candidate);
+    }
+
+    #[inline(always)]
+    fn replace_worst(&mut self, candidate: ValuedMove) -> bool {
+        let mut worst = self.0.peek_mut().unwrap();
+        if candidate >= *worst {
+            return false;
+        }
+        *worst = candidate;
+        true
+    }
+
+    #[inline(always)]
+    fn worst_equity(&self) -> equity::Equity {
+        self.0.peek().unwrap().equity
+    }
+
+    #[inline(always)]
+    fn into_sorted_vec(self) -> Vec<ValuedMove> {
+        self.0.into_sorted_vec()
+    }
+}
+
+// for a cap of one: the best so far, and the list it gives back
+struct KeptOne {
+    best: Option<ValuedMove>,
+    plays: Vec<ValuedMove>,
+}
+
+impl Kept for KeptOne {
+    #[inline(always)]
+    fn from_vec(mut plays: Vec<ValuedMove>) -> Self {
+        plays.clear();
+        Self { best: None, plays }
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.best.is_some() as usize
+    }
+
+    #[inline(always)]
+    fn push(&mut self, candidate: ValuedMove) {
+        debug_assert!(self.best.is_none());
+        self.best = Some(candidate);
+    }
+
+    #[inline(always)]
+    fn replace_worst(&mut self, candidate: ValuedMove) -> bool {
+        let best = self.best.as_mut().unwrap();
+        if candidate >= *best {
+            return false;
+        }
+        *best = candidate;
+        true
+    }
+
+    #[inline(always)]
+    fn worst_equity(&self) -> equity::Equity {
+        self.best.as_ref().unwrap().equity
+    }
+
+    #[inline(always)]
+    fn into_sorted_vec(mut self) -> Vec<ValuedMove> {
+        self.plays.extend(self.best);
+        self.plays
+    }
+}
+
+// a move offered to what a capped generation keeps: one worse than the
+// threshold, once the cap is reached, is turned away before it is made
+#[inline(always)]
+fn push_kept<K: Kept, F: FnMut() -> Play>(
+    found_moves: &mut K,
+    equity_pred: &mut EquityPredicate<'_>,
+    threshold: &std::cell::Cell<equity::Equity>,
+    max_gen: usize,
+    equity: equity::Equity,
+    mut construct_play: F,
+) {
+    if found_moves.len() >= max_gen && threshold.get() > equity {
+        return;
+    }
+    let play = construct_play();
+    if equity_pred.test(equity, &play) {
+        let candidate = ValuedMove { equity, play };
+        if found_moves.len() >= max_gen {
+            if !found_moves.replace_worst(candidate) {
+                return;
+            }
+        } else {
+            found_moves.push(candidate);
+        }
+        if found_moves.len() >= max_gen {
+            threshold.set(found_moves.worst_equity());
+        }
     }
 }
 
