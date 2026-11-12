@@ -1634,6 +1634,15 @@ fn solve_position<N: kwg::Node>(
                 named
             ),
         )?;
+        if result.best_move.is_none() {
+            writeln!(
+                std::io::stdout(),
+                "peg: {bag_size} tiles in the bag of {} unseen tiles (current score \
+                 {score_diff:+}): no move valued yet",
+                oppo_rack.len(),
+            )?;
+            return Ok(());
+        }
         let deals = result
             .hypotheses
             .iter()
