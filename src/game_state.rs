@@ -3,15 +3,25 @@
 use super::{bag, equity, error, game_config, movegen};
 use rand::prelude::*;
 
+// each tile taken off the rack as swap_remove would, but moved past the rack's
+// kept part rather than dropped, so a tile the rack lacks leaves it holding
+// every tile it held (their order changed), and only a whole success shortens
+// it
 #[inline(always)]
 pub fn use_tiles<II: IntoIterator<Item = u8>>(
     rack: &mut Vec<u8>,
     tiles_iter: II,
 ) -> error::Returns<()> {
+    let mut kept = rack.len();
     for tile in tiles_iter {
-        let pos = rack.iter().rposition(|&t| t == tile).ok_or("bad tile")?;
-        rack.swap_remove(pos);
+        let pos = rack[..kept]
+            .iter()
+            .rposition(|&t| t == tile)
+            .ok_or("bad tile")?;
+        kept -= 1;
+        rack.swap(pos, kept);
     }
+    rack.truncate(kept);
     Ok(())
 }
 
@@ -212,14 +222,9 @@ impl GameState {
             } => {
                 let strider = game_config.board_layout().dim().lane(*down, *lane);
 
-                // place the tiles
-                for (i, &tile) in (*idx..).zip(word.iter()) {
-                    if tile != 0 {
-                        self.board_tiles[strider.at(i)] = tile;
-                    }
-                }
-
-                current_player.score = current_player
+                // every check before any change, so a refused play changes
+                // nothing but the rack's order
+                let new_score = current_player
                     .score
                     .checked_add(*score)
                     .ok_or("score overflow")?;
@@ -233,6 +238,15 @@ impl GameState {
                         }
                     }),
                 )?;
+                current_player.score = new_score;
+
+                // place the tiles
+                for (i, &tile) in (*idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        self.board_tiles[strider.at(i)] = tile;
+                    }
+                }
+
                 self.bag.replenish(
                     &mut current_player.rack,
                     game_config.rack_size() as usize,
@@ -330,4 +344,58 @@ pub enum CheckGameEnded {
     NotEnded,
     PlayedOut,
     ZeroScores,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a play the rack cannot make is refused and changes nothing: no tile on
+    // the board, no score, the rack's tiles all still there
+    #[test]
+    fn a_refused_play_changes_nothing() {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = GameState::new(&game_config);
+        game_state.players[0]
+            .rack
+            .extend_from_slice(&[1, 2, 3, 4, 5, 6, 7]);
+        game_state.zero_turns = 3;
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
+        // A, B, then a Z the rack lacks
+        let play = movegen::Play::Place {
+            down: false,
+            lane: 7,
+            idx: 7,
+            word: [1, 2, 26][..].into(),
+            score: 10,
+        };
+        assert!(game_state.play(&game_config, &mut rng, &play).is_err());
+        assert!(game_state.board_tiles.iter().all(|&tile| tile == 0));
+        assert_eq!(game_state.players[0].score, 0);
+        assert_eq!(game_state.zero_turns, 3);
+        let mut rack = game_state.players[0].rack.clone();
+        rack.sort_unstable();
+        assert_eq!(rack, [1, 2, 3, 4, 5, 6, 7]);
+        // an exchange of a tile the rack lacks, the same
+        let play = movegen::Play::Exchange {
+            tiles: [7, 7][..].into(),
+        };
+        assert!(game_state.play(&game_config, &mut rng, &play).is_err());
+        let mut rack = game_state.players[0].rack.clone();
+        rack.sort_unstable();
+        assert_eq!(rack, [1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    // a whole success takes tiles off exactly as swap_remove did
+    #[test]
+    fn use_tiles_keeps_swap_removes_order() {
+        let mut rack = vec![1, 2, 3, 1, 5, 6, 7];
+        use_tiles(&mut rack, [1, 6]).unwrap();
+        let mut old = vec![1, 2, 3, 1, 5, 6, 7];
+        for tile in [1, 6] {
+            let pos = old.iter().rposition(|&t| t == tile).unwrap();
+            old.swap_remove(pos);
+        }
+        assert_eq!(rack, old);
+    }
 }
