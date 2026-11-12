@@ -3808,21 +3808,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let seed = seed_or_random(seed)?;
 
-    // each multiset's leave from klv0, a share of the lattice a thread
+    // each multiset's leave from klv0, from one walk of its leaves
     let mut leave_cur = vec![0i32; lat.len()];
-    let share = lat.len().div_ceil(threads.max(1));
-    std::thread::scope(|s| {
-        for (part, slots) in leave_cur.chunks_mut(share).enumerate() {
-            let (lat, klv) = (&lat, &arc_klv0);
-            s.spawn(move || {
-                let mut tally = vec![0u8; num_letters];
-                for (idx, slot) in (part * share..).zip(slots) {
-                    lat.unrank_into(idx, &mut tally);
-                    *slot = klv.leave_value_from_tally(&tally);
-                }
-            });
-        }
-    });
+    census::fill_lattice_klv_leaves(&lat, &mut leave_cur, &arc_klv0);
     let mut tally_buf = vec![0u8; num_letters];
 
     let (start_gen, census_run_epoch, resumed) = if let Some(path) = resume {
