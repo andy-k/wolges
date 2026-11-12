@@ -827,10 +827,14 @@ impl PackedLeaves {
     }
 
     // the leave a weighted draw at this point (from 0 up to the total) picks:
-    // the first whose running sum passes it, so never a leave of weight 0
+    // the first whose running sum passes it, so never a leave of weight 0; no
+    // tiles from a list of none
     #[inline]
     pub fn pick(&self, at: f64) -> &[u8] {
         let sums = &self.sums;
+        if sums.is_empty() {
+            return &[];
+        }
         self.leave(sums.partition_point(|&sum| sum <= at).min(sums.len() - 1))
     }
 }
@@ -1879,6 +1883,8 @@ mod tests {
         assert!(packed.push(&[3], f64::MAX).is_err());
         assert_eq!(packed.len(), 6);
         assert!(packed.total().is_finite());
+        // a list of none picks no tiles
+        assert!(PackedLeaves::default().pick(0.0).is_empty());
     }
 
     #[test]
