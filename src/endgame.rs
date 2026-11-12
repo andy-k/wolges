@@ -5124,6 +5124,7 @@ impl<
                 expected_margin,
                 hypotheses,
                 best_move: None,
+                moves: Vec::new(),
                 committed: false,
                 exact,
                 depth: limits.depth.get(),
@@ -5143,6 +5144,7 @@ impl<
                         expected_margin: equity::Equity::ZERO,
                         hypotheses: Vec::new(),
                         best_move: None,
+                        moves: Vec::new(),
                         committed: false,
                         exact: false,
                         depth: 0,
@@ -5420,12 +5422,18 @@ impl<
                     // no pass valued every move: the best of those valued
                     let best = peg_best(&mut state.reached, &state.valued);
                     let value = state.valued[best].as_ref().unwrap();
-                    return Ok(peg_result(&state.moves, best, value, 0, false));
+                    let answered = (state.reached.iter())
+                        .map(|&i| (i, state.valued[i].clone().unwrap()))
+                        .collect::<Vec<_>>();
+                    return Ok(peg_result(&state.moves, best, value, &answered, 0, false));
                 }
                 break;
             }
             let best = peg_best(&mut state.reached, &state.valued);
             state.answer = Some((best, state.valued[best].clone().unwrap(), state.depth));
+            state.answered.clear();
+            (state.answered)
+                .extend((state.reached.iter()).map(|&i| (i, state.valued[i].clone().unwrap())));
             if state.pass_exact || state.depth == COMPLETE {
                 state.done = true;
                 break;
@@ -5448,7 +5456,14 @@ impl<
             unreachable!("the first move of the first pass is always valued");
         };
         let exact = state.done && state.pass_exact;
-        Ok(peg_result(&state.moves, *best, value, *depth, exact))
+        Ok(peg_result(
+            &state.moves,
+            *best,
+            value,
+            &state.answered,
+            *depth,
+            exact,
+        ))
     }
 }
 
@@ -5466,19 +5481,37 @@ fn peg_best(reached: &mut [usize], valued: &[Option<PegValue>]) -> usize {
     best
 }
 
-// the committed model's answer: a move, its value, and the depth it is of
+// the committed model's answer: a move, its value, every move the pass valued
+// with its own (best first, as peg_best ranks them, then as generated), and the
+// depth it is of
 fn peg_result(
     moves: &[PegMove],
     best: usize,
     value: &PegValue,
+    answered: &[(usize, PegValue)],
     depth: i8,
     exact: bool,
 ) -> PegResult {
+    let mut listed = answered.iter().collect::<Vec<_>>();
+    listed.sort_by(|(a, x), (b, y)| {
+        (y.win.total_cmp(&x.win))
+            .then(y.marg.total_cmp(&x.marg))
+            .then(a.cmp(b))
+    });
     PegResult {
         win_pct: value.win,
         expected_margin: to_equity(value.marg),
         hypotheses: value.hyps.clone(),
         best_move: Some(moves[best].clone()),
+        moves: (listed.into_iter())
+            .map(|(i, value)| PegMoveValue {
+                play: moves[*i].clone(),
+                win_pct: value.win,
+                expected_margin: to_equity(value.marg),
+                hypotheses: value.hyps.clone(),
+                exact: value.exact,
+            })
+            .collect(),
         committed: true,
         exact,
         depth,
@@ -5564,6 +5597,7 @@ struct PegCommitted {
     depth: i8,
     passing: PassLine,
     answer: Option<(usize, PegValue, i8)>,
+    answered: Vec<(usize, PegValue)>, // every move the answer's pass valued
     done: bool,
 }
 
@@ -5573,12 +5607,26 @@ pub enum PegMove {
     Place(movegen::Play),
 }
 
+// a move of a search with a tile in the bag and its value: its share of the
+// bag's tiles won (a tie counted half), its mean margin, its margin for each
+// tile the bag may hold (the tile, its count, the margin), and whether every
+// endgame valuing it was searched to its end
+#[derive(Clone)]
+pub struct PegMoveValue {
+    pub play: PegMove,
+    pub win_pct: f32,
+    pub expected_margin: equity::Equity,
+    pub hypotheses: Vec<(u8, u32, equity::Equity)>,
+    pub exact: bool,
+}
+
 #[derive(Clone)]
 pub struct PegResult {
     pub win_pct: f32,
     pub expected_margin: equity::Equity,
     pub hypotheses: Vec<(u8, u32, equity::Equity)>,
     pub best_move: Option<PegMove>,
+    pub moves: Vec<PegMoveValue>, // the committed model's alone: every move valued, best first
     pub committed: bool,
     pub exact: bool, // false when a limit stopped it short of solving every endgame inside it
     pub depth: i8,   // the pass answered from: 0 none finished, i8::MAX one to the end
@@ -10677,6 +10725,7 @@ mod tests {
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         let mut cut = [0usize; 3];
+        let mut listed = 0usize;
         // the committed model, and the clairvoyant one where exchanges are legal
         for gc in [
             game_config::make_english_game_config(),
@@ -10705,6 +10754,35 @@ mod tests {
                     };
                     let full = solve(&super::Limits::NONE);
                     assert!(full.exact, "an unlimited solve is exact");
+                    // every move the committed model valued, best first, the
+                    // first the answer, each one's tiles making its value
+                    if full.committed {
+                        let moves = &full.moves;
+                        assert!(!moves.is_empty());
+                        assert!(same_peg_move(&Some(moves[0].play.clone()), &full.best_move));
+                        assert_eq!(moves[0].win_pct, full.win_pct);
+                        assert_eq!(moves[0].expected_margin, full.expected_margin);
+                        assert_eq!(moves[0].hypotheses, full.hypotheses);
+                        for pair in moves.windows(2) {
+                            assert!(
+                                (pair[0].win_pct, pair[0].expected_margin)
+                                    >= (pair[1].win_pct, pair[1].expected_margin)
+                            );
+                        }
+                        for valued in moves {
+                            assert!(valued.exact);
+                            let weighted = (valued.hypotheses.iter())
+                                .map(|&(_, count, value)| (count, value))
+                                .collect::<Vec<_>>();
+                            assert_eq!(
+                                super::peg_aggregate(&weighted),
+                                (valued.win_pct, valued.expected_margin)
+                            );
+                        }
+                        listed += moves.len();
+                    } else {
+                        assert!(full.moves.is_empty());
+                    }
                     for (i, limits) in [&no_time, &one_state, &no_memory].into_iter().enumerate() {
                         let limited = solve(limits);
                         if limited.hypotheses.is_empty() {
@@ -10728,6 +10806,7 @@ mod tests {
             cut.iter().all(|&n| n > 0),
             "the time, state, and memory limits cut {cut:?} endgames short"
         );
+        assert!(listed > 0, "the committed model listed no move");
     }
 
     // the same move, or both none
@@ -10831,6 +10910,15 @@ mod tests {
                             same_peg_move(&got.best_move, &full.best_move),
                             "a deepening search breaks ties as an unlimited one"
                         );
+                        // and values every move as an unlimited one, in order
+                        assert_eq!(got.moves.len(), full.moves.len());
+                        for (a, b) in got.moves.iter().zip(&full.moves) {
+                            assert!(same_peg_move(&Some(a.play.clone()), &Some(b.play.clone())));
+                            assert_eq!(a.win_pct, b.win_pct);
+                            assert_eq!(a.expected_margin, b.expected_margin);
+                            assert_eq!(a.hypotheses, b.hypotheses);
+                            assert_eq!(a.exact, b.exact);
+                        }
                         if endgames > full_endgames {
                             more_endgames += 1;
                         }
