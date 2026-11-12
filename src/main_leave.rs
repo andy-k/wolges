@@ -7007,9 +7007,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let mut leave = vec![0i32; lat.len()];
     match phase {
         BoardPhase::Opening | BoardPhase::Midgame => {
-            census::fill_lattice_leaves(&lat, &mut leave, |tally| {
-                klv.leave_value_from_tally(tally)
-            });
+            census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
         }
         BoardPhase::Endgame => {
             census::fill_lattice_leaves(&lat, &mut leave, |tally| {
@@ -7386,7 +7384,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     }
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let ln_binom = LnBinom::new(pool_size);
     let can_exchange = bag >= game_config.exchange_tile_limit() as i64;
     if exchanged.is_some() && !can_exchange {
@@ -7607,7 +7605,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let rack_size = game_config.rack_size() as usize;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let dyn_ctx = matches!(mover, SeatPicker::Dynamic).then(|| {
@@ -8067,7 +8065,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     }
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let no_leave = vec![0i32; lat.len()];
     let ln_binom = LnBinom::new(alphabet.num_tiles() as usize);
     let t0 = std::time::Instant::now();
@@ -8300,7 +8298,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let rack_size = game_config.rack_size() as usize;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let no_leave = vec![0i32; lat.len()];
     let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
     let t0 = std::time::Instant::now();
@@ -8523,7 +8521,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 #[inline]
 fn full_rack_values<L: kwg::Node>(lat: &census::MultisetLattice, klv: &klv::Klv<L>) -> Vec<i32> {
     let mut full_v = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(lat, &mut full_v, |tally| klv.leave_value_from_tally(tally));
+    census::fill_lattice_klv_leaves(lat, &mut full_v, klv);
     full_v
 }
 
