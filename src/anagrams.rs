@@ -5,7 +5,8 @@ use super::{alphagram, error, game_config, kwg};
 const FILTER_BLOCK_BITS: usize = 512;
 const FILTER_BLOCK_WORDS: usize = FILTER_BLOCK_BITS / 64;
 const FILTER_BLOCK_SHIFT: u32 = FILTER_BLOCK_BITS.trailing_zeros();
-const FILTER_PROBES: usize = 3;
+// two probes a key: fewer cost more in false hits, more cost more to probe
+const FILTER_PROBES: usize = 2;
 // the bits a filter spends on each key; the blank filter gets fewer, since only
 // a rack with a blank reads it
 const KEY_FILTER_BITS: usize = 32;
