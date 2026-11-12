@@ -6716,8 +6716,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         }
         // the rows and columns where the board put back differs from the one
         // the generator last held: the table walk looks at their lanes again,
-        // its kept spans being of the board it last held
+        // its kept spans being of the board it last held. A played word reads 0
+        // on the board's tiles, so such a square keeps no letter a walk left on
+        // it (init clears only the squares it sees change)
         let cols = w.board_cols as usize;
+        let rows = w.prev_board_tiles.len() / cols.max(1);
         for (idx, (&held, &kept)) in w
             .prev_board_tiles
             .iter()
@@ -6725,8 +6728,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             .enumerate()
         {
             if held != kept {
-                w.rcs_pending_rows |= G::from(1) << (idx / cols) as u32;
-                w.rcs_pending_cols |= G::from(1) << (idx % cols) as u32;
+                let (row, col) = (idx / cols, idx % cols);
+                w.rcs_pending_rows |= G::from(1) << row as u32;
+                w.rcs_pending_cols |= G::from(1) << col as u32;
+                w.word_buffer_for_across_plays[idx] = 0;
+                w.word_buffer_for_down_plays[col * rows + row] = 0;
             }
         }
         copy_board_part(&mut w.prev_board_tiles, &state.board_tiles);
@@ -11961,6 +11967,106 @@ mod tests {
                     }
                 }
                 assert!(placed > 0, "{fen} placed no lone tile");
+            }
+        }
+    }
+
+    // a generator's state kept on a board and put back after it generated on
+    // others (some of them on a few lanes only, leaving lanes unlooked at)
+    // generates what a new generator does there, on that board and the next
+    #[test]
+    fn a_board_state_put_back_generates_as_a_new_generator() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let boards = [
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+            "15/15/15/15/15/15/6S8/6CARE5/6A8/6N8/6EATS5/9C5/9A5/9T5/15",
+            "15/15/15/15/15/15/15/4SCARE6/6A8/6N8/6EATS5/15/15/15/15",
+        ]
+        .map(|fen| fen_parser.parse(fen).unwrap().to_vec());
+        let rack = parse_test_rack(gc.alphabet(), "AEINRST");
+        for anagrams in [None, Some(&held)] {
+            let gen_on = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8]| {
+                let board_snapshot = BoardSnapshot {
+                    board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams,
+                    rack_lengths: anagrams.is_none().then_some(&rack_lengths),
+                    klv: &klv,
+                };
+                move_generator.gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &rack,
+                    max_gen: 100_000,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                });
+                let mut lines = move_generator
+                    .plays
+                    .iter()
+                    .map(|p| format!("{} {}", p.play.fmt(&board_snapshot), p.equity))
+                    .collect::<Vec<_>>();
+                lines.sort_unstable();
+                lines
+            };
+            let fresh =
+                |board_tiles: &[u8]| gen_on(&mut KurniaMoveGenerator::new(&gc), board_tiles);
+            for kept in 0..boards.len() {
+                for masked in [false, true] {
+                    let mut move_generator = KurniaMoveGenerator::new(&gc);
+                    // the kept board's generation itself on a few lanes, or on
+                    // all
+                    if masked {
+                        gen_on(&mut move_generator, &boards[(kept + 1) % boards.len()]);
+                        move_generator.working_buffer.lane_rows = (1 << 7) | (1 << 10);
+                        move_generator.working_buffer.lane_cols = 1 << 6;
+                    }
+                    gen_on(&mut move_generator, &boards[kept]);
+                    move_generator.working_buffer.lane_rows = !0;
+                    move_generator.working_buffer.lane_cols = !0;
+                    let mut state = BoardState::default();
+                    move_generator.save_board_state(&mut state);
+                    for round in 0..2 {
+                        for (other, board_tiles) in boards.iter().enumerate() {
+                            if other == kept {
+                                continue;
+                            }
+                            // a generation on a few lanes leaves the others
+                            // unlooked at
+                            if round == 1 {
+                                move_generator.working_buffer.lane_rows = 1 << 7;
+                                move_generator.working_buffer.lane_cols = (1 << 6) | (1 << 9);
+                            }
+                            gen_on(&mut move_generator, board_tiles);
+                            move_generator.working_buffer.lane_rows = !0;
+                            move_generator.working_buffer.lane_cols = !0;
+                            move_generator.restore_board_state(&state);
+                            assert_eq!(
+                                gen_on(&mut move_generator, &boards[kept]),
+                                fresh(&boards[kept]),
+                                "kept {kept}, masked {masked}, after {other}, round {round}"
+                            );
+                            let next = &boards[(kept + 1 + other) % boards.len()];
+                            assert_eq!(
+                                gen_on(&mut move_generator, next),
+                                fresh(next),
+                                "the next after kept {kept}, masked {masked}, other {other}"
+                            );
+                            move_generator.restore_board_state(&state);
+                        }
+                    }
+                }
             }
         }
     }
