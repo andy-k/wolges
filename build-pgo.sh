@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# ./build-pgo.sh CSW24.kwg CSW24.klv2
+# ./build-pgo.sh CSW24.kwg CSW24.klv2 [RACKS]
 #
 # A profile-guided build of leave for this machine, by hand only (CI and the
 # release stay plain): an instrumented build, a training run on both arms (1000
-# pairs each; the super board, 300 pairs; one thread), the profiles merged with
-# rustup's llvm-profdata (rustup component add llvm-tools), then the final
-# build. It writes only under target/ and stops if target/pgo-raw is already
-# there.
+# pairs each; the super board, 300 pairs; one thread), and, given a rack table
+# made from that klv (leave racks KLV RACKS), one on the tables arm reading it
+# (1000 pairs), the profiles merged with rustup's llvm-profdata (rustup
+# component add llvm-tools), then the final build. It writes only under
+# target/ and stops if target/pgo-raw is already there.
 
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: ./build-pgo.sh KWG KLV" >&2
+if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
+  echo "usage: ./build-pgo.sh KWG KLV [RACKS]" >&2
   exit 2
 fi
 kwg="$1"
 klv="$2"
+racks="${3:-}"
 
 host="$(rustc -vV | sed -n 's/^host: //p')"
 profdata="$(rustc --print sysroot)/lib/rustlib/${host}/bin/llvm-profdata"
@@ -37,6 +39,9 @@ RUSTFLAGS="-C target-cpu=native -Cprofile-generate=${raw}" \
 target/pgo-gen/release/leave --threads 1 compare "$kwg" "$klv" "$klv" 1000 1
 target/pgo-gen/release/leave --threads 1 --preset super-english compare "$kwg" "$klv" "$klv" 300 1
 target/pgo-gen/release/leave --threads 1 compare --lean "$kwg" "$klv" "$klv" 1000 1
+if [ -n "$racks" ]; then
+  target/pgo-gen/release/leave --threads 1 compare --racks "$racks" "$kwg" "$klv" "$klv" 1000 1
+fi
 "$profdata" merge -o "${raw}/merged.profdata" "$raw"
 RUSTFLAGS="-C target-cpu=native -Cprofile-use=${raw}/merged.profdata" \
   cargo build --release --target-dir target/pgo --bin leave
