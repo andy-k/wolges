@@ -1550,6 +1550,7 @@ struct BagLimits {
     depth: std::cell::Cell<i8>, // the pass's depth, or the end for a search of one pass
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
     stopped: std::cell::Cell<bool>, // a limit stopped it
+    estimates: bool,            // the passes estimate (PegBagProgress::set_estimates)
 }
 
 impl BagLimits {
@@ -1569,14 +1570,16 @@ impl BagLimits {
             depth: std::cell::Cell::new(COMPLETE),
             may_stop: std::cell::Cell::new(false),
             stopped: std::cell::Cell::new(false),
+            estimates: false,
         }
     }
 
     // whether the search deepens a pass at a time, as under a time or state
-    // limit; under neither it is one pass, each endgame searched to its end
+    // limit, or with its passes estimating; else it is one pass, each endgame
+    // searched to its end
     #[inline(always)]
     fn deepens(&self) -> bool {
-        self.time.is_some() || self.states.is_some()
+        self.time.is_some() || self.states.is_some() || self.estimates
     }
 
     // what another thread of the same search needs to keep to its limits
@@ -1588,6 +1591,7 @@ impl BagLimits {
             memory: self.memory,
             t0: self.t0,
             depth: self.depth.get(),
+            estimates: self.estimates,
         }
     }
 
@@ -1608,6 +1612,7 @@ impl BagLimits {
             depth: std::cell::Cell::new(clock.depth),
             may_stop: std::cell::Cell::new(false),
             stopped: std::cell::Cell::new(false),
+            estimates: clock.estimates,
         }
     }
 
@@ -1632,6 +1637,7 @@ struct OnOneClock {
     memory: Option<MemoryLimit>,
     t0: Started,
     depth: i8,
+    estimates: bool,
 }
 
 // the solver counts millipoints in f32, which holds whole ones exactly; an
@@ -4590,11 +4596,12 @@ impl<
         if gc.num_passes_to_end() == 0 && gc.num_zeros_to_end() == 0 {
             return Ok(Err(PegUnsupported::PassWithoutForcedEnd));
         }
-        let limits = BagLimits::new(
+        let mut limits = BagLimits::new(
             limits,
             self.work_buffer.progress.take(),
             self.work_buffer.clock,
         );
+        limits.estimates = progress.estimates;
         let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
             gc,
             self.kwg,
@@ -4653,6 +4660,7 @@ impl<
             moves_at,
             part: _,
             threads,
+            estimates: _,
             state,
             endgames: _,
             nodes: _,
@@ -4748,6 +4756,7 @@ impl<
                         exact: true,
                         hand_overs: &[],
                         hand_over: None,
+                        ply: 0,
                     };
                     match value_root_move(&mut search, splits, &at, &state.moves[i], score_diff) {
                         Ok(value) => {
@@ -4940,7 +4949,11 @@ impl<
                 let floor = help.floor.load(Relaxed);
                 let floor = (floor != NO_FLOOR).then(|| f64::from_bits(floor));
                 let (info, work, splits) = &*work;
-                match search.info_move(info, &work[j], splits, floor) {
+                // the info set a root move handed over is a move below the root
+                search.ply = 1;
+                let helped = search.info_move(info, &work[j], splits, floor);
+                search.ply = 0;
+                match helped {
                     Ok(_) => {}
                     Err(_) if limits.stopped.get() => {
                         stop.store(true, Relaxed);
@@ -5002,6 +5015,7 @@ impl<
                                 exact: true,
                                 hand_overs,
                                 hand_over: None,
+                                ply: 0,
                             };
                             work(&mut search, &limits)
                         });
@@ -5025,6 +5039,7 @@ impl<
                     exact: true,
                     hand_overs,
                     hand_over: None,
+                    ply: 0,
                 };
                 work(&mut search, limits)
             });
@@ -5708,13 +5723,15 @@ pub enum PegModel {
 // in the bag does, PegProgress): its position, each split of the tiles the
 // mover cannot see (the opponent's rack, the bag's counts, the deals giving
 // it), the threads it runs on, how far it has got, and the endgames and nodes
-// its solves searched on the thread solving it
+// its solves searched on the thread solving it, and whether its passes estimate
+// (set_estimates)
 pub struct PegBagProgress {
     position: PegBagPosition,
     splits: Vec<(Vec<u8>, Vec<u8>, u64)>,
     moves_at: (Vec<u8>, Vec<u8>), // the whole's first split, the moves made at it
     part: (usize, usize),         // k of n (part)
     threads: usize,
+    estimates: bool,
     state: PegBagState,
     endgames: u64,
     nodes: u64,
@@ -5759,6 +5776,7 @@ impl PegBagProgress {
             moves_at,
             part: (0, 1),
             threads: 1,
+            estimates: false,
             state: Default::default(),
             endgames: 0,
             nodes: 0,
@@ -5800,6 +5818,21 @@ impl PegBagProgress {
     #[inline]
     pub fn set_threads(&mut self, threads: usize) {
         self.threads = threads;
+    }
+
+    // whether its passes estimate, from the next solve on (not unless set): the
+    // search then deepens, limits or none, and each pass follows no more of the
+    // plies before the bag empties than its depth, a move at that depth whose
+    // line leaves tiles in the bag valued by its equity (what it scores and the
+    // value of its leave by the search's leaves, an empty table, so its score
+    // alone), so the first passes give every move a value soon, exchanges too.
+    // A value so cut short is not exact, nor is an answer holding one; later
+    // passes follow more plies, until every line reaches the bag's end and the
+    // answer is exact, as one not estimating. Set before the first solve, as a
+    // pass under way was begun one way
+    #[inline]
+    pub fn set_estimates(&mut self, estimates: bool) {
+        self.estimates = estimates;
     }
 
     // the endgames its solves searched on the thread solving it, and their
@@ -6909,6 +6942,7 @@ struct BagSearch<
     exact: bool, // cleared by an endgame a limit cut short
     hand_overs: &'s [HandOver],
     hand_over: Option<usize>,
+    ply: usize, // the moves made from the root's position to the one valued
 }
 
 impl<
@@ -6932,6 +6966,40 @@ impl<
             return Err("a limit stopped the search".into());
         }
         Ok(())
+    }
+
+    // whether a move made at the position valued, its line leaving tiles in the
+    // bag, is valued by its equity (estimate): the passes estimating, one at
+    // its depth in the plies before the bag empties, the move the last of them
+    // it follows
+    #[inline(always)]
+    fn at_horizon(&self) -> bool {
+        let depth = self.limits.depth.get();
+        self.limits.estimates && depth != COMPLETE && self.ply + 1 >= depth as usize
+    }
+
+    // a move's equity to its mover, the line cut short there: what it scores
+    // and the value of the tiles it keeps (the rack less those thrown back) by
+    // the search's leaves; not exact
+    fn estimate(&mut self, score: f64, rack: &[u8], thrown: &[u8]) -> f64 {
+        self.exact = false;
+        let mut kept = vec![0u8; self.gc.alphabet().len() as usize];
+        for &tile in rack {
+            kept[tile as usize] += 1;
+        }
+        for &tile in thrown {
+            kept[tile as usize] -= 1;
+        }
+        score + self.klv.leave_value_from_tally(&kept) as f64
+    }
+
+    // f's value at a position a move after the one valued
+    #[inline(always)]
+    fn deeper<T>(&mut self, f: impl FnOnce(&mut Self) -> error::Returns<T>) -> error::Returns<T> {
+        self.ply += 1;
+        let value = f(self);
+        self.ply -= 1;
+        value
     }
 
     // a position's value to its mover: the most any move gets them, a tie going
@@ -7049,6 +7117,8 @@ impl<
         i: usize,
     ) -> error::Returns<bool> {
         let most = match play {
+            // a move valued by its equity is not ruled out by a bound below it
+            _ if self.at_horizon() => return Ok(false),
             movegen::Play::Place { word, score, .. } => {
                 let placed = pos.placed(self.gc, play);
                 let n = word.iter().filter(|&&tile| tile != 0).count();
@@ -7201,6 +7271,17 @@ impl<
         }
     }
 
+    // each draw of n tiles from pos's bag with its deals, to f, at the root
+    // alone: the root's draws are told (move_value_each), and a move valued by
+    // its equity below it makes none
+    fn each_draw_at_root(&self, pos: &InBag, n: usize, mut f: impl FnMut(&[u8], u64)) {
+        if self.ply == 0 {
+            for (drawn, ways) in draws_of(&pos.bag, n) {
+                f(&drawn, ways);
+            }
+        }
+    }
+
     // a move's value to its mover
     #[inline(always)]
     fn move_value(&mut self, pos: &InBag, play: &movegen::Play) -> error::Returns<f64> {
@@ -7221,12 +7302,18 @@ impl<
                 // that refill the rack
                 let placed = pos.placed(self.gc, play);
                 let n = word.iter().filter(|&&tile| tile != 0).count();
+                if n < pos.bag_len() && self.at_horizon() {
+                    let value =
+                        self.estimate(*score as f64, &placed.racks[pos.mover as usize], &[]);
+                    self.each_draw_at_root(pos, n, |drawn, ways| each(drawn, ways, value));
+                    return Ok(value);
+                }
                 let (mut sum, mut total) = (0.0, 0u64);
                 for (drawn, ways) in draws_of(&pos.bag, n.min(pos.bag_len())) {
                     let mut next = placed.clone();
                     next.draw(&drawn);
                     next.next_turn();
-                    let theirs = self.next_value(&next)?;
+                    let theirs = self.deeper(|this| this.next_value(&next))?;
                     each(&drawn, ways, *score as f64 - theirs);
                     sum += ways as f64 * theirs;
                     total += ways;
@@ -7242,9 +7329,12 @@ impl<
                 if pos.a_pass_ends(self.gc) {
                     return Ok(pos.racks_lost(self.gc));
                 }
+                if self.at_horizon() {
+                    return Ok(self.estimate(0.0, &pos.racks[pos.mover as usize], &[]));
+                }
                 let mut next = pos.passed();
                 next.next_turn();
-                Ok(-self.node(&next)?)
+                Ok(-self.deeper(|this| this.node(&next))?)
             }
             movegen::Play::Exchange { tiles } => {
                 // over the draws of as many tiles from the bag, made before the
@@ -7259,6 +7349,14 @@ impl<
                 } else {
                     0
                 };
+                let ends = scoreless_turns_end(self.gc, Some(&pos.board), 0, zeros);
+                if !ends && self.at_horizon() {
+                    let value = self.estimate(0.0, &pos.racks[pos.mover as usize], tiles);
+                    self.each_draw_at_root(pos, tiles.len(), |drawn, ways| {
+                        each(drawn, ways, value)
+                    });
+                    return Ok(value);
+                }
                 let (mut sum, mut total) = (0.0, 0u64);
                 for (drawn, ways) in draws_of(&pos.bag, tiles.len()) {
                     let mut next = pos.clone();
@@ -7268,11 +7366,11 @@ impl<
                     next.zeros = zeros;
                     next.answering = false;
                     next.exchanges[pos.mover as usize] += 1;
-                    let value = if scoreless_turns_end(self.gc, Some(&pos.board), 0, zeros) {
+                    let value = if ends {
                         next.racks_lost(self.gc)
                     } else {
                         next.next_turn();
-                        -self.node(&next)?
+                        -self.deeper(|this| this.node(&next))?
                     };
                     each(&drawn, ways, value);
                     sum += ways as f64 * value;
@@ -7304,6 +7402,12 @@ impl<
                 let score = *score as f64;
                 let placed = pos.placed(self.gc, play);
                 let n = word.iter().filter(|&&tile| tile != 0).count();
+                if n < pos.bag_len() && self.at_horizon() {
+                    let value = self.estimate(score, &placed.racks[pos.mover as usize], &[]);
+                    let win = beats(value, t);
+                    self.each_draw_at_root(pos, n, |drawn, ways| each(drawn, ways, win));
+                    return Ok(win);
+                }
                 let (mut sum, mut total) = (0.0, 0u64);
                 for (drawn, ways) in draws_of(&pos.bag, n.min(pos.bag_len())) {
                     let mut next = placed.clone();
@@ -7313,7 +7417,7 @@ impl<
                     let win = if next.bag_len() == 0 {
                         beats(score - self.endgame(&next)?, t)
                     } else {
-                        1.0 - self.node_win(&next, score - t)?
+                        1.0 - self.deeper(|this| this.node_win(&next, score - t))?
                     };
                     each(&drawn, ways, win);
                     sum += ways as f64 * win;
@@ -7325,9 +7429,13 @@ impl<
                 if pos.a_pass_ends(self.gc) {
                     return Ok(beats(pos.racks_lost(self.gc), t));
                 }
+                if self.at_horizon() {
+                    let value = self.estimate(0.0, &pos.racks[pos.mover as usize], &[]);
+                    return Ok(beats(value, t));
+                }
                 let mut next = pos.passed();
                 next.next_turn();
-                Ok(1.0 - self.node_win(&next, -t)?)
+                Ok(1.0 - self.deeper(|this| this.node_win(&next, -t))?)
             }
             movegen::Play::Exchange { tiles } => {
                 let mut put = vec![0u8; pos.bag.len()];
@@ -7339,6 +7447,13 @@ impl<
                 } else {
                     0
                 };
+                let ends = scoreless_turns_end(self.gc, Some(&pos.board), 0, zeros);
+                if !ends && self.at_horizon() {
+                    let value = self.estimate(0.0, &pos.racks[pos.mover as usize], tiles);
+                    let win = beats(value, t);
+                    self.each_draw_at_root(pos, tiles.len(), |drawn, ways| each(drawn, ways, win));
+                    return Ok(win);
+                }
                 let (mut sum, mut total) = (0.0, 0u64);
                 for (drawn, ways) in draws_of(&pos.bag, tiles.len()) {
                     let mut next = pos.clone();
@@ -7348,11 +7463,11 @@ impl<
                     next.zeros = zeros;
                     next.answering = false;
                     next.exchanges[pos.mover as usize] += 1;
-                    let win = if scoreless_turns_end(self.gc, Some(&pos.board), 0, zeros) {
+                    let win = if ends {
                         beats(next.racks_lost(self.gc), t)
                     } else {
                         next.next_turn();
-                        1.0 - self.node_win(&next, -t)?
+                        1.0 - self.deeper(|this| this.node_win(&next, -t))?
                     };
                     each(&drawn, ways, win);
                     sum += ways as f64 * win;
@@ -7586,6 +7701,11 @@ impl<
                     let margin = *score as f64 - ev;
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
+                if self.at_horizon() {
+                    let margin =
+                        self.estimate(*score as f64, &next.racks[info.mover as usize], &[]);
+                    return Ok((beats(lead + margin, 0.0), margin));
+                }
                 let leave = std::mem::take(&mut next.racks[info.mover as usize]);
                 let next = theirs(
                     next.board,
@@ -7597,7 +7717,7 @@ impl<
                     info.exchanges,
                     -(info.lead + *score),
                 );
-                let (w, m) = self.info_value(&next)?;
+                let (w, m) = self.deeper(|this| this.info_value(&next))?;
                 Ok((1.0 - w, *score as f64 - m))
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
@@ -7609,6 +7729,10 @@ impl<
                     let lost = info.at(other, bag).racks_lost(self.gc);
                     return Ok((beats(lead + lost, 0.0), lost));
                 }
+                if self.at_horizon() {
+                    let margin = self.estimate(0.0, &info.rack, &[]);
+                    return Ok((beats(lead + margin, 0.0), margin));
+                }
                 let next = theirs(
                     info.board.clone(),
                     &info.rack,
@@ -7619,7 +7743,7 @@ impl<
                     info.exchanges,
                     -info.lead,
                 );
-                let (w, m) = self.info_value(&next)?;
+                let (w, m) = self.deeper(|this| this.info_value(&next))?;
                 Ok((1.0 - w, -m))
             }
             movegen::Play::Exchange { tiles } => {
@@ -7649,6 +7773,10 @@ impl<
                     }
                     return Ok((win / total as f64, margin / total as f64));
                 }
+                if self.at_horizon() {
+                    let margin = self.estimate(0.0, &info.rack, tiles);
+                    return Ok((beats(lead + margin, 0.0), margin));
+                }
                 let next = theirs(
                     info.board.clone(),
                     &info.rack,
@@ -7659,7 +7787,7 @@ impl<
                     exchanges,
                     -info.lead,
                 );
-                let (w, m) = self.info_value(&next)?;
+                let (w, m) = self.deeper(|this| this.info_value(&next))?;
                 Ok((1.0 - w, -m))
             }
         }
@@ -13820,6 +13948,7 @@ mod tests {
             exact: true,
             hand_overs: &[],
             hand_over: None,
+            ply: 0,
         };
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -15044,5 +15173,163 @@ mod tests {
         }
         assert_eq!(checked, 32);
         assert!(cut > 0, "no limit cut a search short");
+    }
+
+    // whether two answers of a bag search are alike in everything but their
+    // depth: the move, the values, the splits and their draws, and every move
+    // listed with its own
+    fn bag_answers_alike(a: &super::PegBagResult, b: &super::PegBagResult) -> bool {
+        let draws_alike = |x: &[Vec<super::PegBagDraw>], y: &[Vec<super::PegBagDraw>]| {
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(x, y)| {
+                    x.len() == y.len()
+                        && x.iter().zip(y).all(|(x, y)| {
+                            x.tiles == y.tiles
+                                && x.ways == y.ways
+                                && x.margin == y.margin
+                                && x.win == y.win
+                        })
+                })
+        };
+        a.best_move == b.best_move
+            && a.win_pct == b.win_pct
+            && a.expected_margin == b.expected_margin
+            && a.hypotheses == b.hypotheses
+            && a.wins == b.wins
+            && draws_alike(&a.draws, &b.draws)
+            && a.exact == b.exact
+            && a.moves.len() == b.moves.len()
+            && a.moves.iter().zip(&b.moves).all(|(x, y)| {
+                x.play == y.play
+                    && x.win_pct == y.win_pct
+                    && x.expected_margin == y.expected_margin
+                    && x.hypotheses == y.hypotheses
+                    && x.wins == y.wins
+                    && draws_alike(&x.draws, &y.draws)
+                    && x.exact == y.exact
+            })
+    }
+
+    #[test]
+    #[inline]
+    fn a_bag_search_whose_passes_estimate_ends_as_one_that_does_not() {
+        // with no limit, a search whose passes estimate deepens until every
+        // line reaches the bag's end, and then answers exactly as one that does
+        // not estimate, under either model and on one thread or three
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let (mut refined, mut checked) = (0, 0);
+        for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in unseen {
+                unseen_tally[tile as usize] += 1;
+            }
+            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+                for &x in &tiles {
+                    for &y in &tiles {
+                        let mut position =
+                            bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
+                        position.model = model;
+                        let full = egs
+                            .solve_peg(position.clone(), &super::Limits::NONE)
+                            .unwrap()
+                            .unwrap();
+                        assert!(full.exact && full.depth == super::COMPLETE);
+                        for threads in [1, 3] {
+                            let mut progress =
+                                super::PegBagProgress::new(position.clone()).unwrap();
+                            progress.set_threads(threads);
+                            progress.set_estimates(true);
+                            let estimated = egs
+                                .resume_peg(&mut progress, &super::Limits::NONE)
+                                .unwrap()
+                                .unwrap();
+                            assert!(
+                                bag_answers_alike(&estimated, &full),
+                                "{unseen:?} {x} {y} {threads}"
+                            );
+                            assert!(estimated.depth != super::COMPLETE);
+                            if estimated.depth > 1 {
+                                refined += 1;
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 64);
+        assert!(refined > 0, "no search needed a pass after its first");
+    }
+
+    #[test]
+    #[inline]
+    fn a_bag_search_whose_passes_estimate_values_every_move_before_its_limit() {
+        // seven and nine in the bag: exchanges lie below the moves (at nine
+        // below every one), so a search that does not estimate leaves moves
+        // unvalued at a tight limit (at nine all of them). Estimating, its
+        // first pass values every move by its equity, exchanges too, and the
+        // answer says it is not exact
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let rack = [2, 10, 17, 22, 23, 24, 26]; // B J Q V W X Z
+        let limits = super::Limits {
+            time: Some(std::time::Duration::from_millis(100)),
+            states: None,
+            memory: None,
+        };
+        let mut checked = 0;
+        for (unseen, bag_size) in [
+            (&[3usize, 4, 5, 6, 7, 9, 11, 13][..], 7), // C D E F G I K M
+            (&[3, 4, 5, 6, 7, 9, 11, 13, 14, 15][..], 9), // and N O
+        ] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in unseen {
+                unseen_tally[tile] = 1;
+            }
+            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+                for threads in [1, 3] {
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    let mut position =
+                        bag_position(&board, &rack, &unseen_tally, bag_size, equity::Equity::ZERO);
+                    position.model = model;
+                    let mut progress = super::PegBagProgress::new(position).unwrap();
+                    progress.set_threads(threads);
+                    progress.set_estimates(true);
+                    let t0 = std::time::Instant::now();
+                    let result = egs.resume_peg(&mut progress, &limits).unwrap().unwrap();
+                    let took = t0.elapsed();
+                    assert!(
+                        took < std::time::Duration::from_secs(5),
+                        "a search of 100 ms took {took:?}"
+                    );
+                    let (_, moves) = progress.moves().unwrap();
+                    assert!(moves > 100, "{moves} moves: the exchanges missing");
+                    assert_eq!(result.moves.len(), moves, "{bag_size} {threads}");
+                    assert!(result.best_move.is_some());
+                    assert!(!result.exact);
+                    assert!(result.depth >= 1 && result.depth != super::COMPLETE);
+                    assert!(result.moves.iter().all(|valued| !valued.exact));
+                    assert!(result.moves.iter().any(|valued| matches!(
+                        &valued.play,
+                        movegen::Play::Exchange { tiles } if !tiles.is_empty()
+                    )));
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 8);
     }
 }
