@@ -537,6 +537,15 @@ impl MultiLeaves {
         (dense, place_value, num_tiles_on_rack)
     }
 
+    // the rack's digits alone, with no leaves: for a caller that reads no leave
+    // value, as a raw generation
+    #[inline(always)]
+    pub fn init_digits(&mut self, rack_tally: &[u8]) {
+        self.set_digits(rack_tally);
+        self.leave_values.clear();
+        self.num_playeds.clear();
+    }
+
     // the rack's digits and leaves: each leave walked from the klv's graph
     // (none when not use_klv), adjusted
     #[inline(always)]

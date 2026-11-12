@@ -923,7 +923,7 @@ impl<G: LaneBits> WorkingBuffer<G> {
     }
 
     // T: the key places the subracks are keyed by, the anagrams' own
-    fn init<const D: usize, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
+    fn init<const D: usize, const LEAVES: bool, T: TablePlaces, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         rack: &[u8],
@@ -1098,15 +1098,20 @@ impl<G: LaneBits> WorkingBuffer<G> {
             None
         };
         if self.num_tiles_in_bag <= 0 {
-            self.multi_leaves.init(
-                &self.rack_tally,
-                board_snapshot.klv,
-                false,
-                adjust_leave_value,
-            );
-            if self.multi_leaves.is_dense() {
-                self.multi_leaves
-                    .init_endgame_leaves(|tile| alphabet.score(tile), play_out_bonus);
+            if !LEAVES {
+                // no leave is read: the digits alone, and no table
+                self.multi_leaves.init_digits(&self.rack_tally);
+            } else {
+                self.multi_leaves.init(
+                    &self.rack_tally,
+                    board_snapshot.klv,
+                    false,
+                    adjust_leave_value,
+                );
+                if self.multi_leaves.is_dense() {
+                    self.multi_leaves
+                        .init_endgame_leaves(|tile| alphabet.score(tile), play_out_bonus);
+                }
             }
             // the multi_leaves is correct but doing this directly is faster.
             self.best_leave_values.clear();
@@ -6949,7 +6954,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let mut vec_moves = std::mem::take(&mut self.plays);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<0, ByLayout, _, _>(
+        working_buffer.init::<0, false, ByLayout, _, _>(
             board_snapshot,
             rack,
             klv::AdjustLeave::Identity,
@@ -7119,7 +7124,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<0, ByLayout, _, _>(
+        working_buffer.init::<0, true, ByLayout, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
@@ -7583,7 +7588,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             return Some((place_move_predicate, equity_predicate));
         }
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<D, T, _, _>(
+        working_buffer.init::<D, true, T, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
@@ -7877,7 +7882,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<D, ByLayout, _, _>(
+        working_buffer.init::<D, true, ByLayout, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
@@ -8121,7 +8126,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         found_word: FoundWord,
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<0, ByLayout, _, _>(
+        working_buffer.init::<0, true, ByLayout, _, _>(
             board_snapshot,
             &[],
             klv::AdjustLeave::Identity,
@@ -8143,7 +8148,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         mut found: impl FnMut(usize, u64, u64),
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init::<0, ByLayout, _, _>(
+        working_buffer.init::<0, true, ByLayout, _, _>(
             board_snapshot,
             &[],
             klv::AdjustLeave::Identity,
@@ -14657,7 +14662,7 @@ mod tests {
         let board_layout = board_snapshot.game_config.board_layout();
         let working_buffer = &mut move_generator.working_buffer;
         working_buffer.is_census = is_census;
-        working_buffer.init::<0, ByLayout, _, _>(
+        working_buffer.init::<0, true, ByLayout, _, _>(
             board_snapshot,
             rack,
             klv::AdjustLeave::Identity,
