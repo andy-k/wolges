@@ -1683,12 +1683,13 @@ fn solve_position<N: kwg::Node>(
             result.expected_margin,
         )?;
         writeln!(std::io::stdout(), "peg: each move valued, best first:")?;
-        for (play, win, margin) in &result.moves {
+        for valued in &result.moves {
             writeln!(
                 std::io::stdout(),
-                "  {}: win% {:.4}, expected game margin {margin}",
-                named(play),
-                win * 100.0,
+                "  {}: win% {:.4}, expected game margin {}",
+                named(&valued.play),
+                valued.win_pct * 100.0,
+                valued.expected_margin,
             )?;
         }
         if !result.exact {
