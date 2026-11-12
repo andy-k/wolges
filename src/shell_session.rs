@@ -245,6 +245,7 @@ pub struct Session {
     kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node24>>,
     klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node24>>,
     arm_tables_built: std::collections::HashMap<String, &'static anagrams::ArmTables>,
+    rules_made: std::collections::HashMap<String, &'static game_config::GameConfig>,
     infer_tables: Option<infer::InferTables>, // for klv, built at its first use
     game: Option<Game>,
     state: game_state::GameState,
@@ -441,6 +442,7 @@ impl Session {
             kwgs_read: Default::default(),
             klvs_read: Default::default(),
             arm_tables_built: Default::default(),
+            rules_made: Default::default(),
             infer_tables: None,
             game: None,
             state: game_state::GameState::new(game_config),
@@ -583,21 +585,29 @@ impl Session {
                 let [name] = args else {
                     return Err("rules NAME|FILE".into());
                 };
-                let game_config = game_config::Options {
-                    preset: name,
-                    tiles: None,
-                    board: None,
-                    rack_size: None,
-                    jumbled: false,
-                    players: None,
-                    bingo_bonus: None,
-                    zeros_to_end: None,
-                    passes_to_end: None,
-                    exchange_limit: None,
-                    exchanges: None,
-                }
-                .make_game_config(&|path| Ok(std::fs::read_to_string(path)?))?;
-                self.use_rules(Box::leak(Box::new(game_config)))?;
+                let game_config = match self.rules_made.get(name.as_str()) {
+                    Some(&game_config) => game_config,
+                    None => {
+                        let game_config = game_config::Options {
+                            preset: name,
+                            tiles: None,
+                            board: None,
+                            rack_size: None,
+                            jumbled: false,
+                            players: None,
+                            bingo_bonus: None,
+                            zeros_to_end: None,
+                            passes_to_end: None,
+                            exchange_limit: None,
+                            exchanges: None,
+                        }
+                        .make_game_config(&|path| Ok(std::fs::read_to_string(path)?))?;
+                        let game_config: &'static _ = Box::leak(Box::new(game_config));
+                        self.rules_made.insert(name.clone(), game_config);
+                        game_config
+                    }
+                };
+                self.use_rules(game_config)?;
                 line.to_string()
             }
             "new" => {
@@ -3719,6 +3729,21 @@ mod tests {
             .map(String::from)
             .collect::<Vec<_>>();
         session.run(line, &words, false)
+    }
+
+    // rules named again are the ones made before, so a long session switching
+    // back and forth holds each once
+    #[test]
+    #[inline]
+    fn rules_named_again_are_the_ones_made_before() {
+        let mut session = session();
+        run(&mut session, "rules english").unwrap();
+        let english = session.game_config;
+        run(&mut session, "rules french").unwrap();
+        assert!(!std::ptr::eq(session.game_config, english));
+        run(&mut session, "rules english").unwrap();
+        assert!(std::ptr::eq(session.game_config, english));
+        assert_eq!(session.rules_made.len(), 2);
     }
 
     #[test]
