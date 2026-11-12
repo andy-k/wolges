@@ -326,12 +326,14 @@ impl Question {
     }
 }
 
-// how each solve runs: on which arm, within which limits, whether it prints its
-// progress, after which scoreless turns (the passes and the zeros, as the game
-// counts them), and under which model with two or more tiles in the bag
+// how each solve runs: on which arm, within which limits, on how many threads
+// with two or more tiles in the bag, whether it prints its progress, after
+// which scoreless turns (the passes and the zeros, as the game counts them),
+// and under which model with two or more tiles in the bag
 struct Solving {
     lean: bool,
     limits: endgame::Limits,
+    threads: usize,
     quiet: bool,
     scoreless: [u16; 2],
     peg_model: endgame::PegModel,
@@ -485,6 +487,11 @@ struct Cli {
     lean: bool,
     #[arg(
         long,
+        help = "worker threads with two or more tiles in the bag [default: every core]"
+    )]
+    threads: Option<std::num::NonZeroUsize>,
+    #[arg(
+        long,
         value_name = "FILE",
         requires = "kwg_file",
         conflicts_with_all = ["fen", "rack"],
@@ -580,6 +587,7 @@ fn main() -> error::Returns<()> {
             states: cli.max_states,
             memory: endgame_watch::memory_limit(cli.max_memory)?,
         },
+        threads: (cli.threads).map_or_else(parallelism::available, std::num::NonZeroUsize::get),
         quiet: cli.quiet,
         scoreless: [cli.passes, cli.zeros],
         peg_model: match cli.peg_model {
@@ -1578,7 +1586,7 @@ fn solve_position<N: kwg::Node>(
             exchanges: [0, 0],
             model: solving.peg_model,
         })?;
-        progress.set_threads(parallelism::available());
+        progress.set_threads(solving.threads);
         let result = egs.resume_peg(&mut progress, &solving.limits)?;
         let result = match result {
             Ok(result) => result,
