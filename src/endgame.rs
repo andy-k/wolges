@@ -2131,6 +2131,13 @@ impl<
                     .filter(|(_, candidate)| candidate.placed == 1)
                     .map(|(at, _)| at as u32),
             );
+            // highest score first, so the read stops at the first it takes
+            singles.sort_unstable_by_key(|&at| {
+                std::cmp::Reverse(match &list[at as usize].play {
+                    movegen::Play::Place { score, .. } => *score,
+                    movegen::Play::Exchange { .. } => i32::MIN,
+                })
+            });
         }
         for &at in singles.iter() {
             let candidate = &list[at as usize];
@@ -2147,6 +2154,7 @@ impl<
                 && held_tile(tile) == left
             {
                 best = best.max(score + out_bonus);
+                break;
             }
         }
         if best as f32 > need {
