@@ -435,12 +435,15 @@ impl Session {
         memory: Option<endgame::MemoryLimit>,
         game_config: &'static game_config::GameConfig,
     ) -> error::Returns<Self> {
+        // no leave values, made once: "leaves -" and rules they do not fit both
+        // come back to this one
+        let none: &'static _ = Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?));
         Ok(Self {
             game_config,
             kwg: None,
-            klv: Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?)),
+            klv: none,
             kwgs_read: Default::default(),
-            klvs_read: Default::default(),
+            klvs_read: [("-".to_string(), none)].into_iter().collect(),
             arm_tables_built: Default::default(),
             rules_made: Default::default(),
             infer_tables: None,
@@ -1428,7 +1431,7 @@ impl Session {
             )?;
         }
         if game_config.check_klv(self.klv).is_err() {
-            self.klv = Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?));
+            self.klv = self.klvs_read["-"];
             writeln!(
                 std::io::stdout(),
                 "the leave values do not fit these rules: none now (leaves FILE for others)"
@@ -3744,6 +3747,16 @@ mod tests {
         run(&mut session, "rules english").unwrap();
         assert!(std::ptr::eq(session.game_config, english));
         assert_eq!(session.rules_made.len(), 2);
+    }
+
+    // no leave values asked for are the session's one empty leaves
+    #[test]
+    #[inline]
+    fn no_leaves_asked_for_are_the_sessions_one() {
+        let mut session = session();
+        let none = session.klv;
+        run(&mut session, "leaves -").unwrap();
+        assert!(std::ptr::eq(session.klv, none));
     }
 
     #[test]
