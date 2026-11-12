@@ -452,7 +452,12 @@ impl<
             if seat == initial_turn || seat >= self.final_scores.len() {
                 continue;
             }
-            let at = self.rng.random_range(0.0..kept.leaves.total());
+            // no leave to put back from a list of none, or of weight 0 in all
+            let total = kept.leaves.total();
+            if total <= 0.0 {
+                continue;
+            }
+            let at = self.rng.random_range(0.0..total);
             let rack_len = self.final_scores[seat] as usize;
             let game_state = &mut self.initial_game_state;
             for &tile in kept.leaves.pick(at).iter().take(rack_len) {
