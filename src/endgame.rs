@@ -1644,6 +1644,15 @@ fn to_equity(v: f32) -> equity::Equity {
 // a solve's answer: exact, or the value of the deepest search that finished
 // before a limit stopped it, or that of a move the stopped search found worth
 // more (partway is that search's depth)
+// a first move of the position to solve and its value (value_first_moves): none
+// when a limit stopped its first depth; exact when no line was cut short by the
+// depth
+pub struct FirstMove {
+    pub play: movegen::Play,
+    pub value: Option<equity::Equity>,
+    pub exact: bool,
+}
+
 pub struct Solved {
     pub value: equity::Equity,
     pub depth: i8,
@@ -3053,6 +3062,120 @@ impl<
         }
         self.unplace(player_idx, play);
         wins
+    }
+
+    // every move of player_idx from the position to solve (each that places
+    // tiles, and the pass), each with its value: its own, less its reply's, the
+    // reply searched depth by depth with a full window on the table kept (warm
+    // from a solve before it), till no line is cut short by the depth (exact)
+    // or a limit stops it (the value of the last depth it finished, or none).
+    // Best first, by value, then as the solve's root orders them. The limits
+    // are on one clock for all of them
+    pub fn value_first_moves(
+        &mut self,
+        player_idx: u8,
+        limits: &Limits,
+    ) -> error::Returns<Vec<FirstMove>> {
+        self.start_clock();
+        self.reset_position();
+        self.generate(0, player_idx, false);
+        let work_buffer = &mut self.work_buffer;
+        order(
+            &mut work_buffer.lists[0],
+            &mut work_buffer.orders[0],
+            0,
+            NO_PLAY,
+        );
+        let mut plays = (work_buffer.lists[0].iter())
+            .map(|candidate| candidate.play.clone())
+            .collect::<Vec<_>>();
+        plays.push(movegen::Play::Exchange {
+            tiles: [][..].into(),
+        });
+        let mut valued = Vec::with_capacity(plays.len());
+        for play in plays {
+            let (value, exact) = self.first_move_value(player_idx, &play, limits)?;
+            valued.push(FirstMove {
+                play,
+                value: value.map(to_equity),
+                exact,
+            });
+        }
+        // a sort that keeps the root's order among equals
+        valued.sort_by_key(|first| std::cmp::Reverse(first.value));
+        Ok(valued)
+    }
+
+    // the value of player_idx's move play from the position to solve, as
+    // value_first_moves takes it, and whether it is exact
+    #[inline]
+    fn first_move_value(
+        &mut self,
+        player_idx: u8,
+        play: &movegen::Play,
+        limits: &Limits,
+    ) -> error::Returns<(Option<f32>, bool)> {
+        self.reset_position();
+        let scoreless = self.entering();
+        // this list keeps no rack places, so two plies down generates whole
+        self.generate(0, player_idx, false);
+        let (valuation, after) = match play {
+            movegen::Play::Exchange { .. } => {
+                if self.pass_ends_the_line(scoreless) {
+                    return Ok((Some(self.both_pass_value(player_idx)), true));
+                }
+                (0.0, Scoreless::Answering)
+            }
+            movegen::Play::Place { .. } => {
+                let Some(candidate) = self.work_buffer.lists[0]
+                    .iter()
+                    .find(|candidate| candidate.play == *play)
+                else {
+                    return Ok((None, false));
+                };
+                if candidate.plays_out {
+                    return Ok((Some(candidate.valuation), true));
+                }
+                let counted = Scoreless::Counted {
+                    passes: 0,
+                    zeros: 0,
+                };
+                (candidate.valuation, counted)
+            }
+        };
+        self.place(player_idx, play);
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.time_limit = limits.time;
+        work_buffer.state_limit = limits.states;
+        work_buffer.memory_limit = limits.memory;
+        work_buffer.check_limits =
+            limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
+        let mut found = Ok((None, false));
+        for depth in 1..COMPLETE {
+            self.work_buffer.cut_short = false;
+            match self.negamax_eval(
+                1,
+                player_idx ^ 1,
+                depth,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                after,
+            ) {
+                Ok(searched) => {
+                    found = Ok((Some(valuation - searched.value), searched.complete));
+                    if searched.complete {
+                        break;
+                    }
+                }
+                Err(_) if self.work_buffer.cut_short => break,
+                Err(e) => {
+                    found = Err(e);
+                    break;
+                }
+            }
+        }
+        self.unplace(player_idx, play);
+        found
     }
 
     // based on https://en.wikipedia.org/wiki/Negamax
@@ -7990,6 +8113,106 @@ mod tests {
             0,
             table_play,
         );
+    }
+
+    #[test]
+    #[inline]
+    fn every_first_move_is_valued_exactly_warm_or_cold() {
+        // each first move's value, with no limit, is exact; the best is the
+        // solve's, none is more, and a solver warm from that solve values every
+        // move as a cold one does
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut moves = 0usize;
+        let mut checked = 0usize;
+        for (name, pos) in all_positions() {
+            let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+            for mover in 0..2u8 {
+                let mut cold =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                cold.init(&pos.board, racks);
+                let cold_moves = cold.value_first_moves(mover, &super::Limits::NONE).unwrap();
+                let mut warm =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                warm.init(&pos.board, racks);
+                let want = warm.solve(mover).unwrap();
+                let warm_moves = warm.value_first_moves(mover, &super::Limits::NONE).unwrap();
+                assert!(!cold_moves.is_empty(), "[{name}] mover {mover}");
+                assert!(
+                    cold_moves
+                        .iter()
+                        .all(|first| first.exact && first.value.is_some()),
+                    "[{name}] mover {mover}"
+                );
+                assert_eq!(cold_moves[0].value, Some(want), "[{name}] mover {mover}");
+                assert!(
+                    cold_moves.iter().all(|first| first.value <= Some(want)),
+                    "[{name}] mover {mover}"
+                );
+                let values = |firsts: &[super::FirstMove]| {
+                    let mut values = (firsts.iter())
+                        .map(|first| {
+                            let key = match &first.play {
+                                movegen::Play::Place {
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    score,
+                                } => Some((*down, *lane, *idx, word[..].to_vec(), *score)),
+                                movegen::Play::Exchange { .. } => None,
+                            };
+                            (key, first.value)
+                        })
+                        .collect::<Vec<_>>();
+                    values.sort_unstable();
+                    values
+                };
+                assert_eq!(
+                    values(&cold_moves),
+                    values(&warm_moves),
+                    "[{name}] mover {mover}"
+                );
+                // a placing move that leaves the mover tiles is its score less
+                // the reply's own solve on the board after it
+                let mut after = Vec::new();
+                for first in &cold_moves {
+                    let movegen::Play::Place { word, score, .. } = &first.play else {
+                        continue;
+                    };
+                    let mut left = racks[mover as usize].to_vec();
+                    crate::game_state::use_tiles(
+                        &mut left,
+                        word.iter()
+                            .filter(|&&tile| tile != 0)
+                            .map(|&tile| if tile & 0x80 != 0 { 0 } else { tile }),
+                    )
+                    .unwrap();
+                    if left.is_empty() {
+                        continue;
+                    }
+                    crate::glance::board_after(&gc, &pos.board, &first.play, &mut after);
+                    let mut next = [racks[0].to_vec(), racks[1].to_vec()];
+                    next[mover as usize] = left;
+                    let mut reply =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    reply.init(&after, [&next[0][..], &next[1][..]]);
+                    let replied = reply.solve(mover ^ 1).unwrap();
+                    assert_eq!(
+                        first.value,
+                        Some(equity::Equity::new(score - replied.raw())),
+                        "[{name}] mover {mover}"
+                    );
+                    checked += 1;
+                }
+                moves += cold_moves.len();
+            }
+        }
+        println!("{moves} first moves valued, {checked} checked by the reply's solve");
+        assert!(checked > 0);
     }
 
     #[test]
