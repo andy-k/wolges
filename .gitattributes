@@ -1,2 +1,3 @@
+src/movegen-corpus-baseline.txt text eol=lf
 src/movegen-sweep-baseline.txt text eol=lf
 src/movegen.rs text eol=lf

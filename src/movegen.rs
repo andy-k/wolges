@@ -11491,6 +11491,10 @@ fn gen_remaining_words<
     );
 }
 
+// a frozen corpus of every arm's generations, asked every way
+#[cfg(test)]
+mod corpus;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11501,7 +11505,7 @@ mod tests {
         "TA", "TAE", "TAS", "TEA", "TEAS",
     ];
 
-    static SWEEP_WORDS: &[&str] = &[
+    pub(super) static SWEEP_WORDS: &[&str] = &[
         "AN", "AND", "ANT", "ANTS", "ARE", "ART", "ARTS", "AS", "AT", "ATE", "CAN", "CANE",
         "CANES", "CANS", "CAR", "CARE", "CARES", "CARS", "CART", "CARTS", "CASE", "CASES", "CAST",
         "CASTE", "CAT", "CATS", "CENT", "CENTS", "CRATE", "CRATES", "EAR", "EARN", "EARNS", "EARS",
@@ -11539,7 +11543,7 @@ mod tests {
     }
 
     #[inline]
-    fn sweep_kwg_covering(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
+    pub(super) fn sweep_kwg_covering(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node24> {
         let dim = gc.board_layout().dim();
         let longest = dim.rows.max(dim.cols) as u8;
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
@@ -11727,7 +11731,7 @@ mod tests {
         }
     }
 
-    static SWEEP_RACKS: &[&str] = &[
+    pub(super) static SWEEP_RACKS: &[&str] = &[
         "AEINRST", "CARTONS", "STARTED", "SEATERS", "RATTANS", "AAAAAAA", "AE", "ST", "CAT",
         "NNNNTTT", "ERASECS", "?EINRST", "?AT", "C?T", "?ANTES", "?", "?A", "??TANS", "?ANTS??",
     ];
@@ -11756,7 +11760,7 @@ mod tests {
         both_arms_agree(&gc, &[empty, one, two], SWEEP_RACKS);
     }
 
-    static LONG_RACKS: &[&str] = &[
+    pub(super) static LONG_RACKS: &[&str] = &[
         "AEINRSTCS",
         "CARTONSEA",
         "STARTEDNE",
@@ -12311,7 +12315,10 @@ mod tests {
     }
 
     #[inline]
-    fn test_kad(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::Node24> {
+    pub(super) fn test_kad(
+        gc: &game_config::GameConfig,
+        test_words: &[&str],
+    ) -> kwg::Kwg<kwg::Node24> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
         let mut words = Vec::<bites::Bites>::with_capacity(test_words.len());
@@ -12337,7 +12344,7 @@ mod tests {
     }
 
     #[inline]
-    fn parse_test_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
+    pub(super) fn parse_test_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
         let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
         let sb = rack_str.as_bytes();
         let mut rack = Vec::new();
@@ -13989,7 +13996,7 @@ mod tests {
     }
 
     #[inline]
-    fn uneven_game_config(
+    pub(super) fn uneven_game_config(
         rows: i8,
         cols: i8,
         star_row: i8,

@@ -287,10 +287,12 @@ struct Files {
 #[derive(clap::Subcommand)]
 enum Task {
     #[command(
-        about = "generate every case's moves on both arms and compare them with the baseline"
+        about = "generate every case's moves on every arm, every way, and compare them with the baseline"
     )]
     Check(Files),
-    #[command(about = "generate every case's moves on both arms and write them as the baseline")]
+    #[command(
+        about = "generate every case's moves on every arm, every way, and write them as the baseline"
+    )]
     Write(Files),
 }
 
@@ -371,6 +373,13 @@ fn run(
         .ok_or("this alphabet does not lay out a key")?;
     let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
+    let detected = wolges::anagrams::ArmTables::build(kwg, game_config, false)?;
+    let every_arm = [
+        ("detected", detected.anagrams(), None, true),
+        ("layout", Some(&anagrams), None, true),
+        ("lean", None, Some(&rack_lengths), false),
+        ("lean bare", None, None, false),
+    ];
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
@@ -427,6 +436,96 @@ fn run(
                     boxed_stdout_or_stderr(),
                     "Case {case_idx}: the arms generate different plays"
                 )?;
+                disagreements += 1;
+            }
+        }
+        // every arm asked every way: all, capped (the head of all), and raw
+        // (all's moves), all the same on every arm
+        let mut first_all = None;
+        for &(arm, anagrams, rack_lengths, tables) in &every_arm {
+            let board_snapshot = movegen::BoardSnapshot {
+                board_tiles,
+                game_config,
+                kwg,
+                anagrams,
+                rack_lengths,
+                klv,
+            };
+            let lines = |g: &movegen::KurniaMoveGenerator, equity: bool| {
+                let mut list = g
+                    .plays
+                    .iter()
+                    .map(|p| {
+                        if equity {
+                            format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot))
+                        } else {
+                            format!("{}", p.play.fmt(&board_snapshot))
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if !equity {
+                    list.sort_unstable();
+                }
+                list
+            };
+            let generate = |g: &mut movegen::KurniaMoveGenerator, max_gen: usize| {
+                let params = movegen::GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &rack,
+                    max_gen,
+                    num_exchanges_by_this_player: case.num_exchanges_by_this_player,
+                    pass_policy: case.pass_policy,
+                    dynamic_leaves: None,
+                };
+                if tables {
+                    g.gen_moves_unfiltered(&params);
+                } else {
+                    g.gen_moves_unfiltered_lean(&params);
+                }
+                lines(g, true)
+            };
+            let all = generate(&mut move_generator, usize::MAX);
+            let capped = generate(&mut move_generator, case.max_gen);
+            if tables {
+                move_generator.gen_moves_raw_all_unsorted(
+                    &board_snapshot,
+                    &rack,
+                    case.num_exchanges_by_this_player,
+                    case.pass_policy,
+                );
+            } else {
+                move_generator.gen_moves_raw_all_unsorted_lean(
+                    &board_snapshot,
+                    &rack,
+                    case.num_exchanges_by_this_player,
+                    case.pass_policy,
+                );
+            }
+            let raw = lines(&move_generator, false);
+            let mut all_set = all
+                .iter()
+                .map(|l| l.split_once(' ').unwrap().1.to_string())
+                .collect::<Vec<_>>();
+            all_set.sort_unstable();
+            let mut differs = Vec::new();
+            if capped[..] != all[..case.max_gen.min(all.len())] {
+                differs.push("capped is not the head of all");
+            }
+            if raw != all_set {
+                differs.push("raw is not all");
+            }
+            match &first_all {
+                None => first_all = Some(all),
+                Some(first) => {
+                    if *first != all {
+                        differs.push("all is not the first arm's");
+                    }
+                }
+            }
+            for what in &differs {
+                writeln!(boxed_stdout_or_stderr(), "Case {case_idx}, {arm}: {what}")?;
+            }
+            if !differs.is_empty() {
                 disagreements += 1;
             }
         }
