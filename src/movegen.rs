@@ -540,6 +540,7 @@ struct WorkingBuffer<G: LaneBits> {
     subracks_spare: Vec<Subrack>,
     found_placements: Vec<PossiblePlacement>,
     raw_anchors: Vec<(i8, i8, i8)>, // a lane's anchors, raw: (anchor, leftmost, rightmost)
+    sure_plays: Vec<equity::Equity>, // sure_floor's, reused
     rcs_lanes: Vec<RcsLane>,        // the table walk's, rows then columns
     board_cols: u8,                 // the board's columns, for restore_board_state's lanes
     rcs_pending_rows: G,            // rows whose tiles changed since the table walk last looked
@@ -631,6 +632,7 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
             subracks_spare: self.subracks_spare.clone(),
             found_placements: self.found_placements.clone(),
             raw_anchors: self.raw_anchors.clone(),
+            sure_plays: Vec::new(),
             rcs_lanes: self.rcs_lanes.clone(),
             board_cols: self.board_cols,
             rcs_pending_rows: self.rcs_pending_rows,
@@ -858,6 +860,7 @@ impl<G: LaneBits> WorkingBuffer<G> {
             subracks_spare: Vec::new(),
             found_placements: Vec::new(),
             raw_anchors: Vec::new(),
+            sure_plays: Vec::new(),
             rcs_lanes: Vec::new(),
             board_cols: dim.cols as u8,
             rcs_pending_rows: !G::from(0),
@@ -7061,6 +7064,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             params.dynamic_leaves,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
+        if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
+            threshold.set(floor);
+        }
 
         // an empty board's leave value comes with the opening's penalty
         let found_place_move =
@@ -7540,6 +7546,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
+        if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
+            threshold.set(floor);
+        }
+
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate.test(down, lane, idx, word, score) {
@@ -7812,6 +7822,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             params.dynamic_leaves,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
+        if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
+            threshold.set(floor);
+        }
 
         // an empty board's leave value comes with the opening's penalty
         let found_place_move =
@@ -8254,6 +8267,58 @@ fn push_kept<K: Kept, F: FnMut() -> Play>(
             threshold.set(found_moves.worst_equity());
         }
     }
+}
+
+// the max_gen-th best of the plays sure to be pushed, when every play is taken
+// and there are that many: for each count exchanged, the best exchange of that
+// many, its value exact (best_leave_values[k] is a real leave of the rack's
+// tiles but k, the k exchanged; the exchanges generated find it), and the pass
+// when it is pushed unconditionally (else a worse play takes its place); a walk
+// can start from it
+#[inline(always)]
+fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits>(
+    params: &GenMovesParams<'_, N, L>,
+    working_buffer: &mut WorkingBuffer<G>,
+    multi_leaves: &klv::MultiLeaves,
+    equity_predicate: &EquityPredicate<'_>,
+) -> Option<equity::Equity> {
+    if !matches!(equity_predicate, EquityPredicate::AcceptAll) {
+        return None;
+    }
+    let max_gen = params.max_gen;
+    let game_config = params.board_snapshot.game_config;
+    let mut sure = std::mem::take(&mut working_buffer.sure_plays);
+    sure.clear();
+    if working_buffer.num_tiles_in_bag >= game_config.exchange_tile_limit()
+        && params.num_exchanges_by_this_player < game_config.exchanges_allowed_per_player()
+    {
+        let most = (working_buffer.best_leave_values.len() - 1)
+            .min(working_buffer.num_tiles_in_bag.max(0) as usize);
+        for (exchanged, &best_leave_value) in (working_buffer.best_leave_values.iter().enumerate())
+            .take(most + 1)
+            .skip(1)
+        {
+            sure.push(equity::Equity::new(best_leave_value.saturating_sub(
+                game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE,
+            )));
+        }
+    }
+    if params.pass_policy.emits_unconditionally() {
+        sure.push(equity::Equity::new(if multi_leaves.is_dense() {
+            multi_leaves.pass_leave_value()
+        } else {
+            params
+                .board_snapshot
+                .klv
+                .leave_value_from_tally(&working_buffer.rack_tally)
+        }));
+    }
+    let floor = (max_gen != 0 && max_gen <= sure.len()).then(|| {
+        sure.select_nth_unstable_by(max_gen - 1, |a, b| b.cmp(a));
+        sure[max_gen - 1]
+    });
+    working_buffer.sure_plays = sure;
+    floor
 }
 
 // the best equity an exchange can have: the best leave of the tiles kept when
@@ -12059,6 +12124,116 @@ mod tests {
             .iter()
             .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
             .collect::<Vec<_>>()
+    }
+
+    // a capped generation by the tables, its walk started from the worst of the
+    // best plays sure to be pushed (an exchange of each count, the pass when
+    // unconditional), keeps what an uncapped one keeps first, over leaves that
+    // are not all 0 and a board that fills turn by turn
+    #[inline]
+    #[test]
+    fn a_capped_generation_from_a_floor_keeps_the_uncapped_head() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let racks = [
+            "AEINRST", "?EIORST", "AADEILN", "EEIRSTT", "ACEHORT", "?AEILNS",
+        ];
+        let racks = racks
+            .iter()
+            .map(|rack| parse_test_rack(gc.alphabet(), rack))
+            .collect::<Vec<_>>();
+        // every subset of each rack, valued by its tiles, up to 6 of them
+        let mut leaves = Vec::new();
+        for rack in &racks {
+            for mask in 1u32..(1 << rack.len()) {
+                let mut leave = (0..rack.len())
+                    .filter(|&i| mask & (1 << i) != 0)
+                    .map(|i| rack[i])
+                    .collect::<Vec<_>>();
+                if leave.len() <= 6 {
+                    leave.sort_unstable();
+                    leaves.push(leave);
+                }
+            }
+        }
+        leaves.sort_unstable();
+        leaves.dedup();
+        let valued = leaves
+            .iter()
+            .map(|leave| {
+                let v = leave.iter().fold(7i32, |a, &t| (a * 31 + t as i32) % 97);
+                (&leave[..], (v - 40) as f32 / 4.0)
+            })
+            .collect::<Vec<_>>();
+        let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(&valued)).unwrap();
+        let mut board_tiles = vec![0u8; 225];
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        for rack in &racks {
+            let mut best = None;
+            for (anagrams, lean) in [(None, false), (Some(&held), false), (Some(&held), true)] {
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                for pass_policy in [PassPolicy::OnlyWhenForced, PassPolicy::AsACandidate] {
+                    let mut generate = |max_gen: usize| {
+                        let params = GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack,
+                            max_gen,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy,
+                            dynamic_leaves: None,
+                        };
+                        if lean {
+                            move_generator.gen_moves_unfiltered_lean(&params);
+                        } else {
+                            move_generator.gen_moves_unfiltered(&params);
+                        }
+                        move_generator
+                            .plays
+                            .iter()
+                            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                            .collect::<Vec<_>>()
+                    };
+                    let all = generate(usize::MAX);
+                    assert!(all.iter().any(|line| line.contains("xch")), "no exchange");
+                    for max_gen in [1, 2, 3, 5, 8, 15] {
+                        let head = &all[..max_gen.min(all.len())];
+                        assert_eq!(
+                            generate(max_gen),
+                            head,
+                            "at most {max_gen}, tables {}, lean {lean}",
+                            anagrams.is_some()
+                        );
+                    }
+                    best = Some(move_generator.plays.first().map(|p| p.play.clone()));
+                }
+            }
+            if let Some(Some(Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                ..
+            })) = best
+            {
+                let strider = gc.board_layout().dim().lane(down, lane);
+                for (i, &tile) in (idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        board_tiles[strider.at(i)] = tile;
+                    }
+                }
+            }
+        }
+        assert!(board_tiles.iter().filter(|&&t| t != 0).count() > 10);
     }
 
     #[inline]
