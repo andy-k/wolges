@@ -155,6 +155,11 @@ enum Bound {
 // depth
 const COMPLETE: i8 = i8::MAX;
 
+// the least two values can differ by: every endgame value is a whole number of
+// millipoints, so a window from a value less this to the value holds none
+// strictly inside it
+const LEAST_STEP: f32 = 1.0;
+
 // the best move as stored: its place among the moves the generator gives for
 // the position, or a pass, or none
 const PASS_PLAY: u16 = u16::MAX - 1;
@@ -535,6 +540,7 @@ enum Child {
         index: u16,
         score: f32,
         play: movegen::Play,
+        scout: bool, // searched with a zero-width window, to be searched again past it
     }, // a move, placed
     Pass,  // the pass
     PassDone, // its moves and its pass done
@@ -3232,7 +3238,10 @@ impl<
                 if self.work_buffer.frames.len() == base {
                     return Ok(searched);
                 }
-                self.child_returned(searched);
+                if let Some(again) = self.child_returned(searched) {
+                    enter = Some((again, None));
+                    continue;
+                }
             }
             match self.advance_top() {
                 Advance::Enter(node) => enter = Some((node, None)),
@@ -3414,15 +3423,30 @@ impl<
                     }
                     continue;
                 }
+                // a move after the first is searched with a zero-width window
+                // at alpha, which only says whether it beats alpha; one that
+                // does without reaching beta is searched again with the whole
+                // window (child_returned)
+                let (child_alpha, child_beta) = (score - beta, score - alpha);
+                let scout = i > 0 && child_alpha < child_beta - LEAST_STEP;
                 let frame = &mut self.work_buffer.frames[t];
                 frame.next = next;
-                frame.child = Child::Move { index, score, play };
+                frame.child = Child::Move {
+                    index,
+                    score,
+                    play,
+                    scout,
+                };
                 return Advance::Enter(Enter {
                     ply: ply + 1,
                     player_idx: player_idx ^ 1,
                     depth: depth - 1,
-                    alpha: score - beta,
-                    beta: score - alpha,
+                    alpha: if scout {
+                        child_beta - LEAST_STEP
+                    } else {
+                        child_alpha
+                    },
+                    beta: child_beta,
                     scoreless: Scoreless::Counted {
                         passes: 0,
                         zeros: 0,
@@ -3553,12 +3577,46 @@ impl<
     }
 
     // the top frame takes the value its child returned: a move's, unplaced
-    // first, or the pass's
-    fn child_returned(&mut self, child: Searched) {
+    // first, or the pass's; or, for a move its zero-width window found between
+    // alpha and beta, the move's search again with the whole window, the move
+    // left placed
+    fn child_returned(&mut self, child: Searched) -> Option<Enter> {
         let frame = self.work_buffer.frames.last_mut().unwrap();
+        if let Child::Move {
+            score,
+            scout: scout @ true,
+            ..
+        } = &mut frame.child
+        {
+            let value = *score - child.value;
+            if value > frame.node.alpha && value < frame.node.beta {
+                *scout = false;
+                let Enter {
+                    ply,
+                    player_idx,
+                    depth,
+                    alpha,
+                    beta,
+                    ..
+                } = frame.node;
+                return Some(Enter {
+                    ply: ply + 1,
+                    player_idx: player_idx ^ 1,
+                    depth: depth - 1,
+                    alpha: *score - beta,
+                    beta: *score - alpha,
+                    scoreless: Scoreless::Counted {
+                        passes: 0,
+                        zeros: 0,
+                    },
+                });
+            }
+        }
         frame.best.complete &= child.complete;
         match std::mem::replace(&mut frame.child, Child::Moves) {
-            Child::Move { index, score, play } => {
+            Child::Move {
+                index, score, play, ..
+            } => {
                 let (mover, i) = (frame.node.player_idx, frame.next - 1);
                 self.unplace(mover, &play);
                 if self.take_value(i, index, score - child.value) {
@@ -3572,6 +3630,7 @@ impl<
             }
             Child::Moves | Child::PassDone => unreachable!("a child returned to no search"),
         }
+        None
     }
 
     // the top frame takes a move's value (Frame::take_value)
