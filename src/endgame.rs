@@ -4650,6 +4650,8 @@ impl<
         let PegBagProgress {
             position,
             splits,
+            moves_at,
+            part: _,
             threads,
             state,
             endgames: _,
@@ -4675,8 +4677,9 @@ impl<
         };
         if state.moves.is_empty() {
             // the moves are the same whatever the split: they read only the
-            // board, the mover's rack, and how many tiles the bag holds
-            let (opp_rack, bag, _) = &splits[0];
+            // board, the mover's rack, and how many tiles the bag holds (so a
+            // part's are made at the whole's first split)
+            let (opp_rack, bag) = &*moves_at;
             state.moves = in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 gc,
                 kwg,
@@ -5709,6 +5712,8 @@ pub enum PegModel {
 pub struct PegBagProgress {
     position: PegBagPosition,
     splits: Vec<(Vec<u8>, Vec<u8>, u64)>,
+    moves_at: (Vec<u8>, Vec<u8>), // the whole's first split, the moves made at it
+    part: (usize, usize),         // k of n (part)
     threads: usize,
     state: PegBagState,
     endgames: u64,
@@ -5732,7 +5737,7 @@ impl PegBagProgress {
             .into());
         }
         position.mover_rack.sort_unstable();
-        let mut splits = Vec::new();
+        let mut splits: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
         each_split(
             &position.unseen_tally,
             unseen - position.bag_size,
@@ -5744,15 +5749,50 @@ impl PegBagProgress {
                 splits.push((rack, bag.to_vec(), ways));
             },
         );
+        let moves_at: (Vec<u8>, Vec<u8>) = splits
+            .first()
+            .map(|(rack, bag, _)| (rack.clone(), bag.clone()))
+            .unwrap_or_default();
         Ok(Self {
             position,
             splits,
+            moves_at,
+            part: (0, 1),
             threads: 1,
             state: Default::default(),
             endgames: 0,
             nodes: 0,
             lanes: LanePool::new(),
         })
+    }
+
+    // made part k of n before it begins: it values only the splits whose index
+    // (in the order every part makes them) is k mod n, so n searches, one a
+    // part, value every split between them once, each move's rows (its splits
+    // with their deals, margins, chances, and draws) its own; the rows of all n
+    // merged, weighed by their deals, are the whole search's. A part given no
+    // split values each move over none (no rows)
+    #[inline]
+    pub fn part(&mut self, k: usize, n: usize) -> error::Returns<()> {
+        if k >= n {
+            return Err(format!("part: k below n, found {k} of {n}").into());
+        }
+        if !self.state.moves.is_empty() {
+            return Err("part: before the search begins".into());
+        }
+        let splits = std::mem::take(&mut self.splits);
+        self.splits = (splits.into_iter().enumerate())
+            .filter(|(i, _)| i % n == k)
+            .map(|(_, split)| split)
+            .collect();
+        self.part = (k, n);
+        Ok(())
+    }
+
+    // the part it is, k of n (0 of 1 when whole)
+    #[inline(always)]
+    pub fn part_of(&self) -> (usize, usize) {
+        self.part
     }
 
     // value the moves on this many threads from the next solve on (one unless
@@ -5874,6 +5914,8 @@ fn peg_bag_value(
             .collect();
         hyps.push((bag_tiles, *ways, equity::Equity::new(value.round() as i32)));
     }
+    // a part given no split (PegBagProgress::part) has no deals to weigh
+    let total = total.max(1);
     PegBagValue {
         win: win / total as f64,
         marg: marg / total as f64,
@@ -13310,6 +13352,93 @@ mod tests {
             score_diff,
             exchanges: [0, 0],
             model: super::PegModel::RandomDraws,
+        }
+    }
+
+    // a bag search split into n parts, each solved on its own: each move's rows
+    // of all the parts together are the whole search's rows, and weighed by
+    // their deals give its chance to win and mean margin; so for a part count
+    // past the splits too, some parts then given none
+    #[test]
+    #[inline]
+    fn a_bag_search_in_parts_merges_into_the_whole() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[1] = 2; // A
+        unseen_tally[8] = 1; // H
+        unseen_tally[19] = 1; // S
+        unseen_tally[20] = 2; // T
+        let solve = |part: Option<(usize, usize)>| {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let position = bag_position(&board, &[5, 20], &unseen_tally, 2, equity::Equity::ZERO);
+            let mut progress = super::PegBagProgress::new(position).unwrap();
+            if let Some((k, n)) = part {
+                progress.part(k, n).unwrap();
+                assert_eq!(progress.part_of(), (k, n));
+            }
+            egs.resume_peg(&mut progress, &super::Limits::NONE)
+                .unwrap()
+                .unwrap()
+        };
+        let whole = solve(None);
+        assert!(whole.exact);
+        let key = |play: &movegen::Play| match play {
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => Some((*down, *lane, *idx, word[..].to_vec(), *score)),
+            movegen::Play::Exchange { tiles } => {
+                (!tiles.is_empty()).then(|| (false, -1, -1, tiles[..].to_vec(), 0))
+            }
+        };
+        let splits = whole.moves[0].hypotheses.len();
+        assert!(splits > 1, "{splits} splits");
+        for n in [2, 3, splits + 1] {
+            let mut rows = fash::MyHashMap::default();
+            for k in 0..n {
+                let part = solve(Some((k, n)));
+                assert!(part.exact, "part {k} of {n}");
+                for valued in &part.moves {
+                    let at = rows.entry(key(&valued.play)).or_insert_with(Vec::new);
+                    for (row, &win) in valued.hypotheses.iter().zip(&valued.wins) {
+                        at.push((row.clone(), win));
+                    }
+                }
+            }
+            assert_eq!(rows.len(), whole.moves.len(), "{n} parts");
+            for valued in &whole.moves {
+                let mut merged = rows.remove(&key(&valued.play)).unwrap();
+                let mut want = (valued.hypotheses.iter().cloned())
+                    .zip(valued.wins.iter().copied())
+                    .collect::<Vec<_>>();
+                merged.sort_by(|a, b| a.0.cmp(&b.0));
+                want.sort_by(|a, b| a.0.cmp(&b.0));
+                assert_eq!(merged.len(), want.len(), "{n} parts");
+                let (mut deals, mut won, mut margin) = (0u64, 0.0f64, 0.0f64);
+                for ((row, win), (want_row, want_win)) in merged.iter().zip(&want) {
+                    assert_eq!(row, want_row, "{n} parts");
+                    assert_eq!(win, want_win, "{n} parts");
+                    deals += row.1;
+                    won += row.1 as f64 * win;
+                    margin += row.1 as f64 * row.2.raw() as f64;
+                }
+                assert!(
+                    (won / deals as f64 - valued.win_pct).abs() < 1e-9,
+                    "{n} parts"
+                );
+                assert!(
+                    (margin / deals as f64 - valued.expected_margin.raw() as f64).abs() <= 1.0,
+                    "{n} parts"
+                );
+            }
         }
     }
 
