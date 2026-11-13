@@ -282,6 +282,12 @@ struct Files {
     klv: String,
     #[arg(help = "the baseline")]
     baseline: String,
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "how many timed passes each arm makes alone, after its warming one"
+    )]
+    passes: usize,
 }
 
 #[derive(clap::Subcommand)]
@@ -542,6 +548,54 @@ fn run(
         boxed_stdout_or_stderr(),
         "Total: {total_moves} moves, {total_elapsed:?}"
     )?;
+
+    // each arm timed alone, the production table arm (detected) among them: its
+    // own generator, warmed by an untimed pass over every case, then a timed
+    // pass; the tables were built above, outside every timer
+    let mut cases = Vec::with_capacity(TEST_CASES.len());
+    for case in TEST_CASES.iter() {
+        let board_tiles = fen_parser.parse(case.fen)?.to_vec();
+        cases.push((case, board_tiles, parse_rack(alphabet, case.rack)?));
+    }
+    for &(arm, anagrams, rack_lengths, tables) in &every_arm {
+        let mut generator = movegen::KurniaMoveGenerator::new(game_config);
+        let mut timed = std::time::Duration::ZERO;
+        for pass in 0..=files.passes {
+            let warm = pass == 0;
+            for (case, board_tiles, rack) in &cases {
+                let board_snapshot = movegen::BoardSnapshot {
+                    board_tiles,
+                    game_config,
+                    kwg,
+                    anagrams,
+                    rack_lengths,
+                    klv,
+                };
+                let params = movegen::GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack,
+                    max_gen: case.max_gen,
+                    num_exchanges_by_this_player: case.num_exchanges_by_this_player,
+                    pass_policy: case.pass_policy,
+                    dynamic_leaves: None,
+                };
+                let t0 = std::time::Instant::now();
+                if tables {
+                    generator.gen_moves_unfiltered(&params);
+                } else {
+                    generator.gen_moves_unfiltered_lean(&params);
+                }
+                if !warm {
+                    timed += t0.elapsed();
+                }
+            }
+        }
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "Timed alone, {arm}: {timed:?} over {} passes",
+            files.passes
+        )?;
+    }
 
     if disagreements != 0 {
         return_error!(format!("the arms disagree on {disagreements} cases"));
