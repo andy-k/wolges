@@ -1482,6 +1482,24 @@ impl Limits {
     };
 }
 
+// n of a value for each move and split of a bag search, n none if it overflowed
+// counting: an error, not a failed allocation, when the program cannot hold
+// them (a bag of many tiles can have more splits than the memory)
+fn cells_of<T: Clone>(n: Option<usize>, value: T) -> error::Returns<Vec<T>> {
+    let refused = || -> error::BoxAnyError {
+        error::new(format!(
+            "a bag search needs {} cells for its moves and splits, more than it can hold",
+            n.map_or("too many".to_string(), |n| n.to_string())
+        ))
+        .into()
+    };
+    let n = n.ok_or_else(refused)?;
+    let mut cells = Vec::new();
+    cells.try_reserve_exact(n).map_err(|_| refused())?;
+    cells.resize(n, value);
+    Ok(cells)
+}
+
 // the most bytes the program may use, and how to read how many it holds. The
 // table grows only while the program stays within them, then replaces other
 // positions, so a solve stops on the limit only when the rest of the program
@@ -4791,7 +4809,14 @@ impl<
                 });
             }
             state.valued = state.moves.iter().map(|_| None).collect();
-            state.took = vec![std::time::Duration::ZERO; state.moves.len() * splits.len()];
+            let cells = state.moves.len().checked_mul(splits.len());
+            match cells_of(cells, std::time::Duration::ZERO) {
+                Ok(took) => state.took = took,
+                Err(e) => {
+                    state.moves.clear();
+                    return Err(e);
+                }
+            }
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
@@ -4940,7 +4965,8 @@ impl<
         let next = AtomicUsize::new(0);
         // the tasks (each a move's place in the rest of the order and a split),
         // the costliest by the pass before first, ties in the order
-        let mut taking = (0..tasks).collect::<Vec<_>>();
+        let mut taking = cells_of(Some(tasks), 0usize)?;
+        (taking.iter_mut().enumerate()).for_each(|(task, at)| *at = task);
         taking.sort_by_key(|&task| {
             let i = state.order[base + task / num_splits];
             std::cmp::Reverse(state.took[i * num_splits + task % num_splits])
@@ -5139,7 +5165,7 @@ impl<
         state.tables = kept;
         state.lanes = pools;
         let mut stopped = false;
-        let mut found = vec![None; tasks];
+        let mut found = cells_of(Some(tasks), None)?;
         for share in shares {
             let (mine, stopped_here) = share?;
             stopped |= stopped_here;
@@ -13565,6 +13591,19 @@ mod tests {
             exchanges: [0, 0],
             model: super::PegModel::RandomDraws,
         }
+    }
+
+    // cells for a bag search's moves and splits that cannot be held (a count
+    // past counting, or past what can be allocated) are an error, not a failed
+    // allocation; those that can, made
+    #[test]
+    #[inline]
+    fn cells_a_bag_search_cannot_hold_are_refused() {
+        for n in [None, Some(usize::MAX), Some(isize::MAX as usize / 2)] {
+            let message = super::cells_of(n, 0u64).unwrap_err().to_string();
+            assert!(message.contains("more than it can hold"), "{message}");
+        }
+        assert_eq!(super::cells_of(Some(3), 7u8).unwrap(), [7, 7, 7]);
     }
 
     // a bag search split into n parts, each solved on its own: each move's rows
