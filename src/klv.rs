@@ -781,28 +781,33 @@ impl MultiLeaves {
         struct Env<'a, L: kwg::Node> {
             klv: &'a Klv<L>,
             rack_tally: &'a mut [u8],
-            kept_tally: &'a mut [u8],
             best_leave_values: &'a mut [i32],
             num_tiles_on_rack: u8,
             num_kept: u8,
             adjust_leave_value: AdjustLeave,
         }
 
-        fn traverse<L: kwg::Node>(env: &mut Env<'_, L>, mut p: i32) {
-            if p <= 0 {
+        // the list at q, its first leave at index base, as for_each_tally_leave
+        // walks it: a leave's value read by its index there, not looked up from
+        // the root again; a tile seen earlier in the list is not taken again,
+        // as get_word_index_of takes the first
+        fn traverse<L: kwg::Node>(env: &mut Env<'_, L>, q: i32, base: u32) {
+            if q <= 0 {
                 return;
             }
+            let mut p = q;
             loop {
                 let node = env.klv.kwg(p);
                 let tile = node.tile();
-                if (tile as usize) < env.rack_tally.len() && env.rack_tally[tile as usize] > 0 {
+                if (tile as usize) < env.rack_tally.len()
+                    && env.rack_tally[tile as usize] > 0
+                    && !(q..p).any(|e| env.klv.kwg(e).tile() == tile)
+                {
+                    let idx = base + env.klv.counts[q as usize] - env.klv.counts[p as usize];
                     env.rack_tally[tile as usize] -= 1;
-                    env.kept_tally[tile as usize] += 1;
                     env.num_kept += 1;
                     if node.accepts() {
-                        let leave_val = env
-                            .adjust_leave_value
-                            .apply(env.klv.leave_value_from_tally(env.kept_tally));
+                        let leave_val = env.adjust_leave_value.apply(env.klv.leave(idx));
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
                             && leave_val > env.best_leave_values[num_played]
@@ -810,9 +815,8 @@ impl MultiLeaves {
                             env.best_leave_values[num_played] = leave_val;
                         }
                     }
-                    traverse(env, node.arc_index());
+                    traverse(env, node.arc_index(), idx + node.accepts() as u32);
                     env.num_kept -= 1;
-                    env.kept_tally[tile as usize] -= 1;
                     env.rack_tally[tile as usize] += 1;
                 }
                 if node.is_end() {
@@ -821,19 +825,17 @@ impl MultiLeaves {
                 p += 1;
             }
         }
-        let tally_len = rack_tally.len();
-        let mut kept_tally = vec![0u8; tally_len];
         traverse(
             &mut Env {
                 klv,
                 rack_tally,
-                kept_tally: &mut kept_tally,
                 best_leave_values,
                 num_tiles_on_rack,
                 num_kept: 0,
                 adjust_leave_value,
             },
             klv.kwg[0].arc_index(),
+            0,
         );
 
         for v in best_leave_values.iter_mut() {
@@ -1137,6 +1139,121 @@ mod tests {
             5517.0 / 128.0,
         ] {
             assert_eq!(value_text(v).parse::<f32>().unwrap(), v, "{v:e}");
+        }
+    }
+
+    // the best leave of each count kept as the walk finds it (each leave's value
+    // by its index in the walk) is the one a lookup of each kept tally from the
+    // root finds, over racks of blanks, of repeated letters, and a table that
+    // lacks some leaves
+    #[test]
+    #[inline]
+    fn the_best_leaves_by_index_are_those_by_lookup() {
+        use crate::kwg::Node;
+        fn by_lookup(
+            rack_tally: &mut [u8],
+            klv: &Klv<kwg::Node24>,
+            num_tiles_on_rack: u8,
+            kept: &mut Vec<u8>,
+            best: &mut [i32],
+            p: i32,
+        ) {
+            if p <= 0 {
+                return;
+            }
+            let mut p = p;
+            loop {
+                let node = klv.kwg(p);
+                let tile = node.tile() as usize;
+                if tile < rack_tally.len() && rack_tally[tile] > 0 {
+                    rack_tally[tile] -= 1;
+                    kept[tile] += 1;
+                    if node.accepts() {
+                        let value = klv.leave_value_from_tally(kept);
+                        let played = num_tiles_on_rack as usize
+                            - kept.iter().map(|&n| n as usize).sum::<usize>();
+                        if played < best.len() && value > best[played] {
+                            best[played] = value;
+                        }
+                    }
+                    by_lookup(
+                        rack_tally,
+                        klv,
+                        num_tiles_on_rack,
+                        kept,
+                        best,
+                        node.arc_index(),
+                    );
+                    kept[tile] -= 1;
+                    rack_tally[tile] += 1;
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+        let racks: [&[u8]; 6] = [
+            &[1, 5, 9, 14, 18, 19, 20],
+            &[0, 5, 9, 15, 18, 19, 20],
+            &[0, 0, 1, 5, 12, 14, 19],
+            &[5, 5, 5, 9, 9, 18, 20],
+            &[1, 1, 2, 3, 3, 4, 26],
+            &[17, 21, 9, 26, 24, 10, 11],
+        ];
+        // every sub-multiset of each rack up to 6 tiles, but none holding a C
+        let mut leaves = Vec::<Vec<u8>>::new();
+        for rack in racks {
+            for mask in 1u32..(1 << rack.len()) {
+                let mut leave = (0..rack.len())
+                    .filter(|&i| mask & (1 << i) != 0)
+                    .map(|i| rack[i])
+                    .collect::<Vec<_>>();
+                if leave.len() <= 6 && !leave.contains(&3) {
+                    leave.sort_unstable();
+                    leaves.push(leave);
+                }
+            }
+        }
+        leaves.sort_unstable();
+        leaves.dedup();
+        let valued = (leaves.iter())
+            .map(|leave| {
+                let v = leave.iter().fold(7i32, |a, &t| (a * 31 + t as i32) % 97);
+                (&leave[..], (v - 40) as f32 / 4.0)
+            })
+            .collect::<Vec<_>>();
+        let klv = kbwg_from_bytes_alloc(make_klv2(&valued)).unwrap();
+        for rack in racks {
+            let mut tally = vec![0u8; 27];
+            for &tile in rack {
+                tally[tile as usize] += 1;
+            }
+            let mut found = Vec::new();
+            MultiLeaves::extract_best_leave_values_from_klv(
+                &mut tally,
+                &klv,
+                rack.len() as u8,
+                AdjustLeave::Identity,
+                &mut found,
+            );
+            let mut want = vec![i32::MIN; rack.len() + 1];
+            let mut kept = vec![0u8; 27];
+            let root = klv.kwg[0].arc_index();
+            by_lookup(
+                &mut tally,
+                &klv,
+                rack.len() as u8,
+                &mut kept,
+                &mut want,
+                root,
+            );
+            for v in &mut want {
+                if *v == i32::MIN {
+                    *v = 0;
+                }
+            }
+            assert_eq!(found, want, "{rack:?}");
         }
     }
 
