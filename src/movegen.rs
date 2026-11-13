@@ -126,7 +126,7 @@ struct PossiblePlacement {
 // a placement no kept span made (the shadow pass's)
 const NO_KEPT: u32 = u32::MAX;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct MultiJump {
     left_score: i32,
     right_score: i32,
@@ -460,9 +460,10 @@ impl Taken {
 // the table walk's spans of a lane, kept until its inputs change: found by the
 // shadow pass with every letter on hand without limit, so they are every span a
 // rack can have; each with what of its bound needs no rack (rcs_placements)
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct RcsLane {
     valid: bool,
+    stamp: (u64, u64), // who found its spans and when (rcs_owner, rcs_rev)
     tiles: Vec<u8>,
     cross_bits: Vec<u64>,
     word_multipliers: Vec<i8>,
@@ -475,6 +476,34 @@ struct RcsLane {
     multipliers: Vec<Taken>, // each span's empty squares' with the square, descending, from its at
 }
 
+// a copy into a lane reuses its vectors
+impl Clone for RcsLane {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        let mut lane = Self::default();
+        lane.clone_from(self);
+        lane
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.valid = source.valid;
+        self.stamp = source.stamp;
+        self.tiles.clone_from(&source.tiles);
+        self.cross_bits.clone_from(&source.cross_bits);
+        self.word_multipliers.clone_from(&source.word_multipliers);
+        self.tile_multipliers.clone_from(&source.tile_multipliers);
+        self.perpendicular_word_multipliers
+            .clone_from(&source.perpendicular_word_multipliers);
+        self.perpendicular_scores
+            .clone_from(&source.perpendicular_scores);
+        self.jumps.clone_from(&source.jumps);
+        self.hooks = source.hooks;
+        self.spans.clone_from(&source.spans);
+        self.multipliers.clone_from(&source.multipliers);
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RcsSpan {
     anchor: i8,
@@ -485,6 +514,14 @@ struct RcsSpan {
     hooked: u64,   // its empty squares a cross word reaches, a bit each
     fixed: i32, // its board tiles' scores times its word multiplier, plus its cross words' board scores
     at: u32,
+}
+
+// a working buffer's own number, for the stamps of the lanes it finds: no two
+// buffers of a process share one
+#[inline(always)]
+fn next_rcs_owner() -> u64 {
+    static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    OWNERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 // WorkingBuffer can only be reused for the same game_config and kwg.
@@ -547,6 +584,8 @@ struct WorkingBuffer<G: LaneBits> {
     rcs_pending_cols: G,            // columns whose tiles changed since then
     rcs_stale_rows: G,              // across lanes whose kept spans may be out of date
     rcs_stale_cols: G,              // down lanes whose kept spans may be out of date
+    rcs_owner: u64,                 // this buffer's own, for its lanes' stamps (none other's)
+    rcs_rev: u64,                   // the lanes it has found, for their stamps
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
     span_memo: SpanMemo,
@@ -641,6 +680,8 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
             rcs_pending_cols: self.rcs_pending_cols,
             rcs_stale_rows: self.rcs_stale_rows,
             rcs_stale_cols: self.rcs_stale_cols,
+            rcs_owner: next_rcs_owner(),
+            rcs_rev: 0,
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
             span_memo: self.span_memo.clone(),
@@ -873,6 +914,8 @@ impl<G: LaneBits> WorkingBuffer<G> {
             rcs_pending_cols: !G::from(0),
             rcs_stale_rows: !G::from(0),
             rcs_stale_cols: !G::from(0),
+            rcs_owner: next_rcs_owner(),
+            rcs_rev: 0,
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
             span_memo: SpanMemo::new(),
@@ -6578,6 +6621,7 @@ pub struct BoardState {
     face_values: [Box<[i32]>; 2],
     perpendicular_word_multipliers: [Box<[i8]>; 2],
     perpendicular_scores: [Box<[i32]>; 2],
+    rcs_lanes: Vec<RcsLane>, // the walk's lanes, or none if changes were unread
 }
 
 impl BoardState {
@@ -6703,6 +6747,29 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             &mut state.perpendicular_scores[1],
             &w.perpendicular_scores_for_down_plays,
         );
+        if w.rcs_pending_rows != G::from(0)
+            || w.rcs_pending_cols != G::from(0)
+            || w.rcs_lanes.len() < w.board_cols as usize
+        {
+            state.rcs_lanes.clear();
+        } else {
+            let rows = w.rcs_lanes.len() - w.board_cols as usize;
+            state
+                .rcs_lanes
+                .resize(w.rcs_lanes.len(), RcsLane::default());
+            for (at, (to, from)) in state.rcs_lanes.iter_mut().zip(&w.rcs_lanes).enumerate() {
+                let stale = if at >= rows {
+                    w.rcs_stale_cols & (G::from(1) << (at - rows) as u32)
+                } else {
+                    w.rcs_stale_rows & (G::from(1) << at as u32)
+                } != G::from(0);
+                let valid = from.valid && !stale;
+                if to.stamp != from.stamp || to.valid != valid {
+                    to.clone_from(from);
+                    to.valid = valid;
+                }
+            }
+        }
     }
 
     // puts back what save_board_state kept, for a generator of the same game;
@@ -6714,13 +6781,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         if state.board_tiles.len() != w.prev_board_tiles.len() {
             return;
         }
-        // the rows and columns where the board put back differs from the one
-        // the generator last held: the table walk looks at their lanes again,
-        // its kept spans being of the board it last held. A played word reads 0
-        // on the board's tiles, so such a square keeps no letter a walk left on
-        // it (init clears only the squares it sees change)
+        // the squares where the board put back differs from the one the
+        // generator last held. A played word reads 0 on the board's tiles, so
+        // such a square keeps no letter a walk left on it (init clears only the
+        // squares it sees change)
         let cols = w.board_cols as usize;
         let rows = w.prev_board_tiles.len() / cols.max(1);
+        let keeps_lanes = !state.rcs_lanes.is_empty();
         for (idx, (&held, &kept)) in w
             .prev_board_tiles
             .iter()
@@ -6729,11 +6796,44 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         {
             if held != kept {
                 let (row, col) = (idx / cols, idx % cols);
-                w.rcs_pending_rows |= G::from(1) << row as u32;
-                w.rcs_pending_cols |= G::from(1) << col as u32;
+                // with no kept lanes, the table walk looks at these rows and
+                // columns again, its kept spans being of the board it last held
+                if !keeps_lanes {
+                    w.rcs_pending_rows |= G::from(1) << row as u32;
+                    w.rcs_pending_cols |= G::from(1) << col as u32;
+                }
                 w.word_buffer_for_across_plays[idx] = 0;
                 w.word_buffer_for_down_plays[col * rows + row] = 0;
             }
+        }
+        if keeps_lanes {
+            // the kept board's lanes, each of the inputs put back below (or not
+            // valid): a lane the generator holds a copy of stays, every other
+            // is copied, and the span sums of each one copied or marked are
+            // filled again
+            let rows = state.rcs_lanes.len() - cols;
+            if w.rcs_lanes.len() != state.rcs_lanes.len() {
+                w.rcs_lanes.clone_from(&state.rcs_lanes);
+                w.span_lanes.iter_mut().for_each(|lane| lane.kept = false);
+            } else {
+                for (at, (to, from)) in w.rcs_lanes.iter_mut().zip(&state.rcs_lanes).enumerate() {
+                    let stale = if at >= rows {
+                        w.rcs_stale_cols & (G::from(1) << (at - rows) as u32)
+                    } else {
+                        w.rcs_stale_rows & (G::from(1) << at as u32)
+                    } != G::from(0);
+                    if to.stamp != from.stamp || to.valid != from.valid {
+                        to.clone_from(from);
+                        w.span_lanes[at].kept = false;
+                    } else if stale {
+                        w.span_lanes[at].kept = false;
+                    }
+                }
+            }
+            w.rcs_pending_rows = G::from(0);
+            w.rcs_pending_cols = G::from(0);
+            w.rcs_stale_rows = G::from(0);
+            w.rcs_stale_cols = G::from(0);
         }
         copy_board_part(&mut w.prev_board_tiles, &state.board_tiles);
         copy_board_part(&mut w.transposed_board_tiles, &state.transposed_board_tiles);
@@ -10242,6 +10342,8 @@ fn rcs_placements<
             kept.perpendicular_scores
                 .extend_from_slice(perpendicular_scores);
             kept.valid = true;
+            working_buffer.rcs_rev += 1;
+            kept.stamp = (working_buffer.rcs_owner, working_buffer.rcs_rev);
         }
         // the crossing squares none of the rack's tiles fit (with a blank on
         // hand, none: a cross set's bit 0 is the blank's), and each crossing
