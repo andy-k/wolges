@@ -524,12 +524,79 @@ fn next_rcs_owner() -> u64 {
     OWNERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+// what a tile placement adds to its equity for the bag it leaves: by the bag
+// size after the play (negative when it overdraws: the bag empties and the
+// mover keeps a short rack), values[b - lowest] in millipoints for b from
+// lowest on; a size outside the values adds none, and so does any play when the
+// bag is already empty. An exchange leaves the bag as it was and gets none. The
+// values are the caller's: there are none by default.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BagTerm {
+    lowest: i16,
+    values: Box<[i32]>,
+}
+
+impl BagTerm {
+    pub fn new(lowest: i16, values: Vec<i32>) -> Self {
+        Self {
+            lowest,
+            values: values.into_boxed_slice(),
+        }
+    }
+
+    // the term for a play leaving bag_after tiles in the bag
+    #[inline(always)]
+    pub fn at(&self, bag_after: i16) -> i32 {
+        usize::try_from(bag_after as i32 - self.lowest as i32)
+            .ok()
+            .and_then(|i| self.values.get(i).copied())
+            .unwrap_or(0)
+    }
+
+    // "b value" lines, value in points (blank lines and # comments skipped)
+    pub fn parse(text: &str) -> error::Returns<Self> {
+        let mut pairs = Vec::new();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut it = line.split_whitespace();
+            let (Some(b), Some(v), None) = (it.next(), it.next(), it.next()) else {
+                return_error!(format!("a bag term line is \"b value\", not {line:?}"));
+            };
+            let b: i16 = b.parse()?;
+            let v: f64 = v.parse()?;
+            let v = (v * equity::SCALE as f64).round();
+            if !v.is_finite() || v.abs() > (i32::MAX / 4) as f64 {
+                return_error!(format!("the bag term {v} for {b} is out of range"));
+            }
+            pairs.push((b, v as i32));
+        }
+        let Some(lowest) = pairs.iter().map(|&(b, _)| b).min() else {
+            return_error!("a bag term needs at least one value".to_string());
+        };
+        let highest = pairs.iter().map(|&(b, _)| b).max().unwrap();
+        let mut values = vec![0i32; (highest as i32 - lowest as i32 + 1) as usize];
+        let mut seen = vec![false; values.len()];
+        for (b, v) in pairs {
+            let i = (b - lowest) as usize;
+            if seen[i] {
+                return_error!(format!("the bag term for {b} is given twice"));
+            }
+            seen[i] = true;
+            values[i] = v;
+        }
+        Ok(Self::new(lowest, values))
+    }
+}
+
 // WorkingBuffer can only be reused for the same game_config and kwg.
 // (The kwg is partially cached in cached_cross_set.)
 // WorkingBuffer can also be reset for reuse with another kwg by calling
 // reset_for_another_kwg().
 // This is not enforced.
-struct WorkingBuffer<G: LaneBits> {
+struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool> {
     rack_tally: [u8; MAX_ALPHABET_LEN],
     word_buffer_for_across_plays: Box<[u8]>,     // r*c
     word_buffer_for_down_plays: Box<[u8]>,       // c*r
@@ -563,6 +630,7 @@ struct WorkingBuffer<G: LaneBits> {
     prev_tile_score: i32,  // board_tile_score for prev_board_tiles (with no 0xff)
     num_tiles_in_bag: i16, // negative when players also have less than full racks
     play_out_bonus: i32,
+    bag_term: Option<BagTerm>, // the caller's, if any
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
@@ -608,7 +676,7 @@ struct WorkingBuffer<G: LaneBits> {
     is_census: bool,
 }
 
-impl<G: LaneBits> Clone for WorkingBuffer<G> {
+impl<G: LaneBits, const BAG_TERM: bool> Clone for WorkingBuffer<G, BAG_TERM> {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
@@ -659,6 +727,7 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
             prev_tile_score: self.prev_tile_score,
             num_tiles_in_bag: self.num_tiles_in_bag,
             play_out_bonus: self.play_out_bonus,
+            bag_term: self.bag_term.clone(),
             num_tiles_on_rack: self.num_tiles_on_rack,
             rack_bits: self.rack_bits,
             multi_leaves: self.multi_leaves.clone(),
@@ -762,6 +831,7 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
         self.prev_tile_score.clone_from(&source.prev_tile_score);
         self.num_tiles_in_bag.clone_from(&source.num_tiles_in_bag);
         self.play_out_bonus.clone_from(&source.play_out_bonus);
+        self.bag_term.clone_from(&source.bag_term);
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
         self.rack_bits.clone_from(&source.rack_bits);
         self.multi_leaves.clone_from(&source.multi_leaves);
@@ -812,7 +882,7 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
     }
 }
 
-impl<G: LaneBits> WorkingBuffer<G> {
+impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
     fn new(game_config: &game_config::GameConfig) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
@@ -892,6 +962,7 @@ impl<G: LaneBits> WorkingBuffer<G> {
             prev_tile_score: 0,
             num_tiles_in_bag: 0,
             play_out_bonus: 0,
+            bag_term: None,
             num_tiles_on_rack: 0,
             rack_bits: 0,
             multi_leaves: klv::MultiLeaves::new(),
@@ -1108,6 +1179,24 @@ impl<G: LaneBits> WorkingBuffer<G> {
             0
         };
         self.play_out_bonus = play_out_bonus;
+        // the bag term by tiles played: none for none played (a pass or an
+        // exchange), none when the bag is already empty
+        if BAG_TERM {
+            match &self.bag_term {
+                Some(bag_term) if self.num_tiles_in_bag > 0 => {
+                    let bag = self.num_tiles_in_bag;
+                    self.multi_leaves
+                        .set_bag_terms((0..=self.num_tiles_on_rack as i16).map(|num_played| {
+                            if num_played == 0 {
+                                0
+                            } else {
+                                bag_term.at(bag - num_played)
+                            }
+                        }));
+                }
+                _ => self.multi_leaves.set_bag_terms(std::iter::empty()),
+            }
+        }
 
         self.descending_scores.clear();
         self.descending_scores
@@ -1192,6 +1281,11 @@ impl<G: LaneBits> WorkingBuffer<G> {
                         self.num_tiles_in_bag.max(0) as usize,
                     );
                 }
+                // each placement's leave with its bag term, so every bound read
+                // from the leaves has it too
+                if BAG_TERM {
+                    self.multi_leaves.add_bag_terms();
+                }
                 self.multi_leaves
                     .extract_raw_best_leave_values(&mut self.best_leave_values);
             } else {
@@ -1202,6 +1296,11 @@ impl<G: LaneBits> WorkingBuffer<G> {
                     adjust_leave_value,
                     &mut self.best_leave_values,
                 );
+                if BAG_TERM {
+                    for (num_played, v) in self.best_leave_values.iter_mut().enumerate() {
+                        *v += self.multi_leaves.bag_term(num_played);
+                    }
+                }
             }
         }
         for i in 0..=self.num_tiles_on_rack {
@@ -2125,8 +2224,9 @@ fn fill_key_check<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
-    working_buffer: &mut WorkingBuffer<G>,
+    working_buffer: &mut WorkingBuffer<G, BAG_TERM>,
     board_snapshot: &BoardSnapshot<'a, N, L>,
     dim: &matrix::Dim,
     down: bool,
@@ -3510,8 +3610,10 @@ struct TableWalkParams<
     span_multiplied: u128,         // of those, the ones with a word multiplier
 }
 
+// BAG_TERM: whether the generation has a bag term (MultiLeaves::bag_terms),
+// which a leave read from the klv adds here; a table's leaves have it already
 #[inline(always)]
-fn leave_value_of<L: kwg::Node>(
+fn leave_value_of<const BAG_TERM: bool, L: kwg::Node>(
     multi_leaves: &klv::MultiLeaves,
     klv: &klv::Klv<L>,
     rack_tally: &[u8],
@@ -3534,7 +3636,12 @@ fn leave_value_of<L: kwg::Node>(
             -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
         }
     } else {
-        klv.leave_value_from_tally(rack_tally)
+        let leave_value = klv.leave_value_from_tally(rack_tally);
+        if BAG_TERM {
+            leave_value + multi_leaves.bag_term_of_kept(rack_tally)
+        } else {
+            leave_value
+        }
     }
 }
 
@@ -3596,6 +3703,7 @@ macro_rules! strip_at {
 fn gen_classic_place_moves_lean<
     'a,
     const LEAVES: bool,
+    const BAG_TERM: bool,
     R: RunLetters,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
@@ -3633,6 +3741,7 @@ fn gen_classic_place_moves_lean<
     fn record<
         const SPELL_ONCE: bool,
         const LEAVES: bool,
+        const BAG_TERM: bool,
         R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
@@ -3658,7 +3767,7 @@ fn gen_classic_place_moves_lean<
         let leave_value = if SPELL_ONCE || !LEAVES {
             0
         } else {
-            leave_value_of(
+            leave_value_of::<BAG_TERM, _>(
                 env.params.multi_leaves,
                 env.params.board_snapshot.klv,
                 env.params.rack_tally,
@@ -3688,6 +3797,7 @@ fn gen_classic_place_moves_lean<
     fn play_right<
         const SPELL_ONCE: bool,
         const LEAVES: bool,
+        const BAG_TERM: bool,
         R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
@@ -3720,7 +3830,7 @@ fn gen_classic_place_moves_lean<
             && idx - env.idx_left >= 2
             && node.accepts()
         {
-            record::<SPELL_ONCE, LEAVES, _, _, _, _>(env, acc, env.idx_left, idx);
+            record::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(env, acc, env.idx_left, idx);
         }
         if env.num_played >= env.params.num_max_played {
             return;
@@ -3794,7 +3904,7 @@ fn gen_classic_place_moves_lean<
                         let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
-                        play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
+                        play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                             env,
                             &mut if SPELL_ONCE {
                                 Accumulator {
@@ -3834,7 +3944,7 @@ fn gen_classic_place_moves_lean<
                     {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
+                        play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                             env,
                             &mut Accumulator { ..*blank_acc },
                             p,
@@ -3885,6 +3995,7 @@ fn gen_classic_place_moves_lean<
     fn play_left<
         const SPELL_ONCE: bool,
         const LEAVES: bool,
+        const BAG_TERM: bool,
         R: RunLetters,
         CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
@@ -3930,7 +4041,12 @@ fn gen_classic_place_moves_lean<
         }
         let mut node = env.params.board_snapshot.kwg[p];
         if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
-            record::<SPELL_ONCE, LEAVES, _, _, _, _>(env, acc, idx + 1, env.params.anchor + 1);
+            record::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
+                env,
+                acc,
+                idx + 1,
+                env.params.anchor + 1,
+            );
         }
         if env.num_played >= env.params.num_max_played {
             return;
@@ -3978,7 +4094,7 @@ fn gen_classic_place_moves_lean<
                 if node.tile() == 0 {
                     // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
                     env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
+                    play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                         env,
                         acc,
                         turnaround_p,
@@ -4046,7 +4162,7 @@ fn gen_classic_place_moves_lean<
                 if tile == 0 {
                     env.num_played -= 1;
                     env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, LEAVES, _, _, _, _>(
+                    play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                         env,
                         acc,
                         p,
@@ -4061,7 +4177,7 @@ fn gen_classic_place_moves_lean<
                         let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
-                        play_left::<SPELL_ONCE, LEAVES, _, _, _, _>(
+                        play_left::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                             env,
                             &mut if SPELL_ONCE {
                                 Accumulator {
@@ -4101,7 +4217,7 @@ fn gen_classic_place_moves_lean<
                     {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_left::<SPELL_ONCE, LEAVES, _, _, _, _>(
+                        play_left::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                             env,
                             &mut Accumulator { ..*blank_acc },
                             p,
@@ -4185,9 +4301,21 @@ fn gen_classic_place_moves_lean<
         leave_idx: pass_leave_idx,
     };
     if is_census {
-        play_left::<true, LEAVES, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
+        play_left::<true, LEAVES, BAG_TERM, _, _, _, _>(
+            &mut env,
+            &mut acc,
+            1,
+            anchor,
+            single_tile_plays,
+        );
     } else {
-        play_left::<false, LEAVES, _, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
+        play_left::<false, LEAVES, BAG_TERM, _, _, _, _>(
+            &mut env,
+            &mut acc,
+            1,
+            anchor,
+            single_tile_plays,
+        );
     }
 }
 
@@ -5388,9 +5516,11 @@ impl JumbledMultisets {
     }
 }
 
+// BAG_TERM: the generator's, as leave_value_of's
 #[inline]
 fn gen_jumbled_place_moves<
     'a,
+    const BAG_TERM: bool,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
@@ -5473,7 +5603,12 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn record<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+    fn record<
+        const BAG_TERM: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
     ) {
@@ -5485,7 +5620,7 @@ fn gen_jumbled_place_moves<
                 .game_config
                 .num_played_bonus(env.num_played) as i32
                 * equity::SCALE;
-        let leave_value = leave_value_of(
+        let leave_value = leave_value_of::<BAG_TERM, _>(
             env.params.multi_leaves,
             env.params.board_snapshot.klv,
             env.params.rack_tally,
@@ -5507,7 +5642,12 @@ fn gen_jumbled_place_moves<
         );
     }
 
-    fn fill_span<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+    fn fill_span<
+        const BAG_TERM: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         mut idx: i8,
@@ -5516,7 +5656,7 @@ fn gen_jumbled_place_moves<
             idx += 1;
         }
         if idx >= env.idx_right {
-            record(env, acc);
+            record::<BAG_TERM, _, _, _>(env, acc);
             return;
         }
         if env.square_bounded && env.params.threshold != i32::MIN {
@@ -5600,7 +5740,7 @@ fn gen_jumbled_place_moves<
                 let tile_value =
                     env.alphabet.score(tile) as i32 * equity::SCALE * tile_multiplier as i32;
                 env.params.word_strip_buffer[idx as usize] = tile;
-                fill_span(
+                fill_span::<BAG_TERM, _, _, _>(
                     env,
                     &Accumulator {
                         main_score: acc.main_score + tile_value,
@@ -5621,7 +5761,7 @@ fn gen_jumbled_place_moves<
             {
                 env.params.rack_tally[0] -= 1;
                 env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                fill_span(env, blank_acc, idx + 1);
+                fill_span::<BAG_TERM, _, _, _>(env, blank_acc, idx + 1);
                 env.params.rack_tally[0] += 1;
             }
             env.unplaced[tile as usize] += 1;
@@ -5824,7 +5964,7 @@ fn gen_jumbled_place_moves<
                             env.unplaced[tile as usize] += 1;
                             env.unplaced_bits |= 1 << tile;
                         }
-                        fill_span(
+                        fill_span::<BAG_TERM, _, _, _>(
                             &mut env,
                             &Accumulator {
                                 main_score: main_score_left + main_score_right,
@@ -5881,6 +6021,7 @@ fn gen_jumbled_place_moves<
 fn gen_place_moves_lean<
     'a,
     const LEAVES: bool,
+    const BAG_TERM: bool,
     R: RunLetters,
     CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
@@ -5892,13 +6033,17 @@ fn gen_place_moves_lean<
     runs: R,
 ) {
     match params.board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic => gen_classic_place_moves_lean::<LEAVES, _, _, _, _>(
-            params,
-            single_tile_plays,
-            left_bounds,
-            runs,
-        ),
-        game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
+        game_config::GameRules::Classic => {
+            gen_classic_place_moves_lean::<LEAVES, BAG_TERM, _, _, _, _>(
+                params,
+                single_tile_plays,
+                left_bounds,
+                runs,
+            )
+        }
+        game_config::GameRules::Jumbled => {
+            gen_jumbled_place_moves::<BAG_TERM, _, _, _>(params, single_tile_plays)
+        }
     }
 }
 
@@ -5909,10 +6054,11 @@ struct GenPlaceMovesAtParams<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 > {
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     placement: &'a PossiblePlacement,
     num_max_played: u8,
@@ -5929,8 +6075,9 @@ fn gen_place_moves_at_lean<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
-    p: GenPlaceMovesAtParams<'a, R, FoundPlaceMove, N, L, G>,
+    p: GenPlaceMovesAtParams<'a, R, FoundPlaceMove, N, L, G, BAG_TERM>,
 ) {
     let GenPlaceMovesAtParams {
         runs,
@@ -5962,7 +6109,7 @@ fn gen_place_moves_at_lean<
     let bounds_at = working_buffer.bounds_at;
     let stride = dim.rows.max(dim.cols) as usize + 1;
     let left_bounds = &working_buffer.anchor_left_bounds[bounds_at..bounds_at + 2 * stride];
-    gen_place_moves_lean::<true, _, _, _, _>(
+    gen_place_moves_lean::<true, BAG_TERM, _, _, _, _>(
         &mut GenPlaceMovesParams {
             board_snapshot,
             board_strip: if placement.down {
@@ -6060,8 +6207,9 @@ fn gen_place_moves_at<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
-    p: GenPlaceMovesAtParams<'a, (), FoundPlaceMove, N, L, G>,
+    p: GenPlaceMovesAtParams<'a, (), FoundPlaceMove, N, L, G, BAG_TERM>,
 ) {
     let GenPlaceMovesAtParams {
         runs: (),
@@ -6641,18 +6789,20 @@ pub struct Steer<'a> {
 // (true; the wasm's false, so no walk that jumps is compiled for it); and
 // whether it keeps the lean arm's copy for any side beside those for 15 by 15
 // and 21 by 21 (true; the wasm's false, so it takes those two boards alone,
-// each by its own copy, the raw walk's too).
+// each by its own copy, the raw walk's too). BAG_TERM: whether it adds the bag
+// term a caller sets (with_bag_term); false, the default, has none of it.
 pub struct KurniaMoveGenerator<
     G: LaneBits = u128,
     const JUMPS: bool = true,
     const ANY_SIDE: bool = true,
+    const BAG_TERM: bool = false,
 > {
-    working_buffer: WorkingBuffer<G>,
+    working_buffer: WorkingBuffer<G, BAG_TERM>,
     pub plays: Vec<ValuedMove>,
 }
 
-impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> Clone
-    for KurniaMoveGenerator<G, JUMPS, ANY_SIDE>
+impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool> Clone
+    for KurniaMoveGenerator<G, JUMPS, ANY_SIDE, BAG_TERM>
 {
     #[inline(always)]
     fn clone(&self) -> Self {
@@ -6669,7 +6819,29 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> Clone
     }
 }
 
+impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
+    KurniaMoveGenerator<G, JUMPS, ANY_SIDE, true>
+{
+    // the bag term each later generation adds to a tile placement's equity
+    // (None: none)
+    #[inline(always)]
+    pub fn set_bag_term(&mut self, bag_term: Option<BagTerm>) {
+        self.working_buffer.bag_term = bag_term;
+    }
+}
+
 impl KurniaMoveGenerator {
+    // a generator adding the bag term (set_bag_term), starting with this one
+    #[inline(always)]
+    pub fn with_bag_term(
+        game_config: &game_config::GameConfig,
+        bag_term: BagTerm,
+    ) -> KurniaMoveGenerator<u128, true, true, true> {
+        let mut move_generator = KurniaMoveGenerator::<u128, true, true, true>::new_in(game_config);
+        move_generator.set_bag_term(Some(bag_term));
+        move_generator
+    }
+
     #[inline(always)]
     pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self::new_in(game_config)
@@ -6713,7 +6885,9 @@ fn copy_board_part<T: Clone>(to: &mut Box<[T]>, from: &[T]) {
     }
 }
 
-impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G, JUMPS, ANY_SIDE> {
+impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
+    KurniaMoveGenerator<G, JUMPS, ANY_SIDE, BAG_TERM>
+{
     // a generator whose sets of rows and of columns are G; a board with more
     // rows or columns than G holds is refused
     #[inline(always)]
@@ -7159,7 +7333,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         let dim = board_snapshot.game_config.board_layout().dim();
         if working_buffer.num_tiles_on_board == 0 {
             if ANY_SIDE {
-                gen_empty_board_place_moves::<0, _, _, _, _, _>(
+                gen_empty_board_place_moves::<0, _, _, _, _, _, _>(
                     runs,
                     board_snapshot,
                     working_buffer,
@@ -7168,7 +7342,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     found_place_move,
                 );
             } else if dim.rows == 15 {
-                gen_empty_board_place_moves::<15, _, _, _, _, _>(
+                gen_empty_board_place_moves::<15, _, _, _, _, _, _>(
                     runs,
                     board_snapshot,
                     working_buffer,
@@ -7177,7 +7351,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     found_place_move,
                 );
             } else {
-                gen_empty_board_place_moves::<21, _, _, _, _, _>(
+                gen_empty_board_place_moves::<21, _, _, _, _, _, _>(
                     runs,
                     board_snapshot,
                     working_buffer,
@@ -7187,7 +7361,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 );
             }
         } else if ANY_SIDE {
-            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _>(
+            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _, _>(
                 runs,
                 board_snapshot,
                 working_buffer,
@@ -7195,7 +7369,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 found_place_move,
             );
         } else if dim.rows == 15 {
-            kurnia_gen_raw_place_moves::<15, u32, _, _, _, _, _>(
+            kurnia_gen_raw_place_moves::<15, u32, _, _, _, _, _, _>(
                 runs,
                 board_snapshot,
                 working_buffer,
@@ -7203,7 +7377,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 found_place_move,
             );
         } else {
-            kurnia_gen_raw_place_moves::<21, u32, _, _, _, _, _>(
+            kurnia_gen_raw_place_moves::<21, u32, _, _, _, _, _, _>(
                 runs,
                 board_snapshot,
                 working_buffer,
@@ -7336,7 +7510,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             };
         // a rack of one tile has its plays from the cross sets, with no walk
         if working_buffer.num_tiles_on_rack == 1 {
-            lean_cross_sets::<0, _, _, _>(params.board_snapshot, working_buffer);
+            lean_cross_sets::<0, _, _, _, _>(params.board_snapshot, working_buffer);
             kurnia_gen_one_tile_moves(
                 params.board_snapshot,
                 working_buffer,
@@ -7344,7 +7518,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 found_place_move,
             );
         } else if working_buffer.num_tiles_on_board == 0 {
-            gen_empty_board_place_moves::<0, _, _, _, _, _>(
+            gen_empty_board_place_moves::<0, _, _, _, _, _, _>(
                 (),
                 params.board_snapshot,
                 working_buffer,
@@ -7355,7 +7529,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             breathe().await;
         } else {
             for _ in
-                kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
+                kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _, _>(KurniaIterParams {
                     runs: (),
                     board_snapshot: params.board_snapshot,
                     working_buffer,
@@ -7373,9 +7547,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         // with the threshold above the best an exchange can be, push_move would
         // turn each one away
         if threshold.get()
-            <= best_exchange_equity(
+            <= best_exchange_equity::<BAG_TERM>(
                 params.board_snapshot.game_config,
                 &working_buffer.best_leave_values,
+                &multi_leaves,
             )
         {
             kurnia_gen_exchange_moves(
@@ -7962,7 +8137,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             working_buffer.lane_rows = allowed_rows & keep_rows;
             working_buffer.lane_cols = allowed_cols & keep_cols;
         }
-        for _ in kurnia_gen_place_moves_iter::<D, W, T, _, _, _, _, _, _>(KurniaIterParams {
+        for _ in kurnia_gen_place_moves_iter::<D, W, T, _, _, _, _, _, _, _>(KurniaIterParams {
             runs: (),
             board_snapshot: params.board_snapshot,
             working_buffer: &mut *working_buffer,
@@ -7977,9 +8152,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         // with the threshold above the best an exchange can be, push_move would
         // turn each one away
         if threshold.get()
-            <= best_exchange_equity(
+            <= best_exchange_equity::<BAG_TERM>(
                 params.board_snapshot.game_config,
                 &working_buffer.best_leave_values,
+                &multi_leaves,
             )
         {
             kurnia_gen_exchange_moves(
@@ -8188,7 +8364,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             // a rack of one tile has its plays from the cross sets, with no
             // walk
             _ if working_buffer.num_tiles_on_rack == 1 => {
-                lean_cross_sets::<D, _, _, _>(params.board_snapshot, working_buffer);
+                lean_cross_sets::<D, _, _, _, _>(params.board_snapshot, working_buffer);
                 kurnia_gen_one_tile_moves(
                     params.board_snapshot,
                     working_buffer,
@@ -8196,7 +8372,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                     found_place_move,
                 );
             }
-            Some(runs) if empty => gen_empty_board_place_moves::<D, _, _, _, _, _>(
+            Some(runs) if empty => gen_empty_board_place_moves::<D, _, _, _, _, _, _>(
                 runs,
                 params.board_snapshot,
                 working_buffer,
@@ -8204,7 +8380,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 current_threshold(),
                 found_place_move,
             ),
-            None if empty => gen_empty_board_place_moves::<D, _, _, _, _, _>(
+            None if empty => gen_empty_board_place_moves::<D, _, _, _, _, _, _>(
                 (),
                 params.board_snapshot,
                 working_buffer,
@@ -8213,7 +8389,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 found_place_move,
             ),
             Some(runs) => {
-                for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _>(
+                for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _, _>(
                     KurniaIterParams {
                         runs,
                         board_snapshot: params.board_snapshot,
@@ -8226,7 +8402,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
                 ) {}
             }
             None => {
-                for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _>(
+                for _ in kurnia_gen_place_moves_iter_lean::<D, W, _, _, _, _, _, _, _, _>(
                     KurniaIterParams {
                         runs: (),
                         board_snapshot: params.board_snapshot,
@@ -8242,9 +8418,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
         // with the threshold above the best an exchange can be, push_move would
         // turn each one away
         if threshold.get()
-            <= best_exchange_equity(
+            <= best_exchange_equity::<BAG_TERM>(
                 params.board_snapshot.game_config,
                 &working_buffer.best_leave_values,
+                &multi_leaves,
             )
         {
             kurnia_gen_exchange_moves(
@@ -8597,9 +8774,9 @@ fn push_kept<K: Kept, F: FnMut() -> Play>(
 // when it is pushed unconditionally (else a worse play takes its place); a walk
 // can start from it
 #[inline(always)]
-fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits>(
+fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool>(
     params: &GenMovesParams<'_, N, L>,
-    working_buffer: &mut WorkingBuffer<G>,
+    working_buffer: &mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &klv::MultiLeaves,
     equity_predicate: &EquityPredicate<'_>,
 ) -> Option<equity::Equity> {
@@ -8619,8 +8796,14 @@ fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits>(
             .take(most + 1)
             .skip(1)
         {
+            // an exchange gets no bag term: take it back out, when there is one
             sure.push(equity::Equity::new(best_leave_value.saturating_sub(
-                game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE,
+                game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE
+                    + if BAG_TERM {
+                        multi_leaves.bag_term(exchanged)
+                    } else {
+                        0
+                    },
             )));
         }
     }
@@ -8646,15 +8829,21 @@ fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits>(
 // one or more go, best_leave_values less the bonus for playing them (an
 // exchange plays none)
 #[inline(always)]
-fn best_exchange_equity(
+fn best_exchange_equity<const BAG_TERM: bool>(
     game_config: &game_config::GameConfig,
     best_leave_values: &[i32],
+    multi_leaves: &klv::MultiLeaves,
 ) -> equity::Equity {
     equity::Equity::new(
         (1..best_leave_values.len())
             .map(|exchanged| {
                 best_leave_values[exchanged].saturating_sub(
-                    game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE,
+                    game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE
+                        + if BAG_TERM {
+                            multi_leaves.bag_term(exchanged)
+                        } else {
+                            0
+                        },
                 )
             })
             .max()
@@ -8669,9 +8858,10 @@ fn kurnia_gen_exchange_moves<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &mut WorkingBuffer<G>,
+    working_buffer: &mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &klv::MultiLeaves,
     num_exchanges_by_this_player: i16,
     found_exchange_move: FoundExchangeMove,
@@ -8680,6 +8870,22 @@ fn kurnia_gen_exchange_moves<
         && num_exchanges_by_this_player < board_snapshot.game_config.exchanges_allowed_per_player()
     {
         if multi_leaves.is_dense() {
+            // the table's leaves have the bag term, which an exchange takes back
+            if BAG_TERM {
+                let mut found_exchange_move = found_exchange_move;
+                multi_leaves.kurnia_gen_exchange_moves_unconditionally(
+                    |exchanged_tiles: &[u8], leave_value: i32| {
+                        found_exchange_move(
+                            exchanged_tiles,
+                            leave_value - multi_leaves.bag_term(exchanged_tiles.len()),
+                        )
+                    },
+                    &mut working_buffer.rack_tally,
+                    &mut working_buffer.exchange_buffer,
+                    working_buffer.num_tiles_in_bag as usize,
+                );
+                return;
+            }
             multi_leaves.kurnia_gen_exchange_moves_unconditionally(
                 found_exchange_move,
                 &mut working_buffer.rack_tally,
@@ -8702,9 +8908,15 @@ fn kurnia_gen_exchange_moves<
 // empty board, the board kept as the last one seen, and what init leaves to be
 // done after the cross sets
 #[inline(always)]
-fn lean_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node, G: LaneBits>(
+fn lean_cross_sets<
+    const D: usize,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+    const BAG_TERM: bool,
+>(
     board_snapshot: &BoardSnapshot<'_, N, L>,
-    working_buffer: &mut WorkingBuffer<G>,
+    working_buffer: &mut WorkingBuffer<G, BAG_TERM>,
 ) {
     let board_layout = board_snapshot.game_config.board_layout();
     let fixed;
@@ -8821,9 +9033,9 @@ struct StarLane<'a> {
 // is handed each leave value with the opening's penalty. One copy serves every
 // generation, by the dyn callback.
 #[inline(never)]
-fn walk_jumbled_star_lanes<'a, N: kwg::Node, L: kwg::Node, G: LaneBits>(
+fn walk_jumbled_star_lanes<'a, N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     lanes: [Option<(bool, i8, i8)>; 2],
     threshold: i32,
@@ -8851,7 +9063,7 @@ fn walk_jumbled_star_lanes<'a, N: kwg::Node, L: kwg::Node, G: LaneBits>(
             );
             threshold
         };
-        gen_jumbled_place_moves(
+        gen_jumbled_place_moves::<BAG_TERM, _, _, _>(
             &mut GenPlaceMovesParams {
                 board_snapshot,
                 board_strip: if down {
@@ -8938,15 +9150,16 @@ fn gen_empty_board_place_moves<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     threshold: i32,
     mut found_place_move: FoundPlaceMove,
 ) {
-    lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
+    lean_cross_sets::<D, _, _, _, _>(board_snapshot, working_buffer);
     gen_empty_board_place_moves_made(
         runs,
         board_snapshot,
@@ -8960,10 +9173,17 @@ fn gen_empty_board_place_moves<
 // gen_empty_board_place_moves once the cross sets are made, one copy for every
 // generation, by the dyn callback
 #[inline(never)]
-fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Node, G: LaneBits>(
+fn gen_empty_board_place_moves_made<
+    'a,
+    R: RunLetters,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+    const BAG_TERM: bool,
+>(
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     threshold: i32,
     found_place_move: FoundPlaceMoveFn<'_>,
@@ -9019,7 +9239,13 @@ fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Nod
     // those to its left from the nearest, then those to its right), its blanks
     // on the rest
     #[inline(always)]
-    fn lay<const SPELL_ONCE: bool, R: RunLetters, N: kwg::Node, L: kwg::Node>(
+    fn lay<
+        const SPELL_ONCE: bool,
+        const BAG_TERM: bool,
+        R: RunLetters,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, R, N, L>,
         len: usize,
         leave_idx: u32,
@@ -9080,7 +9306,7 @@ fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Nod
             }
             return;
         }
-        let leave_value = leave_value_of(
+        let leave_value = leave_value_of::<BAG_TERM, _>(
             env.multi_leaves,
             env.board_snapshot.klv,
             env.rack_tally,
@@ -9126,7 +9352,13 @@ fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Nod
     // the words from the run of nodes at p, with depth tiles before them; a
     // census's each once, a blank taken only for a letter the rack has run out
     // of, as the walk takes it
-    fn walk<const SPELL_ONCE: bool, R: RunLetters, N: kwg::Node, L: kwg::Node>(
+    fn walk<
+        const SPELL_ONCE: bool,
+        const BAG_TERM: bool,
+        R: RunLetters,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, R, N, L>,
         mut p: i32,
         depth: usize,
@@ -9159,10 +9391,10 @@ fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Nod
                     env.tile_values[depth] = env.alphabet.score(tile) as i32 * equity::SCALE;
                     let leave_idx = leave_idx.wrapping_sub(env.multi_leaves.place_value(tile));
                     if len >= 2 && node.accepts() {
-                        lay::<SPELL_ONCE, _, _, _>(env, len, leave_idx);
+                        lay::<SPELL_ONCE, BAG_TERM, _, _, _>(env, len, leave_idx);
                     }
                     if next > 0 {
-                        walk::<SPELL_ONCE, _, _, _>(env, next, len, leave_idx);
+                        walk::<SPELL_ONCE, BAG_TERM, _, _, _>(env, next, len, leave_idx);
                     }
                     env.rack_bits ^= spent;
                     env.rack_tally[tile as usize] += 1;
@@ -9173,10 +9405,10 @@ fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Nod
                     env.tile_values[depth] = env.alphabet.scaled_score(0);
                     let leave_idx = leave_idx.wrapping_sub(env.multi_leaves.place_value(0));
                     if len >= 2 && node.accepts() {
-                        lay::<SPELL_ONCE, _, _, _>(env, len, leave_idx);
+                        lay::<SPELL_ONCE, BAG_TERM, _, _, _>(env, len, leave_idx);
                     }
                     if next > 0 {
-                        walk::<SPELL_ONCE, _, _, _>(env, next, len, leave_idx);
+                        walk::<SPELL_ONCE, BAG_TERM, _, _, _>(env, next, len, leave_idx);
                     }
                     env.rack_tally[0] += 1;
                 }
@@ -9282,9 +9514,11 @@ fn gen_empty_board_place_moves_made<'a, R: RunLetters, N: kwg::Node, L: kwg::Nod
         runs,
     };
     if is_census {
-        walk::<true, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
+        walk::<true, false, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
+    } else if BAG_TERM {
+        walk::<false, true, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
     } else {
-        walk::<false, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
+        walk::<false, false, _, _, _>(env, root, 0, multi_leaves.pass_leave_idx());
     }
 }
 
@@ -9297,10 +9531,11 @@ struct KurniaIterParams<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 > {
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     found_place_move: FoundPlaceMove,
     can_accept: CanAccept,
@@ -9319,8 +9554,9 @@ fn kurnia_gen_place_moves_iter_lean<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
-    p: KurniaIterParams<'a, R, FoundPlaceMove, CanAccept, CurrentThreshold, N, L, G>,
+    p: KurniaIterParams<'a, R, FoundPlaceMove, CanAccept, CurrentThreshold, N, L, G, BAG_TERM>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         runs,
@@ -9344,7 +9580,7 @@ fn kurnia_gen_place_moves_iter_lean<
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
-    lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
+    lean_cross_sets::<D, _, _, _, _>(board_snapshot, working_buffer);
 
     let feasible_lengths = feasible_word_lengths::<false>(
         board_snapshot.anagrams,
@@ -9482,7 +9718,7 @@ fn kurnia_gen_place_moves_iter_lean<
             if can_accept(equity) {
                 let placement = working_buffer.found_placements[idx as usize];
                 working_buffer.bounds_at = idx as usize * 2 * bounds_stride;
-                gen_place_moves_at_lean::<D, _, _, _, _, _>(GenPlaceMovesAtParams {
+                gen_place_moves_at_lean::<D, _, _, _, _, _, _>(GenPlaceMovesAtParams {
                     runs,
                     board_snapshot,
                     working_buffer,
@@ -9539,10 +9775,11 @@ fn kurnia_gen_raw_place_moves<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     runs: R,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     mut found_place_move: FoundPlaceMove,
 ) {
@@ -9551,7 +9788,7 @@ fn kurnia_gen_raw_place_moves<
     let num_max_played = game_config
         .rack_size()
         .min(working_buffer.num_tiles_on_rack);
-    lean_cross_sets::<D, _, _, _>(board_snapshot, working_buffer);
+    lean_cross_sets::<D, _, _, _, _>(board_snapshot, working_buffer);
     // a rack of one tile, whose every play places that tile alone: the plays
     // the cross sets give, in the classic walk's order where the graph's runs
     // ascend
@@ -9693,7 +9930,7 @@ fn kurnia_gen_raw_place_moves<
         };
         for &(anchor, leftmost, rightmost) in anchors.iter().rev() {
             // a raw generation drops the leave, so the walk need not find it
-            gen_place_moves_lean::<false, _, _, _, _>(
+            gen_place_moves_lean::<false, false, _, _, _, _>(
                 &mut GenPlaceMovesParams {
                     board_snapshot,
                     board_strip,
@@ -9749,9 +9986,10 @@ fn kurnia_gen_one_tile_moves<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     multi_leaves: &'a klv::MultiLeaves,
     mut found_place_move: FoundPlaceMove,
 ) {
@@ -9779,7 +10017,7 @@ fn kurnia_gen_one_tile_moves<
         (1u64 << tile, alphabet.score(tile) as i32 * equity::SCALE, 0)
     };
     working_buffer.rack_tally[tile as usize] -= 1;
-    let leave_value = leave_value_of(
+    let leave_value = leave_value_of::<BAG_TERM, _>(
         multi_leaves,
         board_snapshot.klv,
         &working_buffer.rack_tally,
@@ -10262,9 +10500,10 @@ fn rcs_placements<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     board_snapshot: &BoardSnapshot<'_, N, L>,
-    working_buffer: &mut WorkingBuffer<G>,
+    working_buffer: &mut WorkingBuffer<G, BAG_TERM>,
     dim: &matrix::Dim,
     num_max_played: u8,
     feasible_lengths: u64,
@@ -10393,7 +10632,7 @@ fn rcs_placements<
         .iter()
         .any(|&tile| tile != 0);
         let check = if holds_tiles {
-            fill_key_check::<D, W, T, _, _, _>(working_buffer, board_snapshot, dim, down, lane)
+            fill_key_check::<D, W, T, _, _, _, _>(working_buffer, board_snapshot, dim, down, lane)
         } else {
             None
         };
@@ -10582,8 +10821,9 @@ fn kurnia_gen_place_moves_iter<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
-    p: KurniaIterParams<'a, (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L, G>,
+    p: KurniaIterParams<'a, (), FoundPlaceMove, CanAccept, CurrentThreshold, N, L, G, BAG_TERM>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         runs: (),
@@ -10694,7 +10934,7 @@ fn kurnia_gen_place_moves_iter<
     // squares), else the shadow pass's, lane by lane
     let kept_lanes = dim.rows.max(dim.cols) as u32 <= u64::BITS;
     if kept_lanes {
-        rcs_placements::<D, W, T, _, _, _>(
+        rcs_placements::<D, W, T, _, _, _, _>(
             board_snapshot,
             working_buffer,
             dim,
@@ -10711,7 +10951,7 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         let check =
-            fill_key_check::<D, W, T, _, _, _>(working_buffer, board_snapshot, dim, false, row);
+            fill_key_check::<D, W, T, _, _, _, _>(working_buffer, board_snapshot, dim, false, row);
         shadow_lane::<D, W, _, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
@@ -10777,7 +11017,7 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         let check =
-            fill_key_check::<D, W, T, _, _, _>(working_buffer, board_snapshot, dim, true, col);
+            fill_key_check::<D, W, T, _, _, _, _>(working_buffer, board_snapshot, dim, true, col);
         shadow_lane::<D, W, _, _>(
             &mut GenPlacePlacementsParams {
                 board_strip: &working_buffer.transposed_board_tiles
@@ -10883,7 +11123,7 @@ fn kurnia_gen_place_moves_iter<
                 }
                 {
                     let placement = working_buffer.found_placements[idx as usize];
-                    gen_place_moves_at::<D, W, T, _, _, _, _>(GenPlaceMovesAtParams {
+                    gen_place_moves_at::<D, W, T, _, _, _, _, _>(GenPlaceMovesAtParams {
                         runs: (),
                         board_snapshot,
                         working_buffer,
@@ -11288,9 +11528,10 @@ fn gen_remaining_jumbled_words<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     mut found_word: FoundWord,
 ) {
     struct Env<'a, FoundWord: FnMut(&[u8]), N: kwg::Node> {
@@ -11447,9 +11688,10 @@ fn gen_remaining_words<
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
+    const BAG_TERM: bool,
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer<G>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM>,
     found_word: FoundWord,
 ) {
     let game_config = &board_snapshot.game_config;
@@ -15121,7 +15363,7 @@ mod tests {
                 i32::MIN
             };
         if raw {
-            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _>(
+            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _, _>(
                 (),
                 board_snapshot,
                 &mut *working_buffer,
@@ -15130,7 +15372,7 @@ mod tests {
             );
         } else {
             for _ in
-                kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _>(KurniaIterParams {
+                kurnia_gen_place_moves_iter_lean::<0, G, _, _, _, _, _, _, _, _>(KurniaIterParams {
                     runs: (),
                     board_snapshot,
                     working_buffer: &mut *working_buffer,
@@ -15504,6 +15746,361 @@ mod tests {
                 }
             }
             assert!(played_on > 3, "too few racks played anything");
+        }
+    }
+
+    mod bag_term {
+        use super::*;
+
+        // the SEAT board, its snapshot's pieces, and the bag it leaves counted
+        // from the tiles alone: 100 less the 4 on the board less two full racks
+        const BAG_TERM_FEN: &str = "15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15";
+        const BAG_TERM_BAG: i16 = 100 - 4 - 2 * 7;
+
+        // every play of the rack on the SEAT board, by its text, with its equity;
+        // dense or not, and by the walk or the lean arm
+        fn bag_term_plays(
+            bag_term: Option<BagTerm>,
+            rack: &str,
+            max_gen: usize,
+            dense: bool,
+            lean: bool,
+        ) -> Vec<(String, i32, Option<u8>)> {
+            bag_term_plays_on(
+                false,
+                BAG_TERM_FEN,
+                BAG_TERM_BAG,
+                bag_term,
+                rack,
+                max_gen,
+                dense,
+                lean,
+            )
+        }
+
+        // as bag_term_plays, on the board given (its bag counted by the caller),
+        // by the jumbled rules or the classic
+        #[allow(clippy::too_many_arguments)]
+        fn bag_term_plays_on(
+            jumbled: bool,
+            fen: &str,
+            bag: i16,
+            bag_term: Option<BagTerm>,
+            rack: &str,
+            max_gen: usize,
+            dense: bool,
+            lean: bool,
+        ) -> Vec<(String, i32, Option<u8>)> {
+            let gc = if jumbled {
+                game_config::make_jumbled_english_game_config()
+            } else {
+                game_config::make_english_game_config()
+            };
+            let kwg = if jumbled {
+                test_kad(&gc, TEST_WORDS)
+            } else {
+                test_kwg(&gc)
+            };
+            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            let board = fen_parser.parse(fen).unwrap().to_vec();
+            let rack = parse_test_rack(gc.alphabet(), rack);
+            let snapshot = BoardSnapshot {
+                board_tiles: &board,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            fn generate<const BAG_TERM: bool>(
+                mut move_generator: KurniaMoveGenerator<u128, true, true, BAG_TERM>,
+                params: &GenMovesParams<'_, kwg::Node24, kwg::Node24>,
+                dense: bool,
+                lean: bool,
+            ) -> (Vec<ValuedMove>, i16) {
+                if !dense {
+                    move_generator.set_dense_leaves_most(0);
+                }
+                if lean {
+                    move_generator.gen_moves_unfiltered_lean(params);
+                } else {
+                    move_generator.gen_moves_unfiltered(params);
+                }
+                let bag = move_generator.num_tiles_in_bag();
+                (move_generator.plays, bag)
+            }
+            let params = GenMovesParams {
+                board_snapshot: &snapshot,
+                rack: &rack,
+                max_gen,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            };
+            let (plays, bag_seen) = match bag_term {
+                None => generate(KurniaMoveGenerator::new(&gc), &params, dense, lean),
+                Some(bag_term) => generate(
+                    KurniaMoveGenerator::with_bag_term(&gc, bag_term),
+                    &params,
+                    dense,
+                    lean,
+                ),
+            };
+            assert_eq!(bag_seen, bag);
+            plays
+                .iter()
+                .map(|p| {
+                    let num_played = match &p.play {
+                        Play::Exchange { .. } => None,
+                        Play::Place { word, .. } => {
+                            Some(word.iter().filter(|&&tile| tile != 0).count() as u8)
+                        }
+                    };
+                    (
+                        p.play.fmt(&snapshot).to_string(),
+                        p.equity.raw(),
+                        num_played,
+                    )
+                })
+                .collect()
+        }
+
+        // a term for each bag size a play of up to 7 tiles can leave, each its own
+        fn every_bag_term() -> BagTerm {
+            BagTerm::new(
+                BAG_TERM_BAG - 7,
+                vec![-7000, 11000, -5000, 3000, 2000, -13000, 17000, 0],
+            )
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_adds_to_each_placement_by_the_bag_it_leaves() {
+            let term = every_bag_term();
+            for (dense, lean) in [(true, false), (false, false), (true, true), (false, true)] {
+                let without = bag_term_plays(None, "AAEESTT", usize::MAX, dense, lean);
+                let with = bag_term_plays(Some(term.clone()), "AAEESTT", usize::MAX, dense, lean);
+                let mut with = with
+                    .into_iter()
+                    .map(|(text, equity, num_played)| (text, (equity, num_played)))
+                    .collect::<std::collections::HashMap<_, _>>();
+                assert_eq!(without.len(), with.len());
+                let mut placements = 0;
+                for (text, equity, num_played) in without {
+                    let (with_equity, _) = with.remove(&text).unwrap();
+                    // the bag the board leaves, less the tiles the play places
+                    let expected = num_played.map_or(0, |n| term.at(BAG_TERM_BAG - n as i16));
+                    placements += num_played.is_some() as u32;
+                    assert_eq!(with_equity - equity, expected, "{text} {dense} {lean}");
+                }
+                assert!(placements > 5);
+            }
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_adds_on_every_walk() {
+            // the empty board's walk, one tile's plays, the jumbled walk, and the
+            // classic: each placement gets its term, each exchange none, and the
+            // best few are the best few of every play
+            const EMPTY_FEN: &str = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
+            for (jumbled, fen, bag, rack) in [
+                (false, EMPTY_FEN, 100 - 2 * 7, "AAEESTT"),
+                (false, BAG_TERM_FEN, BAG_TERM_BAG, "A"),
+                (true, BAG_TERM_FEN, BAG_TERM_BAG, "AEST"),
+                (true, EMPTY_FEN, 100 - 2 * 7, "AEST"),
+            ] {
+                let term = BagTerm::new(
+                    bag - 7,
+                    vec![-7000, 11000, -5000, 3000, 2000, -13000, 17000, 0],
+                );
+                for (dense, lean) in [(true, false), (false, false), (true, true), (false, true)] {
+                    let why = format!("{jumbled} {fen} {rack} {dense} {lean}");
+                    let plays = |term: Option<BagTerm>, max_gen: usize| {
+                        bag_term_plays_on(jumbled, fen, bag, term, rack, max_gen, dense, lean)
+                    };
+                    let without = plays(None, usize::MAX);
+                    let with = plays(Some(term.clone()), usize::MAX);
+                    assert_eq!(without.len(), with.len(), "{why}");
+                    let with_by_text = with
+                        .iter()
+                        .map(|p| (p.0.clone(), p.1))
+                        .collect::<std::collections::HashMap<_, _>>();
+                    let mut placements = 0;
+                    for (text, equity, num_played) in &without {
+                        let expected = num_played.map_or(0, |n| term.at(bag - n as i16));
+                        placements += num_played.is_some() as u32;
+                        assert_eq!(with_by_text[text] - equity, expected, "{text} {why}");
+                    }
+                    assert!(placements > 0, "{why}");
+                    let mut want = with.iter().map(|p| p.1).collect::<Vec<_>>();
+                    want.sort_unstable_by(|a, b| b.cmp(a));
+                    for max_gen in [1, 3] {
+                        let top = plays(Some(term.clone()), max_gen);
+                        let n = max_gen.min(want.len());
+                        assert_eq!(
+                            top.iter().map(|p| p.1).collect::<Vec<_>>(),
+                            want[..n],
+                            "{max_gen} {why}"
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_leaves_each_exchange_as_it_was() {
+            let term = every_bag_term();
+            for (dense, lean) in [(true, false), (false, false), (true, true), (false, true)] {
+                let without = bag_term_plays(None, "AAEESTT", usize::MAX, dense, lean);
+                let with = bag_term_plays(Some(term.clone()), "AAEESTT", usize::MAX, dense, lean);
+                let exchanges = |plays: Vec<(String, i32, Option<u8>)>| {
+                    let mut v = plays
+                        .into_iter()
+                        .filter(|p| p.2.is_none())
+                        .map(|p| (p.0, p.1))
+                        .collect::<Vec<_>>();
+                    v.sort_unstable();
+                    v
+                };
+                let without = exchanges(without);
+                assert!(without.len() > 50);
+                assert_eq!(exchanges(with), without, "{dense} {lean}");
+            }
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_never_prunes_the_best_play() {
+            // each count played in turn made the best by far, then the worst; a
+            // bound without the term would prune the play it lifts
+            for num_played in 1..=7i16 {
+                for sign in [1, -1] {
+                    let mut values = vec![0i32; 8];
+                    values[(7 - num_played) as usize] = sign * 500_000;
+                    let term = BagTerm::new(BAG_TERM_BAG - 7, values);
+                    for (dense, lean) in
+                        [(true, false), (false, false), (true, true), (false, true)]
+                    {
+                        let all =
+                            bag_term_plays(Some(term.clone()), "AAEESTT", usize::MAX, dense, lean);
+                        let best = all.iter().map(|p| p.1).max().unwrap();
+                        for max_gen in [1, 3] {
+                            let top =
+                                bag_term_plays(Some(term.clone()), "AAEESTT", max_gen, dense, lean);
+                            assert_eq!(top[0].1, best, "{num_played} {sign} {dense} {lean}");
+                            let mut want = all.iter().map(|p| p.1).collect::<Vec<_>>();
+                            want.sort_unstable_by(|a, b| b.cmp(a));
+                            assert_eq!(
+                                top.iter().map(|p| p.1).collect::<Vec<_>>(),
+                                want[..max_gen],
+                                "{num_played} {sign} {dense} {lean}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_below_every_placement_leaves_an_exchange_best() {
+            // a term that sinks every placement: the bound on exchanges must not
+            // carry it, or the exchanges are cut off by the placements' threshold
+            let term = BagTerm::new(BAG_TERM_BAG - 7, vec![-500_000; 8]);
+            for (dense, lean) in [(true, false), (false, false), (true, true), (false, true)] {
+                for max_gen in [1, 2, 5] {
+                    let top = bag_term_plays(Some(term.clone()), "AAEESTT", max_gen, dense, lean);
+                    assert_eq!(top.len(), max_gen);
+                    assert!(
+                        top.iter().all(|p| p.2.is_none() && p.1 == 0),
+                        "{max_gen} {dense} {lean} {top:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_reads_the_board_not_a_rebuilt_bag() {
+            // the generator counts the bag from the board, as it is in the game
+            // (num_tiles_in_bag is asserted in bag_term_plays): a term keyed to
+            // one bag size lifts only the placements leaving it, here of 2 tiles
+            let mut values = vec![0i32; 8];
+            values[5] = 9000;
+            let term = BagTerm::new(BAG_TERM_BAG - 7, values);
+            let without = bag_term_plays(None, "AAEESTT", usize::MAX, true, false);
+            let with = bag_term_plays(Some(term), "AAEESTT", usize::MAX, true, false);
+            let without = without
+                .into_iter()
+                .map(|p| (p.0, p.1))
+                .collect::<std::collections::HashMap<_, _>>();
+            let lifted = with
+                .iter()
+                .filter(|p| without[&p.0] != p.1)
+                .map(|p| p.2)
+                .collect::<Vec<_>>();
+            assert!(!lifted.is_empty());
+            assert!(lifted.iter().all(|&n| n == Some(2)));
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_adds_nothing_once_the_bag_is_empty() {
+            let gc = game_config::make_english_game_config();
+            let kwg = test_kwg(&gc);
+            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            // 90 tiles on the board: the bag is empty
+            let board = fen_parser
+                .parse("15/15/15/15/15/15/15/6SEAT5/15/AAAAAAAAAAAAAAA/AAAAAAAAAAAAAAA/AAAAAAAAAAAAAAA/AAAAAAAAAAAAAAA/AAAAAAAAAAAAAAA/AAAAAAAAAA5")
+                .unwrap()
+                .to_vec();
+            let rack = parse_test_rack(gc.alphabet(), "AEST");
+            let snapshot = BoardSnapshot {
+                board_tiles: &board,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let params = GenMovesParams {
+                board_snapshot: &snapshot,
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            };
+            let mut plain = KurniaMoveGenerator::new(&gc);
+            plain.gen_moves_unfiltered(&params);
+            assert!(plain.num_tiles_in_bag() <= 0);
+            let mut with =
+                KurniaMoveGenerator::with_bag_term(&gc, BagTerm::new(-7, vec![1_000_000; 15]));
+            with.gen_moves_unfiltered(&params);
+            assert!(plain.plays.len() > 3);
+            assert!(with.plays == plain.plays);
+        }
+
+        #[test]
+        #[inline]
+        fn a_bag_term_parses_its_values_file() {
+            let term =
+                BagTerm::parse("# by the bag left\n-2 -1.5\n\n1 6.04 # one left\n0 0\n").unwrap();
+            assert_eq!(term, BagTerm::new(-2, vec![-1500, 0, 0, 6040]));
+            assert_eq!(term.at(-3), 0);
+            assert_eq!(term.at(-2), -1500);
+            assert_eq!(term.at(1), 6040);
+            assert_eq!(term.at(2), 0);
+            assert!(BagTerm::parse("").is_err());
+            assert!(BagTerm::parse("1 2\n1 3\n").is_err());
+            assert!(BagTerm::parse("1\n").is_err());
+            assert!(BagTerm::parse("1 2 3\n").is_err());
+            assert!(BagTerm::parse("x 2\n").is_err());
+            assert!(BagTerm::parse("1 1e12\n").is_err());
         }
     }
 }

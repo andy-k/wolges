@@ -479,6 +479,7 @@ pub struct MultiLeaves {
     leave_values: Vec<i32>, // typically 2**7, can be shorter when duplicates
     num_playeds: Vec<u8>,  // same length as leave_values
     dense_most: u32,       // the most leaves kept as a table (DENSE_LEAVES_MOST)
+    bag_terms: Vec<i32>,   // by tiles played, each placement's bag term
 }
 
 // the most leaves a rack's tiles may have for them to be kept as a table, each
@@ -506,6 +507,7 @@ impl Clone for MultiLeaves {
             leave_values: self.leave_values.clone(),
             num_playeds: self.num_playeds.clone(),
             dense_most: self.dense_most,
+            bag_terms: self.bag_terms.clone(),
         }
     }
 
@@ -516,6 +518,7 @@ impl Clone for MultiLeaves {
         self.leave_values.clone_from(&source.leave_values);
         self.num_playeds.clone_from(&source.num_playeds);
         self.dense_most = source.dense_most;
+        self.bag_terms.clone_from(&source.bag_terms);
     }
 }
 
@@ -527,6 +530,60 @@ impl MultiLeaves {
             leave_values: Vec::new(),
             num_playeds: Vec::new(),
             dense_most: DENSE_LEAVES_MOST,
+            bag_terms: Vec::new(),
+        }
+    }
+
+    // the bag terms by tiles played (index 0 must be 0: a pass or an exchange
+    // gets none); empty for none
+    #[inline(always)]
+    pub fn set_bag_terms(&mut self, bag_terms: impl Iterator<Item = i32>) {
+        self.bag_terms.clear();
+        self.bag_terms.extend(bag_terms);
+    }
+
+    // whether a placement may have a bag term
+    #[inline(always)]
+    pub fn has_bag_terms(&self) -> bool {
+        !self.bag_terms.is_empty()
+    }
+
+    // what a placement of num_played tiles adds for the bag it leaves
+    #[inline(always)]
+    pub fn bag_term(&self, num_played: usize) -> i32 {
+        self.bag_terms.get(num_played).copied().unwrap_or(0)
+    }
+
+    // the bag term of the placement keeping rack_tally's tiles, for a leave
+    // read from the klv rather than the table
+    #[inline(always)]
+    pub fn bag_term_of_kept(&self, rack_tally: &[u8]) -> i32 {
+        if self.has_bag_terms() {
+            self.bag_term_of_kept_counted(rack_tally)
+        } else {
+            0
+        }
+    }
+
+    // out of the way of the generations with no term
+    #[cold]
+    #[inline(never)]
+    fn bag_term_of_kept_counted(&self, rack_tally: &[u8]) -> i32 {
+        let kept: usize = rack_tally.iter().map(|&c| c as usize).sum();
+        self.bag_term((self.bag_terms.len() - 1).saturating_sub(kept))
+    }
+
+    // each leave of the table with its placement's bag term added
+    #[inline(always)]
+    pub fn add_bag_terms(&mut self) {
+        if !self.bag_terms.is_empty() {
+            for (v, &num_played) in self.leave_values.iter_mut().zip(&self.num_playeds) {
+                *v += self
+                    .bag_terms
+                    .get(num_played as usize)
+                    .copied()
+                    .unwrap_or(0);
+            }
         }
     }
 
@@ -1514,6 +1571,7 @@ mod tests {
             leave_values: statics.clone(),
             num_playeds: vec![3, 2, 1, 2, 1, 0],
             dense_most: DENSE_LEAVES_MOST,
+            bag_terms: Vec::new(),
         };
 
         let live_pool = [2u8, 2u8, 1u8]; // A, B, C still drawable
@@ -1580,6 +1638,7 @@ mod tests {
             leave_values: statics.clone(),
             num_playeds: ml.num_playeds.clone(),
             dense_most: DENSE_LEAVES_MOST,
+            bag_terms: Vec::new(),
         };
         short_bag.apply_dynamic_leaves(&replacing, &live_pool, 1);
         let keep_one_a = 1usize; // idx = keptA + 3 * keptB
