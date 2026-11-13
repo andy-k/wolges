@@ -511,6 +511,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "MIB",
+        default_value = "32",
         help = "each solve's table from the start, in MiB (0: none; it grows from one \
                 bucket), held to half of --max-memory"
     )]
