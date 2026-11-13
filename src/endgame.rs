@@ -4865,7 +4865,10 @@ impl<
         // move's place in the rest of the order times the splits, plus the
         // split's), with the value, the chance to win, whether it was exact, and
         // the time it took; and whether a limit stopped it
-        type Share = (Vec<(usize, f64, f64, bool, std::time::Duration)>, bool);
+        type Share = (
+            Vec<(usize, f64, f64, bool, std::time::Duration, Vec<PegBagDraw>)>,
+            bool,
+        );
         let work = |search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
                     limits: &BagLimits|
          -> error::Returns<Share> {
@@ -4893,9 +4896,9 @@ impl<
                     handing.fetch_sub(1, Relaxed);
                 }
                 match valued {
-                    Ok((value, win)) => {
+                    Ok((value, win, draws)) => {
                         let took = limits.t0.elapsed().saturating_sub(began);
-                        mine.push((task, value, win, search.exact, took));
+                        mine.push((task, value, win, search.exact, took, draws));
                         if unvalued[m].fetch_sub(1, Relaxed) == 1 {
                             moves_valued.fetch_add(1, Relaxed);
                         }
@@ -5038,19 +5041,21 @@ impl<
         for share in shares {
             let (mine, stopped_here) = share?;
             stopped |= stopped_here;
-            for (task, value, win, exact, took) in mine {
-                found[task] = Some((value, win, exact));
+            for (task, value, win, exact, took, draws) in mine {
+                found[task] = Some((value, win, exact, draws));
                 let i = state.order[base + task / num_splits];
                 state.took[i * num_splits + task % num_splits] = took;
             }
         }
         let (mut taken, mut left) = (Vec::new(), Vec::new());
-        for (m, per_split) in found.chunks(num_splits.max(1)).enumerate() {
+        for (m, per_split) in found.chunks_mut(num_splits.max(1)).enumerate() {
             let i = state.order[base + m];
             if per_split.iter().all(Option::is_some) {
-                let per_split = per_split.iter().map(|found| found.unwrap());
-                let exact = per_split.clone().all(|(_, _, exact)| exact);
-                let per_split = per_split.map(|(value, win, _)| (value, win));
+                let exact = (per_split.iter()).all(|found| found.as_ref().unwrap().2);
+                let per_split = (per_split.iter_mut()).map(|found| {
+                    let (value, win, _, draws) = found.take().unwrap();
+                    (value, win, draws)
+                });
                 let value = peg_bag_value(splits, per_split, exact);
                 state.pass_exact &= value.exact;
                 state.valued[i] = Some(value);
@@ -5124,6 +5129,7 @@ impl<
                 expected_margin,
                 hypotheses,
                 best_move: None,
+                moves: Vec::new(),
                 committed: false,
                 exact,
                 depth: limits.depth.get(),
@@ -5143,6 +5149,7 @@ impl<
                         expected_margin: equity::Equity::ZERO,
                         hypotheses: Vec::new(),
                         best_move: None,
+                        moves: Vec::new(),
                         committed: false,
                         exact: false,
                         depth: 0,
@@ -5420,12 +5427,18 @@ impl<
                     // no pass valued every move: the best of those valued
                     let best = peg_best(&mut state.reached, &state.valued);
                     let value = state.valued[best].as_ref().unwrap();
-                    return Ok(peg_result(&state.moves, best, value, 0, false));
+                    let answered = (state.reached.iter())
+                        .map(|&i| (i, state.valued[i].clone().unwrap()))
+                        .collect::<Vec<_>>();
+                    return Ok(peg_result(&state.moves, best, value, &answered, 0, false));
                 }
                 break;
             }
             let best = peg_best(&mut state.reached, &state.valued);
             state.answer = Some((best, state.valued[best].clone().unwrap(), state.depth));
+            state.answered.clear();
+            (state.answered)
+                .extend((state.reached.iter()).map(|&i| (i, state.valued[i].clone().unwrap())));
             if state.pass_exact || state.depth == COMPLETE {
                 state.done = true;
                 break;
@@ -5448,7 +5461,14 @@ impl<
             unreachable!("the first move of the first pass is always valued");
         };
         let exact = state.done && state.pass_exact;
-        Ok(peg_result(&state.moves, *best, value, *depth, exact))
+        Ok(peg_result(
+            &state.moves,
+            *best,
+            value,
+            &state.answered,
+            *depth,
+            exact,
+        ))
     }
 }
 
@@ -5466,19 +5486,37 @@ fn peg_best(reached: &mut [usize], valued: &[Option<PegValue>]) -> usize {
     best
 }
 
-// the committed model's answer: a move, its value, and the depth it is of
+// the committed model's answer: a move, its value, every move the pass valued
+// with its own (best first, as peg_best ranks them, then as generated), and the
+// depth it is of
 fn peg_result(
     moves: &[PegMove],
     best: usize,
     value: &PegValue,
+    answered: &[(usize, PegValue)],
     depth: i8,
     exact: bool,
 ) -> PegResult {
+    let mut listed = answered.iter().collect::<Vec<_>>();
+    listed.sort_by(|(a, x), (b, y)| {
+        (y.win.total_cmp(&x.win))
+            .then(y.marg.total_cmp(&x.marg))
+            .then(a.cmp(b))
+    });
     PegResult {
         win_pct: value.win,
         expected_margin: to_equity(value.marg),
         hypotheses: value.hyps.clone(),
         best_move: Some(moves[best].clone()),
+        moves: (listed.into_iter())
+            .map(|(i, value)| PegMoveValue {
+                play: moves[*i].clone(),
+                win_pct: value.win,
+                expected_margin: to_equity(value.marg),
+                hypotheses: value.hyps.clone(),
+                exact: value.exact,
+            })
+            .collect(),
         committed: true,
         exact,
         depth,
@@ -5564,6 +5602,7 @@ struct PegCommitted {
     depth: i8,
     passing: PassLine,
     answer: Option<(usize, PegValue, i8)>,
+    answered: Vec<(usize, PegValue)>, // every move the answer's pass valued
     done: bool,
 }
 
@@ -5573,12 +5612,26 @@ pub enum PegMove {
     Place(movegen::Play),
 }
 
+// a move of a search with a tile in the bag and its value: its share of the
+// bag's tiles won (a tie counted half), its mean margin, its margin for each
+// tile the bag may hold (the tile, its count, the margin), and whether every
+// endgame valuing it was searched to its end
+#[derive(Clone)]
+pub struct PegMoveValue {
+    pub play: PegMove,
+    pub win_pct: f32,
+    pub expected_margin: equity::Equity,
+    pub hypotheses: Vec<(u8, u32, equity::Equity)>,
+    pub exact: bool,
+}
+
 #[derive(Clone)]
 pub struct PegResult {
     pub win_pct: f32,
     pub expected_margin: equity::Equity,
     pub hypotheses: Vec<(u8, u32, equity::Equity)>,
     pub best_move: Option<PegMove>,
+    pub moves: Vec<PegMoveValue>, // the committed model's alone: every move valued, best first
     pub committed: bool,
     pub exact: bool, // false when a limit stopped it short of solving every endgame inside it
     pub depth: i8,   // the pass answered from: 0 none finished, i8::MAX one to the end
@@ -5764,16 +5817,37 @@ fn value_root_split<
     at: &impl Fn(&[u8], &[u8]) -> InBag,
     play: &movegen::Play,
     score_diff: f64,
-) -> error::Returns<(f64, f64)> {
+) -> error::Returns<(f64, f64, Vec<PegBagDraw>)> {
     let pos = at(opp_rack, bag);
     if search.model == PegModel::InfoSets {
         let info = InfoSet::of(&pos, score_diff as i32);
         let (win, margin) = search.info_split(&info, play, opp_rack, bag)?;
-        return Ok((margin + score_diff, win));
+        return Ok((margin + score_diff, win, Vec::new()));
     }
-    let value = search.move_value(&pos, play)? + score_diff;
-    let win = search.move_win(&pos, play, -score_diff)?;
-    Ok((value, win))
+    let mut draws = Vec::new();
+    let value = search.move_value_each(&pos, play, |drawn, ways, value| {
+        draws.push(PegBagDraw {
+            tiles: tiles_of(drawn),
+            ways,
+            margin: equity::Equity::new((value + score_diff).round() as i32),
+            win: 0.0,
+        })
+    })? + score_diff;
+    let mut at_draw = 0;
+    let win = search.move_win_each(&pos, play, -score_diff, |_, _, win| {
+        draws[at_draw].win = win;
+        at_draw += 1;
+    })?;
+    debug_assert_eq!(at_draw, draws.len());
+    Ok((value, win, draws))
+}
+
+// a tally's tiles, each as many times as it counts
+fn tiles_of(tally: &[u8]) -> Vec<u8> {
+    (0u8..)
+        .zip(tally.iter())
+        .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
+        .collect()
 }
 
 // a move's value from its value and chance to win in each split (in the splits'
@@ -5781,12 +5855,16 @@ fn value_root_split<
 // valuing it was exact
 fn peg_bag_value(
     splits: &[(Vec<u8>, Vec<u8>, u64)],
-    per_split: impl Iterator<Item = (f64, f64)>,
+    per_split: impl Iterator<Item = (f64, f64, Vec<PegBagDraw>)>,
     exact: bool,
 ) -> PegBagValue {
     let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
     let mut hyps = Vec::with_capacity(splits.len());
-    for ((_, bag, ways), (value, chance)) in splits.iter().zip(per_split) {
+    let mut wins = Vec::with_capacity(splits.len());
+    let mut draws = Vec::with_capacity(splits.len());
+    for ((_, bag, ways), (value, chance, drawn)) in splits.iter().zip(per_split) {
+        wins.push(chance);
+        draws.push(drawn);
         win += *ways as f64 * chance;
         marg += *ways as f64 * value;
         total += ways;
@@ -5800,6 +5878,8 @@ fn peg_bag_value(
         win: win / total as f64,
         marg: marg / total as f64,
         hyps,
+        wins,
+        draws,
         exact,
     }
 }
@@ -5847,22 +5927,53 @@ struct PegBagValue {
     win: f64,
     marg: f64,
     hyps: Vec<(Vec<u8>, u64, equity::Equity)>,
+    wins: Vec<f64>,              // each split's chance to win, as hyps lists them
+    draws: Vec<Vec<PegBagDraw>>, // each split's draws at the root, as hyps lists them
     exact: bool,
 }
 
+// a draw a move makes at the root with tiles left in the bag: the tiles it
+// draws, the deals that give them, the margin then, and the chance to win
+#[derive(Clone)]
+pub struct PegBagDraw {
+    pub tiles: Vec<u8>,
+    pub ways: u64,
+    pub margin: equity::Equity,
+    pub win: f64,
+}
+
+// a move of a search with tiles in the bag and its value: its share of the
+// deals won (a tie counted half), its mean margin, each split's (the bag's
+// tiles, the deals giving it, the margin there) with its chance to win there
+// (wins) and, where the model draws at the root (random draws), each draw the
+// move makes there (draws), both in the same order; and whether every endgame
+// valuing it was searched to its end
+#[derive(Clone)]
+pub struct PegBagMove {
+    pub play: movegen::Play,
+    pub win_pct: f64,
+    pub expected_margin: equity::Equity,
+    pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
+    pub wins: Vec<f64>,
+    pub draws: Vec<Vec<PegBagDraw>>,
+    pub exact: bool,
+}
+
 // a search's answer with tiles in the bag: the best move's share of wins, mean
-// margin, and margin in each split; the move, none if a limit stopped the
-// search before it valued one (the shares and margins then 0 and empty);
-// every move the answering pass valued, best first, with its share of wins and
-// mean margin; whether it is exact; and the pass it is of (0 none finished,
-// i8::MAX one to the end)
+// margin, and margin in each split with its chance to win there (wins, in the
+// same order); the move, none if a limit stopped the search before it valued
+// one (the shares and margins then 0 and empty); every move the answering pass
+// valued, best first, each with its own; whether it is exact; and the pass it
+// is of (0 none finished, i8::MAX one to the end)
 #[derive(Clone)]
 pub struct PegBagResult {
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
     pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
+    pub wins: Vec<f64>,
+    pub draws: Vec<Vec<PegBagDraw>>, // as PegBagMove's
     pub best_move: Option<movegen::Play>,
-    pub moves: Vec<(movegen::Play, f64, equity::Equity)>,
+    pub moves: Vec<PegBagMove>,
     pub exact: bool,
     pub depth: i8,
 }
@@ -5906,15 +6017,21 @@ fn peg_bag_result(
             equity::Equity::new(value.marg.round() as i32)
         }),
         hypotheses: value.map_or_else(Vec::new, |value| value.hyps.clone()),
+        wins: value.map_or_else(Vec::new, |value| value.wins.clone()),
+        draws: value.map_or_else(Vec::new, |value| value.draws.clone()),
         best_move: best.map(|best| moves[best].clone()),
         moves: (listed.into_iter())
             .map(|i| {
                 let value = valued[i].as_ref().unwrap();
-                (
-                    moves[i].clone(),
-                    value.win,
-                    equity::Equity::new(value.marg.round() as i32),
-                )
+                PegBagMove {
+                    play: moves[i].clone(),
+                    win_pct: value.win,
+                    expected_margin: equity::Equity::new(value.marg.round() as i32),
+                    hypotheses: value.hyps.clone(),
+                    wins: value.wins.clone(),
+                    draws: value.draws.clone(),
+                    exact: value.exact,
+                }
             })
             .collect(),
         exact,
@@ -7043,7 +7160,19 @@ impl<
     }
 
     // a move's value to its mover
+    #[inline(always)]
     fn move_value(&mut self, pos: &InBag, play: &movegen::Play) -> error::Returns<f64> {
+        self.move_value_each(pos, play, |_, _, _| {})
+    }
+
+    // the same, each draw the move makes told with its deals and its value
+    // (drawn as a tally)
+    fn move_value_each(
+        &mut self,
+        pos: &InBag,
+        play: &movegen::Play,
+        mut each: impl FnMut(&[u8], u64, f64),
+    ) -> error::Returns<f64> {
         match play {
             movegen::Play::Place { word, score, .. } => {
                 // what it scores, less the next mover's value over the draws
@@ -7055,7 +7184,9 @@ impl<
                     let mut next = placed.clone();
                     next.draw(&drawn);
                     next.next_turn();
-                    sum += ways as f64 * self.next_value(&next)?;
+                    let theirs = self.next_value(&next)?;
+                    each(&drawn, ways, *score as f64 - theirs);
+                    sum += ways as f64 * theirs;
                     total += ways;
                 }
                 Ok(*score as f64 - sum / total as f64)
@@ -7101,6 +7232,7 @@ impl<
                         next.next_turn();
                         -self.node(&next)?
                     };
+                    each(&drawn, ways, value);
                     sum += ways as f64 * value;
                     total += ways;
                 }
@@ -7111,7 +7243,20 @@ impl<
 
     // the chance a move leaves its mover's final spread above t (a tie counted
     // half), each player after it making the move node found best
+    #[inline(always)]
     fn move_win(&mut self, pos: &InBag, play: &movegen::Play, t: f64) -> error::Returns<f64> {
+        self.move_win_each(pos, play, t, |_, _, _| {})
+    }
+
+    // the same, each draw the move makes told with its deals and its chance
+    // (drawn as a tally)
+    fn move_win_each(
+        &mut self,
+        pos: &InBag,
+        play: &movegen::Play,
+        t: f64,
+        mut each: impl FnMut(&[u8], u64, f64),
+    ) -> error::Returns<f64> {
         match play {
             movegen::Play::Place { word, score, .. } => {
                 let score = *score as f64;
@@ -7128,6 +7273,7 @@ impl<
                     } else {
                         1.0 - self.node_win(&next, score - t)?
                     };
+                    each(&drawn, ways, win);
                     sum += ways as f64 * win;
                     total += ways;
                 }
@@ -7166,6 +7312,7 @@ impl<
                         next.next_turn();
                         1.0 - self.node_win(&next, -t)?
                     };
+                    each(&drawn, ways, win);
                     sum += ways as f64 * win;
                     total += ways;
                 }
@@ -10677,6 +10824,7 @@ mod tests {
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         let mut cut = [0usize; 3];
+        let mut listed = 0usize;
         // the committed model, and the clairvoyant one where exchanges are legal
         for gc in [
             game_config::make_english_game_config(),
@@ -10705,6 +10853,35 @@ mod tests {
                     };
                     let full = solve(&super::Limits::NONE);
                     assert!(full.exact, "an unlimited solve is exact");
+                    // every move the committed model valued, best first, the
+                    // first the answer, each one's tiles making its value
+                    if full.committed {
+                        let moves = &full.moves;
+                        assert!(!moves.is_empty());
+                        assert!(same_peg_move(&Some(moves[0].play.clone()), &full.best_move));
+                        assert_eq!(moves[0].win_pct, full.win_pct);
+                        assert_eq!(moves[0].expected_margin, full.expected_margin);
+                        assert_eq!(moves[0].hypotheses, full.hypotheses);
+                        for pair in moves.windows(2) {
+                            assert!(
+                                (pair[0].win_pct, pair[0].expected_margin)
+                                    >= (pair[1].win_pct, pair[1].expected_margin)
+                            );
+                        }
+                        for valued in moves {
+                            assert!(valued.exact);
+                            let weighted = (valued.hypotheses.iter())
+                                .map(|&(_, count, value)| (count, value))
+                                .collect::<Vec<_>>();
+                            assert_eq!(
+                                super::peg_aggregate(&weighted),
+                                (valued.win_pct, valued.expected_margin)
+                            );
+                        }
+                        listed += moves.len();
+                    } else {
+                        assert!(full.moves.is_empty());
+                    }
                     for (i, limits) in [&no_time, &one_state, &no_memory].into_iter().enumerate() {
                         let limited = solve(limits);
                         if limited.hypotheses.is_empty() {
@@ -10728,6 +10905,7 @@ mod tests {
             cut.iter().all(|&n| n > 0),
             "the time, state, and memory limits cut {cut:?} endgames short"
         );
+        assert!(listed > 0, "the committed model listed no move");
     }
 
     // the same move, or both none
@@ -10831,6 +11009,15 @@ mod tests {
                             same_peg_move(&got.best_move, &full.best_move),
                             "a deepening search breaks ties as an unlimited one"
                         );
+                        // and values every move as an unlimited one, in order
+                        assert_eq!(got.moves.len(), full.moves.len());
+                        for (a, b) in got.moves.iter().zip(&full.moves) {
+                            assert!(same_peg_move(&Some(a.play.clone()), &Some(b.play.clone())));
+                            assert_eq!(a.win_pct, b.win_pct);
+                            assert_eq!(a.expected_margin, b.expected_margin);
+                            assert_eq!(a.hypotheses, b.hypotheses);
+                            assert_eq!(a.exact, b.exact);
+                        }
                         if endgames > full_endgames {
                             more_endgames += 1;
                         }
@@ -14038,7 +14225,14 @@ mod tests {
                         .unwrap();
                     assert!(result.exact);
                     let lead = score_diff.raw() as f64;
-                    for (play, win, margin) in &result.moves {
+                    for super::PegBagMove {
+                        play,
+                        win_pct: win,
+                        expected_margin: margin,
+                        draws: own_draws,
+                        ..
+                    } in &result.moves
+                    {
                         let movegen::Play::Place {
                             down,
                             lane,
@@ -14065,7 +14259,13 @@ mod tests {
                             }
                         }
                         let (mut sum, mut wins, mut total) = (0.0f64, 0.0f64, 0u64);
+                        // each split's draws, in the order the reference walks
+                        // them, its own
+                        let mut split_at = 0usize;
                         super::each_split(&unseen_tally, opp_len, &mut |opp, bag, ways| {
+                            let split_draws = &own_draws[split_at];
+                            split_at += 1;
+                            let mut draw_at = 0usize;
                             let opp_rack = (0u8..)
                                 .zip(opp)
                                 .flat_map(|(t, &c)| std::iter::repeat_n(t, c as usize))
@@ -14090,12 +14290,19 @@ mod tests {
                                     unequal += 1;
                                 }
                                 let value = *score as f64 - theirs.raw() as f64 + lead;
+                                let drawn_here = &split_draws[draw_at];
+                                draw_at += 1;
+                                assert_eq!(drawn_here.ways, draws);
+                                assert!((drawn_here.margin.raw() as f64 - value).abs() <= 1.0);
+                                assert_eq!(drawn_here.win, super::beats(value, 0.0));
                                 let w = (ways * draws) as f64;
                                 sum += w * value;
                                 wins += w * super::beats(value, 0.0);
                                 total += ways * draws;
                             });
+                            assert_eq!(draw_at, split_draws.len());
                         });
+                        assert_eq!(split_at, own_draws.len());
                         let case = (
                             unseen, bag_size, mover_rack, score_diff, *down, *lane, *idx, *score,
                         );
@@ -14255,7 +14462,12 @@ mod tests {
                         own: &mut own,
                         known: fash::MyHashMap::default(),
                     };
-                    for (play, _, margin) in &result.moves {
+                    for super::PegBagMove {
+                        play,
+                        expected_margin: margin,
+                        ..
+                    } in &result.moves
+                    {
                         let (mut sum, mut total) = (0.0, 0u64);
                         for (opp_rack, bag, ways) in &progress.splits {
                             let pos = super::InBag {
@@ -14475,9 +14687,26 @@ mod tests {
                         own: &mut own,
                         known: fash::MyHashMap::default(),
                     };
-                    for (play, win, margin) in &result.moves {
+                    for super::PegBagMove {
+                        play,
+                        win_pct: win,
+                        expected_margin: margin,
+                        hypotheses,
+                        wins,
+                        draws,
+                        ..
+                    } in &result.moves
+                    {
+                        // each split's own row and chance, as the reference
+                        // values that split; no draws at the root in this
+                        // model, the mover's draw unseen by the other
+                        assert_eq!(draws.len(), progress.splits.len());
+                        assert!(draws.iter().all(Vec::is_empty));
+                        assert_eq!(hypotheses.len(), progress.splits.len());
+                        assert_eq!(wins.len(), progress.splits.len());
                         let (mut want_win, mut want_margin, mut total) = (0.0, 0.0, 0u64);
-                        for (opp_rack, bag, ways) in &progress.splits {
+                        for (split_at, (opp_rack, bag, ways)) in progress.splits.iter().enumerate()
+                        {
                             let pos = super::InBag {
                                 board: board.clone(),
                                 racks: [progress.position.mover_rack.clone(), opp_rack.clone()],
@@ -14494,6 +14723,14 @@ mod tests {
                             want_win += *ways as f64 * w;
                             want_margin += *ways as f64 * (m + lead.raw() as f64);
                             total += ways;
+                            assert!((wins[split_at] - w).abs() < 1e-9, "split {split_at}");
+                            assert_eq!(hypotheses[split_at].1, *ways);
+                            assert!(
+                                (hypotheses[split_at].2.raw() as f64 - (m + lead.raw() as f64))
+                                    .abs()
+                                    <= 1.0,
+                                "split {split_at}"
+                            );
                         }
                         let (want_win, want_margin) =
                             (want_win / total as f64, want_margin / total as f64);
@@ -14575,7 +14812,12 @@ mod tests {
             ]
         );
         assert_eq!(result.moves.len(), 2);
-        let (pass, win, margin) = &result.moves[1];
+        let super::PegBagMove {
+            play: pass,
+            win_pct: win,
+            expected_margin: margin,
+            ..
+        } = &result.moves[1];
         assert!(matches!(pass, movegen::Play::Exchange { tiles } if tiles.is_empty()));
         assert!((win - 1.0 / 12.0).abs() < 1e-9);
         assert_eq!(*margin, e(-1833));
