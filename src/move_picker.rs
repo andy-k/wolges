@@ -335,22 +335,19 @@ fn limit_surviving_candidates(
 // where the bag holds 25 - 3000 / (budget + 200) tiles, the budget in
 // iterations, or seven fewer while a blank is off the board. That is where they
 // met over classic games in ten lexicons on both boards with racks of seven to
-// nine tiles, jumbled games too. A decision over threads pays for the build
-// alone while its threads share the saving, so it builds only while the bag
-// holds a rack's worth at most.
+// nine tiles, jumbled games too. Over threads the build runs alone while the
+// threads share the saving, so each thread's share of the budget counts: 28 -
+// 5250 / (share + 200), six fewer with a blank off, fit by the clock on two to
+// eight threads with budgets of 100 to 3000
 #[inline]
-fn late_graph_pays(
-    bag: usize,
-    blank_off_board: bool,
-    budget: u64,
-    threads: usize,
-    rack_size: u8,
-) -> bool {
-    if threads > 1 {
-        return bag <= rack_size as usize;
+fn late_graph_pays(bag: usize, blank_off_board: bool, budget: u64, threads: usize) -> bool {
+    if threads <= 1 {
+        let blank_shift = if blank_off_board { 7.0 } else { 0.0 };
+        return bag as f64 <= 25.0 - 3000.0 / (budget as f64 + 200.0) - blank_shift;
     }
-    let blank_shift = if blank_off_board { 7.0 } else { 0.0 };
-    bag as f64 <= 25.0 - 3000.0 / (budget as f64 + 200.0) - blank_shift
+    let blank_shift = if blank_off_board { 6.0 } else { 0.0 };
+    let share = budget as f64 / threads as f64;
+    bag as f64 <= 28.0 - 5250.0 / (share + 200.0) - blank_shift
 }
 
 // Simmer can only be reused for the same game_config and kwg.
@@ -1859,7 +1856,6 @@ impl<
             blanks_on_board < self.game_config.alphabet().freq(0) as usize,
             self.num_sim_iters,
             threads,
-            self.game_config.rack_size(),
         );
         if late || self.late_graph.is_some() {
             self.simmer.reset_for_another_kwg();
@@ -2569,21 +2565,32 @@ mod tests {
 
     #[test]
     #[inline]
-    fn a_late_graph_pays_by_the_budget_and_the_blanks_and_over_threads_by_the_rack() {
+    fn a_late_graph_pays_by_the_budget_and_the_blanks_and_over_threads_by_the_share() {
         // on one thread the bag it pays at rises with the budget toward 25
         // tiles, seven fewer while a blank is off the board
         for (budget, most) in [(16, 11), (100, 15), (1000, 22), (1_000_000, 24)] {
-            assert!(late_graph_pays(most, false, budget, 1, 7), "{budget}");
-            assert!(!late_graph_pays(most + 1, false, budget, 1, 7), "{budget}");
-            assert!(late_graph_pays(most - 7, true, budget, 1, 7), "{budget}");
-            assert!(!late_graph_pays(most - 6, true, budget, 1, 7), "{budget}");
+            assert!(late_graph_pays(most, false, budget, 1), "{budget}");
+            assert!(!late_graph_pays(most + 1, false, budget, 1), "{budget}");
+            assert!(late_graph_pays(most - 7, true, budget, 1), "{budget}");
+            assert!(!late_graph_pays(most - 6, true, budget, 1), "{budget}");
         }
-        // over threads, a rack's worth at most, whatever the budget
-        for budget in [16, 1000, 1_000_000] {
-            assert!(late_graph_pays(7, true, budget, 4, 7), "{budget}");
-            assert!(late_graph_pays(9, false, budget, 2, 9), "{budget}");
-            assert!(!late_graph_pays(8, false, budget, 4, 7), "{budget}");
+        // over threads it rises with each thread's share of the budget toward
+        // 28 tiles, six fewer while a blank is off the board
+        for (budget, threads, most) in [
+            (1000, 2, 20),
+            (1000, 4, 16),
+            (1000, 8, 11),
+            (3000, 8, 18),
+            (1_000_000, 8, 27),
+        ] {
+            let at = |bag, blank| late_graph_pays(bag, blank, budget, threads);
+            assert!(at(most, false), "{budget} {threads}");
+            assert!(!at(most + 1, false), "{budget} {threads}");
+            assert!(at(most - 6, true), "{budget} {threads}");
+            assert!(!at(most - 5, true), "{budget} {threads}");
         }
+        // a share of a few iterations pays at no bag with a blank off the board
+        assert!(!late_graph_pays(0, true, 100, 8));
     }
 
     #[test]
@@ -2598,7 +2605,8 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
         // twelve tiles in the bag: past a rack's worth, at a bag where a
-        // decision of 1000 iterations on one thread builds its graph
+        // decision of 1000 iterations builds its graph on one thread, not on
+        // eight (a blank is off the board)
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
         let board_snapshot = movegen::BoardSnapshot {
@@ -2642,7 +2650,7 @@ mod tests {
             simmer
         };
         let alone = decide(1);
-        let shared = decide(2);
+        let shared = decide(8);
         assert!(alone.late_graph.is_some());
         assert!(shared.late_graph.is_none());
         // the rows do not depend on the threads, so the late graph's are the
