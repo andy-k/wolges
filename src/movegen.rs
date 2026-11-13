@@ -3576,6 +3576,20 @@ impl RunLetters for &[u64] {
     }
 }
 
+// a lean walk's read of a strip at i (an i8), unchecked: the optimized walk
+// paid a bounds check on every read
+macro_rules! strip_at {
+    ($strip:expr, $i:expr) => {{
+        let (strip, i) = ($strip, $i);
+        debug_assert!(i >= 0 && (i as usize) < strip.len());
+        // Safety: play_left reads at leftmost <= i <= anchor (left of its
+        // square only while i > leftmost) and play_right at anchor < i <
+        // rightmost, a window gen_classic_place_moves_lean asserts lies in each
+        // strip it reads
+        unsafe { strip.get_unchecked(i as usize) }
+    }};
+}
+
 // a walk asked for no leaves, as a raw generation asks, keeps no leave index
 // and reads no leave value: the callback is given 0 for the leave
 #[inline]
@@ -3687,7 +3701,7 @@ fn gen_classic_place_moves_lean<
     ) {
         // tail-recurse placing current sequence of tiles
         while idx < env.params.rightmost {
-            let b = env.params.board_strip[idx as usize];
+            let b = *strip_at!(env.params.board_strip, idx);
             if b == 0 {
                 break;
             }
@@ -3696,7 +3710,7 @@ fn gen_classic_place_moves_lean<
                 return;
             }
             if !SPELL_ONCE {
-                acc.main_score += env.params.face_value_scores_strip[idx as usize];
+                acc.main_score += *strip_at!(env.params.face_value_scores_strip, idx);
             }
             idx += 1;
         }
@@ -3717,7 +3731,7 @@ fn gen_classic_place_moves_lean<
             if p <= 0 {
                 return;
             }
-            let mut this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            let mut this_cross_bits = strip_at!(env.params.cross_set_strip, idx).bits;
             if this_cross_bits == 1 {
                 // already handled '@'
                 return;
@@ -3738,11 +3752,11 @@ fn gen_classic_place_moves_lean<
                 return;
             }
             let new_word_multiplier = acc.word_multiplier
-                * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-            let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
+                * *strip_at!(env.params.remaining_word_multipliers_strip, idx) as i32;
+            let tile_multiplier = *strip_at!(env.params.remaining_tile_multipliers_strip, idx);
             let perpendicular_word_multiplier =
-                env.params.perpendicular_word_multipliers_strip[idx as usize];
-            let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+                *strip_at!(env.params.perpendicular_word_multipliers_strip, idx);
+            let perpendicular_score = *strip_at!(env.params.perpendicular_scores_strip, idx);
             env.num_played += 1;
             let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
                 if SPELL_ONCE {
@@ -3883,24 +3897,24 @@ fn gen_classic_place_moves_lean<
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
-        if p == 1 && idx >= env.params.leftmost && env.params.board_strip[idx as usize] != 0 {
+        if p == 1 && idx >= env.params.leftmost && *strip_at!(env.params.board_strip, idx) != 0 {
             let mut jump_idx = idx;
             while jump_idx > env.params.leftmost
                 && env.params.board_strip[jump_idx as usize - 1] != 0
             {
                 jump_idx -= 1;
             }
-            p = env.params.cross_set_buffer_strip[jump_idx as usize].p;
+            p = strip_at!(env.params.cross_set_buffer_strip, jump_idx).p;
             if p <= 0 {
                 return;
             }
             if !SPELL_ONCE {
-                acc.main_score += env.params.cross_set_buffer_strip[jump_idx as usize].score;
+                acc.main_score += strip_at!(env.params.cross_set_buffer_strip, jump_idx).score;
             }
             idx = jump_idx - 1;
         } else {
             while idx >= env.params.leftmost {
-                let b = env.params.board_strip[idx as usize];
+                let b = *strip_at!(env.params.board_strip, idx);
                 if b == 0 {
                     break;
                 }
@@ -3909,7 +3923,7 @@ fn gen_classic_place_moves_lean<
                     return;
                 }
                 if !SPELL_ONCE {
-                    acc.main_score += env.params.face_value_scores_strip[idx as usize];
+                    acc.main_score += *strip_at!(env.params.face_value_scores_strip, idx);
                 }
                 idx -= 1;
             }
@@ -3931,7 +3945,7 @@ fn gen_classic_place_moves_lean<
 
         let mut this_cross_bits = 0;
         if idx >= env.params.leftmost {
-            let bits = env.params.cross_set_strip[idx as usize].bits;
+            let bits = strip_at!(env.params.cross_set_strip, idx).bits;
             if bits == 0 {
                 this_cross_bits = !1;
                 is_unique = true;
@@ -3991,12 +4005,12 @@ fn gen_classic_place_moves_lean<
         if candidates == 0 || !env.runs.may_hold(p, candidates) {
             return;
         }
-        let new_word_multiplier =
-            acc.word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-        let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
+        let new_word_multiplier = acc.word_multiplier
+            * *strip_at!(env.params.remaining_word_multipliers_strip, idx) as i32;
+        let tile_multiplier = *strip_at!(env.params.remaining_tile_multipliers_strip, idx);
         let perpendicular_word_multiplier =
-            env.params.perpendicular_word_multipliers_strip[idx as usize];
-        let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+            *strip_at!(env.params.perpendicular_word_multipliers_strip, idx);
+        let perpendicular_score = *strip_at!(env.params.perpendicular_scores_strip, idx);
         env.num_played += 1;
         let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
             if SPELL_ONCE {
@@ -4133,6 +4147,22 @@ fn gen_classic_place_moves_lean<
         env.num_played -= 1;
     }
 
+    // the window strip_at reads in, in every strip
+    {
+        let p = &*params;
+        let end = p.rightmost as usize;
+        assert!(0 <= p.leftmost && p.leftmost <= p.anchor && p.anchor < p.rightmost);
+        assert!(
+            end <= p.board_strip.len()
+                && end <= p.cross_set_strip.len()
+                && end <= p.cross_set_buffer_strip.len()
+                && end <= p.remaining_word_multipliers_strip.len()
+                && end <= p.remaining_tile_multipliers_strip.len()
+                && end <= p.face_value_scores_strip.len()
+                && end <= p.perpendicular_word_multipliers_strip.len()
+                && end <= p.perpendicular_scores_strip.len()
+        );
+    }
     let alphabet = params.board_snapshot.game_config.alphabet();
     let anchor = params.anchor;
     let pass_leave_idx = params.multi_leaves.pass_leave_idx();
