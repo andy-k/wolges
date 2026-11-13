@@ -4936,6 +4936,8 @@ struct Losses {
     top: equity::Equity,
     tied: Vec<Vec<bites::Bites>>,  // the words each tied top play formed
     racks: Vec<Vec<bites::Bites>>, // the racks of each tied top play
+    tied_keys: Vec<Vec<bites::Bites>>, // the racks of each tied top play
+    tied_best: Vec<Option<equity::Equity>>, // best forming none, if exact
     solved: fash::MyHashMap<Vec<bites::Bites>, equity::Equity>, // by the racks avoided
     move_loss: fash::MyHashMap<bites::Bites, f64>,
 }
@@ -4956,6 +4958,8 @@ impl Losses {
             top: equity::Equity::NEG_INFINITY,
             tied: Vec::new(),
             racks: Vec::new(),
+            tied_keys: Vec::new(),
+            tied_best: Vec::new(),
             solved: Default::default(),
             move_loss: Default::default(),
         }
@@ -4979,6 +4983,7 @@ impl Losses {
             move_loss,
             top,
             tied: formed,
+            tied_best,
             ..
         } = self;
         let top = *top;
@@ -4998,7 +5003,7 @@ impl Losses {
             racks.push(keys);
         }
         solved.clear();
-        for (words, keys) in formed.iter().zip(racks.iter()) {
+        for ((words, keys), known) in formed.iter().zip(racks.iter()).zip(tied_best.iter()) {
             if words.is_empty() {
                 continue;
             }
@@ -5007,6 +5012,8 @@ impl Losses {
                 .any(|other| !other.iter().any(|key| keys.contains(key)));
             let lost = if avoided {
                 0
+            } else if let Some(best) = known.filter(|best| best.is_finite()) {
+                top.raw() as i64 - best.raw() as i64
             } else {
                 let best = match solved.get(keys) {
                     Some(&best) => best,
@@ -5076,11 +5083,15 @@ impl Losses {
             rack_loss,
             top,
             tied,
+            tied_keys,
+            tied_best,
             ..
         } = self;
         let jumbled = *jumbled;
         targets.clear();
         tied.clear();
+        tied_keys.clear();
+        tied_best.clear();
         *top = equity::Equity::NEG_INFINITY;
         let mut floor = *top;
         let mut first = None;
@@ -5133,10 +5144,16 @@ impl Losses {
                     formed.contains(&target.tiles)
                 }
             };
+            let avoids = |other: &[bites::Bites]| !other.iter().any(|key| keys.contains(key));
             if pass && top.is_finite() {
                 for target in targets.iter_mut() {
                     if !target.best.is_finite() {
                         target.best = equity;
+                    }
+                }
+                for best in tied_best.iter_mut().flatten() {
+                    if !best.is_finite() {
+                        *best = equity;
                     }
                 }
             } else {
@@ -5157,13 +5174,35 @@ impl Losses {
                             }
                         }
                         std::mem::swap(targets, next);
+                        // exact when a play at the old top forms none of its
+                        // racks (or nothing came before)
+                        let best = (tied_keys.is_empty()
+                            || tied_keys.iter().any(|other| avoids(other)))
+                        .then_some(*top);
                         *top = equity;
                         first = Some(play.clone());
                         tied.clear();
                         tied.push(formed.clone());
+                        tied_keys.clear();
+                        tied_keys.push(keys.clone());
+                        tied_best.clear();
+                        tied_best.push(best);
                     }
                     std::cmp::Ordering::Equal => {
+                        for (other, best) in tied_keys.iter().zip(tied_best.iter_mut()) {
+                            if let Some(best) = best
+                                && other.iter().all(|key| !keys.contains(key))
+                            {
+                                *best = *top;
+                            }
+                        }
+                        let best = tied_keys
+                            .iter()
+                            .any(|other| other.iter().all(|key| !keys.contains(key)))
+                            .then_some(*top);
                         tied.push(formed.clone());
+                        tied_keys.push(keys.clone());
+                        tied_best.push(best);
                         for target in targets.iter_mut() {
                             if !forms(target) {
                                 target.best = *top;
@@ -5190,12 +5229,20 @@ impl Losses {
                                 target.best = target.best.max(equity);
                             }
                         }
+                        for (other, best) in tied_keys.iter().zip(tied_best.iter_mut()) {
+                            if let Some(best) = best
+                                && other.iter().all(|key| !keys.contains(key))
+                            {
+                                *best = (*best).max(equity);
+                            }
+                        }
                     }
                 }
             }
             floor = targets
                 .iter()
                 .map(|target| target.best)
+                .chain(tied_best.iter().flatten().copied())
                 .min()
                 .unwrap_or(*top);
             equity <= floor
@@ -10481,5 +10528,123 @@ WCMP_P1_SCORE 402.000000
                 "{text:?}"
             );
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_turns_tracked_move_best_matches_a_generation_shunning_its_racks() {
+        // a made-up lexicon dense enough to give tied tops and shared racks
+        let mut lex_rng = GameRng::from_stream(2, 0);
+        let mut next = || lex_rng.next_u64();
+        let mut words = Vec::<bites::Bites>::new();
+        for len in 2..=5u32 {
+            let keep = [0, 0, 400, 40, 4, 1][len as usize];
+            for code in 0..26u64.pow(len) {
+                if next() % 1000 < keep {
+                    let mut w = Vec::new();
+                    let mut c = code;
+                    for _ in 0..len {
+                        w.push((c % 26) as u8 + 1);
+                        c /= 26;
+                    }
+                    words.push(w[..].into());
+                }
+            }
+        }
+        words.sort_unstable();
+        words.dedup();
+        let bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let game_config = game_config::make_english_game_config();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let mut losses = Losses::new(&game_config);
+        let mut checker = move_filter::LimitedVocabChecker::new();
+        let mut seeker = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut sorted = Vec::new();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut final_scores = vec![0; game_config.num_players() as usize];
+        let (mut known, mut unknown) = (0, 0);
+        for game in 0..20 {
+            let mut rng = GameRng::from_stream(1, game);
+            game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+            while !game_state.bag.is_empty() {
+                game_state.players[game_state.turn as usize]
+                    .rack
+                    .sort_unstable();
+                let board_snapshot = &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: &klv,
+                };
+                let params = movegen::GenMovesParams {
+                    board_snapshot,
+                    rack: &game_state.current_player().rack,
+                    max_gen: 1,
+                    num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                };
+                let play = losses.play_turn(&params).unwrap();
+                for (keys, best) in losses.tied_keys.iter().zip(losses.tied_best.iter()) {
+                    let Some(best) = best.filter(|best| best.is_finite()) else {
+                        unknown += 1;
+                        continue;
+                    };
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    known += 1;
+                    let mut shuns = |word: &[u8]| {
+                        sorted.clear();
+                        sorted.extend_from_slice(word);
+                        sorted.sort_unstable();
+                        keys.iter().any(|key| key[..] == sorted[..])
+                    };
+                    seeker.gen_moves_filtered(
+                        &params,
+                        movegen::PlacePredicate::Dyn(
+                            &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                                checker.words_placed_are_ok(
+                                    board_snapshot,
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    |word: &[u8]| !shuns(word),
+                                )
+                            },
+                        ),
+                        klv::AdjustLeave::Identity,
+                        movegen::EquityPredicate::AcceptAll,
+                    );
+                    assert_eq!(seeker.plays[0].equity, best, "game {game}");
+                }
+                game_state.play(&game_config, &mut rng, &play).unwrap();
+                if !matches!(
+                    game_state
+                        .check_game_ended(&game_config, &mut final_scores)
+                        .unwrap(),
+                    game_state::CheckGameEnded::NotEnded
+                ) {
+                    break;
+                }
+                game_state.next_turn();
+            }
+        }
+        // both ways were taken
+        assert!(
+            known > 100 && unknown > 0,
+            "{known} known, {unknown} unknown"
+        );
     }
 }
