@@ -108,8 +108,12 @@ jobs:
       run: cargo fmt --check
     - name: Type-check without the optional feature
       run: cargo check --all-targets --verbose
+    - name: Build what ships, with no tests
+      run: cargo build --release --verbose
     - name: Type-check for the target that ships
       run: cargo check --target wasm32-unknown-unknown --verbose
+    - name: Build for the target that ships, with no tests
+      run: cargo build --release --target wasm32-unknown-unknown --verbose
     - name: Clippy
       run: cargo clippy --all-targets --all-features --verbose -- -D warnings
     - name: Run tests with overflow checks
