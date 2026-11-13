@@ -773,6 +773,9 @@ impl PackedLeaves {
         let end = u32::try_from(self.tiles.len() + tiles.len())
             .map_err(|_| "more tiles than a packed list of leaves can count")?;
         let sum = self.total() + weight;
+        if !sum.is_finite() {
+            return_error!("the leaves' weights must sum to a finite total".into());
+        }
         self.tiles.extend_from_slice(tiles);
         self.ends.push(end);
         self.weights.push(weight);
@@ -824,10 +827,14 @@ impl PackedLeaves {
     }
 
     // the leave a weighted draw at this point (from 0 up to the total) picks:
-    // the first whose running sum passes it, so never a leave of weight 0
+    // the first whose running sum passes it, so never a leave of weight 0; no
+    // tiles from a list of none
     #[inline]
     pub fn pick(&self, at: f64) -> &[u8] {
         let sums = &self.sums;
+        if sums.is_empty() {
+            return &[];
+        }
         self.leave(sums.partition_point(|&sum| sum <= at).min(sums.len() - 1))
     }
 }
@@ -1870,6 +1877,14 @@ mod tests {
         packed.push(&[2], 1.0).unwrap();
         assert_eq!(packed.total(), 2.0);
         assert_eq!(packed.pick(1.5), [2]);
+        // a weight that would take the sum past finite is refused, the list as
+        // it was
+        assert!(packed.push(&[3], f64::MAX).is_ok());
+        assert!(packed.push(&[3], f64::MAX).is_err());
+        assert_eq!(packed.len(), 6);
+        assert!(packed.total().is_finite());
+        // a list of none picks no tiles
+        assert!(PackedLeaves::default().pick(0.0).is_empty());
     }
 
     #[test]
