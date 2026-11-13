@@ -1346,6 +1346,25 @@ pub fn fill_lattice_leaves(
     }
 }
 
+// fill_lattice_leaves with klv.leave_value_from_tally, from one walk of the
+// leaves' graph in place of one lookup a tally: every tally the graph lacks is
+// 0
+#[inline]
+pub fn fill_lattice_klv_leaves<L: crate::kwg::Node>(
+    lat: &MultisetLattice,
+    out: &mut [i32],
+    klv: &crate::klv::Klv<L>,
+) {
+    assert!(out.len() == lat.len());
+    out.fill(0);
+    klv.for_each_tally_leave(lat.num_letters(), |tally, value| {
+        let ri = lat.rank(tally);
+        if ri != !0 {
+            out[ri as usize] = value;
+        }
+    });
+}
+
 #[inline]
 fn n_choose_k(n: u64, k: u64) -> u64 {
     if k > n {

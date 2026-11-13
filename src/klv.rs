@@ -341,6 +341,60 @@ impl<L: kwg::Node> Klv<L> {
             self.leave(leave_idx)
         }
     }
+
+    // every leave leave_value_from_tally finds for a tally of num_tiles
+    // letters, as that tally and its value, in one walk of the graph: a tally
+    // not given here is one it values at 0
+    #[inline]
+    pub fn for_each_tally_leave(&self, num_tiles: usize, mut f: impl FnMut(&[u8], i32)) {
+        struct Env<'a, L: kwg::Node, F: FnMut(&[u8], i32)> {
+            klv: &'a Klv<L>,
+            tally: Vec<u8>,
+            f: F,
+        }
+        // the list at q, its first word at index base; a tile in order is one
+        // at least min_tile, and the first of its tile in the list, as
+        // get_word_index_of takes the first
+        fn iter<L: kwg::Node, F: FnMut(&[u8], i32)>(
+            env: &mut Env<'_, L, F>,
+            q: i32,
+            base: u32,
+            min_tile: usize,
+        ) {
+            let mut p = q;
+            loop {
+                let node = env.klv.kwg[p];
+                let tile = node.tile() as usize;
+                if tile >= min_tile
+                    && tile < env.tally.len()
+                    && !(q..p).any(|e| env.klv.kwg[e].tile() == node.tile())
+                {
+                    let idx = base + env.klv.counts[q as usize] - env.klv.counts[p as usize];
+                    env.tally[tile] += 1;
+                    if node.accepts() {
+                        (env.f)(&env.tally, env.klv.leave(idx));
+                    }
+                    if node.arc_index() != 0 {
+                        iter(env, node.arc_index(), idx + node.accepts() as u32, tile);
+                    }
+                    env.tally[tile] -= 1;
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+        let root = self.kwg[0].arc_index();
+        if root != 0 {
+            let mut env = Env {
+                klv: self,
+                tally: vec![0u8; num_tiles],
+                f: &mut f,
+            };
+            iter(&mut env, root, 0, 0);
+        }
+    }
 }
 
 #[inline(always)]
@@ -1194,6 +1248,35 @@ mod tests {
         let mut bin = make_klv2(&[(&[1], 1.0), (&[2], 2.0)]);
         bin.truncate(bin.len() - 2);
         assert!(read_leaves_alloc::<kwg::Node22>(&bin).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn one_walk_of_the_leaves_fills_a_lattice_as_a_lookup_a_tally_does() {
+        // a leave past the lattice's letters and one past its rack size among
+        // them, which neither fill holds
+        let bin = make_klv2(&[
+            (&[0], 0.5),
+            (&[0, 0, 1], -1.25),
+            (&[1], 1.0),
+            (&[1, 1], 4.0),
+            (&[1, 2], 2.0),
+            (&[1, 2, 3], 7.5),
+            (&[2], 3.0),
+            (&[2, 2, 2, 2], 9.0),
+            (&[3, 4], 6.0),
+            (&[4], -2.0),
+        ]);
+        let klv = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
+        let lat = crate::census::MultisetLattice::new(4, 3).unwrap();
+        let mut by_tally = vec![0i32; lat.len()];
+        crate::census::fill_lattice_leaves(&lat, &mut by_tally, |tally| {
+            klv.leave_value_from_tally(tally)
+        });
+        let mut by_walk = vec![1i32; lat.len()];
+        crate::census::fill_lattice_klv_leaves(&lat, &mut by_walk, &klv);
+        assert_eq!(by_walk, by_tally);
+        assert!(by_tally.iter().filter(|&&v| v != 0).count() == 7);
     }
 
     #[test]
