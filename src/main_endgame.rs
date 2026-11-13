@@ -326,13 +326,15 @@ impl Question {
     }
 }
 
-// how each solve runs: on which arm, within which limits, on how many threads
-// with two or more tiles in the bag, whether it prints its progress, after
-// which scoreless turns (the passes and the zeros, as the game counts them),
-// and under which model with two or more tiles in the bag
+// how each solve runs: on which arm, within which limits, with how big a table
+// from the start, on how many threads with two or more tiles in the bag,
+// whether it prints its progress, after which scoreless turns (the passes and
+// the zeros, as the game counts them), and under which model with two or more
+// tiles in the bag
 struct Solving {
     lean: bool,
     limits: endgame::Limits,
+    reserve_table_bytes: usize,
     threads: usize,
     quiet: bool,
     scoreless: [u16; 2],
@@ -344,6 +346,21 @@ struct Solving {
 enum PegModelArg {
     InfoSets,
     RandomDraws,
+}
+
+// the solver's table reserved from the start, as --reserve-table-mb asks: held
+// to half the memory limit, as a growing table holds its old buckets beside the
+// new ones; none at 0
+fn reserve_table(
+    egs: &mut endgame::EndgameSolver<'_, kwg::Node24, kwg::Node24>,
+    solving: &Solving,
+) {
+    let bytes = (solving.limits.memory).map_or(solving.reserve_table_bytes, |limit| {
+        solving.reserve_table_bytes.min(limit.bytes / 2)
+    });
+    if bytes != 0 {
+        egs.reserve_table(bytes);
+    }
 }
 
 #[inline(always)]
@@ -436,6 +453,7 @@ fn run_batch<N: kwg::Node>(
             &arm_tables,
         )?;
         egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
+        reserve_table(&mut egs, solving);
         // the progress goes to stderr, so stdout keeps one line a position
         if !solving.quiet {
             egs.report_progress(endgame_watch::ticking(move |progress, elapsed| {
@@ -490,6 +508,13 @@ struct Cli {
         help = "worker threads with two or more tiles in the bag [default: every core]"
     )]
     threads: Option<std::num::NonZeroUsize>,
+    #[arg(
+        long,
+        value_name = "MIB",
+        help = "each solve's table from the start, in MiB (0: none; it grows from one \
+                bucket), held to half of --max-memory"
+    )]
+    reserve_table_mb: Option<usize>,
     #[arg(
         long,
         value_name = "FILE",
@@ -587,6 +612,7 @@ fn main() -> error::Returns<()> {
             states: cli.max_states,
             memory: endgame_watch::memory_limit(cli.max_memory)?,
         },
+        reserve_table_bytes: (cli.reserve_table_mb).map_or(0, |mb| mb.saturating_mul(1 << 20)),
         threads: (cli.threads).map_or_else(parallelism::available, std::num::NonZeroUsize::get),
         quiet: cli.quiet,
         scoreless: [cli.passes, cli.zeros],
@@ -1567,6 +1593,7 @@ fn solve_position<N: kwg::Node>(
         &smaller_kwg,
         &arm_tables,
     )?;
+    reserve_table(&mut egs, solving);
     if !solving.quiet {
         egs.report_progress(endgame_watch::ticking(|progress, elapsed| {
             writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
