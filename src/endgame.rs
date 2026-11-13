@@ -1311,6 +1311,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     generated: u64,        // the lists generated, each list's serial
     serials: Vec<u64>,     // the serial of each ply's list
     siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
+    singles: Vec<(u64, Vec<u32>)>, // each list's one-tile moves by place, and its serial
     lane_pool: LanePool,
     pool_walker: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // LanePool's walks
     #[cfg(test)]
@@ -1369,6 +1370,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             generated: 0,
             serials: Vec::new(),
             siblings: Vec::new(),
+            singles: Vec::new(),
             lane_pool: LanePool::new(),
             pool_walker: None,
             #[cfg(test)]
@@ -2115,21 +2117,44 @@ impl<
         let out_bonus = 2 * work_buffer.rack_scores[player_idx as usize ^ 1];
         let mut best = work_buffer.rack_scores[player_idx as usize ^ 1]
             - work_buffer.rack_scores[player_idx as usize];
-        for candidate in &work_buffer.lists[ply] {
+        // not set aside with a stopped pass's lists, so grown on its own
+        if work_buffer.singles.len() <= ply {
+            work_buffer.singles.resize_with(ply + 1, Default::default);
+        }
+        let list = &work_buffer.lists[ply];
+        let (of, singles) = &mut work_buffer.singles[ply];
+        if *of != work_buffer.serials[ply] {
+            *of = work_buffer.serials[ply];
+            singles.clear();
+            singles.extend(
+                (list.iter().enumerate())
+                    .filter(|(_, candidate)| candidate.placed == 1)
+                    .map(|(at, _)| at as u32),
+            );
+            // highest score first, so the read stops at the first it takes
+            singles.sort_unstable_by_key(|&at| {
+                std::cmp::Reverse(match &list[at as usize].play {
+                    movegen::Play::Place { score, .. } => *score,
+                    movegen::Play::Exchange { .. } => i32::MIN,
+                })
+            });
+        }
+        for &at in singles.iter() {
+            let candidate = &list[at as usize];
             // a move placing one tile, whose word alone is read for it
-            if candidate.placed == 1
-                && let movegen::Play::Place {
-                    down,
-                    lane,
-                    word,
-                    score,
-                    ..
-                } = &candidate.play
+            if let movegen::Play::Place {
+                down,
+                lane,
+                word,
+                score,
+                ..
+            } = &candidate.play
                 && (if *down { cols } else { rows }) >> lane & 1 == 0
                 && let Some(&tile) = word.iter().find(|&&t| t != 0)
                 && held_tile(tile) == left
             {
                 best = best.max(score + out_bonus);
+                break;
             }
         }
         if best as f32 > need {
