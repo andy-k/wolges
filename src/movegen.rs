@@ -6485,6 +6485,48 @@ pub struct LaneCensus {
 // enough that a leave added to it stays below any play's
 const NO_PLAY: i32 = i32::MIN / 2;
 
+// the ways to take from tally the tiles placed at at or past it by word (a
+// play's in its letters). Each tile is taken as itself or as a blank. Each way
+// is found with score less the deltas of its blanks: play_scorer's
+// score_and_blank_deltas gives one for each tile placed. k is the first such
+// tile's place among them.
+fn designate(
+    tally: &mut [u8],
+    deltas: &[(u8, i32)],
+    word: &mut [u8],
+    at: usize,
+    k: usize,
+    score: i32,
+    found: &mut dyn FnMut(&[u8], i32),
+) {
+    let Some(skip) = word[at..].iter().position(|&tile| tile != 0) else {
+        found(word, score);
+        return;
+    };
+    let at = at + skip;
+    let letter = word[at];
+    if tally[letter as usize] > 0 {
+        tally[letter as usize] -= 1;
+        designate(tally, deltas, word, at + 1, k + 1, score, found);
+        tally[letter as usize] += 1;
+    }
+    if tally[0] > 0 {
+        tally[0] -= 1;
+        word[at] = letter | 0x80;
+        designate(
+            tally,
+            deltas,
+            word,
+            at + 1,
+            k + 1,
+            score - deltas[k].1,
+            found,
+        );
+        word[at] = letter;
+        tally[0] += 1;
+    }
+}
+
 impl LaneCensus {
     #[inline(always)]
     fn new(nibbles: bool, lanes: usize) -> Self {
@@ -7454,6 +7496,82 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool> KurniaMoveGenerator<G
             EquityPredicate::RejectAll,
         );
         census
+    }
+
+    // every play of at most a rack's tiles placeable from the tiles of pool
+    // (blanks among them as 0). Each way of designating blanks is its own play.
+    // found(down, lane, idx, word, score) is called once for each play; word
+    // and score are as a Play::Place's. It runs the census walk that reads no
+    // leave. That walk spells each word once with a real tile before a blank.
+    // So each word is taken in its letters to score every designation the pool
+    // allows.
+    pub fn pool_plays<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) {
+        let game_config = board_snapshot.game_config;
+        let rack_size = game_config.rack_size();
+        // no play places more of a tile than a rack holds
+        let mut tally = vec![0u8; game_config.alphabet().len() as usize];
+        for &tile in pool {
+            tally[tile as usize] = tally[tile as usize].saturating_add(1);
+        }
+        let walked = (0u8..)
+            .zip(tally.iter())
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count.min(rack_size) as usize))
+            .collect::<Vec<_>>();
+        let snapshot = BoardSnapshot {
+            board_tiles: board_snapshot.board_tiles,
+            game_config,
+            kwg: board_snapshot.kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: board_snapshot.klv,
+        };
+        let params = GenMovesParams {
+            board_snapshot: &snapshot,
+            rack: &walked,
+            max_gen: 1,
+            num_exchanges_by_this_player: i16::MAX,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        let mut letters = Vec::new();
+        let mut deltas = Vec::new();
+        let mut word = Vec::new();
+        self.gen_census_sheet_impl(
+            &params,
+            PlacePredicate::Dyn(&mut |down, lane, idx, spelled: &[u8], _score: i32| {
+                if spelled.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize {
+                    letters.clear();
+                    letters.extend(spelled.iter().map(|&tile| tile & 0x7f));
+                    let score = play_scorer::score_and_blank_deltas(
+                        &snapshot,
+                        down,
+                        lane,
+                        idx,
+                        &letters,
+                        &mut deltas,
+                    );
+                    word.clear();
+                    word.extend_from_slice(&letters);
+                    designate(
+                        &mut tally,
+                        &deltas,
+                        &mut word,
+                        0,
+                        0,
+                        score,
+                        &mut |word: &[u8], score| found(down, lane, idx, word, score),
+                    );
+                }
+                false
+            }),
+            klv::AdjustLeave::Identity,
+            EquityPredicate::RejectAll,
+        );
     }
 
     #[inline(always)]
@@ -14178,6 +14296,57 @@ mod tests {
             }
         }
         assert_eq!(compared, 3 * (tiles.len() + 1));
+    }
+
+    #[test]
+    #[inline]
+    fn a_pools_plays_are_what_a_generation_from_it_places() {
+        // on an empty board and then as tiles go down: the plays pool_plays
+        // finds from a pool are the placements of at most a rack's tiles that a
+        // generation with the pool as its rack finds. Each is found once. Pools
+        // with no blank and with blanks are both tried.
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let rack_size = gc.rack_size() as usize;
+        let placed = parse_test_rack(gc.alphabet(), "AEST");
+        let pools = ["AAEEIILNORSST", "?AEEST", "??AEST", "?ACEST"]
+            .map(|pool| parse_test_rack(gc.alphabet(), pool));
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let mut generator = KurniaMoveGenerator::new(&gc);
+        let mut compared = 0;
+        for step in 0..=15 {
+            if step > 0 {
+                let at = gc
+                    .board_layout()
+                    .dim()
+                    .at_row_col(step - 1, (((step - 1) as i32 * 7 + 3) % 15) as i8);
+                board_tiles[at] = placed[(step - 1) as usize % placed.len()];
+            }
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            for pool in &pools {
+                let mut found = Vec::new();
+                generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                    found.push((down, lane, idx, word.to_vec(), score));
+                });
+                found.sort_unstable();
+                let mut want = place_plays(&mut generator, &board_snapshot, pool, false);
+                want.retain(|(_, _, _, word, _)| {
+                    word.iter().filter(|&&tile| tile != 0).count() <= rack_size
+                });
+                assert!(!want.is_empty(), "step {step}, pool {pool:?}");
+                assert_eq!(found, want, "step {step}, pool {pool:?}");
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 16 * pools.len());
     }
 
     #[test]
