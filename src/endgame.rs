@@ -215,6 +215,16 @@ impl Table {
         }
     }
 
+    // a table with room for this many buckets from the start (at least one),
+    // growing on from there as new's does
+    #[inline(always)]
+    fn with_buckets(buckets: usize) -> Self {
+        Self {
+            buckets: vec![[0; 8]; buckets.max(1)],
+            ..Self::new()
+        }
+    }
+
     // the positions the table has room for
     #[inline(always)]
     fn room(&self) -> usize {
@@ -2921,6 +2931,20 @@ impl<
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock();
         self.run_id_loop(player_idx, false, limits, None, true)
+    }
+
+    // a table of as many buckets as fit in this many bytes from the start, in
+    // place of a smaller one holding nothing; false, the table as it was,
+    // otherwise. A table grown from one bucket replaces positions while it is
+    // small that the solve then searches again
+    pub fn reserve_table(&mut self, bytes: usize) -> bool {
+        let buckets = bytes / std::mem::size_of::<[u64; 8]>();
+        let table = &self.work_buffer.table;
+        if table.held != 0 || table.growing() || table.room() >= 4 * buckets {
+            return false;
+        }
+        self.work_buffer.table = Table::with_buckets(buckets);
+        true
     }
 
     // solve_within, deepening on from a depth a solve of the same position on
@@ -10549,6 +10573,34 @@ mod tests {
                 assert_ne!(a, b, "two positions share a key");
             }
         }
+    }
+
+    #[test]
+    fn a_reserved_table_answers_as_a_grown_one() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut grown =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut reserved =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let bucket = std::mem::size_of::<[u64; 8]>();
+        assert!(reserved.reserve_table(bucket << 10));
+        assert_eq!(reserved.work_buffer.table.room(), 4 << 10);
+        assert!(
+            !reserved.reserve_table(bucket << 9),
+            "a smaller table is not taken"
+        );
+        for (_, pos) in &all_positions() {
+            for egs in [&mut grown, &mut reserved] {
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            }
+            assert_eq!(reserved.solve(0).unwrap(), grown.solve(0).unwrap());
+        }
+        assert!(
+            !reserved.reserve_table(bucket << 12),
+            "a table holding positions stays"
+        );
     }
 
     #[test]
