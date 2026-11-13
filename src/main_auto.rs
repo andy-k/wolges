@@ -25,6 +25,8 @@ struct Cli {
         help = "write each bag-empty position the games reach to FILE, as endgame --batch reads"
     )]
     harvest: Option<String>,
+    #[arg(long, value_name = "N", help = "stop after N games (default: never)")]
+    games: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
     #[arg(default_value = "lexbin/CSW24.kwg", help = "the word graph")]
@@ -93,7 +95,7 @@ fn main() -> error::Returns<()> {
     game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-    do_it(&kwg, &klv, &game_config, harvest, cli.lean)
+    do_it(&kwg, &klv, &game_config, harvest, cli.games, cli.lean)
 }
 
 #[inline]
@@ -117,6 +119,7 @@ fn do_it(
     klv: &klv::Klv<kwg::Node24>,
     game_config: &game_config::GameConfig,
     harvest: Option<HarvestWriter>,
+    games: Option<u64>,
     lean: bool,
 ) -> error::Returns<()> {
     let mut fen_parser =
@@ -644,6 +647,11 @@ fn do_it(
             win_stats_0.standard_deviation(),
             t0.elapsed(),
         )?;
+        if games.is_some_and(|games| {
+            (loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2]) as u64 >= games
+        }) {
+            return Ok(());
+        }
     } // loop
 
     //Ok(())
