@@ -553,6 +553,8 @@ struct WorkingBuffer<G: LaneBits> {
     span_prefix: Box<[SpanPrefix]>, // r*(c+1), then c*(r+1): each lane's sums
     span_lanes: Box<[SpanLane]>,    // rows + cols, across lanes first
     span_turn: u32,                 // the generation's, for span_lanes
+    span_look_turn: u32,            // the generation the table walk last checked its lanes in
+    span_source: usize,             // the tables and keys span_lanes's kept sums are by
     exist_memo: Box<[ExistSlot]>,   // key check answers, made at first use
     exist_turn: u32,                // the generation's, for exist_memo
     anchor_left_bounds: Vec<i32>,   // per lean placement, two blocks by left edge
@@ -645,6 +647,8 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
             span_prefix: self.span_prefix.clone(),
             span_lanes: self.span_lanes.clone(),
             span_turn: self.span_turn,
+            span_look_turn: self.span_look_turn,
+            span_source: self.span_source,
             exist_memo: self.exist_memo.clone(),
             exist_turn: self.exist_turn,
             anchor_left_bounds: self.anchor_left_bounds.clone(),
@@ -744,6 +748,8 @@ impl<G: LaneBits> Clone for WorkingBuffer<G> {
         self.span_prefix.clone_from(&source.span_prefix);
         self.span_lanes.clone_from(&source.span_lanes);
         self.span_turn = source.span_turn;
+        self.span_look_turn = source.span_look_turn;
+        self.span_source = source.span_source;
         self.exist_memo.clone_from(&source.exist_memo);
         self.exist_turn = source.exist_turn;
         self.anchor_left_bounds
@@ -879,6 +885,8 @@ impl<G: LaneBits> WorkingBuffer<G> {
             span_lanes: vec![SpanLane::new(); dim.rows as usize + dim.cols as usize]
                 .into_boxed_slice(),
             span_turn: 0,
+            span_look_turn: 0,
+            span_source: 0,
             exist_memo: Box::new([]),
             exist_turn: 0,
             anchor_left_bounds: Vec::new(),
@@ -931,6 +939,7 @@ impl<G: LaneBits> WorkingBuffer<G> {
         if self.span_turn == 0 {
             self.span_lanes.fill(SpanLane::new());
             self.span_turn = 1;
+            self.span_look_turn = 0;
         }
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
@@ -1250,13 +1259,17 @@ impl<G: LaneBits> WorkingBuffer<G> {
     // a lane's span sums and its squares' allowed letters (only the anagram
     // tables' path reads either), filled once a generation, when a span of it
     // is read: where the sums start in span_prefix, and the lane's index in
-    // span_lanes
+    // span_lanes. Sums kept from an earlier generation are taken again when the
+    // table walk has checked its lanes this generation and found this one as it
+    // kept it (rcs_placements), the sums filled while it was so, by the same
+    // tables and keys (source)
     #[inline(always)]
     fn fill_span_lane<const D: usize, W: LaneBits, P: alphagram::KeyPlaces>(
         &mut self,
         board_tiles: &[u8],
         dim: &matrix::Dim,
         places: P,
+        source: usize,
         down: bool,
         lane: i8,
     ) -> (usize, usize) {
@@ -1279,6 +1292,18 @@ impl<G: LaneBits> WorkingBuffer<G> {
             )
         };
         if self.span_lanes[lane_at].turn == self.span_turn {
+            return (at, lane_at);
+        }
+        if self.span_source != source {
+            for span_lane in self.span_lanes.iter_mut() {
+                span_lane.kept = false;
+            }
+            self.span_source = source;
+        }
+        // kept is set only in a generation the table walk looked in (below),
+        // and cleared at its look for a lane it found changed
+        if self.span_lanes[lane_at].kept {
+            self.span_lanes[lane_at].turn = self.span_turn;
             return (at, lane_at);
         }
         let (board_strip, cross_sets, face_values, perpendicular_scores, word_multipliers) = if down
@@ -1351,6 +1376,7 @@ impl<G: LaneBits> WorkingBuffer<G> {
         }
         self.span_lanes[lane_at] = SpanLane {
             turn: self.span_turn,
+            kept: self.span_look_turn == self.span_turn,
             empty,
             multiplied,
         };
@@ -2015,6 +2041,14 @@ impl TablePlaces for ByLayout {
     }
 }
 
+// the tables and their keys' kind, as fill_span_lane tells kept sums apart: the
+// tables' address, its low bit (an Anagrams is aligned past a byte) for nibble
+// keys
+#[inline(always)]
+fn span_source<T: TablePlaces>(anagrams: &anagrams::Anagrams) -> usize {
+    std::ptr::from_ref(anagrams) as usize | T::NIBBLES as usize
+}
+
 // keys by nibbles
 struct ByNibble;
 
@@ -2066,6 +2100,7 @@ fn fill_key_check<
         board_snapshot.board_tiles,
         dim,
         T::of(source),
+        span_source::<T>(source),
         down,
         lane,
     );
@@ -4202,11 +4237,13 @@ impl SpanPrefix {
     }
 }
 
-// a lane's sums as filled: the generation they are for, its empty squares, and
-// its empty squares whose word multiplier is not 1, a bit each
+// a lane's sums as filled: the generation they are for, whether they are the
+// lane's inputs as the table walk keeps them (fill_span_lane), its empty
+// squares, and its empty squares whose word multiplier is not 1, a bit each
 #[derive(Clone, Copy)]
 struct SpanLane {
     turn: u32,
+    kept: bool,
     empty: u128,
     multiplied: u128,
 }
@@ -4216,6 +4253,7 @@ impl SpanLane {
     fn new() -> Self {
         Self {
             turn: 0,
+            kept: false,
             empty: 0,
             multiplied: 0,
         }
@@ -5966,6 +6004,7 @@ fn gen_place_moves_at<
         board_snapshot.board_tiles,
         dim,
         T::of(held),
+        span_source::<T>(held),
         placement.down,
         placement.lane,
     );
@@ -10017,6 +10056,19 @@ fn rcs_placements<
     }
     working_buffer.rcs_pending_rows = G::from(0);
     working_buffer.rcs_pending_cols = G::from(0);
+    // the lanes are checked: span sums kept for a lane found again, or marked
+    // to be, are its old inputs', so filled again (fill_span_lane)
+    working_buffer.span_look_turn = working_buffer.span_turn;
+    for (at, kept) in working_buffer.rcs_lanes.iter().enumerate() {
+        let stale = if at >= dim.rows as usize {
+            stale_cols & (G::from(1) << (at - dim.rows as usize) as u32)
+        } else {
+            stale_rows & (G::from(1) << at as u32)
+        } != G::from(0);
+        if stale || !kept.valid {
+            working_buffer.span_lanes[at].kept = false;
+        }
+    }
     let rack_bits = working_buffer.rack_bits;
     // the rack's tiles (a bit each) and their scores, for the caps
     let mut rack_tiles = [(0u64, 0i32); u64::BITS as usize];
@@ -13533,6 +13585,89 @@ mod tests {
                     "board {i}, rack {rack}"
                 );
             }
+        }
+    }
+
+    // a generator kept across boards, some generated with the tables and some
+    // without (so with no look by the table walk at its lanes), boards coming
+    // back to one seen before, generates as a fresh one each time: span sums
+    // kept from an earlier generation are taken only for a lane as it was
+    #[test]
+    #[inline]
+    fn a_kept_generator_between_arms_matches_a_fresh_one() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        // each board, and whether the tables generate on it
+        let steps = [
+            ("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", true),
+            ("15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15", true),
+            ("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15", false),
+            ("15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15", true),
+            (
+                "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+                false,
+            ),
+            ("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15", true),
+            (
+                "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+                true,
+            ),
+            ("15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15", false),
+            (
+                "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+                true,
+            ),
+            ("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15", true),
+        ]
+        .map(|(fen, tables)| (fen_parser.parse(fen).unwrap().to_vec(), tables));
+        let racks = ["AEINRST", "CARTONS", "?EINRST", "DEILOPS"];
+        let plays = |move_generator: &mut KurniaMoveGenerator,
+                     board_tiles: &[u8],
+                     tables: bool,
+                     rack: &str| {
+            let board_snapshot = BoardSnapshot {
+                board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: tables.then_some(&held),
+                rack_lengths: (!tables).then_some(&rack_lengths),
+                klv: &klv,
+            };
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(gc.alphabet(), rack),
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            move_generator
+                .plays
+                .iter()
+                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .collect::<Vec<_>>()
+        };
+        let mut kept = KurniaMoveGenerator::new(&gc);
+        for (i, (board_tiles, tables)) in steps.iter().enumerate() {
+            let rack = racks[i % racks.len()];
+            assert_eq!(
+                plays(&mut kept, board_tiles, *tables, rack),
+                plays(
+                    &mut KurniaMoveGenerator::new(&gc),
+                    board_tiles,
+                    *tables,
+                    rack
+                ),
+                "step {i}, rack {rack}"
+            );
         }
     }
 
