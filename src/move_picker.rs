@@ -1868,9 +1868,7 @@ impl<
         self.simmer.prepare(
             self.game_config,
             game_state,
-            self.num_sim_plies,
-            OBSERVE,
-            kept_leaves,
+            &simmer::SimChoices::new(self.num_sim_plies, OBSERVE, kept_leaves),
         );
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
