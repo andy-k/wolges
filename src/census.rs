@@ -2,7 +2,7 @@
 
 pub const UNPLAYABLE: i32 = i32::MIN / 2;
 
-const MAX_LETTERS: usize = 64;
+pub const MAX_LETTERS: usize = 64;
 
 pub struct MultisetLattice {
     num_letters: usize,
@@ -12,14 +12,20 @@ pub struct MultisetLattice {
     steps: RankSteps,
 }
 
+#[inline]
+pub fn check_letters(num_letters: usize) -> crate::error::Returns<()> {
+    if !(1..=MAX_LETTERS).contains(&num_letters) {
+        return Err(
+            format!("a census counts 1 to {MAX_LETTERS} letters, not {num_letters}").into(),
+        );
+    }
+    Ok(())
+}
+
 impl MultisetLattice {
     #[inline(always)]
     pub fn new(num_letters: usize, rack_size: usize) -> crate::error::Returns<Self> {
-        if !(1..=MAX_LETTERS).contains(&num_letters) {
-            return Err(
-                format!("a census counts 1 to {MAX_LETTERS} letters, not {num_letters}").into(),
-            );
-        }
+        check_letters(num_letters)?;
         let n_max = rack_size + num_letters;
 
         let pascal = crate::prob::Pascal::with_rows(n_max + 1);

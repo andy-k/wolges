@@ -2,6 +2,8 @@
 
 use super::{error, game_config, klv, kwg, movegen};
 
+pub const MAX_RACK_SIZE: u8 = u8::BITS as u8;
+
 // every full rack's setup as a generation makes it from a klv, made once: the
 // leave of each part of the rack it keeps, by MultiLeaves's leave index, and
 // the order the table walk takes its subracks in (movegen::subrack_order's),
@@ -93,11 +95,8 @@ impl RackTable {
         let counts = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<[u8]>>();
+        game_config.supports(game_config::Op::Tables)?;
         let rack_size = game_config.rack_size();
-        // a subrack's position is a byte, so a rack has at most 1 << 8 of them
-        if rack_size > 8 {
-            return Err("a rack table holds racks of at most 8 tiles".into());
-        }
         let ways = Self::ways_of(&counts, rack_size);
         let mut table = Self {
             rack_size,

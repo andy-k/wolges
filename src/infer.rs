@@ -718,6 +718,7 @@ impl InferTables {
         game_config: &game_config::GameConfig,
         klv: &klv::Klv<L>,
     ) -> error::Returns<Self> {
+        game_config.supports(game_config::Op::Inference)?;
         let lat = census::MultisetLattice::new(
             game_config.alphabet().len() as usize,
             game_config.rack_size() as usize,

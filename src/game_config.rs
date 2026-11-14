@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout, equity, error, klv, kwg, text};
+use super::{alphabet, board_layout, census, equity, error, klv, kwg, racks, text};
 use std::str::FromStr;
 
 #[derive(Clone)]
@@ -25,6 +25,23 @@ pub struct StaticGameConfig {
     pub exchanges_allowed_per_player: i16,
     pub exchange_tile_limit: i16, // >= 1
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    Generation,
+    Inference,
+    Tables,
+    Sim,
+    Endgame,
+}
+
+pub const OPS: [Op; 5] = [
+    Op::Generation,
+    Op::Inference,
+    Op::Tables,
+    Op::Sim,
+    Op::Endgame,
+];
 
 #[derive(Clone)]
 pub enum GameConfig {
@@ -850,6 +867,31 @@ impl GameConfig {
     }
 
     #[inline]
+    pub fn supports(&self, op: Op) -> error::Returns<()> {
+        match op {
+            Op::Generation | Op::Sim => Ok(()),
+            Op::Inference => census::check_letters(self.alphabet().len() as usize),
+            Op::Tables => {
+                if self.rack_size() > racks::MAX_RACK_SIZE {
+                    return_error!(format!(
+                        "a rack table holds racks of at most {} tiles",
+                        racks::MAX_RACK_SIZE
+                    ));
+                }
+                Ok(())
+            }
+            Op::Endgame => {
+                if self.num_players() != 2 {
+                    return_error!(
+                        "the endgame solver plays two seats, so it needs exactly 2 players".into()
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[inline]
     fn check_parts(&self) -> error::Returns<()> {
         if self.rack_size() == 0
             || self.num_players() == 0
@@ -1020,6 +1062,39 @@ impl GameConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[inline]
+    fn each_bundled_game_is_refused_only_what_it_is_too_big_for() {
+        for (name, make) in GAME_CONFIGS {
+            for game_config in [make(), make().jumbled()] {
+                for op in OPS {
+                    let too_long_a_rack =
+                        op == Op::Tables && game_config.rack_size() > racks::MAX_RACK_SIZE;
+                    assert_eq!(
+                        game_config.supports(op).is_err(),
+                        too_long_a_rack,
+                        "{name} {op:?}"
+                    );
+                }
+            }
+        }
+        let mut three = make_english_game_config();
+        let GameConfig::Static(rules) = &mut three;
+        rules.num_players = 3;
+        assert_eq!(
+            three.supports(Op::Endgame).unwrap_err().to_string(),
+            "the endgame solver plays two seats, so it needs exactly 2 players"
+        );
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        assert_eq!(
+            racks::RackTable::build(&klv, &make_hong_kong_english_game_config(), 1)
+                .err()
+                .unwrap()
+                .to_string(),
+            "a rack table holds racks of at most 8 tiles"
+        );
+    }
 
     #[test]
     #[inline]

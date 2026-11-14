@@ -1978,9 +1978,7 @@ impl<
         arm_tables: &'a anagrams::ArmTables,
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     ) -> error::Returns<Self> {
-        if game_config.num_players() != 2 {
-            return Err("cannot solve non-2-player endgames".into());
-        }
+        game_config.supports(game_config::Op::Endgame)?;
         // the run letters, unless the tables are the lean arm's (rack lengths),
         // which reads no more than the word graph, and only for a graph whose
         // runs ascend, as a walk with them goes straight to a tile's node
