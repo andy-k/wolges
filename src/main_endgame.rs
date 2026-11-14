@@ -1647,8 +1647,7 @@ fn solve_position<N: kwg::Node>(
             exchanges: [0, 0],
             model: solving.peg_model,
         })?;
-        progress.set_threads(solving.threads);
-        let result = egs.resume_peg(&mut progress, &solving.limits)?;
+        let result = egs.resume_peg(&mut progress, &solving.limits, solving.threads)?;
         let result = match result {
             Ok(result) => result,
             Err(unsupported) => {
