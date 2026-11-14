@@ -5610,6 +5610,7 @@ struct JumbledSplits {
     narrowed: Vec<u8>,
     tile_values: Vec<i32>,
     starts: Vec<u32>,
+    out_of_memory: bool,
 }
 
 impl JumbledMultisets {
@@ -5638,6 +5639,7 @@ impl JumbledMultisets {
         }
         self.multisets.clear();
         self.kept.clear();
+        self.splits.out_of_memory = false;
     }
 
     // the start in by_size of the lists for these forced letters, and whether
@@ -5648,6 +5650,15 @@ impl JumbledMultisets {
             return (start as usize, true);
         }
         let start = self.kept.len() * (max_size + 1);
+        if self.kept.try_reserve(1).is_err()
+            || self
+                .by_size
+                .try_reserve((start + max_size + 1).saturating_sub(self.by_size.len()))
+                .is_err()
+        {
+            self.splits.out_of_memory = true;
+            return (0, true);
+        }
         if self.by_size.len() < start + max_size + 1 {
             self.by_size.resize_with(start + max_size + 1, Vec::new);
         }
@@ -5673,6 +5684,9 @@ fn gen_jumbled_place_moves<
     single_tile_plays: bool,
     opening: Option<bool>,
 ) {
+    if params.jumbled.splits.out_of_memory {
+        return;
+    }
     match params.jumbled.walk {
         JUMBLED_EVERY_ARRANGEMENT => {
             gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_EVERY_ARRANGEMENT, _, _, _>(
@@ -5755,6 +5769,14 @@ fn gen_jumbled_place_moves_walk<
     ) {
         if letter >= c.alphabet_len {
             if size != 0 && c.kwg[p].accepts() {
+                if c.out.by_size[c.start + size as usize]
+                    .try_reserve(1)
+                    .is_err()
+                    || c.out.multisets.try_reserve(c.out.current.len()).is_err()
+                {
+                    c.out.splits.out_of_memory = true;
+                    return;
+                }
                 c.out.by_size[c.start + size as usize].push(c.out.multisets.len() as u32);
                 c.out.multisets.extend_from_slice(&c.out.current);
             }
@@ -5841,6 +5863,9 @@ fn gen_jumbled_place_moves_walk<
         at: usize,
         fixed: i32,
     ) {
+        if env.params.jumbled.splits.out_of_memory {
+            return;
+        }
         let mut s = std::mem::take(&mut env.params.jumbled.splits);
         let num_played = env.num_played as usize;
         let alphabet = env.alphabet;
@@ -5896,6 +5921,11 @@ fn gen_jumbled_place_moves_walk<
             return;
         }
         s.order.clear();
+        if s.out_of_memory || s.order.try_reserve(s.members.len()).is_err() {
+            s.out_of_memory = true;
+            env.params.jumbled.splits = s;
+            return;
+        }
         s.order.extend(0..s.members.len() as u32);
         let members = &s.members;
         let member_data = &s.member_data;
@@ -5964,6 +5994,10 @@ fn gen_jumbled_place_moves_walk<
         cells: usize,
         num_letters: usize,
     ) {
+        if s.out_of_memory || s.starts.try_reserve(1).is_err() {
+            s.out_of_memory = true;
+            return;
+        }
         s.placed.clear();
         s.placed.resize(cells, 0);
         s.blanks_used.clear();
@@ -5974,6 +6008,10 @@ fn gen_jumbled_place_moves_walk<
         for d in 1..s.starts.len() {
             let (from, to) = (s.starts[d - 1], s.starts[d]);
             s.order.clear();
+            if s.order.try_reserve((to - from) as usize).is_err() {
+                s.out_of_memory = true;
+                return;
+            }
             s.order.extend(from..to);
             let members = &s.members;
             s.order.sort_unstable_by(|&a, &b| {
@@ -6085,6 +6123,10 @@ fn gen_jumbled_place_moves_walk<
             s.class_left.clone_from(&s.class_sizes);
             s.matrix.clear();
             s.matrix.resize(s.class_sizes.len() * s.values.len(), 0);
+            if s.starts.try_reserve(1).is_err() {
+                s.out_of_memory = true;
+                return;
+            }
             s.starts.push(s.members.len() as u32);
             share_classes(s, 0, fixed, 0, leave_value);
             return;
@@ -6116,6 +6158,14 @@ fn gen_jumbled_place_moves_walk<
     ) {
         let num_values = s.values.len();
         if cell == s.matrix.len() {
+            if s.members.try_reserve(1).is_err()
+                || (s.member_data)
+                    .try_reserve(s.blanks.len() + s.matrix.len())
+                    .is_err()
+            {
+                s.out_of_memory = true;
+                return;
+            }
             let offset = s.member_data.len() as u32;
             s.member_data.extend_from_slice(&s.blanks);
             s.member_data.extend_from_slice(&s.matrix);
@@ -6172,6 +6222,10 @@ fn gen_jumbled_place_moves_walk<
         } + 1;
         let placed = s.placed[cell] + 1;
         let to = s.group.len();
+        if s.group.try_reserve(to - from).is_err() {
+            s.out_of_memory = true;
+            return false;
+        }
         for i in from..to {
             let offset = s.group[i] as usize;
             let blanks = s.member_data[offset + j];
@@ -6494,6 +6548,9 @@ fn gen_jumbled_place_moves_walk<
                                 env.params.rack_tally[0],
                                 0,
                             );
+                        }
+                        if env.params.jumbled.splits.out_of_memory {
+                            return;
                         }
                         lists_start = start;
                         collected_epoch = forced_epoch;
@@ -7644,6 +7701,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             plays: Vec::new(),
         }
     }
+
+    #[inline(always)]
+    pub fn out_of_memory(&self) -> bool {
+        self.working_buffer.jumbled.splits.out_of_memory
+    }
     #[inline(always)]
     pub fn num_tiles_in_bag(&self) -> i16 {
         self.working_buffer.num_tiles_in_bag
@@ -8410,6 +8472,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             );
         }
 
+        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
@@ -8641,6 +8704,15 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         }
         let mut walked = std::mem::take(&mut self.working_buffer.pool.walked);
         walked.clear();
+        let len = tally
+            .iter()
+            .map(|&count| count.min(rack_size) as usize)
+            .sum();
+        if walked.try_reserve(len).is_err() {
+            self.working_buffer.pool.walked = walked;
+            self.working_buffer.jumbled.splits.out_of_memory = true;
+            return None;
+        }
         walked.extend(
             (0u8..).zip(tally.iter()).flat_map(|(tile, &count)| {
                 std::iter::repeat_n(tile, count.min(rack_size) as usize)
@@ -8679,6 +8751,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         (row, col): (i8, i8),
         mut found: impl FnMut(bool, i8, i8, &[u8], i32),
     ) {
+        let mut out_of_memory = false;
         for (lanes, through) in [((1 << row, 0), col), ((0, 1 << col), row)] {
             self.pool_plays_window(
                 board_snapshot,
@@ -8696,7 +8769,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
                     }
                 },
             );
+            out_of_memory |= self.out_of_memory();
         }
+        self.working_buffer.jumbled.splits.out_of_memory = out_of_memory;
     }
 
     pub fn pool_plays_spans_through_top<N: kwg::Node, L: kwg::Node>(
@@ -8811,6 +8886,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         self.working_buffer.jumbled.walk = walk;
         self.working_buffer.jumbled.held = false;
         std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.jumbled.splits.out_of_memory = lists.0.splits.out_of_memory;
         self.working_buffer.pool.walked = walked;
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
@@ -8924,6 +9000,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         self.working_buffer.jumbled.walk = walk;
         self.working_buffer.jumbled.held = false;
         std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.jumbled.splits.out_of_memory = lists.0.splits.out_of_memory;
         self.working_buffer.pool.walked = walked;
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
@@ -9409,6 +9486,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             );
         }
 
+        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
@@ -9680,6 +9758,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             );
         }
 
+        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
@@ -9868,18 +9947,19 @@ trait Kept {
         self.len() == 0
     }
     fn push(&mut self, candidate: ValuedMove);
+    fn refused(&self) -> bool;
     // the candidate in place of the worst kept, false if it is no better
     fn replace_worst(&mut self, candidate: ValuedMove) -> bool;
     fn worst_equity(&self) -> equity::Equity;
     fn into_sorted_vec(self) -> Vec<ValuedMove>;
 }
 
-struct KeptHeap(std::collections::BinaryHeap<ValuedMove>);
+struct KeptHeap(std::collections::BinaryHeap<ValuedMove>, bool);
 
 impl Kept for KeptHeap {
     #[inline(always)]
     fn from_vec(plays: Vec<ValuedMove>) -> Self {
-        Self(std::collections::BinaryHeap::from(plays))
+        Self(std::collections::BinaryHeap::from(plays), false)
     }
 
     #[inline(always)]
@@ -9889,7 +9969,16 @@ impl Kept for KeptHeap {
 
     #[inline(always)]
     fn push(&mut self, candidate: ValuedMove) {
+        if self.0.try_reserve(1).is_err() {
+            self.1 = true;
+            return;
+        }
         self.0.push(candidate);
+    }
+
+    #[inline(always)]
+    fn refused(&self) -> bool {
+        self.1
     }
 
     #[inline(always)]
@@ -9935,6 +10024,11 @@ impl Kept for KeptOne {
     fn push(&mut self, candidate: ValuedMove) {
         debug_assert!(self.best.is_none());
         self.best = Some(candidate);
+    }
+
+    #[inline(always)]
+    fn refused(&self) -> bool {
+        false
     }
 
     #[inline(always)]
