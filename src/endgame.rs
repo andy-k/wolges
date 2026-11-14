@@ -1734,6 +1734,7 @@ struct OnOneClock {
 // average, such as the peg's margin, rounds to the nearest
 #[inline(always)]
 fn to_equity(v: f32) -> equity::Equity {
+    debug_assert!(v.abs() <= (1u32 << f32::MANTISSA_DIGITS) as f32, "{v}");
     equity::Equity::new(v.round() as i32)
 }
 
