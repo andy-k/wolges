@@ -8561,6 +8561,67 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         }
     }
 
+    pub fn pool_plays_spans_through_top<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (row, col): (i8, i8),
+        most: usize,
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) {
+        let game_config = board_snapshot.game_config;
+        if !matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+            self.pool_plays_spans_through(board_snapshot, pool, (row, col), found);
+            return;
+        }
+        let rack_size = game_config.rack_size();
+        let mut tally = vec![0u8; game_config.alphabet().len() as usize];
+        for &tile in pool {
+            tally[tile as usize] = tally[tile as usize].saturating_add(1);
+        }
+        let walked = (0u8..)
+            .zip(tally.iter())
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count.min(rack_size) as usize))
+            .collect::<Vec<_>>();
+        let params = GenMovesParams {
+            board_snapshot,
+            rack: &walked,
+            max_gen: most,
+            num_exchanges_by_this_player: i16::MAX,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        let walk = self.working_buffer.jumbled.walk;
+        for (lanes, through) in [((1u128 << row, 0), col), ((0, 1u128 << col), row)] {
+            self.working_buffer.lane_rows = G::of_u128(lanes.0);
+            self.working_buffer.lane_cols = G::of_u128(lanes.1);
+            self.working_buffer.jumbled.walk = JUMBLED_ONCE_PER_RACK_TILES;
+            self.working_buffer.jumbled.through = Some(through);
+            self.gen_sheet_impl(
+                &params,
+                PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                    let (along, at) = if down { (col, row) } else { (row, col) };
+                    let kept = word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize
+                        && lane == along
+                        && at >= idx
+                        && word.get((at - idx) as usize).is_some_and(|&tile| tile != 0);
+                    if kept {
+                        found(down, lane, idx, word, score);
+                    }
+                    kept
+                }),
+                klv::AdjustLeave::Identity,
+                EquityPredicate::AcceptAll,
+                false,
+            );
+            self.working_buffer.jumbled.through = None;
+            self.working_buffer.jumbled.walk = walk;
+            self.working_buffer.lane_rows = !G::from(0);
+            self.working_buffer.lane_cols = !G::from(0);
+        }
+        self.plays.clear();
+    }
+
     pub fn pool_plays_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -16144,6 +16205,30 @@ mod tests {
                             want.sort_unstable();
                             spans.sort_unstable();
                             assert_eq!(spans, want, "{jumbled} {step} {pool:?} {row} {col}");
+                            let rank = |a: &Found, b: &Found| {
+                                (b.4, a.0, a.1, a.2, &a.3).cmp(&(a.4, b.0, b.1, b.2, &b.3))
+                            };
+                            want.sort_unstable_by(rank);
+                            for most in [1, 3, 10] {
+                                let mut top = Vec::<Found>::new();
+                                generator.pool_plays_spans_through_top(
+                                    &board_snapshot,
+                                    pool,
+                                    (row, col),
+                                    most,
+                                    |down, lane, idx, word, score| {
+                                        top.push((down, lane, idx, word.to_vec(), score));
+                                    },
+                                );
+                                top.sort_unstable_by(rank);
+                                top.truncate(most);
+                                let mut wanted = want.clone();
+                                wanted.truncate(most);
+                                assert_eq!(
+                                    top, wanted,
+                                    "{jumbled} {step} {pool:?} {row} {col} {most}"
+                                );
+                            }
                             squares_with_plays += usize::from(!want.is_empty());
                         }
                     }
