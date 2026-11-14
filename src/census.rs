@@ -25,8 +25,19 @@ impl MultisetLattice {
         let pascal = crate::prob::Pascal::with_rows(n_max + 1);
 
         let mut size_offset = vec![0u64; rack_size + 2];
-        for (s, slot) in size_offset.iter_mut().enumerate() {
-            *slot = pascal.binom(s + num_letters - 1, num_letters);
+        let mut count = 1u64;
+        for (s, slot) in size_offset.iter_mut().enumerate().skip(1) {
+            *slot = count;
+            if s <= rack_size {
+                count = u64::try_from(count as u128 * (s + num_letters) as u128 / s as u128)
+                    .ok()
+                    .filter(|&n| usize::try_from(n).is_ok())
+                    .ok_or_else(|| {
+                        format!(
+                            "a census of {num_letters} letters and racks of {rack_size} has more multisets than can be counted"
+                        )
+                    })?;
+            }
         }
         let steps = RankSteps::new(&pascal, num_letters, rack_size);
         Ok(Self {
@@ -52,6 +63,14 @@ impl MultisetLattice {
     pub fn len(&self) -> usize {
         self.size_offset[self.rack_size + 1] as usize
     }
+    #[inline]
+    pub fn dense<T: Clone>(&self, value: T) -> crate::error::Returns<Vec<T>> {
+        let mut table = Vec::new();
+        table.try_reserve_exact(self.len())?;
+        table.resize(self.len(), value);
+        Ok(table)
+    }
+
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -1521,6 +1540,7 @@ mod tests {
         assert!(MultisetLattice::new(1, 7).is_ok());
         assert!(MultisetLattice::new(64, 1).is_ok());
         assert!(MultisetLattice::new(65, 1).is_err());
+        assert!(MultisetLattice::new(64, 255).is_err());
     }
 
     #[test]
@@ -2139,5 +2159,23 @@ mod tests {
         );
         assert_eq!(sheet[key(&[0, 2, 0, 0])], 120); // {A,A} from the better word
         assert_eq!(sheet[key(&[1, 1, 0, 0])], 116); // {blank,A} likewise
+    }
+
+    #[test]
+    fn a_lattice_too_large_to_count_or_hold_is_refused() {
+        let mut rack_size = 1;
+        let lat = loop {
+            match MultisetLattice::new(64, rack_size) {
+                Ok(lat) if lat.len() > isize::MAX as usize / std::mem::size_of::<u64>() => {
+                    break lat;
+                }
+                Ok(_) => rack_size += 1,
+                Err(e) => panic!("refused at rack {rack_size} before too large to hold: {e}"),
+            }
+        };
+        assert!(lat.dense(0u64).is_err());
+        assert!(MultisetLattice::new(64, rack_size + 64).is_err());
+        let small = MultisetLattice::new(27, 7).unwrap();
+        assert_eq!(small.dense(0i32).unwrap().len(), small.len());
     }
 }

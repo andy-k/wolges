@@ -722,7 +722,7 @@ impl InferTables {
             game_config.alphabet().len() as usize,
             game_config.rack_size() as usize,
         )?;
-        let mut leave = vec![0i32; lat.len()];
+        let mut leave = lat.dense(0i32)?;
         census::fill_lattice_klv_leaves(&lat, &mut leave, klv);
         Ok(Self {
             lat,
