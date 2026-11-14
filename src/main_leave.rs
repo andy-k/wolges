@@ -6484,7 +6484,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                         .ok();
                     }
                 }
-                shared.lock().unwrap().merge(&acc);
+                shared.lock().unwrap().merge(&acc)?;
                 Ok(())
             }));
         }
