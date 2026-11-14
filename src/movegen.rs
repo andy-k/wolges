@@ -3639,7 +3639,6 @@ struct TableWalkParams<
 > {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
-    cross_set_strip: &'a [CrossSet],
     allowed_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -4738,8 +4737,8 @@ fn span_sets_u16(
         while empty != 0 {
             let idx = empty.trailing_zeros() as usize;
             empty &= empty - 1;
-            let bits = params.cross_set_strip[idx].bits;
-            blank_ok |= if bits == 0 { letters } else { bits & letters };
+            let bits = params.allowed_strip[idx];
+            blank_ok |= bits & letters;
         }
     }
     (word_multiplier, blank_ok)
@@ -4772,8 +4771,8 @@ fn span_sets_u32(
         while empty != 0 {
             let idx = empty.trailing_zeros() as usize;
             empty &= empty - 1;
-            let bits = params.cross_set_strip[idx].bits;
-            blank_ok |= if bits == 0 { letters } else { bits & letters };
+            let bits = params.allowed_strip[idx];
+            blank_ok |= bits & letters;
         }
     }
     (word_multiplier, blank_ok)
@@ -5040,8 +5039,8 @@ fn gen_classic_place_moves<
                 &[alphagram::Nibble::MAX_COUNT; alphagram::Nibble::TILES]
             ));
         } else {
-            let bits = params.cross_set_strip[idx].bits;
-            if bits == 0 {
+            let bits = params.allowed_strip[idx];
+            if bits == u64::MAX {
                 e.free_squares += 1;
                 e.blank_ok = letters;
             } else if bits == 1 {
@@ -5105,8 +5104,8 @@ fn gen_classic_place_moves<
             while empty != 0 {
                 let idx = empty.trailing_zeros() as usize;
                 empty &= empty - 1;
-                let bits = env.params.cross_set_strip[idx].bits;
-                blank_ok |= if bits == 0 { letters } else { bits & letters };
+                let bits = env.params.allowed_strip[idx];
+                blank_ok |= bits & letters;
             }
         }
         (word_multiplier, blank_ok)
@@ -7071,11 +7070,6 @@ fn gen_place_moves_at<
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
             } else {
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end]
-            },
-            cross_set_strip: if placement.down {
-                &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
             allowed_strip: if placement.down {
                 &working_buffer.allowed_for_down_plays[strip_range_start..strip_range_end]
