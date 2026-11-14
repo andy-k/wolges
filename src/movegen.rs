@@ -5486,6 +5486,9 @@ struct JumbledMultisets {
     current: Vec<u8>,
     walk: u8,
     splits: JumbledSplits,
+    window: std::ops::Range<u64>,
+    through: Option<i8>,
+    seen: u64,
 }
 
 const JUMBLED_EVERY_ARRANGEMENT: u8 = 0;
@@ -5588,6 +5591,9 @@ impl JumbledMultisets {
             current: Vec::new(),
             walk: JUMBLED_EVERY_ARRANGEMENT,
             splits: JumbledSplits::default(),
+            window: 0..u64::MAX,
+            through: None,
+            seen: 0,
         }
     }
 
@@ -6462,8 +6468,21 @@ fn gen_jumbled_place_moves_walk<
                     let mut weighed = false;
                     env.square_bounded = false;
                     let list = lists_start + num_played as usize;
+                    let elsewhere = WALK == JUMBLED_ONCE_PER_RACK_TILES
+                        && env.params.jumbled.through.is_some_and(|through| {
+                            through < idx_l
+                                || through > idx_r
+                                || env.params.board_strip[through as usize] != 0
+                        });
                     for which in 0..env.params.jumbled.by_size[list].len() {
                         let at = env.params.jumbled.by_size[list][which] as usize;
+                        if WALK == JUMBLED_ONCE_PER_RACK_TILES {
+                            let seen = env.params.jumbled.seen;
+                            env.params.jumbled.seen += 1;
+                            if elsewhere || !env.params.jumbled.window.contains(&seen) {
+                                continue;
+                            }
+                        }
                         if boundable && env.params.threshold != i32::MIN {
                             if !weighed {
                                 let mut word_multiplier = 1i32;
@@ -8517,6 +8536,55 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
                 }
             },
         );
+    }
+
+    pub fn pool_plays_spans_through<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (row, col): (i8, i8),
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) {
+        for (lanes, through) in [((1 << row, 0), col), ((0, 1 << col), row)] {
+            self.pool_plays_window(
+                board_snapshot,
+                pool,
+                lanes,
+                0..u64::MAX,
+                Some(through),
+                |down, lane, idx, word, score| {
+                    let (along, at) = if down { (col, row) } else { (row, col) };
+                    if lane == along
+                        && at >= idx
+                        && word.get((at - idx) as usize).is_some_and(|&tile| tile != 0)
+                    {
+                        found(down, lane, idx, word, score);
+                    }
+                },
+            );
+        }
+    }
+
+    pub fn pool_plays_window<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        lanes: (u128, u128),
+        window: std::ops::Range<u64>,
+        through: Option<i8>,
+        found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) -> u64 {
+        let jumbled = &mut self.working_buffer.jumbled;
+        jumbled.window = window;
+        jumbled.through = through;
+        jumbled.seen = 0;
+        self.pool_plays_lanes(board_snapshot, pool, lanes, found);
+        let jumbled = &mut self.working_buffer.jumbled;
+        let seen = jumbled.seen;
+        jumbled.window = 0..u64::MAX;
+        jumbled.through = None;
+        jumbled.seen = 0;
+        seen
     }
 
     pub fn pool_plays_lanes<N: kwg::Node, L: kwg::Node>(
@@ -16073,6 +16141,7 @@ mod tests {
         ];
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut squares_with_plays = 0;
+        let mut windowed = 0;
         for (gc, jumbled) in &configs {
             let kwg = if *jumbled {
                 test_kad(gc, SWEEP_WORDS)
@@ -16126,6 +16195,19 @@ mod tests {
                                 },
                             );
                             assert_eq!(through, want, "{jumbled} {step} {pool:?} {row} {col}");
+                            let mut spans = Vec::<Found>::new();
+                            generator.pool_plays_spans_through(
+                                &board_snapshot,
+                                pool,
+                                (row, col),
+                                |down, lane, idx, word, score| {
+                                    spans.push((down, lane, idx, word.to_vec(), score));
+                                },
+                            );
+                            let mut want = want;
+                            want.sort_unstable();
+                            spans.sort_unstable();
+                            assert_eq!(spans, want, "{jumbled} {step} {pool:?} {row} {col}");
                             squares_with_plays += usize::from(!want.is_empty());
                         }
                     }
@@ -16150,6 +16232,49 @@ mod tests {
                             },
                         );
                     }
+                    for lane in 0..(dim.rows + dim.cols) as u32 {
+                        let masks = if lane < dim.rows as u32 {
+                            (1 << lane, 0)
+                        } else {
+                            (0, 1 << (lane - dim.rows as u32))
+                        };
+                        let mut whole = Vec::<Found>::new();
+                        let total = generator.pool_plays_window(
+                            &board_snapshot,
+                            pool,
+                            masks,
+                            0..u64::MAX,
+                            None,
+                            |down, lane, idx, word, score| {
+                                whole.push((down, lane, idx, word.to_vec(), score));
+                            },
+                        );
+                        windowed += usize::from(*jumbled && total > 50 && !whole.is_empty());
+                        for size in [1, 2, 7, 50] {
+                            let mut pieces = Vec::<Found>::new();
+                            let mut from = 0;
+                            loop {
+                                let seen = generator.pool_plays_window(
+                                    &board_snapshot,
+                                    pool,
+                                    masks,
+                                    from..from + size,
+                                    None,
+                                    |down, lane, idx, word, score| {
+                                        pieces.push((down, lane, idx, word.to_vec(), score));
+                                    },
+                                );
+                                assert_eq!(seen, total);
+                                from += size;
+                                if from >= seen {
+                                    break;
+                                }
+                            }
+                            if *jumbled {
+                                assert_eq!(pieces, whole, "{step} {pool:?} {lane} {size}");
+                            }
+                        }
+                    }
                     let mut sorted = all.clone();
                     sorted.sort_unstable();
                     lanes.sort_unstable();
@@ -16163,6 +16288,7 @@ mod tests {
             }
         }
         assert!(squares_with_plays > 0);
+        assert!(windowed > 0);
     }
 
     #[test]
