@@ -1586,6 +1586,7 @@ struct BagLimits {
     depth: std::cell::Cell<i8>, // the pass's depth, or the end for a search of one pass
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
     stopped: std::cell::Cell<bool>, // a limit stopped it
+    refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
     estimates: bool,            // the passes estimate (PegBagProgress::set_estimates)
 }
 
@@ -1606,6 +1607,7 @@ impl BagLimits {
             depth: std::cell::Cell::new(COMPLETE),
             may_stop: std::cell::Cell::new(false),
             stopped: std::cell::Cell::new(false),
+            refused: std::cell::Cell::new(false),
             estimates: false,
         }
     }
@@ -1648,8 +1650,22 @@ impl BagLimits {
             depth: std::cell::Cell::new(clock.depth),
             may_stop: std::cell::Cell::new(false),
             stopped: std::cell::Cell::new(false),
+            refused: std::cell::Cell::new(false),
             estimates: clock.estimates,
         }
+    }
+
+    // whether the memory limit leaves room for bytes more; if not, the search
+    // stops before it takes them (stopped and refused set), whether or not
+    // another limit may stop it: an error
+    #[inline(always)]
+    fn refuse(&self, bytes: usize) -> error::Returns<()> {
+        if self.memory.is_some_and(|memory| bytes > memory.room()) {
+            self.stopped.set(true);
+            self.refused.set(true);
+            return Err("the memory limit stopped the search".into());
+        }
+        Ok(())
     }
 
     // whether any limit has passed, on the table the endgames share
@@ -4913,7 +4929,14 @@ impl<
                     // any
                     let best = (!state.reached.is_empty())
                         .then(|| peg_bag_best(&mut state.reached, &state.valued));
-                    return Ok(peg_bag_result(&state.moves, &state.valued, best, 0, false));
+                    return Ok(peg_bag_result(
+                        &state.moves,
+                        &state.valued,
+                        best,
+                        0,
+                        false,
+                        limits.refused.get(),
+                    ));
                 }
                 break;
             }
@@ -4955,6 +4978,7 @@ impl<
             Some(best),
             depth,
             exact,
+            limits.refused.get(),
         ))
     }
 
@@ -4993,6 +5017,21 @@ impl<
         let rest = state.order.len() - base;
         let num_splits = splits.len();
         let tasks = rest * num_splits;
+        // the tasks' order, what each found, and their hand-overs; the moves'
+        // splits not yet valued
+        type Found = Option<(f64, f64, bool, Vec<PegBagDraw>)>;
+        if limits
+            .refuse(
+                tasks
+                    * (std::mem::size_of::<usize>()
+                        + std::mem::size_of::<Found>()
+                        + std::mem::size_of::<HandOver>())
+                    + rest * std::mem::size_of::<AtomicUsize>(),
+            )
+            .is_err()
+        {
+            return Ok(true); // stopped, nothing valued
+        }
         let next = AtomicUsize::new(0);
         // the tasks (each a move's place in the rest of the order and a split),
         // the costliest by the pass before first, ties in the order
@@ -5008,6 +5047,7 @@ impl<
             .collect::<Vec<_>>();
         let moves_valued = AtomicUsize::new(state.reached.len());
         let stop = AtomicBool::new(false);
+        let refused = AtomicBool::new(false); // any thread's memory limit stopped it
         let on_one_clock = limits.on_one_clock();
         let (order, moves) = (&state.order, &state.moves);
         // each task's hand-over (HandOver), and how many tasks that hand the
@@ -5058,6 +5098,7 @@ impl<
                     }
                     Err(_) if limits.stopped.get() => {
                         stop.store(true, Relaxed);
+                        refused.fetch_or(limits.refused.get(), Relaxed);
                         return Ok((mine, true));
                     }
                     Err(e) => {
@@ -5098,6 +5139,7 @@ impl<
                     Ok(_) => {}
                     Err(_) if limits.stopped.get() => {
                         stop.store(true, Relaxed);
+                        refused.fetch_or(limits.refused.get(), Relaxed);
                         return Ok((mine, true));
                     }
                     Err(e) => {
@@ -5195,6 +5237,9 @@ impl<
         });
         state.tables = kept;
         state.lanes = pools;
+        if refused.load(Relaxed) {
+            limits.refused.set(true);
+        }
         let mut stopped = false;
         let mut found = cells_of(Some(tasks), None)?;
         for share in shares {
@@ -5209,7 +5254,15 @@ impl<
         let (mut taken, mut left) = (Vec::new(), Vec::new());
         for (m, per_split) in found.chunks_mut(num_splits.max(1)).enumerate() {
             let i = state.order[base + m];
-            if per_split.iter().all(Option::is_some) {
+            if per_split.iter().all(Option::is_some)
+                && !stopped
+                && limits.refuse(rows_bytes(splits)).is_err()
+            {
+                // no room for its rows: the pass stops, the move left for the
+                // next step
+                stopped = true;
+            }
+            if per_split.iter().all(Option::is_some) && !limits.refused.get() {
                 let exact = (per_split.iter()).all(|found| found.as_ref().unwrap().2);
                 let per_split = (per_split.iter_mut()).map(|found| {
                     let (value, win, _, draws) = found.take().unwrap();
@@ -6008,6 +6061,7 @@ fn value_root_move<
     play: &movegen::Play,
     score_diff: f64,
 ) -> error::Returns<PegBagValue> {
+    search.limits.refuse(rows_bytes(splits))?;
     let mut per_split = Vec::with_capacity(splits.len());
     for split in splits {
         per_split.push(value_root_split(search, split, at, play, score_diff)?);
@@ -6054,6 +6108,19 @@ fn value_root_split<
     })?;
     debug_assert_eq!(at_draw, draws.len());
     Ok((value, win, draws))
+}
+
+// the bytes valuing a move over these splits takes: each split's value as
+// found, and its row (the bag's tiles, the deals, the margin, the chance to
+// win, the draws' list)
+fn rows_bytes(splits: &[(Vec<u8>, Vec<u8>, u64)]) -> usize {
+    let row = std::mem::size_of::<(f64, f64, Vec<PegBagDraw>)>()
+        + std::mem::size_of::<(Vec<u8>, u64, equity::Equity)>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<Vec<PegBagDraw>>();
+    (splits.iter())
+        .map(|(_, bag, _)| row + bag.iter().map(|&count| count as usize).sum::<usize>())
+        .sum()
 }
 
 // a tally's tiles, each as many times as it counts
@@ -6196,6 +6263,7 @@ pub struct PegBagResult {
     pub moves: Vec<PegBagMove>,
     pub exact: bool,
     pub depth: i8,
+    pub out_of_memory: bool, // the memory limit stopped the search, before it grew past it
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
@@ -6220,6 +6288,7 @@ fn peg_bag_result(
     best: Option<usize>,
     depth: i8,
     exact: bool,
+    out_of_memory: bool,
 ) -> PegBagResult {
     let value = best.map(|best| valued[best].as_ref().unwrap());
     let mut listed = (0..moves.len())
@@ -6256,6 +6325,7 @@ fn peg_bag_result(
             .collect(),
         exact,
         depth,
+        out_of_memory,
     }
 }
 
@@ -7750,6 +7820,8 @@ impl<
     ) -> error::Returns<Option<(f64, Vec<Option<f64>>)>> {
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
         let (mut win, mut left) = (0.0, total);
+        self.limits
+            .refuse(splits.len() * std::mem::size_of::<Option<f64>>())?;
         let mut margins = Vec::with_capacity(splits.len());
         for (other, bag, ways) in splits {
             // a share a hair under the floor is not ruled out, lest a sum's
@@ -14250,9 +14322,11 @@ mod tests {
 
     // a search with tiles in the bag whose tables the memory limit holds to a
     // few entries, so that they give up what they kept to keep more, answers as
-    // one with no limit does, under either model and on one thread or three; so
-    // does the search with one tile in the bag and exchanges. Past the limit
-    // from the start, no table grows
+    // one with no limit does, under either model and on one thread or three,
+    // unless the limit leaves no room for its own lists: then it stops short
+    // and says so, never answering otherwise; so does the search with one tile
+    // in the bag and exchanges. Past the limit from the start, no table grows
+    // and the search stops, saying so
     #[test]
     #[inline]
     fn a_bag_search_holding_a_few_entries_answers_as_one_with_no_limit() {
@@ -14291,7 +14365,7 @@ mod tests {
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let tiles = [1u8, 2, 8, 20]; // A B H T
-        let (mut gave_up, mut checked) = (0, 0);
+        let (mut gave_up, mut checked, mut refused) = (0, 0, 0);
         for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
             for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
                 let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
@@ -14325,14 +14399,22 @@ mod tests {
                                 super::PegBagProgress::new(position.clone()).unwrap();
                             progress.set_threads(threads);
                             let held = egs.resume_peg(&mut progress, &small).unwrap().unwrap();
-                            assert!(
-                                held.exact
-                                    && held.best_move == full.best_move
-                                    && held.win_pct == full.win_pct
-                                    && held.expected_margin == full.expected_margin
-                                    && held.hypotheses == full.hypotheses,
-                                "{unseen:?} {x} {y} {threads}"
-                            );
+                            // a search whose own lists the limit has no room
+                            // for stops short and says so; one that fits
+                            // answers as one with no limit
+                            if held.out_of_memory {
+                                assert!(!held.exact, "{unseen:?} {x} {y} {threads}");
+                                refused += 1;
+                            } else {
+                                assert!(
+                                    held.exact
+                                        && held.best_move == full.best_move
+                                        && held.win_pct == full.win_pct
+                                        && held.expected_margin == full.expected_margin
+                                        && held.hypotheses == full.hypotheses,
+                                    "{unseen:?} {x} {y} {threads}"
+                                );
+                            }
                             for shard in progress.state.searched.shards.iter() {
                                 let shard = shard.lock().unwrap();
                                 assert!(within(&shard.nodes) && within(&shard.infos));
@@ -14344,7 +14426,8 @@ mod tests {
                             let mut progress =
                                 super::PegBagProgress::new(position.clone()).unwrap();
                             progress.set_threads(threads);
-                            egs.resume_peg(&mut progress, &past).unwrap().unwrap();
+                            let stopped = egs.resume_peg(&mut progress, &past).unwrap().unwrap();
+                            assert!(stopped.out_of_memory && !stopped.exact);
                             for shard in progress.state.searched.shards.iter() {
                                 let shard = shard.lock().unwrap();
                                 assert!(shard.nodes.entries.len() == 4);
@@ -14359,6 +14442,8 @@ mod tests {
         }
         assert_eq!(checked, 64);
         assert!(gave_up > 0, "no table gave up what it kept");
+        // each position is searched on one thread and on three
+        assert!(refused < 2 * checked, "every search was refused room");
         // the search with one tile in the bag and exchanges, its memo held to
         // its first four entries, against one with no limit
         let four = super::Limits {
