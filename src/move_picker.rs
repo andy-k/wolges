@@ -220,9 +220,15 @@ fn normal_quantile(p: f64) -> f64 {
 // whole decision to one in twenty, split evenly over its looks (one every
 // PRUNE_CADENCE iterations)
 #[inline]
-pub fn paired_z(budget: u64) -> f64 {
+pub fn paired_z_among(budget: u64, candidates: usize) -> f64 {
     let looks = (budget / PRUNE_CADENCE).max(1) as f64;
-    -normal_quantile(0.05 / looks)
+    let others = candidates.saturating_sub(1).max(1) as f64;
+    -normal_quantile(0.05 / (looks * others))
+}
+
+#[inline]
+pub fn paired_z(budget: u64) -> f64 {
+    paired_z_among(budget, 2)
 }
 
 // the one-sided z at a sim's iterations so far of the stitched boundary of
@@ -1534,7 +1540,6 @@ impl<
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
-        let paired_z = paired_z(budget);
         let start = self.iters_done;
         for sim_iter in (start + 1)..=(start + count) {
             self.iters_done = sim_iter;
@@ -1580,7 +1585,8 @@ impl<
                 candidates.len(),
             );
             if sim_iter % PRUNE_CADENCE == 0 {
-                retire_paired(&mut candidates, &mut retired, paired_z);
+                let z = paired_z_among(budget, candidates.len());
+                retire_paired(&mut candidates, &mut retired, z);
 
                 let prune_periods_remaining = budget.saturating_sub(sim_iter) / PRUNE_CADENCE;
                 limit_surviving_candidates(
@@ -1719,7 +1725,8 @@ impl<
         );
         if block.hi.is_multiple_of(PRUNE_CADENCE) {
             const Z: f64 = 1.96; // 95% confidence interval
-            retire_paired(&mut self.candidates, &mut self.retired, paired_z(budget));
+            let z = paired_z_among(budget, self.candidates.len());
+            retire_paired(&mut self.candidates, &mut self.retired, z);
             let prune_periods_remaining = budget.saturating_sub(block.hi) / PRUNE_CADENCE;
             limit_surviving_candidates(
                 &mut self.candidates,
@@ -2337,6 +2344,17 @@ mod tests {
     #[inline]
     fn best_retired_share(k: usize, gap: f64, budget: u64, decisions: u64) -> f64 {
         let z = paired_z(budget);
+        best_retired_share_among(k, gap, budget, decisions, |_| z)
+    }
+
+    #[inline]
+    fn best_retired_share_among(
+        k: usize,
+        gap: f64,
+        budget: u64,
+        decisions: u64,
+        z_of: impl Fn(usize) -> f64,
+    ) -> f64 {
         let mut rng = simmer::DefaultRng::seed_from_u64(k as u64);
         let mut normal = || {
             let u: f64 = 1.0 - rand::RngExt::random::<f64>(&mut rng);
@@ -2356,6 +2374,7 @@ mod tests {
                     candidate.objectives.push(value);
                 }
                 if iter % PRUNE_CADENCE == 0 && candidates.len() > 1 {
+                    let z = z_of(candidates.len());
                     retire_paired(&mut candidates, &mut retired, z);
                 }
             }
@@ -2373,6 +2392,20 @@ mod tests {
         let share = best_retired_share(2, 0.0, 256, decisions);
         let bound = 0.05 + 3.0 * (0.05 * 0.95 / decisions as f64).sqrt();
         assert!(share <= bound, "{share}");
+    }
+
+    #[test]
+    #[inline]
+    fn retire_paired_retires_the_first_of_k_tied_at_most_one_time_in_twenty() {
+        let budget = 256;
+        let decisions = 400;
+        let bound = 0.05 + 3.0 * (0.05 * 0.95 / decisions as f64).sqrt();
+        for k in [2, 4, 8, 16] {
+            let share = best_retired_share_among(k, 0.0, budget, decisions, |candidates| {
+                paired_z_among(budget, candidates)
+            });
+            assert!(share <= bound, "{k}: {share}");
+        }
     }
 
     #[test]
@@ -2480,6 +2513,8 @@ mod tests {
         let z = paired_z(1000);
         assert!((z + normal_quantile(0.05 / 62.0)).abs() < 1e-12);
         assert!(3.1 < z && z < 3.2, "{z}");
+        let z = paired_z_among(1000, 16);
+        assert!((z + normal_quantile(0.05 / (62.0 * 15.0))).abs() < 1e-12);
     }
 
     #[test]
