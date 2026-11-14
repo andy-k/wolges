@@ -9407,7 +9407,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         // reads the empty klv and keeps no leaves' table, however many tiles it
         // walks
         let no_leaves = matches!(equity_predicate, EquityPredicate::RejectAll);
-        let empty = no_leaves.then(klv::Klv::<L>::try_empty).flatten();
+        // a snapshot whose klv already has no leaves is read as it is, so a
+        // caller that keeps one makes none per walk
+        let empty = (no_leaves && !params.board_snapshot.klv.is_empty())
+            .then(klv::Klv::<L>::try_empty)
+            .flatten();
         let snapshot;
         let without_leaves;
         let params = match &empty {

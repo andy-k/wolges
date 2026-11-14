@@ -292,6 +292,13 @@ impl<L: kwg::Node> Klv<L> {
         Self::from_bytes_alloc(&buf)
     }
 
+    // whether it reads as the table of no leaves: none listed and no table of
+    // full racks
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.leaves.is_empty() && self.racks.is_none()
+    }
+
     // empty's, or None where it found no room or the layout has no empty node
     #[inline]
     pub fn try_empty() -> Option<Self> {
