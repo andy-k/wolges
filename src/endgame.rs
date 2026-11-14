@@ -616,6 +616,41 @@ struct Siblings {
     moves: Vec<(movegen::Play, u8)>, // each with the tiles it places
 }
 
+const OUT_SLOTS: usize = 4;
+
+#[derive(Clone, Copy)]
+struct Out {
+    score: i32,
+    zone: zone::Squares,
+    down: bool,
+    lane: i8,
+    idx: i8,
+}
+
+struct OutReplies {
+    of: u64,
+    floor: u64,
+    len: usize,
+    slots: [Out; OUT_SLOTS],
+}
+
+impl Default for OutReplies {
+    fn default() -> Self {
+        Self {
+            of: 0,
+            floor: u64::MAX,
+            len: 0,
+            slots: [Out {
+                score: 0,
+                zone: zone::Squares::NONE,
+                down: false,
+                lane: 0,
+                idx: 0,
+            }; OUT_SLOTS],
+        }
+    }
+}
+
 // 128-bit FNV-1a's offset basis and prime:
 // http://www.isthe.com/chongo/tech/comp/fnv/index.html
 const FNV128_BASIS: u128 = 0x6c62272e07bb014262b821756295c58d;
@@ -1322,6 +1357,9 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     serials: Vec<u64>,     // the serial of each ply's list
     siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
     singles: Vec<(u64, Vec<u32>)>, // each list's one-tile moves by place, and its serial
+    outs: Vec<OutReplies>,
+    out_skips: u64,
+    out_checks: u32,
     lane_pool: LanePool,
     pool_walker: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // LanePool's walks
     #[cfg(test)]
@@ -1381,6 +1419,9 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             serials: Vec::new(),
             siblings: Vec::new(),
             singles: Vec::new(),
+            outs: Vec::new(),
+            out_skips: 0,
+            out_checks: 0,
             lane_pool: LanePool::new(),
             pool_walker: None,
             #[cfg(test)]
@@ -2241,6 +2282,171 @@ impl<
             dim,
             &zone::footprint(dim, &self.work_buffer.board_tiles, play).zone,
         )
+    }
+
+    #[inline(always)]
+    fn enter_outs(&mut self, ply: usize) {
+        let work_buffer = &mut self.work_buffer;
+        if work_buffer.outs.len() <= ply {
+            work_buffer.outs.resize_with(ply + 1, Default::default);
+        }
+        let outs = &mut work_buffer.outs[ply];
+        if outs.of != work_buffer.serials[ply] {
+            outs.of = work_buffer.serials[ply];
+            outs.len = 0;
+        }
+        outs.floor = work_buffer.generated;
+    }
+
+    #[inline]
+    fn harvest_outs(&mut self, ply: usize, depth: i8, play: &movegen::Play) {
+        let work_buffer = &mut self.work_buffer;
+        if ply == 0 || depth < 2 {
+            return;
+        }
+        let Some(outs) = work_buffer.outs.get(ply) else {
+            return;
+        };
+        if outs.of != work_buffer.serials[ply]
+            || (work_buffer.serials.get(ply + 1)).is_none_or(|&serial| serial <= outs.floor)
+        {
+            return;
+        }
+        let dim = self.game_config.board_layout().dim();
+        let board = &work_buffer.board_tiles[..];
+        let fills = zone::footprint(dim, board, play).fills;
+        let outs = &mut work_buffer.outs[ply];
+        for candidate in work_buffer.lists[ply + 1].iter() {
+            if !candidate.plays_out {
+                continue;
+            }
+            let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = &candidate.play
+            else {
+                continue;
+            };
+            if outs.len == OUT_SLOTS && outs.slots[OUT_SLOTS - 1].score >= *score {
+                continue;
+            }
+            if (outs.slots[..outs.len]).iter().any(|out| {
+                out.down == *down && out.lane == *lane && out.idx == *idx && out.score == *score
+            }) {
+                continue;
+            }
+            let strider = dim.lane(*down, *lane);
+            if (*idx..)
+                .zip(word.iter())
+                .any(|(i, &tile)| tile == 0 && board[strider.at(i)] == 0)
+            {
+                continue;
+            }
+            let zone = zone::footprint(dim, board, &candidate.play).zone;
+            if zone.meets(&fills) {
+                continue;
+            }
+            let at = (outs.slots[..outs.len]).partition_point(|out| out.score >= *score);
+            let end = outs.len.min(OUT_SLOTS - 1);
+            outs.slots.copy_within(at..end, at + 1);
+            outs.slots[at] = Out {
+                score: *score,
+                zone,
+                down: *down,
+                lane: *lane,
+                idx: *idx,
+            };
+            outs.len = (outs.len + 1).min(OUT_SLOTS);
+        }
+    }
+
+    #[inline(always)]
+    fn out_cap(
+        &self,
+        ply: usize,
+        player_idx: u8,
+        score: f32,
+        alpha: f32,
+        fills: &zone::Squares,
+    ) -> Option<(usize, f32)> {
+        let work_buffer = &self.work_buffer;
+        let outs = work_buffer.outs.get(ply)?;
+        if outs.of != work_buffer.serials[ply] {
+            return None;
+        }
+        let kept = 2 * work_buffer.rack_scores[player_idx as usize];
+        let k = (outs.slots[..outs.len])
+            .iter()
+            .position(|out| !out.zone.meets(fills))?;
+        let cap = score - (outs.slots[k].score + kept) as f32;
+        (cap <= alpha).then_some((k, cap))
+    }
+
+    #[inline(never)]
+    fn check_out_skip(
+        &mut self,
+        ply: usize,
+        player_idx: u8,
+        k: usize,
+        score: f32,
+        cap: f32,
+    ) -> bool {
+        let out = self.work_buffer.outs[ply].slots[k];
+        let other = player_idx ^ 1;
+        let work_buffer = &mut self.work_buffer;
+        gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+            &mut work_buffer.movegen,
+            work_buffer.run_letter_bits.as_deref(),
+            &movegen::BoardSnapshot {
+                board_tiles: &work_buffer.board_tiles,
+                game_config: self.game_config,
+                kwg: self.kwg,
+                anagrams: self.arm_tables.anagrams(),
+                rack_lengths: self.arm_tables.rack_lengths(),
+                klv: &self.klv,
+            },
+            &work_buffer.racks[other as usize],
+            !0,
+            !0,
+        );
+        let held = work_buffer.racks[other as usize].len();
+        assert!(
+            work_buffer.movegen.plays.iter().any(|valued| matches!(
+                &valued.play,
+                movegen::Play::Place { down, lane, idx, word, score }
+                    if *down == out.down && *lane == out.lane && *idx == out.idx
+                        && *score == out.score
+                        && word.iter().filter(|&&tile| tile != 0).count() == held
+            )),
+            "a skip's play out is not the opponent's after the move"
+        );
+        if work_buffer.out_checks >= 16 {
+            return true;
+        }
+        work_buffer.out_checks += 1;
+        let mut reply = Self::with_generator(
+            self.game_config,
+            self.kwg,
+            self.arm_tables,
+            movegen::KurniaMoveGenerator::new_in(self.game_config),
+        )
+        .unwrap();
+        reply.work_buffer.out_checks = u32::MAX;
+        let work_buffer = &self.work_buffer;
+        reply.init(
+            &work_buffer.board_tiles,
+            [&work_buffer.racks[0], &work_buffer.racks[1]],
+        );
+        let replied = reply.solve(other).unwrap().raw() as f32;
+        assert!(
+            score - replied <= cap,
+            "a skipped move is worth {} past its cap {cap}",
+            score - replied
+        );
+        true
     }
 
     // generate player_idx's moves that place tiles (a pass is searched on its
@@ -3476,9 +3682,18 @@ impl<
                 // we set child_alpha = (score - beta)
                 // and child_beta = (score - alpha).
                 let play = self.work_buffer.lists[ply][found].play.clone();
+                let skip_outs = ply > 0 && depth >= 2;
+                let mut fills = zone::Squares::NONE;
                 // read by the next two plies when they generate
                 if depth >= 2 {
-                    self.work_buffer.zones[ply] = self.zone_lanes(&play);
+                    if skip_outs {
+                        let dim = self.game_config.board_layout().dim();
+                        let fp = zone::footprint(dim, &self.work_buffer.board_tiles, &play);
+                        self.work_buffer.zones[ply] = zone::zone_lanes(dim, &fp.zone);
+                        fills = fp.fills;
+                    } else {
+                        self.work_buffer.zones[ply] = self.zone_lanes(&play);
+                    }
                     if let movegen::Play::Place { word, .. } = &play {
                         self.work_buffer.spent[ply] =
                             rack_places(&self.work_buffer.racks[player_idx as usize], word, true);
@@ -3491,6 +3706,17 @@ impl<
                 // upper bound, as a fail low gives). Below the root only, where
                 // depth is at least 2
                 let Enter { alpha, beta, .. } = self.work_buffer.frames[t].node;
+                if skip_outs
+                    && let Some((k, cap)) = self.out_cap(ply, player_idx, score, alpha, &fills)
+                {
+                    debug_assert!(self.check_out_skip(ply, player_idx, k, score, cap));
+                    self.work_buffer.out_skips += 1;
+                    self.unplace(player_idx, &play);
+                    if self.take_value(i, index, cap) {
+                        break;
+                    }
+                    continue;
+                }
                 let bound = if ply > 0
                     && depth >= 2
                     && self.work_buffer.racks[player_idx as usize].len() == 1
@@ -3512,6 +3738,9 @@ impl<
                 // window (child_returned)
                 let (child_alpha, child_beta) = (score - beta, score - alpha);
                 let scout = i > 0 && child_alpha < child_beta - LEAST_STEP;
+                if skip_outs {
+                    self.enter_outs(ply);
+                }
                 let frame = &mut self.work_buffer.frames[t];
                 frame.next = next;
                 frame.child = Child::Move {
@@ -3701,7 +3930,9 @@ impl<
                 index, score, play, ..
             } => {
                 let (mover, i) = (frame.node.player_idx, frame.next - 1);
+                let (ply, depth) = (frame.node.ply, frame.node.depth);
                 self.unplace(mover, &play);
+                self.harvest_outs(ply, depth, &play);
                 if self.take_value(i, index, score - child.value) {
                     // a cutoff: no more moves, nor the pass
                     self.work_buffer.frames.last_mut().unwrap().next = usize::MAX;
@@ -4190,6 +4421,7 @@ impl<
         work_buffer.serials = stopped.serials;
         work_buffer.siblings = stopped.siblings;
         work_buffer.generated = work_buffer.generated.max(stopped.generated);
+        work_buffer.outs.clear();
     }
 
     // the game_config, kwg, and arm_tables this solver was made with, by address
@@ -8821,6 +9053,238 @@ mod tests {
         }
         println!("{stepped} steps, {resumed} passes resumed");
         assert!(resumed > 0);
+    }
+
+    fn assert_a_best_line<N: kwg::Node, L: kwg::Node>(
+        fixed: &mut Reference<'_, N, L>,
+        board: &[u8],
+        racks: &[Vec<u8>; 2],
+        mover: u8,
+        line: &[(equity::Equity, movegen::Play)],
+        what: &str,
+    ) -> usize {
+        let alphabet = fixed.gc.alphabet();
+        let (mut board, mut racks) = (board.to_vec(), racks.clone());
+        let (mut mover, mut passes, mut zeros) = (mover as usize, 0u8, 0u8);
+        assert!(!line.is_empty(), "{what}: no line");
+        for (ply, (value, play)) in line.iter().enumerate() {
+            let want = reference(fixed, &board, &racks, mover, passes, zeros, false);
+            assert_eq!(*value, super::to_equity(want), "{what}: ply {ply}'s value");
+            let opp = mover ^ 1;
+            let got = match play {
+                movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } => {
+                    let placed = word.iter().filter(|&&tile| tile != 0).count();
+                    let out = placed == racks[mover].len();
+                    let got = if out {
+                        (*score + 2 * alphabet.scaled_rack_score(&racks[opp])) as f32
+                    } else {
+                        let mut next_board = board.clone();
+                        let mut next_racks = racks.clone();
+                        apply_place(
+                            fixed.gc,
+                            &mut next_board,
+                            &mut next_racks[mover],
+                            *down,
+                            *lane,
+                            *idx,
+                            word,
+                        );
+                        let got = *score as f32
+                            - reference(fixed, &next_board, &next_racks, opp, 0, 0, false);
+                        (board, racks) = (next_board, next_racks);
+                        got
+                    };
+                    (passes, zeros) = (0, 0);
+                    got
+                }
+                movegen::Play::Exchange { .. } => {
+                    let (pass_passes, pass_zeros) = (passes + 1, zeros + 1);
+                    let got = if super::scoreless_turns_end(
+                        fixed.gc,
+                        Some(&board),
+                        pass_passes,
+                        pass_zeros,
+                    ) {
+                        (alphabet.scaled_rack_score(&racks[opp])
+                            - alphabet.scaled_rack_score(&racks[mover]))
+                            as f32
+                    } else {
+                        -reference(fixed, &board, &racks, opp, pass_passes, pass_zeros, false)
+                    };
+                    (passes, zeros) = (pass_passes, pass_zeros);
+                    got
+                }
+            };
+            assert_eq!(
+                super::to_equity(got),
+                super::to_equity(want),
+                "{what}: ply {ply}'s move"
+            );
+            mover = opp;
+        }
+        line.len()
+    }
+
+    #[test]
+    #[inline]
+    fn a_solve_skipping_by_plays_out_answers_as_the_reference_does() {
+        let classic = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let jumbled = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &build::make_alphagrams(&tiny_word_list()),
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let (mut skipped, mut solves, mut plies, mut checks) = (0u64, 0usize, 0usize, 0u64);
+        for (rules, gc, kwg) in [
+            ("classic", game_config::make_english_game_config(), &classic),
+            (
+                "super",
+                game_config::make_super_english_game_config(),
+                &classic,
+            ),
+            (
+                "jumbled",
+                game_config::make_jumbled_english_game_config(),
+                &jumbled,
+            ),
+            (
+                "superjumbled",
+                game_config::make_jumbled_super_english_game_config(),
+                &jumbled,
+            ),
+        ] {
+            let cols = gc.board_layout().dim().cols as usize;
+            let rows = gc.board_layout().dim().rows as usize;
+            let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+            let mut fixed = Reference {
+                gc: &gc,
+                kwg,
+                klv: &klv,
+                mg: &mut mg,
+                memo: Default::default(),
+            };
+            let mut rules_skipped = 0u64;
+            for (lean, arm_tables) in &both_arms(kwg, &gc) {
+                for (name, pos) in all_positions() {
+                    let mut board = vec![0u8; rows * cols];
+                    for r in 0..15 {
+                        board[r * cols..r * cols + 15]
+                            .copy_from_slice(&pos.board[r * 15..r * 15 + 15]);
+                    }
+                    let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+                    for mover in 0..2u8 {
+                        let what = format!("[{rules} {name}] lean={lean} mover {mover}");
+                        let mut egs =
+                            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, kwg, arm_tables)
+                                .unwrap();
+                        egs.init(&board, racks);
+                        let value = egs.solve(mover).unwrap();
+                        let mut line = Vec::new();
+                        egs.collect_pv(mover, &mut line);
+                        rules_skipped += egs.work_buffer.out_skips;
+                        checks += egs.work_buffer.out_checks as u64;
+                        let want =
+                            reference(&mut fixed, &board, &pos.racks, mover as usize, 0, 0, false);
+                        assert_eq!(value, super::to_equity(want), "{what}: value");
+                        plies +=
+                            assert_a_best_line(&mut fixed, &board, &pos.racks, mover, &line, &what);
+                        solves += 1;
+                    }
+                }
+            }
+            println!("{rules}: {rules_skipped} moves skipped");
+            assert!(rules_skipped > 0, "{rules}: no move skipped");
+            skipped += rules_skipped;
+        }
+        println!(
+            "{solves} solves, {plies} plies best, {skipped} moves skipped, {checks} checked by the reply's solve"
+        );
+        debug_assert!(checks > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_solve_in_steps_skipping_by_plays_out_ends_as_one_unbroken_solve() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let mut fixed = Reference {
+            gc: &gc,
+            kwg: &kwg,
+            klv: &klv,
+            mg: &mut mg,
+            memo: Default::default(),
+        };
+        let (mut resumed, mut skipped, mut stepped, mut same_line) = (0u64, 0u64, 0usize, 0usize);
+        for (name, pos) in all_positions() {
+            let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+            for mover in 0..2u8 {
+                let what = format!("[{name}] mover {mover}");
+                let mut whole =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                whole.init(&pos.board, racks);
+                let want = whole.solve(mover).unwrap();
+                let mut want_line = Vec::new();
+                whole.collect_pv(mover, &mut want_line);
+                let mut table = None;
+                let mut finished = None;
+                for step in 0.. {
+                    assert!(step < 100_000, "{what}: no end");
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    if let Some(table) = table.take() {
+                        assert!(solver.give_table(table).is_ok());
+                    }
+                    solver.init(&pos.board, racks);
+                    let limits = super::Limits {
+                        states: Some(solver.work_buffer.table.held + 7),
+                        ..super::Limits::NONE
+                    };
+                    let solved = match finished {
+                        Some(finished) => solver.solve_within_after(mover, &limits, finished),
+                        None => solver.solve_within(mover, &limits),
+                    }
+                    .unwrap();
+                    resumed += solver.work_buffer.resumed;
+                    skipped += solver.work_buffer.out_skips;
+                    let mut line = Vec::new();
+                    solver.collect_pv(mover, &mut line);
+                    table = Some(solver.take_table());
+                    finished = Some((solved.depth, solved.value));
+                    stepped += 1;
+                    if solved.exact {
+                        assert_eq!(solved.value, want, "{what}");
+                        assert_eq!(line.first().map(|ply| ply.0), Some(want), "{what}");
+                        assert_a_best_line(&mut fixed, &pos.board, &pos.racks, mover, &line, &what);
+                        same_line += (line == want_line) as usize;
+                        break;
+                    }
+                }
+            }
+        }
+        println!(
+            "{stepped} steps, {resumed} passes resumed, {skipped} moves skipped, {same_line} lines as the whole solve's"
+        );
+        assert!(resumed > 0);
+        assert!(skipped > 0);
     }
 
     #[test]
