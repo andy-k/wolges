@@ -313,6 +313,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "what a sim's inference of the opponent's rack knows: the side to move's rack (mover, as at first), or neither rack, as an annotator",
     ),
     (
+        "progress on|off",
+        "print a line a second while a sim or an endgame runs (on, unless the shell began with --quiet), or not",
+    ),
+    (
         "withdraw",
         "take back the last move as a phony challenged off",
     ),
@@ -1119,6 +1123,14 @@ impl Session {
                     _ => return Err(USAGE.into()),
                 };
                 line.to_string()
+            }
+            "progress" => {
+                self.quiet = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                    ["on"] => false,
+                    ["off"] => true,
+                    _ => return Err("progress on, or progress off".into()),
+                };
+                return Ok(());
             }
             "player" => {
                 const USAGE: &str =
@@ -5282,6 +5294,20 @@ mod tests {
         assert!(!session.public_view);
         assert_eq!(session.kept_leaves().unwrap(), mover);
         assert!(run(&mut session, "infer both").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn progress_turns_on_and_off_and_is_not_logged() {
+        let mut session = session();
+        run(&mut session, "progress off").unwrap();
+        assert!(session.quiet);
+        run(&mut session, "progress on").unwrap();
+        assert!(!session.quiet);
+        assert!(run(&mut session, "progress").is_err());
+        assert!(run(&mut session, "progress loud").is_err());
+        assert!(!session.quiet);
+        assert!(!session.log.iter().any(|line| line.starts_with("progress")));
     }
 
     // a move's reply is refused before a game; on a board holding every tile
