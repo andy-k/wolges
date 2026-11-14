@@ -6052,6 +6052,51 @@ impl<
         result
     }
 
+    fn peg_place_endgame(
+        sub: &mut Self,
+        position: &PegPosition<'_>,
+        play: &movegen::Play,
+        drawn: u8,
+        opp_rack: Vec<u8>,
+        limits: &BagLimits,
+        exact: &mut bool,
+    ) -> error::Returns<f32> {
+        let movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            score,
+        } = play
+        else {
+            unreachable!("Place candidate always holds a Play::Place")
+        };
+        let PegPosition {
+            mover,
+            board,
+            mover_rack,
+            ..
+        } = *position;
+        let mut nb = board.to_vec();
+        let mut mr = mover_rack.to_vec();
+        let strider = sub.game_config.board_layout().dim().lane(*down, *lane);
+        for (i, &tile) in (*idx..).zip(word.iter()) {
+            if tile != 0 {
+                nb[strider.at(i)] = tile;
+                let b = tile & !((tile as i8) >> 7) as u8;
+                let p = mr.iter().rposition(|&x| x == b).unwrap();
+                mr[p] = 0x80;
+            }
+        }
+        mr.retain(|&x| x != 0x80);
+        mr.push(drawn);
+        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        r2[mover as usize] = mr;
+        r2[(mover ^ 1) as usize] = opp_rack;
+        sub.init(&nb, [&r2[0], &r2[1]]);
+        Ok(*score as f32 - sub.solve_in_bag(mover ^ 1, limits, exact)?)
+    }
+
     // the committed model's search, its endgames solved by sub: the move with
     // the most wins, then the best mean margin, ties going to the move
     // generated first (the pass, then the places). Deepening, the first pass
@@ -6081,7 +6126,6 @@ impl<
         let klv = klv::Klv::<L>::empty()?;
         let alphabet = gc.alphabet();
         let opp = mover ^ 1;
-        let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
         // a pass answering the game's last turn, if that was a pass, ends it
         let pass_passes = scoreless[0].saturating_add(1);
         let pass_zeros = scoreless[1].saturating_add(1);
@@ -6129,47 +6173,11 @@ impl<
         }
 
         let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
-            let mut exact = true;
-            let mut win = 0.0f32;
-            let mut marg = 0.0f32;
-            let mut hyps: Vec<(u8, u32, equity::Equity)> = Vec::with_capacity(unseen.len());
-            for &(t, w) in unseen {
-                let drawn = t & !((t as i8) >> 7) as u8;
-
-                let mut opp_rack: Vec<u8> = Vec::new();
-                for &(u, c) in unseen {
-                    let take = if u == t { c - 1 } else { c };
-                    for _ in 0..take {
-                        opp_rack.push(u);
-                    }
-                }
-                let v = match cand {
-                    PegMove::Place(movegen::Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        score,
-                    }) => {
-                        let mut nb = board.to_vec();
-                        let mut mr = mover_rack.to_vec();
-                        let strider = gc.board_layout().dim().lane(*down, *lane);
-                        for (i, &tile) in (*idx..).zip(word.iter()) {
-                            if tile != 0 {
-                                nb[strider.at(i)] = tile;
-                                let b = tile & !((tile as i8) >> 7) as u8;
-                                let p = mr.iter().rposition(|&x| x == b).unwrap();
-                                mr[p] = 0x80;
-                            }
-                        }
-                        mr.retain(|&x| x != 0x80);
-                        mr.push(drawn);
-                        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
-                        r2[mover as usize] = mr;
-                        r2[opp as usize] = opp_rack;
-                        sub.init(&nb, [&r2[0], &r2[1]]);
-                        *score as f32 - sub.solve_in_bag(opp, limits, &mut exact)?
-                    }
+            peg_value(unseen, score_diff, |t, drawn, opp_rack, exact| {
+                Ok(match cand {
+                    PegMove::Place(play) => Self::peg_place_endgame(
+                        sub, position, play, drawn, opp_rack, limits, exact,
+                    )?,
                     // the pass ends the game at once when it brings the scoreless
                     // turns to the config's count, each losing their rack
                     PegMove::Pass if pass_ends_the_game => {
@@ -6208,32 +6216,10 @@ impl<
                                 answering: true,
                             },
                         )?;
-                        exact &= search.exact;
+                        *exact &= search.exact;
                         v
                     }
-                    PegMove::Place(_) => {
-                        unreachable!("Place candidate always holds a Play::Place")
-                    }
-                };
-                let vv = v + score_diff;
-                marg += w as f32 * vv;
-                win += w as f32
-                    * if vv > 0.0 {
-                        1.0
-                    } else if vv == 0.0 {
-                        0.5
-                    } else {
-                        0.0
-                    };
-                hyps.push((t, w, to_equity(vv)));
-            }
-            win /= total;
-            marg /= total;
-            Ok(PegValue {
-                win,
-                marg,
-                hyps,
-                exact,
+                })
             })
         };
 
@@ -6320,6 +6306,49 @@ impl<
             exact,
         ))
     }
+}
+
+fn peg_value(
+    unseen: &[(u8, u32)],
+    score_diff: f32,
+    mut endgame: impl FnMut(u8, u8, Vec<u8>, &mut bool) -> error::Returns<f32>,
+) -> error::Returns<PegValue> {
+    let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
+    let mut exact = true;
+    let mut win = 0.0f32;
+    let mut marg = 0.0f32;
+    let mut hyps: Vec<(u8, u32, equity::Equity)> = Vec::with_capacity(unseen.len());
+    for &(t, w) in unseen {
+        let drawn = t & !((t as i8) >> 7) as u8;
+
+        let mut opp_rack: Vec<u8> = Vec::new();
+        for &(u, c) in unseen {
+            let take = if u == t { c - 1 } else { c };
+            for _ in 0..take {
+                opp_rack.push(u);
+            }
+        }
+        let v = endgame(t, drawn, opp_rack, &mut exact)?;
+        let vv = v + score_diff;
+        marg += w as f32 * vv;
+        win += w as f32
+            * if vv > 0.0 {
+                1.0
+            } else if vv == 0.0 {
+                0.5
+            } else {
+                0.0
+            };
+        hyps.push((t, w, to_equity(vv)));
+    }
+    win /= total;
+    marg /= total;
+    Ok(PegValue {
+        win,
+        marg,
+        hyps,
+        exact,
+    })
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
