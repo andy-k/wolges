@@ -738,6 +738,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 leaves_map.insert(leave, value as f32);
             }
             drop(mixed);
+            let mut out = make_writer(&args.out)?;
             writeln!(
                 boxed_stdout_or_stderr(),
                 "blended {in_both} leaves at weight {weight}, kept {} found only in {} and {} found only in {}",
@@ -746,8 +747,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 num_b - in_both,
                 args.b,
             )?;
-            make_writer(&args.out)?
-                .write_all(&write_leaves_f32(leaves_map, args.layout.build_layout())?)?;
+            out.write_all(&write_leaves_f32(leaves_map, args.layout.build_layout())?)?;
             Ok(())
         }
         Task::Macondo(args) => {
