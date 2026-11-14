@@ -12748,6 +12748,298 @@ mod tests {
     }
 
     #[inline]
+    fn reference_placements(
+        gc: &game_config::GameConfig,
+        board_tiles: &[u8],
+        rack: &[u8],
+        words: &std::collections::HashSet<Vec<u8>>,
+    ) -> std::collections::BTreeSet<(Vec<(usize, u8)>, i32)> {
+        let alphabet = gc.alphabet();
+        let layout = gc.board_layout();
+        let dim = layout.dim();
+        let premiums = layout.premiums();
+        let prefixes = words
+            .iter()
+            .flat_map(|word| (1..=word.len()).map(|n| word[..n].to_vec()))
+            .collect::<std::collections::HashSet<_>>();
+        let empty_board = board_tiles.iter().all(|&tile| tile == 0);
+        let star = dim.at_row_col(layout.star_row(), layout.star_col());
+        let mut held = vec![0u8; alphabet.len() as usize];
+        for &tile in rack {
+            held[tile as usize] += 1;
+        }
+        let mut found = std::collections::BTreeSet::new();
+        let word_at = |at: (i8, i8), step: (i8, i8), placed: &[(usize, u8)]| {
+            let tile_at = |r: i8, c: i8| -> Option<(usize, u8)> {
+                if r < 0 || c < 0 || r >= dim.rows || c >= dim.cols {
+                    return None;
+                }
+                let sq = dim.at_row_col(r, c);
+                if board_tiles[sq] != 0 {
+                    Some((sq, board_tiles[sq]))
+                } else {
+                    placed.iter().find(|&&(p, _)| p == sq).copied()
+                }
+            };
+            let (mut r, mut c) = at;
+            while tile_at(r - step.0, c - step.1).is_some() {
+                r -= step.0;
+                c -= step.1;
+            }
+            let mut word = Vec::new();
+            while let Some(found) = tile_at(r, c) {
+                word.push(found);
+                r += step.0;
+                c += step.1;
+            }
+            word
+        };
+        let score_of = |word: &[(usize, u8)]| -> i32 {
+            let mut sum = 0;
+            let mut times = 1;
+            for &(sq, tile) in word {
+                let face = if tile & 0x80 != 0 {
+                    0
+                } else {
+                    alphabet.scaled_score(tile)
+                };
+                if board_tiles[sq] == 0 {
+                    sum += face * premiums[sq].tile_multiplier as i32;
+                    times *= premiums[sq].word_multiplier as i32;
+                } else {
+                    sum += face;
+                }
+            }
+            sum * times
+        };
+        let directions: &[bool] = if empty_board && layout.is_symmetric() {
+            &[false]
+        } else {
+            &[false, true]
+        };
+        for &down in directions {
+            let (step, cross) = if down {
+                ((1, 0), (0, 1))
+            } else {
+                ((0, 1), (1, 0))
+            };
+            for r0 in 0..dim.rows {
+                for c0 in 0..dim.cols {
+                    let mut stack = vec![((r0, c0), Vec::<(usize, u8)>::new(), Vec::<u8>::new())];
+                    while let Some(((r, c), placed, main)) = stack.pop() {
+                        let on_board = r < dim.rows && c < dim.cols;
+                        let sq = on_board.then(|| dim.at_row_col(r, c));
+                        if !placed.is_empty() && sq.is_none_or(|sq| board_tiles[sq] == 0) {
+                            let mut ok = true;
+                            let mut formed = 0;
+                            let mut touches = false;
+                            let mut score = 0;
+                            let main_word = word_at((r - step.0, c - step.1), step, &placed);
+                            if main_word.len() >= 2 {
+                                formed += 1;
+                                touches |= main_word.iter().any(|&(s, _)| board_tiles[s] != 0);
+                                ok &= words.contains(
+                                    &main_word.iter().map(|&(_, t)| t & 0x7f).collect::<Vec<_>>(),
+                                );
+                                score += score_of(&main_word);
+                            }
+                            for &(p, _) in &placed {
+                                let (pr, pc) =
+                                    ((p / dim.cols as usize) as i8, (p % dim.cols as usize) as i8);
+                                let cross_word = word_at((pr, pc), cross, &placed);
+                                if cross_word.len() >= 2 {
+                                    formed += 1;
+                                    touches = true;
+                                    ok &= words.contains(
+                                        &cross_word
+                                            .iter()
+                                            .map(|&(_, t)| t & 0x7f)
+                                            .collect::<Vec<_>>(),
+                                    );
+                                    score += score_of(&cross_word);
+                                }
+                            }
+                            let covers = placed.iter().any(|&(s, _)| s == star);
+                            if ok && formed > 0 && (touches || (empty_board && covers)) {
+                                score +=
+                                    gc.num_played_bonus(placed.len() as u8) as i32 * equity::SCALE;
+                                let mut key = placed.clone();
+                                key.sort_unstable();
+                                found.insert((key, score));
+                            }
+                        }
+                        let Some(sq) = sq else {
+                            continue;
+                        };
+                        if placed.is_empty() && main.is_empty() {
+                            let (pr, pc) = (r - step.0, c - step.1);
+                            if pr >= 0 && pc >= 0 && board_tiles[dim.at_row_col(pr, pc)] != 0 {
+                                continue;
+                            }
+                        }
+                        let next = (r + step.0, c + step.1);
+                        if board_tiles[sq] != 0 {
+                            let mut main = main.clone();
+                            main.push(board_tiles[sq] & 0x7f);
+                            if prefixes.contains(&main) {
+                                stack.push((next, placed, main));
+                            }
+                            continue;
+                        }
+                        for tile in 0..alphabet.len() {
+                            let used = placed
+                                .iter()
+                                .filter(
+                                    |&&(_, t)| {
+                                        if tile == 0 { t & 0x80 != 0 } else { t == tile }
+                                    },
+                                )
+                                .count();
+                            if used >= held[tile as usize] as usize {
+                                continue;
+                            }
+                            let letters = if tile == 0 {
+                                1..alphabet.len()
+                            } else {
+                                tile..tile + 1
+                            };
+                            for letter in letters {
+                                let mut main = main.clone();
+                                main.push(letter);
+                                if !prefixes.contains(&main) {
+                                    continue;
+                                }
+                                let mut placed = placed.clone();
+                                placed.push((sq, if tile == 0 { letter | 0x80 } else { letter }));
+                                stack.push((next, placed, main));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    #[inline]
+    fn the_generators_find_what_brute_force_finds() {
+        const LETTERS: [u8; 3] = [1, 5, 20];
+        let mut word_list = Vec::<Vec<u8>>::new();
+        for &a in &LETTERS {
+            for &b in &LETTERS {
+                if a != b {
+                    word_list.push(vec![a, b]);
+                }
+                for &c in &LETTERS {
+                    if (a, b) != (c, a) {
+                        word_list.push(vec![a, b, c]);
+                    }
+                }
+            }
+        }
+        word_list.push(vec![20, 1, 20, 5]);
+        word_list.sort_unstable();
+        let bites_list = word_list
+            .iter()
+            .map(|w| w[..].into())
+            .collect::<Vec<bites::Bites>>();
+        let words = word_list
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &bites_list,
+        )
+        .unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        for (gc, fens) in [
+            (
+                game_config::make_english_game_config(),
+                &[
+                    "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+                    "15/15/15/15/15/15/15/6TAT6/15/15/15/15/15/15/15",
+                    "TE13/A14/15/15/15/15/15/7a7/7T7/15/15/15/15/15/14E",
+                ][..],
+            ),
+            (
+                uneven_game_config(5, 9, 2, 4, false),
+                &["9/9/9/9/9", "9/9/3EAT3/9/9", "T8/9/9/9/8A"][..],
+            ),
+        ] {
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            for fen in fens {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                for rack_text in ["A", "AT", "ETA", "?A", "TATE", "?TE", "A??T"] {
+                    let rack = parse_test_rack(gc.alphabet(), rack_text);
+                    let want = reference_placements(&gc, &board_tiles, &rack, &words);
+                    for lean in [false, true] {
+                        let board_snapshot = BoardSnapshot {
+                            board_tiles: &board_tiles,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        };
+                        let mut move_generator = KurniaMoveGenerator::new(&gc);
+                        let params = GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &rack,
+                            max_gen: usize::MAX,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        };
+                        if lean {
+                            move_generator.gen_moves_unfiltered_lean(&params);
+                        } else {
+                            move_generator.gen_moves_unfiltered(&params);
+                        }
+                        let dim = gc.board_layout().dim();
+                        let got = move_generator
+                            .plays
+                            .iter()
+                            .filter_map(|p| match &p.play {
+                                Play::Place {
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    score,
+                                } => {
+                                    let mut key = word
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|&(_, &t)| t != 0)
+                                        .map(|(i, &t)| {
+                                            let i = *idx + i as i8;
+                                            let sq = if *down {
+                                                dim.at_row_col(i, *lane)
+                                            } else {
+                                                dim.at_row_col(*lane, i)
+                                            };
+                                            (sq, t)
+                                        })
+                                        .collect::<Vec<_>>();
+                                    key.sort_unstable();
+                                    Some((key, *score))
+                                }
+                                _ => None,
+                            })
+                            .collect::<std::collections::BTreeSet<_>>();
+                        assert_eq!(got, want, "{fen} {rack_text} lean={lean}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
     fn placements(fen: &str, rack: &str) -> Vec<String> {
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
