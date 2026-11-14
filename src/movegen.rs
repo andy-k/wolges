@@ -5574,6 +5574,9 @@ pub struct PoolLists(JumbledMultisets);
 #[derive(Clone, Default)]
 struct PoolScratch {
     walked: Vec<u8>,
+    letters: Vec<u8>,
+    deltas: Vec<(u8, i32)>,
+    word: Vec<u8>,
 }
 
 // a windowed top walk's threshold so far, carried from one window to the next
@@ -8919,14 +8922,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         let game_config = board_snapshot.game_config;
         let rack_size = game_config.rack_size();
         // no play places more of a tile than a rack holds
-        let mut tally = vec![0u8; game_config.alphabet().len() as usize];
-        for &tile in pool {
-            tally[tile as usize] = tally[tile as usize].saturating_add(1);
-        }
-        let walked = (0u8..)
-            .zip(tally.iter())
-            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count.min(rack_size) as usize))
-            .collect::<Vec<_>>();
+        let mut tally = [0u8; MAX_ALPHABET_LEN];
+        let tally = &mut tally[..game_config.alphabet().len() as usize];
+        let Some(walked) = self.pool_rack(pool, rack_size, tally) else {
+            return;
+        };
         let snapshot = BoardSnapshot {
             board_tiles: board_snapshot.board_tiles,
             game_config,
@@ -8959,11 +8959,30 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 false,
             );
             self.working_buffer.jumbled.walk = walk;
+            self.working_buffer.pool.walked = walked;
             return;
         }
-        let mut letters = Vec::new();
-        let mut deltas = Vec::new();
-        let mut word = Vec::new();
+        let dim = game_config.board_layout().dim();
+        let longest = dim.rows.max(dim.cols) as usize;
+        let mut letters = std::mem::take(&mut self.working_buffer.pool.letters);
+        let mut deltas = std::mem::take(&mut self.working_buffer.pool.deltas);
+        let mut word = std::mem::take(&mut self.working_buffer.pool.word);
+        letters.clear();
+        deltas.clear();
+        word.clear();
+        if letters.try_reserve(longest).is_err()
+            || deltas.try_reserve(longest).is_err()
+            || word.try_reserve(longest).is_err()
+        {
+            self.working_buffer.pool = PoolScratch {
+                walked,
+                letters,
+                deltas,
+                word,
+            };
+            self.working_buffer.jumbled.splits.out_of_memory = true;
+            return;
+        }
         self.gen_census_sheet_impl(
             &params,
             PlacePredicate::Dyn(&mut |down, lane, idx, spelled: &[u8], _score: i32| {
@@ -8981,7 +9000,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     word.clear();
                     word.extend_from_slice(&letters);
                     designate(
-                        &mut tally,
+                        tally,
                         &deltas,
                         &mut word,
                         0,
@@ -8995,6 +9014,12 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             klv::AdjustLeave::Identity,
             EquityPredicate::RejectAll,
         );
+        self.working_buffer.pool = PoolScratch {
+            walked,
+            letters,
+            deltas,
+            word,
+        };
     }
 
     // the rack a pool's walk takes, at most a rack's of each tile, tallied in
@@ -9382,7 +9407,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         // reads the empty klv and keeps no leaves' table, however many tiles it
         // walks
         let no_leaves = matches!(equity_predicate, EquityPredicate::RejectAll);
-        let empty = no_leaves.then(klv::Klv::<L>::empty).and_then(Result::ok);
+        let empty = no_leaves.then(klv::Klv::<L>::try_empty).flatten();
         let snapshot;
         let without_leaves;
         let params = match &empty {
