@@ -2015,6 +2015,18 @@ impl KeptTable {
             ..self
         }
     }
+
+    // the table for a solver of another graph of the same lexicon, each graph
+    // pruned to the words its own board can still take: a value kept is of a
+    // position holding the old board's tiles, and one the new search finds
+    // holds the new board's too, so either graph keeps every word it can play
+    pub fn for_another_graph<N: kwg::Node>(self, kwg: &kwg::Kwg<N>) -> Self {
+        let [game_config, _, arm_tables] = self.made_with;
+        Self {
+            made_with: [game_config, std::ptr::from_ref(kwg).addr(), arm_tables],
+            ..self.for_another_root()
+        }
+    }
 }
 
 // EndgameSolver is the main two-player endgame solver.
