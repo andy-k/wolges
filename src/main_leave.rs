@@ -6507,6 +6507,28 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     Ok(())
 }
 
+#[derive(Clone, Default)]
+struct WinpctBand {
+    n: u64,
+    missing: u64,
+    brier_table: f64,
+    brier_sigmoid: f64,
+    predicted: f64,
+    observed: f64,
+}
+
+impl WinpctBand {
+    #[inline]
+    fn add(&mut self, other: &WinpctBand) {
+        self.n += other.n;
+        self.missing += other.missing;
+        self.brier_table += other.brier_table;
+        self.brier_sigmoid += other.brier_sigmoid;
+        self.predicted += other.predicted;
+        self.observed += other.observed;
+    }
+}
+
 #[inline]
 fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
@@ -6535,9 +6557,9 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let finished_games = std::sync::atomic::AtomicU64::new(0);
     let tick = std::sync::atomic::AtomicU64::new(0);
 
-    let ln_ratio = (1.0f64 / 0.9 - 1.0).ln();
-
-    let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
+    let band_width = game_config.rack_size().max(1) as usize;
+    let num_bands = game_config.alphabet().num_tiles() as usize / band_width + 1;
+    let shared = std::sync::Mutex::new(vec![WinpctBand::default(); num_bands]);
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
@@ -6551,7 +6573,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
                 let mut snapshots = Vec::<(usize, usize, usize, usize, i32)>::new();
-                let (mut bt, mut bs, mut n) = (0.0f64, 0.0f64, 0u64);
+                let mut bands = vec![WinpctBand::default(); num_bands];
                 loop {
                     let g = next_game.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if g >= num_games {
@@ -6581,13 +6603,23 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             -1 => 0.0,
                             _ => 0.5,
                         };
-                        let tab = table.get(lead, bag, my, opp) as f64;
-
-                        let exp_width = -(30.0 + (bag + my + opp) as f64) / ln_ratio;
-                        let sig = 1.0 / (1.0 + (-(lead as f64) / exp_width).exp());
-                        bt += (tab - result) * (tab - result);
-                        bs += (sig - result) * (sig - result);
-                        n += 1;
+                        let sig = wolges::simmer::win_prob_unfinished(
+                            lead.saturating_mul(equity::SCALE),
+                            bag + my + opp,
+                        );
+                        let band = &mut bands[(bag / band_width).min(num_bands - 1)];
+                        let tab = match table.get_opt(lead, bag, my, opp) {
+                            Some(tab) => tab as f64,
+                            None => {
+                                band.missing += 1;
+                                sig
+                            }
+                        };
+                        band.n += 1;
+                        band.brier_table += (tab - result) * (tab - result);
+                        band.brier_sigmoid += (sig - result) * (sig - result);
+                        band.predicted += tab;
+                        band.observed += result;
                     }
                     let done =
                         finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -6601,9 +6633,9 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     }
                 }
                 let mut acc = shared.lock().unwrap();
-                acc.0 += bt;
-                acc.1 += bs;
-                acc.2 += n;
+                for (total, band) in acc.iter_mut().zip(&bands) {
+                    total.add(band);
+                }
                 Ok(())
             }));
         }
@@ -6613,14 +6645,43 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         Ok(())
     })?;
 
-    let (bt, bs, n) = shared.into_inner().unwrap();
-    let d = n.max(1) as f64;
+    let bands = shared.into_inner().unwrap();
+    let mut all = WinpctBand::default();
+    for band in &bands {
+        all.add(band);
+    }
+    let d = all.n.max(1) as f64;
     writeln!(
         boxed_stdout_or_stderr(),
-        "winpct-eval: {n} samples, brier table={:.5} sigmoid={:.5} (lower better)",
-        bt / d,
-        bs / d
+        "winpct-eval: {} samples, brier table={:.5} sigmoid={:.5} (lower better)",
+        all.n,
+        all.brier_table / d,
+        all.brier_sigmoid / d
     )?;
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "winpct-eval: {} samples had no table row and were scored by the sigmoid",
+        all.missing
+    )?;
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "winpct-eval: bag\tsamples\tmissing\tbrier table\tbrier sigmoid\tpredicted\tobserved"
+    )?;
+    for (i, band) in bands.iter().enumerate().filter(|(_, band)| band.n > 0) {
+        let d = band.n as f64;
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "winpct-eval: {}-{}\t{}\t{}\t{:.5}\t{:.5}\t{:.5}\t{:.5}",
+            i * band_width,
+            (i + 1) * band_width - 1,
+            band.n,
+            band.missing,
+            band.brier_table / d,
+            band.brier_sigmoid / d,
+            band.predicted / d,
+            band.observed / d
+        )?;
+    }
     writeln!(
         boxed_stdout_or_stderr(),
         "winpct-eval: {num_games} games in {}s",
