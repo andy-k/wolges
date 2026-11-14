@@ -10,9 +10,16 @@ static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 
 // support "-" to mean stdout.
 #[inline]
-fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
-    Ok(if filename == "-" {
+fn use_writer(filename: &str) {
+    if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    use_writer(filename);
+    Ok(if filename == "-" {
         Box::new(std::io::stdout())
     } else {
         Box::new(std::fs::File::create(filename)?)
@@ -366,6 +373,7 @@ fn run(
     let baseline = if check_mode {
         Some(std::fs::read_to_string(&files.baseline)?)
     } else {
+        use_writer(&files.baseline);
         None
     };
 
