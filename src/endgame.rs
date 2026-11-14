@@ -5161,9 +5161,10 @@ impl<
         Ok(Ok(result?))
     }
 
-    // a move's rows: each split valued again alone, at the depth of the pass
-    // the answer is of, on this solver's table. Under a time or state limit,
-    // or none, they are the rows the search found
+    // a move's rows: each split valued again, at the depth of the pass the
+    // answer is of, from a copy of what that pass valued below the moves.
+    // Under a time or state limit, or none, on one thread, they are the rows
+    // the search found
     #[inline]
     pub fn peg_bag_rows(
         &mut self,
@@ -5201,8 +5202,20 @@ impl<
         let scoreless = self.scoreless;
         let at = |opp_rack: &[u8], bag: &[u8]| position.after_split(scoreless, opp_rack, bag);
         let score_diff = position.score_diff.raw() as f64;
+        let state = &progress.state;
+        let searched = if state.answer.is_none() || state.done {
+            Some(&state.searched)
+        } else {
+            state.answered_searched.as_ref()
+        };
+        let Some(valued) = searched.and_then(|searched| searched.copied(limits.memory)) else {
+            std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
+            self.swap_tables(&mut sub)?;
+            return Ok(Err(PegBagRowsMissing::Stopped {
+                out_of_memory: true,
+            }));
+        };
         let found = klv::Klv::<L>::empty().and_then(|klv| {
-            let valued = BagValued::new(1);
             let mut search = BagSearch {
                 gc,
                 kwg: self.kwg,
@@ -5419,6 +5432,7 @@ impl<
             }
             state.next = 0;
             state.pass_exact = true;
+            state.answered_searched = state.searched.copied(limits.memory);
             state.searched.deepen();
             state.depth += 1;
         }
@@ -6636,7 +6650,9 @@ struct PegBagRoot<'r, At: Fn(&[u8], &[u8]) -> InBag + Sync> {
 // the pass's endgames were exact, and its depth; what the search has valued
 // below the moves; the table and lane pool each thread but the calling one
 // left; the best move of the deepest pass that valued every move, with that
-// depth, and that pass's values; and whether that answer is final
+// depth, that pass's values, and what it had valued below the moves as it
+// ended (none where the memory limit refused the room); and whether that
+// answer is final
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -6652,6 +6668,7 @@ struct PegBagState {
     lanes: Vec<LanePool>,
     answer: Option<(usize, i8)>,
     answered: Vec<Option<PegBagValue>>,
+    answered_searched: Option<BagValued>,
     done: bool,
 }
 
@@ -7331,6 +7348,7 @@ struct BagShard {
 // player knows: its value, the move that gets it, and whether no endgame a
 // depth cut short went into it; or, from a shallower pass, the move found best
 // there alone, to be tried first
+#[derive(Clone)]
 enum BagEntry<V> {
     Valued(V, movegen::Play, bool),
     First(movegen::Play),
@@ -7366,6 +7384,7 @@ impl<V> BagEntry<V> {
 // nothing is lost while it can grow. Refused, it keeps its size: a key not in
 // it takes the place of the first entry worth least on its way, and is not kept
 // when its first place is empty
+#[derive(Clone)]
 struct BagTable<T> {
     entries: Vec<Option<(u64, T)>>,
     held: usize, // the entries holding a key
@@ -7382,6 +7401,11 @@ impl<T> Default for BagTable<T> {
 }
 
 impl<T> BagTable<T> {
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        self.entries.len() * std::mem::size_of::<Option<(u64, T)>>()
+    }
+
     // a key's first place
     #[inline(always)]
     fn first(&self, key: u64) -> usize {
@@ -7485,6 +7509,29 @@ impl<T> BagTable<T> {
 }
 
 impl BagValued {
+    // a copy, none where the memory limit refuses its room
+    fn copied(&self, memory: Option<MemoryLimit>) -> Option<Self> {
+        let shards = self.shards.iter().map(|shard| shard.lock().unwrap());
+        let shards = shards.collect::<Vec<_>>();
+        let bytes = (shards.iter())
+            .map(|shard| shard.nodes.bytes() + shard.endgames.bytes() + shard.infos.bytes())
+            .sum::<usize>();
+        if memory.is_some_and(|memory| bytes > memory.room()) {
+            return None;
+        }
+        Some(Self {
+            shards: (shards.iter())
+                .map(|shard| {
+                    std::sync::Mutex::new(BagShard {
+                        nodes: shard.nodes.clone(),
+                        endgames: shard.endgames.clone(),
+                        infos: shard.infos.clone(),
+                    })
+                })
+                .collect(),
+        })
+    }
+
     // nothing valued yet, in as many shards as threads search
     fn new(threads: usize) -> Self {
         Self {
