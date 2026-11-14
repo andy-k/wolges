@@ -11464,24 +11464,7 @@ fn rcs_placements<
             working_buffer.rcs_rev += 1;
             kept.stamp = (working_buffer.rcs_owner, working_buffer.rcs_rev);
         }
-        // the crossing squares none of the rack's tiles fit (with a blank on
-        // hand, none: a cross set's bit 0 is the blank's), and each crossing
-        // square's cap, the best score of the rack's tiles that fit it, each
-        // tile's kept or dropped by a select (a square no cross word reaches
-        // takes any tile)
-        let mut unfillable = 0u64;
-        let mut hooks = kept.hooks;
-        while hooks != 0 {
-            let idx = hooks.trailing_zeros() as usize;
-            hooks &= hooks - 1;
-            let fits = cross_sets[idx].bits & rack_bits;
-            unfillable |= ((fits == 0) as u64) << idx;
-            caps[idx] = rack_tiles
-                .iter()
-                .map(|&(bit, score)| if fits & bit != 0 { score } else { 0 })
-                .fold(0, i32::max);
-        }
-        let mut check = check.map(|(source, prefix_at)| KeyCheck {
+        let check = check.map(|(source, prefix_at)| KeyCheck {
             source,
             subracks: &working_buffer.subracks,
             by_played: &working_buffer.subracks_by_played,
@@ -11490,55 +11473,104 @@ fn rcs_placements<
             memo: &mut working_buffer.exist_memo,
             min_played,
         });
-        let descending_scores = &working_buffer.descending_scores;
-        let best_leave_values = &working_buffer.best_leave_values;
-        for span in &kept.spans {
-            if span.num_played > num_max_played
-                || span.hooked & unfillable != 0
-                || (!span.crossed && feasible_lengths & 1 << span.num_played == 0)
-                || (span.crossed && check.refuses(span.left, span.right, span.num_played))
-            {
-                continue;
-            }
-            // by Abel's sum, the multipliers' steps (each >= 0) times the least
-            // of the rack's best scores and the squares' caps so far: summed
-            // the other way, each multiplier times what its square adds to that
-            // least (which never falls), the same sum with no look ahead
-            let multipliers =
-                &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
-            let mut bound = span.fixed + best_leave_values[span.num_played as usize];
-            let mut best_scores = 0i32;
-            let mut capped = 0i32;
-            let mut least = 0i32;
-            for (&score, &taken) in descending_scores.iter().zip(multipliers) {
-                best_scores += score;
-                capped = capped.saturating_add(caps[taken.idx()]);
-                let next_least = best_scores.min(capped);
-                bound += taken.multiplier() * (next_least - least);
-                least = next_least;
-            }
-            found_placements.push(PossiblePlacement {
-                num_played: span.num_played,
-                down,
-                lane,
-                anchor: span.anchor,
-                leftmost: span.left,
-                rightmost: span.right,
-                best_possible_equity: bound,
-                kept_at: span.at,
-            });
-        }
-        // the lane's caps back to none for the next
-        let mut hooks = kept.hooks;
-        while hooks != 0 {
-            caps[hooks.trailing_zeros() as usize] = i32::MAX;
-            hooks &= hooks - 1;
-        }
+        rcs_lane_placements(
+            &kept,
+            cross_sets,
+            rack_bits,
+            rack_tiles,
+            &mut caps,
+            check,
+            &working_buffer.descending_scores,
+            &working_buffer.best_leave_values,
+            num_max_played,
+            feasible_lengths,
+            down,
+            lane,
+            found_placements,
+        );
         working_buffer.rcs_lanes[at] = kept;
     }
     // a lane this turn passed by keeps its mark for the turn that walks it
     working_buffer.rcs_stale_rows = stale_rows;
     working_buffer.rcs_stale_cols = stale_cols;
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn rcs_lane_placements(
+    kept: &RcsLane,
+    cross_sets: &[CrossSet],
+    rack_bits: u64,
+    rack_tiles: &[(u64, i32)],
+    caps: &mut [i32; u64::BITS as usize],
+    mut check: Option<KeyCheck<'_>>,
+    descending_scores: &[i32],
+    best_leave_values: &[i32],
+    num_max_played: u8,
+    feasible_lengths: u64,
+    down: bool,
+    lane: i8,
+    found_placements: &mut Vec<PossiblePlacement>,
+) {
+    // the crossing squares none of the rack's tiles fit (with a blank on
+    // hand, none: a cross set's bit 0 is the blank's), and each crossing
+    // square's cap, the best score of the rack's tiles that fit it, each
+    // tile's kept or dropped by a select (a square no cross word reaches
+    // takes any tile)
+    let mut unfillable = 0u64;
+    let mut hooks = kept.hooks;
+    while hooks != 0 {
+        let idx = hooks.trailing_zeros() as usize;
+        hooks &= hooks - 1;
+        let fits = cross_sets[idx].bits & rack_bits;
+        unfillable |= ((fits == 0) as u64) << idx;
+        caps[idx] = rack_tiles
+            .iter()
+            .map(|&(bit, score)| if fits & bit != 0 { score } else { 0 })
+            .fold(0, i32::max);
+    }
+    for span in &kept.spans {
+        if span.num_played > num_max_played
+            || span.hooked & unfillable != 0
+            || (!span.crossed && feasible_lengths & 1 << span.num_played == 0)
+            || (span.crossed && check.refuses(span.left, span.right, span.num_played))
+        {
+            continue;
+        }
+        // by Abel's sum, the multipliers' steps (each >= 0) times the least
+        // of the rack's best scores and the squares' caps so far: summed
+        // the other way, each multiplier times what its square adds to that
+        // least (which never falls), the same sum with no look ahead
+        let multipliers =
+            &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
+        let mut bound = span.fixed + best_leave_values[span.num_played as usize];
+        let mut best_scores = 0i32;
+        let mut capped = 0i32;
+        let mut least = 0i32;
+        for (&score, &taken) in descending_scores.iter().zip(multipliers) {
+            best_scores += score;
+            capped = capped.saturating_add(caps[taken.idx()]);
+            let next_least = best_scores.min(capped);
+            bound += taken.multiplier() * (next_least - least);
+            least = next_least;
+        }
+        found_placements.push(PossiblePlacement {
+            num_played: span.num_played,
+            down,
+            lane,
+            anchor: span.anchor,
+            leftmost: span.left,
+            rightmost: span.right,
+            best_possible_equity: bound,
+            kept_at: span.at,
+        });
+    }
+    // the lane's caps back to none for the next
+    let mut hooks = kept.hooks;
+    while hooks != 0 {
+        caps[hooks.trailing_zeros() as usize] = i32::MAX;
+        hooks &= hooks - 1;
+    }
 }
 
 #[inline]
