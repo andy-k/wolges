@@ -755,6 +755,28 @@ struct SimChunkCheck {
 }
 
 #[derive(clap::Args)]
+struct SimRecall {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(long, default_value_t = 100, help = "how many positions to decide")]
+    positions: u64,
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "the decision's iterations")]
+    iters: u64,
+    #[arg(long, default_value_t = move_picker::SIMMER_FIELD.max_gen, help = "the decision's tile plays")]
+    field: usize,
+    #[arg(long, default_value_t = 10 * move_picker::DEFAULT_NUM_SIM_ITERS, help = "the reference's iterations")]
+    reference_iters: u64,
+    #[arg(long, default_value_t = 4 * move_picker::SIMMER_FIELD.max_gen, help = "the reference's tile plays")]
+    reference_field: usize,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
+}
+
+#[derive(clap::Args)]
 struct SimMutateCheck {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -942,6 +964,10 @@ enum Task {
         about = "check that cutting one decision into randomly sized chunks of resume calls gives the same leaderboard as running it in one call"
     )]
     SimChunkCheck(SimChunkCheck),
+    #[command(
+        about = "on the positions of hasty games, sim each with a bigger field and budget as the reference: how often its best was not among the decision's candidates, and how often it was but lost, with the reference best's static rank"
+    )]
+    SimRecall(SimRecall),
     #[command(
         about = "check that a candidate retired by hand or by the pruner keeps its statistics through a readmit"
     )]
@@ -1380,6 +1406,12 @@ fn run(
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             sim_chunk_check(game_config, kwg, klv, &a)
+        }
+        Task::SimRecall(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
+            let tally = sim_recall(&game_config, &kwg, &klv, &a, threads)?;
+            print_sim_recall(&tally, &a)
         }
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -7180,6 +7212,215 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RecallOne {
+    static_rank: Option<usize>,
+    in_field: bool,
+    chosen: bool,
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn sim_decide<N: kwg::Node + Sync, L: kwg::Node + Sync>(
+    game_config: &game_config::GameConfig,
+    kwg: &kwg::Kwg<N>,
+    arm_tables: &anagrams::ArmTables,
+    klv: &klv::Klv<L>,
+    game_state: &game_state::GameState,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    field: usize,
+    iters: u64,
+    seed: u64,
+    sim_threads: usize,
+) -> error::Returns<movegen::Play> {
+    let board_snapshot = movegen::BoardSnapshot {
+        board_tiles: &game_state.board_tiles,
+        game_config,
+        kwg,
+        anagrams: arm_tables.anagrams(),
+        rack_lengths: arm_tables.rack_lengths(),
+        klv,
+    };
+    let mut scratch = Vec::new();
+    move_picker::gen_simmer_candidates(
+        &mut move_filter::GenMoves::Unfiltered,
+        move_generator,
+        &board_snapshot,
+        &game_state.current_player().rack,
+        game_state.current_player().num_exchanges,
+        move_picker::FieldShape {
+            max_gen: field,
+            nonplacing_quota: move_picker::SIMMER_FIELD.nonplacing_quota,
+        },
+        &mut scratch,
+    );
+    let mut driver = move_picker::Simmer::<_, _, false>::new(
+        game_config,
+        kwg,
+        arm_tables,
+        klv,
+        move_picker::SimmerParams {
+            num_sim_iters: iters,
+            num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
+            sim_threads,
+            win_pct_table: None,
+            quiet: true,
+        },
+    )?;
+    driver.reseed(seed);
+    driver.begin_decision(move_generator, game_state, iters, &[])?;
+    Ok(move_generator.plays[driver.best_so_far()].play.clone())
+}
+
+#[inline]
+fn sim_recall<N: kwg::Node + Sync, L: kwg::Node + Sync>(
+    game_config: &game_config::GameConfig,
+    kwg: &kwg::Kwg<N>,
+    klv: &klv::Klv<L>,
+    a: &SimRecall,
+    sim_threads: usize,
+) -> error::Returns<Vec<RecallOne>> {
+    let arm_tables = anagrams::ArmTables::build(kwg, game_config, a.lean)?;
+    let mut rng = GameRng::seed_from_u64(a.seed);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+    let mut game_state = game_state::GameState::new(game_config);
+    game_state.reset_and_draw_tiles(game_config, &mut rng);
+    let mut tally = Vec::new();
+    let mut final_scores = vec![0i32; game_config.num_players() as usize];
+    while (tally.len() as u64) < a.positions {
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config,
+                kwg,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
+                klv,
+            },
+            rack: &game_state.current_player().rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let ranked = (move_generator.plays.iter())
+            .map(|valued_move| valued_move.play.clone())
+            .collect::<Vec<_>>();
+        let static_best = ranked[0].clone();
+        if game_state.bag.len() >= game_config.rack_size() as usize {
+            let reference = sim_decide(
+                game_config,
+                kwg,
+                &arm_tables,
+                klv,
+                &game_state,
+                &mut move_generator,
+                a.reference_field,
+                a.reference_iters,
+                rng.next_u64(),
+                sim_threads,
+            )?;
+            let chosen = sim_decide(
+                game_config,
+                kwg,
+                &arm_tables,
+                klv,
+                &game_state,
+                &mut move_generator,
+                a.field,
+                a.iters,
+                rng.next_u64(),
+                sim_threads,
+            )?;
+            tally.push(RecallOne {
+                static_rank: ranked.iter().position(|play| *play == reference),
+                in_field: (move_generator.plays.iter())
+                    .any(|valued_move| valued_move.play == reference),
+                chosen: chosen == reference,
+            });
+        }
+        game_state.play(game_config, &mut rng, &static_best)?;
+        match game_state.check_game_ended(game_config, &mut final_scores)? {
+            game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+            _ => game_state.reset_and_draw_tiles(game_config, &mut rng),
+        }
+    }
+    Ok(tally)
+}
+
+#[inline]
+fn wilson_interval(k: usize, n: usize) -> (f64, f64) {
+    const Z: f64 = 1.96;
+    let (k, n) = (k as f64, n as f64);
+    let p = k / n;
+    let center = (p + Z * Z / (2.0 * n)) / (1.0 + Z * Z / n);
+    let half = Z * (p * (1.0 - p) / n + Z * Z / (4.0 * n * n)).sqrt() / (1.0 + Z * Z / n);
+    ((center - half).max(0.0), (center + half).min(1.0))
+}
+
+#[inline]
+fn print_sim_recall(tally: &[RecallOne], a: &SimRecall) -> error::Returns<()> {
+    let n = tally.len();
+    let mut out = std::io::stdout();
+    let line = |out: &mut std::io::Stdout, what: &str, k: usize| -> std::io::Result<()> {
+        let (lo, hi) = wilson_interval(k, n);
+        writeln!(
+            out,
+            "{what}: {k} of {n} ({:.2}%, 95% {:.2}%..{:.2}%)",
+            100.0 * k as f64 / n as f64,
+            100.0 * lo,
+            100.0 * hi
+        )
+    };
+    writeln!(
+        out,
+        "decision: {} tile plays, {} iterations; reference: {} tile plays, {} iterations",
+        a.field, a.iters, a.reference_field, a.reference_iters
+    )?;
+    line(
+        &mut out,
+        "reference best not among the decision's candidates",
+        tally.iter().filter(|one| !one.in_field).count(),
+    )?;
+    line(
+        &mut out,
+        "reference best among them but not chosen",
+        tally
+            .iter()
+            .filter(|one| one.in_field && !one.chosen)
+            .count(),
+    )?;
+    line(
+        &mut out,
+        "reference best chosen",
+        tally.iter().filter(|one| one.chosen).count(),
+    )?;
+    let mut ranks = tally
+        .iter()
+        .map(|one| one.static_rank.map_or(usize::MAX, |rank| rank + 1))
+        .collect::<Vec<_>>();
+    ranks.sort_unstable();
+    let mut top = 1;
+    while top < a.reference_field {
+        line(
+            &mut out,
+            &format!("reference best within the static top {top}"),
+            ranks.partition_point(|&rank| rank <= top),
+        )?;
+        top *= 2;
+    }
+    writeln!(
+        out,
+        "worst static rank of a reference best: {}",
+        match ranks.last() {
+            Some(&usize::MAX) => "unranked (a pass)".to_string(),
+            Some(rank) => rank.to_string(),
+            None => "-".to_string(),
+        }
+    )?;
+    Ok(())
+}
+
 #[inline]
 fn census_one_board<N: kwg::Node, L: kwg::Node>(
     game_config: game_config::GameConfig,
@@ -10416,6 +10657,43 @@ WCMP_P1_SCORE 402.000000
         );
         got.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         got
+    }
+
+    #[test]
+    #[inline]
+    fn a_reference_from_the_decisions_own_field_is_always_among_its_candidates() {
+        let game_config = game_config::make_english_game_config();
+        let mut words = [
+            "AA", "AE", "AT", "TA", "EA", "ET", "TE", "IN", "NI", "IT", "TI", "ON", "NO", "TO",
+            "OR", "RE", "ER", "ES", "SO", "OS", "AS", "IS", "SI", "AN", "NA", "EN", "NE", "ERA",
+            "ATE", "EAT", "TEA", "TAN", "ANT", "NET", "TEN", "RAN", "ART", "RAT", "TAR", "SAT",
+            "SET", "SIT", "TIN", "NIT", "ION", "TON", "NOT", "ORE", "ROE", "RES", "SEA", "TOE",
+        ]
+        .iter()
+        .map(|word| word.bytes().map(|b| b - b'A' + 1).collect::<Vec<u8>>()[..].into())
+        .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+            &build::build_for_game(&game_config, &words).unwrap(),
+        )
+        .unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let field = 3;
+        let a = SimRecall {
+            kwg: String::new(),
+            klv: String::new(),
+            positions: 6,
+            seed: 1,
+            iters: 32,
+            field,
+            reference_iters: 64,
+            reference_field: field,
+            lean: false,
+        };
+        let tally = sim_recall(&game_config, &kwg, &klv, &a, 1).unwrap();
+        assert_eq!(tally.len(), 6);
+        assert!(tally.iter().all(|one| one.in_field));
+        assert_eq!(tally, sim_recall(&game_config, &kwg, &klv, &a, 1).unwrap());
     }
 
     #[test]
