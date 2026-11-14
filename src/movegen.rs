@@ -8492,6 +8492,43 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         );
     }
 
+    pub fn pool_plays_through<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (row, col): (i8, i8),
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) {
+        self.pool_plays_lanes(
+            board_snapshot,
+            pool,
+            (1 << row, 1 << col),
+            |down, lane, idx, word, score| {
+                let (along, at) = if down { (col, row) } else { (row, col) };
+                if lane == along
+                    && at >= idx
+                    && word.get((at - idx) as usize).is_some_and(|&tile| tile != 0)
+                {
+                    found(down, lane, idx, word, score);
+                }
+            },
+        );
+    }
+
+    pub fn pool_plays_lanes<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (rows, cols): (u128, u128),
+        found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) {
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
+        self.pool_plays(board_snapshot, pool, found);
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
+    }
+
     #[inline(always)]
     fn gen_census_sheet_impl<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -15961,6 +15998,107 @@ mod tests {
             collapsed > 0,
             "no arrangement was collapsed, so the test proves nothing"
         );
+    }
+
+    #[test]
+    fn a_pools_plays_through_a_square_are_its_plays_placing_a_tile_there() {
+        type Found = (bool, i8, i8, Vec<u8>, i32);
+        let configs = [
+            (game_config::make_english_game_config(), false),
+            (game_config::make_jumbled_english_game_config(), true),
+        ];
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut squares_with_plays = 0;
+        for (gc, jumbled) in &configs {
+            let kwg = if *jumbled {
+                test_kad(gc, SWEEP_WORDS)
+            } else {
+                test_kwg_of(gc, SWEEP_WORDS)
+            };
+            let dim = gc.board_layout().dim();
+            let cols = dim.cols as usize;
+            let placed = parse_test_rack(gc.alphabet(), "AEST");
+            let pools =
+                ["AERT?", "ACERST", "AEERT??"].map(|pool| parse_test_rack(gc.alphabet(), pool));
+            let mut board_tiles = vec![0u8; dim.rows as usize * cols];
+            let mut generator = KurniaMoveGenerator::new(gc);
+            for step in 0..=4 {
+                if step > 0 {
+                    let at = dim.at_row_col(7, (step + 5) as i8);
+                    board_tiles[at] = placed[(step - 1) as usize % placed.len()];
+                }
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                for pool in &pools {
+                    let mut all = Vec::<Found>::new();
+                    generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                        all.push((down, lane, idx, word.to_vec(), score));
+                    });
+                    for row in 0..dim.rows {
+                        for col in 0..dim.cols {
+                            let want = all
+                                .iter()
+                                .filter(|(down, lane, idx, word, _)| {
+                                    let (along, at) = if *down { (col, row) } else { (row, col) };
+                                    *lane == along
+                                        && at >= *idx
+                                        && word.get((at - idx) as usize).is_some_and(|&t| t != 0)
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let mut through = Vec::<Found>::new();
+                            generator.pool_plays_through(
+                                &board_snapshot,
+                                pool,
+                                (row, col),
+                                |down, lane, idx, word, score| {
+                                    through.push((down, lane, idx, word.to_vec(), score));
+                                },
+                            );
+                            assert_eq!(through, want, "{jumbled} {step} {pool:?} {row} {col}");
+                            squares_with_plays += usize::from(!want.is_empty());
+                        }
+                    }
+                    let mut lanes = Vec::<Found>::new();
+                    for lane in 0..dim.rows {
+                        generator.pool_plays_lanes(
+                            &board_snapshot,
+                            pool,
+                            (1 << lane, 0),
+                            |down, lane, idx, word, score| {
+                                lanes.push((down, lane, idx, word.to_vec(), score));
+                            },
+                        );
+                    }
+                    for lane in 0..dim.cols {
+                        generator.pool_plays_lanes(
+                            &board_snapshot,
+                            pool,
+                            (0, 1 << lane),
+                            |down, lane, idx, word, score| {
+                                lanes.push((down, lane, idx, word.to_vec(), score));
+                            },
+                        );
+                    }
+                    let mut sorted = all.clone();
+                    sorted.sort_unstable();
+                    lanes.sort_unstable();
+                    assert_eq!(lanes, sorted, "{jumbled} {step} {pool:?}");
+                    let mut again = Vec::<Found>::new();
+                    generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                        again.push((down, lane, idx, word.to_vec(), score));
+                    });
+                    assert_eq!(again, all);
+                }
+            }
+        }
+        assert!(squares_with_plays > 0);
     }
 
     #[test]
