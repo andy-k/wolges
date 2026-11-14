@@ -9055,6 +9055,194 @@ mod tests {
         assert!(resumed > 0);
     }
 
+    #[test]
+    #[inline]
+    fn a_value_cut_short_is_no_bound_either_way() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let (mut below, mut above, mut equal) = ([0u64; 3], [0u64; 3], [0u64; 3]);
+        for (_name, pos) in all_positions() {
+            let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+            for mover in 0..2u8 {
+                let new = || {
+                    let mut s =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    s.init(&pos.board, racks);
+                    s
+                };
+                let want = new().solve(mover).unwrap();
+                let exact_firsts = new()
+                    .value_first_moves(mover, &super::Limits::NONE)
+                    .unwrap();
+                let mut tally = |k: usize, got: equity::Equity, want: equity::Equity| {
+                    if got < want {
+                        below[k] += 1
+                    } else if got > want {
+                        above[k] += 1
+                    } else {
+                        equal[k] += 1
+                    }
+                };
+                let longest = new().longest_line(mover) as i8;
+                for cap in 1..longest {
+                    let mut s = new();
+                    s.work_buffer.depth_cap = cap;
+                    let solved = s.solve_within(mover, &super::Limits::NONE).unwrap();
+                    if !solved.exact {
+                        tally(0, solved.value, want);
+                    }
+                }
+                for states in [1usize, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233] {
+                    let limits = super::Limits {
+                        states: Some(states),
+                        ..super::Limits::NONE
+                    };
+                    let solved = new().solve_within(mover, &limits).unwrap();
+                    if !solved.exact {
+                        tally(1, solved.value, want);
+                    }
+                    for first in new().value_first_moves(mover, &limits).unwrap() {
+                        if let (false, Some(v)) = (first.exact, first.value) {
+                            let w = exact_firsts.iter().find(|f| f.play == first.play).unwrap();
+                            tally(2, v, w.value.unwrap());
+                        }
+                    }
+                }
+            }
+        }
+        println!("below {below:?}, above {above:?}, equal {equal:?}");
+        assert!(below.iter().chain(&above).all(|&n| n > 0));
+    }
+
+    #[test]
+    #[inline]
+    fn a_peg_value_cut_short_is_no_bound_either_way() {
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tiles = [1u8, 2, 8, 20];
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let (mut below, mut above, mut equal) = ([0u64; 4], [0u64; 4], [0u64; 4]);
+        let mut tally = |k: usize, got: f64, want: f64| {
+            if got < want {
+                below[k] += 1
+            } else if got > want {
+                above[k] += 1
+            } else {
+                equal[k] += 1
+            }
+        };
+        for gc in [
+            game_config::make_english_game_config(),
+            game_config::make_exchange_test_game_config(),
+        ] {
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            for unseen in [&[8u8, 20][..], &[1, 8], &[2, 20]] {
+                let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+                for &t in unseen {
+                    unseen_tally[t as usize] += 1;
+                }
+                for &x in &tiles {
+                    for &y in &tiles {
+                        let rack = [x, y];
+                        let new = || {
+                            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                                .unwrap()
+                        };
+                        let Ok(full) = new()
+                            .solve_peg_one_in_bag(
+                                0,
+                                &board,
+                                &rack,
+                                &unseen_tally,
+                                equity::Equity::ZERO,
+                                &super::Limits::NONE,
+                            )
+                            .unwrap()
+                        else {
+                            continue;
+                        };
+                        for states in (1..400).step_by(13) {
+                            let limits = super::Limits {
+                                states: Some(states),
+                                ..super::Limits::NONE
+                            };
+                            let got = new()
+                                .solve_peg_one_in_bag(
+                                    0,
+                                    &board,
+                                    &rack,
+                                    &unseen_tally,
+                                    equity::Equity::ZERO,
+                                    &limits,
+                                )
+                                .unwrap()
+                                .unwrap();
+                            if !got.exact && got.depth > 0 {
+                                tally(
+                                    0,
+                                    got.expected_margin.raw() as f64,
+                                    full.expected_margin.raw() as f64,
+                                );
+                                tally(1, got.win_pct as f64, full.win_pct as f64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let gc = game_config::make_english_game_config();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in unseen {
+                unseen_tally[tile as usize] += 1;
+            }
+            for &x in &tiles {
+                for &y in &tiles {
+                    let position = bag_position(
+                        &board,
+                        &[x, y],
+                        &unseen_tally,
+                        bag_size,
+                        equity::Equity::ZERO,
+                    );
+                    let full = egs
+                        .solve_peg(position.clone(), &super::Limits::NONE)
+                        .unwrap()
+                        .unwrap();
+                    for states in (1..2000).step_by(61) {
+                        let limits = super::Limits {
+                            states: Some(states),
+                            ..super::Limits::NONE
+                        };
+                        let mut solver =
+                            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                                .unwrap();
+                        let got = solver
+                            .solve_peg(position.clone(), &limits)
+                            .unwrap()
+                            .unwrap();
+                        if !got.exact && got.best_move.is_some() {
+                            tally(
+                                2,
+                                got.expected_margin.raw() as f64,
+                                full.expected_margin.raw() as f64,
+                            );
+                            tally(3, got.win_pct, full.win_pct);
+                        }
+                    }
+                }
+            }
+        }
+        println!("below {below:?}, above {above:?}, equal {equal:?}");
+        assert!(below.iter().chain(&above).all(|&n| n > 0));
+    }
+
     fn assert_a_best_line<N: kwg::Node, L: kwg::Node>(
         fixed: &mut Reference<'_, N, L>,
         board: &[u8],
