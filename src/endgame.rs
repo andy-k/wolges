@@ -2685,11 +2685,10 @@ impl<
                 // held to the pool's budget, and to the bound others keep
                 let budget = lane_pool.deal.budget;
                 let walker = (work_buffer.pool_walker).get_or_insert_with(|| {
-                    let mut walker = movegen::KurniaMoveGenerator::new_in(self.game_config);
-                    walker.set_dense_leaves_most(
+                    movegen::KurniaMoveGenerator::new_in_dense(
+                        self.game_config,
                         (budget / klv::LEAVE_BYTES).min(klv::DENSE_LEAVES_MOST as usize) as u32,
-                    );
-                    walker
+                    )
                 });
                 work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                     walker,

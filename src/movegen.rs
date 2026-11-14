@@ -7572,7 +7572,7 @@ pub struct Steer<'a> {
 // whether it keeps the lean arm's copy for any side beside those for 15 by 15
 // and 21 by 21 (true; the wasm's false, so it takes those two boards alone,
 // each by its own copy, the raw walk's too). BAG_TERM: whether it adds the bag
-// term a caller sets (with_bag_term); false, the default, has none of it.
+// term it is made with (with_bag_term); false, the default, has none of it.
 pub struct KurniaMoveGenerator<
     G: LaneBits = u128,
     const JUMPS: bool = true,
@@ -7604,24 +7604,30 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
 impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     KurniaMoveGenerator<G, JUMPS, ANY_SIDE, true>
 {
-    // the bag term each later generation adds to a tile placement's equity
-    // (None: none)
+    // each generation adds the bag term to a tile placement's equity
     #[inline(always)]
-    pub fn set_bag_term(&mut self, bag_term: Option<BagTerm>) {
-        self.working_buffer.bag_term = bag_term;
+    pub(crate) fn with_bag_term_in(
+        game_config: &game_config::GameConfig,
+        bag_term: BagTerm,
+        dense_most: u32,
+    ) -> Self {
+        let mut move_generator = Self::new_in_dense(game_config, dense_most);
+        move_generator.working_buffer.bag_term = Some(bag_term);
+        move_generator
     }
 }
 
 impl KurniaMoveGenerator {
-    // a generator adding the bag term (set_bag_term), starting with this one
     #[inline(always)]
     pub fn with_bag_term(
         game_config: &game_config::GameConfig,
         bag_term: BagTerm,
     ) -> KurniaMoveGenerator<u128, true, true, true> {
-        let mut move_generator = KurniaMoveGenerator::<u128, true, true, true>::new_in(game_config);
-        move_generator.set_bag_term(Some(bag_term));
-        move_generator
+        KurniaMoveGenerator::<u128, true, true, true>::with_bag_term_in(
+            game_config,
+            bag_term,
+            klv::DENSE_LEAVES_MOST,
+        )
     }
 
     #[inline(always)]
@@ -7705,6 +7711,17 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
     #[inline(always)]
     pub fn out_of_memory(&self) -> bool {
         self.working_buffer.jumbled.splits.out_of_memory
+    }
+
+    // dense_most: the most leaves a rack may have to be kept as a table
+    #[inline(always)]
+    pub(crate) fn new_in_dense(game_config: &game_config::GameConfig, dense_most: u32) -> Self {
+        let mut working_buffer = WorkingBuffer::new(game_config);
+        working_buffer.multi_leaves = klv::MultiLeaves::with_dense_most(dense_most);
+        Self {
+            working_buffer,
+            plays: Vec::new(),
+        }
     }
     #[inline(always)]
     pub fn num_tiles_in_bag(&self) -> i16 {
@@ -7945,13 +7962,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
     #[inline(always)]
     pub fn reset_for_another_kwg(&mut self) {
         self.working_buffer.reset_for_another_kwg();
-    }
-
-    // the most leaves a rack's tiles may have for this generator to keep them
-    // as a table (klv::DENSE_LEAVES_MOST until set)
-    #[inline(always)]
-    pub fn set_dense_leaves_most(&mut self, dense_most: u32) {
-        self.working_buffer.multi_leaves.set_dense_most(dense_most);
     }
 
     // as gen_moves_raw_all_unsorted, the place moves on the rows and columns in
@@ -18168,12 +18178,8 @@ mod tests {
             fn generate<const BAG_TERM: bool>(
                 mut move_generator: KurniaMoveGenerator<u128, true, true, BAG_TERM>,
                 params: &GenMovesParams<'_, kwg::Node24, kwg::Node24>,
-                dense: bool,
                 lean: bool,
             ) -> (Vec<ValuedMove>, i16) {
-                if !dense {
-                    move_generator.set_dense_leaves_most(0);
-                }
                 if lean {
                     move_generator.gen_moves_unfiltered_lean(params);
                 } else {
@@ -18190,12 +18196,18 @@ mod tests {
                 pass_policy: PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
             };
+            let dense_most = if dense { klv::DENSE_LEAVES_MOST } else { 0 };
             let (plays, bag_seen) = match bag_term {
-                None => generate(KurniaMoveGenerator::new(&gc), &params, dense, lean),
-                Some(bag_term) => generate(
-                    KurniaMoveGenerator::with_bag_term(&gc, bag_term),
+                None => generate(
+                    KurniaMoveGenerator::<u128, true, true, false>::new_in_dense(&gc, dense_most),
                     &params,
-                    dense,
+                    lean,
+                ),
+                Some(bag_term) => generate(
+                    KurniaMoveGenerator::<u128, true, true, true>::with_bag_term_in(
+                        &gc, bag_term, dense_most,
+                    ),
+                    &params,
                     lean,
                 ),
             };
