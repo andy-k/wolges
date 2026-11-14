@@ -1115,7 +1115,7 @@ mod tests {
         for &v in &[-5, 5] {
             acc.record(bag, my, opp, 0, v);
         }
-        let table = acc.finalize();
+        let table = acc.finalize().unwrap();
         let got = simmer.compute_win_prob(false, final_spread, Some(&table));
         assert_eq!(got, 1.0, "table value should be used at the sampled key");
 
@@ -1123,7 +1123,7 @@ mod tests {
         for &v in &[-5, 5] {
             acc_other.record(bag + 1, my, opp, 0, v);
         }
-        let table_other = acc_other.finalize();
+        let table_other = acc_other.finalize().unwrap();
         let fell_back = simmer.compute_win_prob(false, final_spread, Some(&table_other));
         assert_eq!(
             fell_back, sigmoid,
