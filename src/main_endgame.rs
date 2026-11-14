@@ -9,6 +9,27 @@ use wolges::{
 mod endgame_watch;
 mod game_args;
 
+static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    Ok(if filename == "-" {
+        USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(filename)?)
+    })
+}
+
+#[inline]
+fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
+    if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+        Box::new(std::io::stderr()) as Box<dyn std::io::Write>
+    } else {
+        Box::new(std::io::stdout())
+    }
+}
+
 // this is reusing most of main_json, but main_json is the most current code.
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -368,8 +389,10 @@ fn run_batch<N: kwg::Node>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     path: &str,
+    out_path: &str,
     solving: &Solving,
 ) -> error::Returns<()> {
+    let mut out = make_writer(out_path)?;
     let empty_klv = klv::Klv::<kwg::Node24>::empty()?;
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
@@ -454,11 +477,10 @@ fn run_batch<N: kwg::Node>(
         )?;
         egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
         reserve_table(&mut egs, solving);
-        // the progress goes to stderr, so stdout keeps one line a position
         if !solving.quiet {
             egs.report_progress(endgame_watch::ticking(move |progress, elapsed| {
                 writeln!(
-                    std::io::stderr(),
+                    boxed_stdout_or_stderr(),
                     "{line_index}: {}",
                     progress.after(elapsed)
                 )?;
@@ -468,25 +490,19 @@ fn run_batch<N: kwg::Node>(
         let solved = egs.solve_within(player, &solving.limits)?;
         let elapsed = t0.elapsed();
         if solved.exact {
-            writeln!(
-                std::io::stdout(),
-                "{line_index}\t{}\t{elapsed:?}",
-                solved.value
-            )?;
+            writeln!(out, "{line_index}\t{}\t{elapsed:?}", solved.value)?;
         } else if let Some(partway) = solved.partway {
             writeln!(
-                std::io::stdout(),
+                out,
                 "{line_index}\t{}\t{elapsed:?}\tcut short after depth {}; a move in depth \
                  {partway} beat its best",
-                solved.value,
-                solved.depth,
+                solved.value, solved.depth,
             )?;
         } else {
             writeln!(
-                std::io::stdout(),
+                out,
                 "{line_index}\t{}\t{elapsed:?}\tcut short after depth {}",
-                solved.value,
-                solved.depth,
+                solved.value, solved.depth,
             )?;
         }
     }
@@ -523,10 +539,19 @@ struct Cli {
         conflicts_with_all = ["fen", "rack"],
         help = "solve each line of FILE (board fen, both racks, player to move, tab-separated, \
                 then the passes and the scoreless turns before it if not --passes and --zeros) \
-                and print its index, its value, the time it took, and the depth it reached when \
-                a limit cut it short; the progress goes to stderr"
+                and write to --out its index, its value, the time it took, and the depth it \
+                reached when a limit cut it short"
     )]
     batch: Option<String>,
+    #[arg(
+        long,
+        value_name = "FILE",
+        default_value = "-",
+        requires = "batch",
+        help = "where --batch writes its results (- for stdout); the progress goes to stdout, \
+                or to stderr when this is -"
+    )]
+    out: String,
     #[arg(
         long,
         value_name = "SECONDS",
@@ -626,7 +651,7 @@ fn main() -> error::Returns<()> {
         (Some(batch_path), Some(kwg_path), None, None) => {
             let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&kwg_path)?, cli.kbwg)?;
             refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-            return run_batch(game_config, kwg, &batch_path, &solving);
+            return run_batch(game_config, kwg, &batch_path, &cli.out, &solving);
         }
         (None, Some(kwg_path), Some(fen), Some(rack)) => {
             return run_cli(
