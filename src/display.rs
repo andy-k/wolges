@@ -581,6 +581,8 @@ mod tests {
                 .collect::<Vec<_>>();
             let fen = BoardFenner::new(&alphabet, &board_layout, &board_tiles).to_string();
             let mut fen_parser = BoardFenParser::new(&alphabet, &board_layout);
+            // a label starting with a digit reads in a fen as a run of empty
+            // squares: only hex, which cannot be used for games, has one
             let digit_label = board_tiles.iter().any(|&tile| {
                 alphabet
                     .of_board(tile)
