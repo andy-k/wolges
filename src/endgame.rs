@@ -7694,11 +7694,16 @@ impl<
             let Some((win, margins)) = self.info_move(info, &moves[i], &splits, floor)? else {
                 continue;
             };
+            // only the moves at the best chance are read below: those the floor
+            // passes are let go as it rises, and none is kept below it
             if floor.is_none_or(|floor| win > floor) {
                 floor = Some(win);
+                valued.clear();
                 if let Some(help) = help {
                     help.floor.store(win.to_bits(), Relaxed);
                 }
+            } else if floor.is_some_and(|floor| win < floor) {
+                continue;
             }
             valued.push((i, win, margins));
         }
