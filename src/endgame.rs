@@ -1754,6 +1754,12 @@ impl BagLimits {
         Ok(())
     }
 
+    // whether the memory limit cut the search short
+    #[inline(always)]
+    fn out_of_memory(&self, exact: bool) -> bool {
+        self.refused.get() || (!exact && self.memory.is_some_and(|memory| memory.passed(0)))
+    }
+
     // whether any limit has passed, on the table the endgames share
     #[inline(always)]
     fn passed(&self, table: &Table) -> bool {
@@ -5155,6 +5161,90 @@ impl<
         Ok(Ok(result?))
     }
 
+    // a move's rows: each split valued again alone, at the depth of the pass
+    // the answer is of, on this solver's table. Under a time or state limit,
+    // or none, they are the rows the search found
+    #[inline]
+    pub fn peg_bag_rows(
+        &mut self,
+        progress: &mut PegBagProgress,
+        play: &movegen::Play,
+        rows: std::ops::Range<usize>,
+        limits: &Limits,
+    ) -> error::Returns<Result<PegBagRows, PegBagRowsMissing>> {
+        let state = &progress.state;
+        let (values, depth) = match state.answer {
+            Some((_, depth)) => (&state.answered, depth),
+            None => (&state.valued, state.depth),
+        };
+        let valued = (state.moves.iter().zip(values.iter()))
+            .any(|(other, value)| other == play && value.is_some());
+        let Some(splits) = progress.splits.get(rows).filter(|_| valued) else {
+            return Ok(Err(PegBagRowsMissing::Unvalued));
+        };
+        let mut limits = BagLimits::new(limits, None, self.work_buffer.clock);
+        limits.estimates = progress.estimates;
+        limits.depth.set(depth);
+        limits.may_stop.set(true);
+        let gc = self.game_config;
+        let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
+            gc,
+            self.kwg,
+            self.arm_tables,
+            movegen::KurniaMoveGenerator::new_in(gc),
+        )?;
+        self.swap_tables(&mut sub)?;
+        std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
+        let position = &progress.position;
+        let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
+        sub.pool_lanes(rack, unseen, limits.memory, 1);
+        let scoreless = self.scoreless;
+        let at = |opp_rack: &[u8], bag: &[u8]| position.after_split(scoreless, opp_rack, bag);
+        let score_diff = position.score_diff.raw() as f64;
+        let found = klv::Klv::<L>::empty().and_then(|klv| {
+            let valued = BagValued::new(1);
+            let mut search = BagSearch {
+                gc,
+                kwg: self.kwg,
+                arm_tables: self.arm_tables,
+                klv: &klv,
+                sub: &mut sub,
+                mg: &mut movegen::KurniaMoveGenerator::new_in(gc),
+                valued: &valued,
+                limits: &limits,
+                model: position.model,
+                exact: true,
+                hand_overs: &[],
+                hand_over: None,
+                ply: 0,
+            };
+            let mut found = PegBagRows::default();
+            for split in splits {
+                let (value, win, draws) =
+                    value_root_split(&mut search, split, &at, play, score_diff)?;
+                let (_, bag, ways) = split;
+                (found.hypotheses).push((
+                    tiles_of(bag),
+                    *ways,
+                    equity::Equity::new(value.round() as i32),
+                ));
+                found.wins.push(win);
+                found.draws.push(draws);
+            }
+            Ok(found)
+        });
+        std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
+        self.swap_tables(&mut sub)?;
+        match found {
+            Ok(found) => Ok(Ok(found)),
+            Err(_) if limits.stopped.get() => Ok(Err(PegBagRowsMissing::Stopped {
+                out_of_memory: limits.refused.get()
+                    || limits.memory.is_some_and(|memory| memory.passed(0)),
+            })),
+            Err(e) => Err(e),
+        }
+    }
+
     // the search with tiles in the bag, its endgames solved by sub. Deepening,
     // the first pass values the placements by score, highest first, then the
     // other moves, and each later pass the moves best first by the pass before;
@@ -5190,23 +5280,7 @@ impl<
             nodes: _,
             lanes: _,
         } = progress;
-        let mover = position.mover;
-        // the position after a split, its mover to move
-        let at = |opp_rack: &[u8], bag: &[u8]| {
-            let mut racks = [Vec::new(), Vec::new()];
-            racks[mover as usize] = position.mover_rack.clone();
-            racks[(mover ^ 1) as usize] = opp_rack.to_vec();
-            InBag {
-                board: position.board.clone(),
-                racks,
-                bag: bag.to_vec(),
-                mover,
-                passes: scoreless[0],
-                zeros: scoreless[1],
-                answering: scoreless[0] > 0, // the game's last turn a pass
-                exchanges: position.exchanges,
-            }
-        };
+        let at = |opp_rack: &[u8], bag: &[u8]| position.after_split(scoreless, opp_rack, bag);
         // a wasm build has no threads
         let threads = if cfg!(target_family = "wasm") {
             1
@@ -5317,7 +5391,7 @@ impl<
                         best,
                         0,
                         false,
-                        limits.refused.get(),
+                        limits.out_of_memory(false),
                     ));
                 }
                 break;
@@ -5358,7 +5432,7 @@ impl<
             Some(best),
             depth,
             exact,
-            limits.refused.get(),
+            limits.out_of_memory(exact),
         ))
     }
 
@@ -5399,7 +5473,7 @@ impl<
         let tasks = rest * num_splits;
         // the tasks' order, what each found, and their hand-overs; the moves'
         // splits not yet valued
-        type Found = Option<(f64, f64, bool, Vec<PegBagDraw>)>;
+        type Found = Option<(f64, f64, bool)>;
         if limits
             .refuse(
                 tasks
@@ -5438,10 +5512,7 @@ impl<
         // move's place in the rest of the order times the splits, plus the
         // split's), with the value, the chance to win, whether it was exact, and
         // the time it took; and whether a limit stopped it
-        type Share = (
-            Vec<(usize, f64, f64, bool, std::time::Duration, Vec<PegBagDraw>)>,
-            bool,
-        );
+        type Share = (Vec<(usize, f64, f64, bool, std::time::Duration)>, bool);
         let work = |search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
                     limits: &BagLimits|
          -> error::Returns<Share> {
@@ -5469,9 +5540,9 @@ impl<
                     handing.fetch_sub(1, Relaxed);
                 }
                 match valued {
-                    Ok((value, win, draws)) => {
+                    Ok((value, win, _)) => {
                         let took = limits.t0.elapsed().saturating_sub(began);
-                        mine.push((task, value, win, search.exact, took, draws));
+                        mine.push((task, value, win, search.exact, took));
                         if unvalued[m].fetch_sub(1, Relaxed) == 1 {
                             moves_valued.fetch_add(1, Relaxed);
                         }
@@ -5625,8 +5696,8 @@ impl<
         for share in shares {
             let (mine, stopped_here) = share?;
             stopped |= stopped_here;
-            for (task, value, win, exact, took, draws) in mine {
-                found[task] = Some((value, win, exact, draws));
+            for (task, value, win, exact, took) in mine {
+                found[task] = Some((value, win, exact));
                 let i = state.order[base + task / num_splits];
                 state.took[i * num_splits + task % num_splits] = took;
             }
@@ -5634,21 +5705,16 @@ impl<
         let (mut taken, mut left) = (Vec::new(), Vec::new());
         for (m, per_split) in found.chunks_mut(num_splits.max(1)).enumerate() {
             let i = state.order[base + m];
-            if per_split.iter().all(Option::is_some)
-                && !stopped
-                && limits.refuse(rows_bytes(splits)).is_err()
-            {
-                // no room for its rows: the pass stops, the move left for the
-                // next step
-                stopped = true;
-            }
-            if per_split.iter().all(Option::is_some) && !limits.refused.get() {
+            if per_split.iter().all(Option::is_some) {
                 let exact = (per_split.iter()).all(|found| found.as_ref().unwrap().2);
-                let per_split = (per_split.iter_mut()).map(|found| {
-                    let (value, win, _, draws) = found.take().unwrap();
-                    (value, win, draws)
-                });
-                let value = peg_bag_value(splits, per_split, exact);
+                let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
+                for ((_, _, ways), found) in splits.iter().zip(per_split.iter()) {
+                    let (value, chance, _) = found.unwrap();
+                    win += *ways as f64 * chance;
+                    marg += *ways as f64 * value;
+                    total += ways;
+                }
+                let value = peg_bag_value(win, marg, total, exact);
                 state.pass_exact &= value.exact;
                 state.valued[i] = Some(value);
                 state.reached.push(i);
@@ -6305,6 +6371,27 @@ pub enum PegModel {
     RandomDraws,
 }
 
+impl PegBagPosition {
+    // the position after a split (the other's rack and the bag), after these
+    // scoreless turns, its mover to move
+    fn after_split(&self, scoreless: [u8; 2], opp_rack: &[u8], bag: &[u8]) -> InBag {
+        let mover = self.mover;
+        let mut racks = [Vec::new(), Vec::new()];
+        racks[mover as usize] = self.mover_rack.clone();
+        racks[(mover ^ 1) as usize] = opp_rack.to_vec();
+        InBag {
+            board: self.board.clone(),
+            racks,
+            bag: bag.to_vec(),
+            mover,
+            passes: scoreless[0],
+            zeros: scoreless[1],
+            answering: scoreless[0] > 0, // the game's last turn a pass
+            exchanges: self.exchanges,
+        }
+    }
+}
+
 // a search with tiles in the bag that goes on across solves (as one with a tile
 // in the bag does, PegProgress): its position, each split of the tiles the
 // mover cannot see (the opponent's rack, the bag's counts, the deals giving
@@ -6428,6 +6515,15 @@ impl PegBagProgress {
         (self.endgames, self.nodes)
     }
 
+    // the splits each move is valued over, and the deals giving them
+    #[inline(always)]
+    pub fn splits(&self) -> (usize, u64) {
+        (
+            self.splits.len(),
+            self.splits.iter().map(|split| split.2).sum(),
+        )
+    }
+
     // the pass under way: the moves it has valued, of all it values; none
     // before the search began
     #[inline(always)]
@@ -6453,12 +6549,15 @@ fn value_root_move<
     play: &movegen::Play,
     score_diff: f64,
 ) -> error::Returns<PegBagValue> {
-    search.limits.refuse(rows_bytes(splits))?;
-    let mut per_split = Vec::with_capacity(splits.len());
+    let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
     for split in splits {
-        per_split.push(value_root_split(search, split, at, play, score_diff)?);
+        let (value, chance, _) = value_root_split(search, split, at, play, score_diff)?;
+        let ways = split.2;
+        win += ways as f64 * chance;
+        marg += ways as f64 * value;
+        total += ways;
     }
-    Ok(peg_bag_value(splits, per_split.into_iter(), search.exact))
+    Ok(peg_bag_value(win, marg, total, search.exact))
 }
 
 // a move's value with tiles in the bag in one split, and its chance to win
@@ -6502,19 +6601,6 @@ fn value_root_split<
     Ok((value, win, draws))
 }
 
-// the bytes valuing a move over these splits takes: each split's value as
-// found, and its row (the bag's tiles, the deals, the margin, the chance to
-// win, the draws' list)
-fn rows_bytes(splits: &[(Vec<u8>, Vec<u8>, u64)]) -> usize {
-    let row = std::mem::size_of::<(f64, f64, Vec<PegBagDraw>)>()
-        + std::mem::size_of::<(Vec<u8>, u64, equity::Equity)>()
-        + std::mem::size_of::<f64>()
-        + std::mem::size_of::<Vec<PegBagDraw>>();
-    (splits.iter())
-        .map(|(_, bag, _)| row + bag.iter().map(|&count| count as usize).sum::<usize>())
-        .sum()
-}
-
 // a tally's tiles, each as many times as it counts
 fn tiles_of(tally: &[u8]) -> Vec<u8> {
     (0u8..)
@@ -6523,38 +6609,14 @@ fn tiles_of(tally: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-// a move's value from its value and chance to win in each split (in the splits'
-// order), weighed by the deals that give them, and whether every endgame
-// valuing it was exact
-fn peg_bag_value(
-    splits: &[(Vec<u8>, Vec<u8>, u64)],
-    per_split: impl Iterator<Item = (f64, f64, Vec<PegBagDraw>)>,
-    exact: bool,
-) -> PegBagValue {
-    let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
-    let mut hyps = Vec::with_capacity(splits.len());
-    let mut wins = Vec::with_capacity(splits.len());
-    let mut draws = Vec::with_capacity(splits.len());
-    for ((_, bag, ways), (value, chance, drawn)) in splits.iter().zip(per_split) {
-        wins.push(chance);
-        draws.push(drawn);
-        win += *ways as f64 * chance;
-        marg += *ways as f64 * value;
-        total += ways;
-        let bag_tiles = (0u8..)
-            .zip(bag.iter())
-            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
-            .collect();
-        hyps.push((bag_tiles, *ways, equity::Equity::new(value.round() as i32)));
-    }
+// a move's value, summed over its splits weighed by the deals giving them, and
+// whether every endgame valuing it was exact
+fn peg_bag_value(win: f64, marg: f64, total: u64, exact: bool) -> PegBagValue {
     // a part given no split (PegBagProgress::part) has no deals to weigh
     let total = total.max(1);
     PegBagValue {
         win: win / total as f64,
         marg: marg / total as f64,
-        hyps: hyps.into(),
-        wins: wins.into(),
-        draws: draws.into(),
         exact,
     }
 }
@@ -6594,26 +6656,37 @@ struct PegBagState {
 }
 
 // a move's value with tiles in the bag: the share of deals it wins (a tie
-// counted half), its mean margin, each split's (the bag's tiles, the deals
-// giving it, the margin there), and whether every endgame valuing it was
+// counted half), its mean margin, and whether every endgame valuing it was
 // searched to its end
 #[derive(Clone)]
 struct PegBagValue {
     win: f64,
     marg: f64,
-    hyps: PegBagRows<(Vec<u8>, u64, equity::Equity)>,
-    wins: PegBagRows<f64>, // each split's chance to win, as hyps lists them
-    draws: PegBagRows<Vec<PegBagDraw>>, // each split's draws at the root, as hyps lists them
     exact: bool,
 }
 
-// a move's rows, one a split, held once: the search's values share them with
-// every result given from them
-pub type PegBagRows<T> = std::sync::Arc<Vec<T>>;
+// a move's rows with tiles in the bag, for some of its splits: each split's
+// (the bag's tiles, the deals giving it, the margin there), its chance to win
+// there (wins) and, where the model draws at the root (random draws), each draw
+// the move makes there (draws), all in the splits' order
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PegBagRows {
+    pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
+    pub wins: Vec<f64>,
+    pub draws: Vec<Vec<PegBagDraw>>,
+}
+
+// why a move has no rows: the answer has no value of it, or a limit stopped
+// their search (out of memory when the memory limit did)
+#[derive(Debug, PartialEq)]
+pub enum PegBagRowsMissing {
+    Unvalued,
+    Stopped { out_of_memory: bool },
+}
 
 // a draw a move makes at the root with tiles left in the bag: the tiles it
 // draws, the deals that give them, the margin then, and the chance to win
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PegBagDraw {
     pub tiles: Vec<u8>,
     pub ways: u64,
@@ -6622,35 +6695,25 @@ pub struct PegBagDraw {
 }
 
 // a move of a search with tiles in the bag and its value: its share of the
-// deals won (a tie counted half), its mean margin, each split's (the bag's
-// tiles, the deals giving it, the margin there) with its chance to win there
-// (wins) and, where the model draws at the root (random draws), each draw the
-// move makes there (draws), both in the same order; and whether every endgame
-// valuing it was searched to its end
+// deals won (a tie counted half), its mean margin, and whether every endgame
+// valuing it was searched to its end; its rows are EndgameSolver::peg_bag_rows's
 #[derive(Clone)]
 pub struct PegBagMove {
     pub play: movegen::Play,
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
-    pub hypotheses: PegBagRows<(Vec<u8>, u64, equity::Equity)>,
-    pub wins: PegBagRows<f64>,
-    pub draws: PegBagRows<Vec<PegBagDraw>>,
     pub exact: bool,
 }
 
-// a search's answer with tiles in the bag: the best move's share of wins, mean
-// margin, and margin in each split with its chance to win there (wins, in the
-// same order); the move, none if a limit stopped the search before it valued
-// one (the shares and margins then 0 and empty); every move the answering pass
-// valued, best first, each with its own; whether it is exact; and the pass it
-// is of (0 none finished, i8::MAX one to the end)
+// a search's answer with tiles in the bag: the best move's share of wins and
+// mean margin; the move, none if a limit stopped the search before it valued
+// one (the share and margin then 0); every move the answering pass valued,
+// best first, each with its own; whether it is exact; and the pass it is of (0
+// none finished, i8::MAX one to the end)
 #[derive(Clone)]
 pub struct PegBagResult {
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
-    pub hypotheses: PegBagRows<(Vec<u8>, u64, equity::Equity)>,
-    pub wins: PegBagRows<f64>,
-    pub draws: PegBagRows<Vec<PegBagDraw>>, // as PegBagMove's
     pub best_move: Option<movegen::Play>,
     pub moves: Vec<PegBagMove>,
     pub exact: bool,
@@ -6697,9 +6760,6 @@ fn peg_bag_result(
         expected_margin: value.map_or(equity::Equity::ZERO, |value| {
             equity::Equity::new(value.marg.round() as i32)
         }),
-        hypotheses: value.map_or_else(Default::default, |value| value.hyps.clone()),
-        wins: value.map_or_else(Default::default, |value| value.wins.clone()),
-        draws: value.map_or_else(Default::default, |value| value.draws.clone()),
         best_move: best.map(|best| moves[best].clone()),
         moves: (listed.into_iter())
             .map(|i| {
@@ -6708,9 +6768,6 @@ fn peg_bag_result(
                     play: moves[i].clone(),
                     win_pct: value.win,
                     expected_margin: equity::Equity::new(value.marg.round() as i32),
-                    hypotheses: value.hyps.clone(),
-                    wins: value.wins.clone(),
-                    draws: value.draws.clone(),
                     exact: value.exact,
                 }
             })
@@ -14575,6 +14632,34 @@ mod tests {
         }
     }
 
+    fn moves_rows(
+        egs: &mut EndgameSolver<'_, kwg::Node24, kwg::Node24>,
+        progress: &mut super::PegBagProgress,
+        result: &super::PegBagResult,
+        limits: &super::Limits,
+    ) -> Vec<super::PegBagRows> {
+        let (splits, _) = progress.splits();
+        (result.moves.iter())
+            .map(|valued| {
+                (egs.peg_bag_rows(progress, &valued.play, 0..splits, limits))
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    fn solve_peg_rows(
+        egs: &mut EndgameSolver<'_, kwg::Node24, kwg::Node24>,
+        position: super::PegBagPosition,
+    ) -> (super::PegBagResult, Vec<super::PegBagRows>) {
+        let mut progress = super::PegBagProgress::new(position).unwrap();
+        let result = (egs.resume_peg(&mut progress, &super::Limits::NONE))
+            .unwrap()
+            .unwrap();
+        let rows = moves_rows(egs, &mut progress, &result, &super::Limits::NONE);
+        (result, rows)
+    }
+
     // cells for a bag search's moves and splits that cannot be held (a count
     // past counting, or past what can be allocated) are an error, not a failed
     // allocation; those that can, made
@@ -14614,11 +14699,13 @@ mod tests {
                 progress.part(k, n).unwrap();
                 assert_eq!(progress.part_of(), (k, n));
             }
-            egs.resume_peg(&mut progress, &super::Limits::NONE)
+            let result = (egs.resume_peg(&mut progress, &super::Limits::NONE))
                 .unwrap()
-                .unwrap()
+                .unwrap();
+            let rows = moves_rows(&mut egs, &mut progress, &result, &super::Limits::NONE);
+            (result, rows)
         };
-        let whole = solve(None);
+        let (whole, whole_rows) = solve(None);
         assert!(whole.exact);
         let key = |play: &movegen::Play| match play {
             movegen::Play::Place {
@@ -14632,25 +14719,25 @@ mod tests {
                 (!tiles.is_empty()).then(|| (false, -1, -1, tiles[..].to_vec(), 0))
             }
         };
-        let splits = whole.moves[0].hypotheses.len();
+        let splits = whole_rows[0].hypotheses.len();
         assert!(splits > 1, "{splits} splits");
         for n in [2, 3, splits + 1] {
             let mut rows = fash::MyHashMap::default();
             for k in 0..n {
-                let part = solve(Some((k, n)));
+                let (part, part_rows) = solve(Some((k, n)));
                 assert!(part.exact, "part {k} of {n}");
-                for valued in &part.moves {
+                for (valued, own) in part.moves.iter().zip(&part_rows) {
                     let at = rows.entry(key(&valued.play)).or_insert_with(Vec::new);
-                    for (row, &win) in valued.hypotheses.iter().zip(valued.wins.iter()) {
+                    for (row, &win) in own.hypotheses.iter().zip(own.wins.iter()) {
                         at.push((row.clone(), win));
                     }
                 }
             }
             assert_eq!(rows.len(), whole.moves.len(), "{n} parts");
-            for valued in &whole.moves {
+            for (valued, own) in whole.moves.iter().zip(&whole_rows) {
                 let mut merged = rows.remove(&key(&valued.play)).unwrap();
-                let mut want = (valued.hypotheses.iter().cloned())
-                    .zip(valued.wins.iter().copied())
+                let mut want = (own.hypotheses.iter().cloned())
+                    .zip(own.wins.iter().copied())
                     .collect::<Vec<_>>();
                 merged.sort_by(|a, b| a.0.cmp(&b.0));
                 want.sort_by(|a, b| a.0.cmp(&b.0));
@@ -14883,19 +14970,16 @@ mod tests {
                                 )
                                 .unwrap()
                                 .unwrap();
-                            let any = egs
-                                .solve_peg(
-                                    bag_position(&board, &mover_rack, &unseen_tally, 1, score_diff),
-                                    &super::Limits::NONE,
-                                )
-                                .unwrap()
-                                .unwrap();
+                            let (any, any_rows) = solve_peg_rows(
+                                &mut egs,
+                                bag_position(&board, &mover_rack, &unseen_tally, 1, score_diff),
+                            );
                             assert!(one.exact && any.exact, "{case:?}");
                             let mut hyps = (one.hypotheses.iter())
                                 .map(|&(tile, ways, value)| (vec![tile], ways as u64, value))
                                 .collect::<Vec<_>>();
                             hyps.sort_unstable();
-                            let mut any_hyps = any.hypotheses.to_vec();
+                            let mut any_hyps = any_rows[0].hypotheses.clone();
                             any_hyps.sort_unstable();
                             // the margins in each split are those of the move each
                             // picked; the moves agree, so the splits do
@@ -15219,6 +15303,8 @@ mod tests {
                         let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
                         let full = egs.resume_peg(&mut progress, &super::Limits::NONE);
                         let full = full.unwrap().unwrap();
+                        let full_rows =
+                            moves_rows(&mut egs, &mut progress, &full, &super::Limits::NONE);
                         let kept = |progress: &super::PegBagProgress| {
                             (progress.state.searched.shards.iter())
                                 .map(|shard| {
@@ -15242,7 +15328,12 @@ mod tests {
                                         && held.best_move == full.best_move
                                         && held.win_pct == full.win_pct
                                         && held.expected_margin == full.expected_margin
-                                        && held.hypotheses == full.hypotheses,
+                                        && moves_rows(
+                                            &mut egs,
+                                            &mut progress,
+                                            &held,
+                                            &super::Limits::NONE
+                                        )[0] == full_rows[0],
                                     "{unseen:?} {x} {y} {threads}"
                                 );
                             }
@@ -15258,7 +15349,9 @@ mod tests {
                                 super::PegBagProgress::new(position.clone()).unwrap();
                             progress.set_threads(threads);
                             let stopped = egs.resume_peg(&mut progress, &past).unwrap().unwrap();
-                            assert!(stopped.out_of_memory && !stopped.exact);
+                            // holding no rows, a search can end exact past the
+                            // limit; one it cuts short says so
+                            assert!(stopped.out_of_memory != stopped.exact);
                             for shard in progress.state.searched.shards.iter() {
                                 let shard = shard.lock().unwrap();
                                 assert!(shard.nodes.entries.len() == 4);
@@ -15539,19 +15632,14 @@ mod tests {
             for &tile in unseen {
                 unseen_tally[tile as usize] += 1;
             }
-            let result = egs
-                .solve_peg(
-                    bag_position(&board, &[2], &unseen_tally, 2, e(0)),
-                    &super::Limits::NONE,
-                )
-                .unwrap()
-                .unwrap();
+            let (result, rows) =
+                solve_peg_rows(&mut egs, bag_position(&board, &[2], &unseen_tally, 2, e(0)));
             assert!(result.exact);
             assert!(
                 matches!(&result.best_move, Some(movegen::Play::Exchange { tiles }) if tiles.is_empty())
             );
             assert_eq!(result.moves.len(), 1);
-            let mut got = result.hypotheses.to_vec();
+            let mut got = rows[0].hypotheses.clone();
             got.sort_unstable();
             let mut want = hyps.clone();
             want.sort_unstable();
@@ -15607,22 +15695,23 @@ mod tests {
             let leads = [e(2000), e(0)];
             for mover_rack in &racks[bag_size - 2] {
                 for &score_diff in &leads[..4 - bag_size] {
-                    let result = egs
-                        .solve_peg(
-                            bag_position(&board, mover_rack, &unseen_tally, bag_size, score_diff),
-                            &super::Limits::NONE,
-                        )
-                        .unwrap()
-                        .unwrap();
+                    let (result, rows) = solve_peg_rows(
+                        &mut egs,
+                        bag_position(&board, mover_rack, &unseen_tally, bag_size, score_diff),
+                    );
                     assert!(result.exact);
                     let lead = score_diff.raw() as f64;
-                    for super::PegBagMove {
-                        play,
-                        win_pct: win,
-                        expected_margin: margin,
-                        draws: own_draws,
-                        ..
-                    } in &result.moves
+                    for (
+                        super::PegBagMove {
+                            play,
+                            win_pct: win,
+                            expected_margin: margin,
+                            ..
+                        },
+                        super::PegBagRows {
+                            draws: own_draws, ..
+                        },
+                    ) in result.moves.iter().zip(&rows)
                     {
                         let movegen::Play::Place {
                             down,
@@ -16063,10 +16152,7 @@ mod tests {
                     let lead = e(1000);
                     let mut position = bag_position(&board, &[x, y], &unseen_tally, bag_size, lead);
                     position.model = super::PegModel::InfoSets;
-                    let result = egs
-                        .solve_peg(position.clone(), &super::Limits::NONE)
-                        .unwrap()
-                        .unwrap();
+                    let (result, rows) = solve_peg_rows(&mut egs, position.clone());
                     assert!(result.exact);
                     let progress = super::PegBagProgress::new(position.clone()).unwrap();
                     let mut reference = BagReference {
@@ -16078,15 +16164,19 @@ mod tests {
                         own: &mut own,
                         known: fash::MyHashMap::default(),
                     };
-                    for super::PegBagMove {
-                        play,
-                        win_pct: win,
-                        expected_margin: margin,
-                        hypotheses,
-                        wins,
-                        draws,
-                        ..
-                    } in &result.moves
+                    for (
+                        super::PegBagMove {
+                            play,
+                            win_pct: win,
+                            expected_margin: margin,
+                            ..
+                        },
+                        super::PegBagRows {
+                            hypotheses,
+                            wins,
+                            draws,
+                        },
+                    ) in result.moves.iter().zip(&rows)
                     {
                         // each split's own row and chance, as the reference
                         // values that split; no draws at the root in this
@@ -16179,20 +16269,15 @@ mod tests {
         for tile in [1, 8, 20] {
             unseen_tally[tile] += 1;
         }
-        let result = egs
-            .solve_peg(
-                bag_position(&board, &[2], &unseen_tally, 2, e(0)),
-                &super::Limits::NONE,
-            )
-            .unwrap()
-            .unwrap();
+        let (result, rows) =
+            solve_peg_rows(&mut egs, bag_position(&board, &[2], &unseen_tally, 2, e(0)));
         assert!(result.exact);
         assert!(
             matches!(&result.best_move, Some(movegen::Play::Exchange { tiles }) if tiles[..] == [2])
         );
         assert!((result.win_pct - 0.5).abs() < 1e-9);
         assert_eq!(result.expected_margin, e(0));
-        let mut hyps = result.hypotheses.to_vec();
+        let mut hyps = rows[0].hypotheses.clone();
         hyps.sort_unstable();
         assert_eq!(
             hyps,
@@ -16244,11 +16329,12 @@ mod tests {
             memory: None,
         };
         let tiles = [1u8, 2, 8, 20]; // A B H T
-        let same = |a: &super::PegBagResult, b: &super::PegBagResult| {
-            a.best_move == b.best_move
-                && a.win_pct == b.win_pct
-                && a.expected_margin == b.expected_margin
-                && a.hypotheses == b.hypotheses
+        type Answer = (super::PegBagResult, Vec<super::PegBagRows>);
+        let same = |a: &Answer, b: &Answer| {
+            a.0.best_move == b.0.best_move
+                && a.0.win_pct == b.0.win_pct
+                && a.0.expected_margin == b.0.expected_margin
+                && a.1.first() == b.1.first()
         };
         let (mut cut, mut checked) = (0, 0);
         for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
@@ -16259,16 +16345,14 @@ mod tests {
             for &x in &tiles {
                 for &y in &tiles {
                     let position = bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
-                    let full = egs
-                        .solve_peg(position.clone(), &super::Limits::NONE)
-                        .unwrap()
-                        .unwrap();
-                    assert!(full.exact && full.depth == super::COMPLETE);
-                    let deep = egs
-                        .solve_peg(position.clone(), &deepening)
-                        .unwrap()
-                        .unwrap();
-                    assert!(deep.exact && same(&deep, &full), "{unseen:?} {x} {y}");
+                    let full = solve_peg_rows(&mut egs, position.clone());
+                    assert!(full.0.exact && full.0.depth == super::COMPLETE);
+                    let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                    let deep = egs.resume_peg(&mut progress, &deepening);
+                    let deep = deep.unwrap().unwrap();
+                    let deep_rows = moves_rows(&mut egs, &mut progress, &deep, &deepening);
+                    let deep = (deep, deep_rows);
+                    assert!(deep.0.exact && same(&deep, &full), "{unseen:?} {x} {y}");
                     // on one thread and on three, each with its own share of
                     // the moves: the same answers
                     for threads in [1, 3] {
@@ -16278,14 +16362,24 @@ mod tests {
                             .resume_peg(&mut progress, &super::Limits::NONE)
                             .unwrap()
                             .unwrap();
-                        assert!(on_threads.exact && same(&on_threads, &full));
-                        assert!(on_threads.moves.len() == full.moves.len());
+                        let rows =
+                            moves_rows(&mut egs, &mut progress, &on_threads, &super::Limits::NONE);
+                        let on_threads = (on_threads, rows);
+                        assert!(on_threads.0.exact && same(&on_threads, &full));
+                        assert!(on_threads.0.moves.len() == full.0.moves.len());
                         for limits in [&one_state, &no_time] {
                             let mut progress =
                                 super::PegBagProgress::new(position.clone()).unwrap();
                             progress.set_threads(threads);
                             let stopped = egs.resume_peg(&mut progress, limits).unwrap().unwrap();
                             if stopped.exact {
+                                let rows = moves_rows(
+                                    &mut egs,
+                                    &mut progress,
+                                    &stopped,
+                                    &super::Limits::NONE,
+                                );
+                                let stopped = (stopped, rows);
                                 assert!(same(&stopped, &full), "{unseen:?} {x} {y} {threads}");
                             } else {
                                 cut += 1;
@@ -16294,8 +16388,11 @@ mod tests {
                                 .resume_peg(&mut progress, &super::Limits::NONE)
                                 .unwrap()
                                 .unwrap();
+                            let rows =
+                                moves_rows(&mut egs, &mut progress, &resumed, &super::Limits::NONE);
+                            let resumed = (resumed, rows);
                             assert!(
-                                resumed.exact && same(&resumed, &full),
+                                resumed.0.exact && same(&resumed, &full),
                                 "{unseen:?} {x} {y} {threads}"
                             );
                         }
@@ -16311,36 +16408,22 @@ mod tests {
     // whether two answers of a bag search are alike in everything but their
     // depth: the move, the values, the splits and their draws, and every move
     // listed with its own
-    fn bag_answers_alike(a: &super::PegBagResult, b: &super::PegBagResult) -> bool {
-        let draws_alike = |x: &[Vec<super::PegBagDraw>], y: &[Vec<super::PegBagDraw>]| {
-            x.len() == y.len()
-                && x.iter().zip(y).all(|(x, y)| {
-                    x.len() == y.len()
-                        && x.iter().zip(y).all(|(x, y)| {
-                            x.tiles == y.tiles
-                                && x.ways == y.ways
-                                && x.margin == y.margin
-                                && x.win == y.win
-                        })
-                })
-        };
+    fn bag_answers_alike(
+        (a, a_rows): (&super::PegBagResult, &[super::PegBagRows]),
+        (b, b_rows): (&super::PegBagResult, &[super::PegBagRows]),
+    ) -> bool {
         a.best_move == b.best_move
             && a.win_pct == b.win_pct
             && a.expected_margin == b.expected_margin
-            && a.hypotheses == b.hypotheses
-            && a.wins == b.wins
-            && draws_alike(&a.draws, &b.draws)
             && a.exact == b.exact
             && a.moves.len() == b.moves.len()
             && a.moves.iter().zip(&b.moves).all(|(x, y)| {
                 x.play == y.play
                     && x.win_pct == y.win_pct
                     && x.expected_margin == y.expected_margin
-                    && x.hypotheses == y.hypotheses
-                    && x.wins == y.wins
-                    && draws_alike(&x.draws, &y.draws)
                     && x.exact == y.exact
             })
+            && a_rows == b_rows
     }
 
     #[test]
@@ -16370,10 +16453,7 @@ mod tests {
                         let mut position =
                             bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
                         position.model = model;
-                        let full = egs
-                            .solve_peg(position.clone(), &super::Limits::NONE)
-                            .unwrap()
-                            .unwrap();
+                        let (full, full_rows) = solve_peg_rows(&mut egs, position.clone());
                         assert!(full.exact && full.depth == super::COMPLETE);
                         for threads in [1, 3] {
                             let mut progress =
@@ -16384,8 +16464,14 @@ mod tests {
                                 .resume_peg(&mut progress, &super::Limits::NONE)
                                 .unwrap()
                                 .unwrap();
+                            let rows = moves_rows(
+                                &mut egs,
+                                &mut progress,
+                                &estimated,
+                                &super::Limits::NONE,
+                            );
                             assert!(
-                                bag_answers_alike(&estimated, &full),
+                                bag_answers_alike((&estimated, &rows), (&full, &full_rows)),
                                 "{unseen:?} {x} {y} {threads}"
                             );
                             assert!(estimated.depth != super::COMPLETE);
