@@ -218,11 +218,15 @@ impl Table {
     // a table with room for this many buckets from the start (at least one),
     // growing on from there as new's does
     #[inline(always)]
-    fn with_buckets(buckets: usize) -> Self {
-        Self {
-            buckets: vec![[0; 8]; buckets.max(1)],
+    fn with_buckets(buckets: usize) -> Option<Self> {
+        let buckets = buckets.max(1);
+        let mut table = Vec::new();
+        table.try_reserve_exact(buckets).ok()?;
+        table.resize(buckets, [0; 8]);
+        Some(Self {
+            buckets: table,
             ..Self::new()
-        }
+        })
     }
 
     // the positions the table has room for
@@ -3254,7 +3258,10 @@ impl<
         if table.held != 0 || table.growing() || table.room() >= 4 * buckets {
             return false;
         }
-        self.work_buffer.table = Table::with_buckets(buckets);
+        let Some(table) = Table::with_buckets(buckets) else {
+            return false;
+        };
+        self.work_buffer.table = table;
         true
     }
 
@@ -11470,6 +11477,22 @@ mod tests {
             !reserved.reserve_table(bucket << 12),
             "a table holding positions stays"
         );
+    }
+
+    #[test]
+    fn a_table_too_big_to_hold_is_not_reserved() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        for bytes in [usize::MAX, isize::MAX as usize] {
+            assert!(!egs.reserve_table(bytes), "{bytes}");
+            assert_eq!(egs.work_buffer.table.room(), 4);
+        }
+        let bucket = std::mem::size_of::<[u64; 8]>();
+        assert!(egs.reserve_table(bucket << 10));
+        assert_eq!(egs.work_buffer.table.room(), 4 << 10);
     }
 
     #[test]
