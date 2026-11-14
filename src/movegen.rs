@@ -5476,6 +5476,66 @@ struct JumbledMultisets {
     by_size: Vec<Vec<u32>>,
     kept: Vec<([u8; MAX_ALPHABET_LEN], u32)>,
     current: Vec<u8>,
+    walk: u8,
+    splits: JumbledSplits,
+}
+
+const JUMBLED_EVERY_ARRANGEMENT: u8 = 0;
+const JUMBLED_ONCE_PER_SCORE: u8 = 1;
+const JUMBLED_ONCE_PER_RACK_TILES: u8 = 2;
+
+mod jumbled_walk {
+    pub trait Sealed {}
+}
+
+pub trait JumbledWalk: jumbled_walk::Sealed {
+    const WALK: u8;
+}
+
+pub struct EveryArrangement;
+
+pub struct OncePerScore;
+
+impl jumbled_walk::Sealed for EveryArrangement {}
+
+impl jumbled_walk::Sealed for OncePerScore {}
+
+impl JumbledWalk for EveryArrangement {
+    const WALK: u8 = JUMBLED_EVERY_ARRANGEMENT;
+}
+
+impl JumbledWalk for OncePerScore {
+    const WALK: u8 = JUMBLED_ONCE_PER_SCORE;
+}
+
+#[derive(Clone, Default)]
+struct JumbledSplits {
+    squares: Vec<i8>,
+    square_classes: Vec<u8>,
+    class_weights: Vec<i32>,
+    class_penalties: Vec<i32>,
+    class_sizes: Vec<u8>,
+    vowels_matter: bool,
+    letters: Vec<u8>,
+    letter_counts: Vec<u8>,
+    values: Vec<(i32, bool)>,
+    real_class: Vec<u8>,
+    blank_class: Vec<u8>,
+    stride: usize,
+    members: Vec<(i32, i32, i32, u32)>,
+    member_data: Vec<u8>,
+    order: Vec<u32>,
+    group: Vec<u32>,
+    blanks: Vec<u8>,
+    value_left: Vec<u8>,
+    class_left: Vec<u8>,
+    matrix: Vec<u8>,
+    placed: Vec<u8>,
+    blanks_used: Vec<u8>,
+    reals_used: Vec<u8>,
+    sorted_weights: Vec<i32>,
+    narrowed: Vec<u8>,
+    tile_values: Vec<i32>,
 }
 
 impl JumbledMultisets {
@@ -5486,6 +5546,8 @@ impl JumbledMultisets {
             by_size: Vec::new(),
             kept: Vec::new(),
             current: Vec::new(),
+            walk: JUMBLED_EVERY_ARRANGEMENT,
+            splits: JumbledSplits::default(),
         }
     }
 
@@ -5527,6 +5589,43 @@ fn gen_jumbled_place_moves<
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
+    opening: Option<bool>,
+) {
+    match params.jumbled.walk {
+        JUMBLED_EVERY_ARRANGEMENT => {
+            gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_EVERY_ARRANGEMENT, _, _, _>(
+                params,
+                single_tile_plays,
+                opening,
+            )
+        }
+        JUMBLED_ONCE_PER_SCORE => {
+            gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_ONCE_PER_SCORE, _, _, _>(
+                params,
+                single_tile_plays,
+                opening,
+            )
+        }
+        _ => gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_ONCE_PER_RACK_TILES, _, _, _>(
+            params,
+            single_tile_plays,
+            opening,
+        ),
+    }
+}
+
+#[inline]
+fn gen_jumbled_place_moves_walk<
+    'a,
+    const BAG_TERM: bool,
+    const WALK: u8,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
+    single_tile_plays: bool,
+    opening: Option<bool>,
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
@@ -5640,6 +5739,387 @@ fn gen_jumbled_place_moves<
             score,
             leave_value,
         );
+    }
+
+    fn walk_splits<
+        const BAG_TERM: bool,
+        const WALK: u8,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        at: usize,
+        fixed: i32,
+    ) {
+        let mut s = std::mem::take(&mut env.params.jumbled.splits);
+        let num_played = env.num_played as usize;
+        let alphabet = env.alphabet;
+        s.letters.clear();
+        s.letter_counts.clear();
+        for offset in 0..num_played {
+            let tile = env.params.jumbled.multisets[at + offset];
+            if s.letters.last() == Some(&tile) {
+                *s.letter_counts.last_mut().unwrap() += 1;
+            } else {
+                s.letters.push(tile);
+                s.letter_counts.push(1);
+            }
+        }
+        let num_letters = s.letters.len();
+        let by_tiles = WALK == JUMBLED_ONCE_PER_RACK_TILES;
+        s.values.clear();
+        s.real_class.clear();
+        s.blank_class.clear();
+        for i in 0..num_letters {
+            let letter = s.letters[i];
+            let vowel = s.vowels_matter && alphabet.is_vowel(letter);
+            for (value, class) in [
+                (
+                    alphabet.score(letter) as i32 * equity::SCALE,
+                    &mut s.real_class,
+                ),
+                (alphabet.scaled_score(0), &mut s.blank_class),
+            ] {
+                let k = match s.values.iter().position(|&v| v == (value, vowel)) {
+                    Some(k) => k,
+                    None => {
+                        s.values.push((value, vowel));
+                        s.values.len() - 1
+                    }
+                };
+                class.push(k as u8);
+            }
+        }
+        let num_values = s.values.len();
+        let num_classes = s.class_sizes.len();
+        let cells = num_classes * num_values;
+        s.stride = num_letters + cells;
+        s.members.clear();
+        s.member_data.clear();
+        s.blanks.clear();
+        s.blanks.resize(num_letters, 0);
+        designate_blanks::<BAG_TERM, _, _, _>(env, &mut s, 0, env.params.rack_tally[0], fixed);
+        s.order.clear();
+        s.order.extend(0..s.members.len() as u32);
+        let members = &s.members;
+        let member_data = &s.member_data;
+        let blanks_of = |m: &(i32, i32, i32, u32)| {
+            if by_tiles {
+                &member_data[m.3 as usize..m.3 as usize + num_letters]
+            } else {
+                &[]
+            }
+        };
+        s.order.sort_unstable_by(|&a, &b| {
+            let (a, b) = (&members[a as usize], &members[b as usize]);
+            (b.1, b.0)
+                .cmp(&(a.1, a.0))
+                .then_with(|| blanks_of(a).cmp(blanks_of(b)))
+        });
+        s.placed.clear();
+        s.placed.resize(cells, 0);
+        s.blanks_used.clear();
+        s.blanks_used.resize(num_letters, 0);
+        s.reals_used.clear();
+        s.reals_used.resize(num_letters, 0);
+        let mut first = 0;
+        while first < s.order.len() {
+            let head = s.members[s.order[first] as usize];
+            let (score, equity, leave_value, _) = head;
+            let mut last = first + 1;
+            while last < s.order.len() && {
+                let m = &s.members[s.order[last] as usize];
+                (m.0, m.1) == (score, equity)
+                    && (!by_tiles
+                        || s.member_data[m.3 as usize..m.3 as usize + num_letters]
+                            == s.member_data[head.3 as usize..head.3 as usize + num_letters])
+            } {
+                last += 1;
+            }
+            s.group.clear();
+            for i in first..last {
+                s.group.push(s.members[s.order[i] as usize].3);
+            }
+            first = last;
+            if !env.params.is_census && score + leave_value < env.params.threshold {
+                continue;
+            }
+            if place_smallest(env, &mut s, 0, 0) {
+                env.params.threshold = (env.params.callback)(
+                    env.idx_left,
+                    &env.params.word_strip_buffer[env.idx_left as usize..env.idx_right as usize],
+                    score,
+                    leave_value,
+                );
+            }
+        }
+        env.params.jumbled.splits = s;
+    }
+
+    fn designate_blanks<
+        const BAG_TERM: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        s: &mut JumbledSplits,
+        i: usize,
+        blanks_left: u8,
+        fixed: i32,
+    ) {
+        if i == s.letters.len() {
+            let mut leave_idx = env.params.multi_leaves.pass_leave_idx();
+            for j in 0..s.letters.len() {
+                let letter = s.letters[j] as usize;
+                let real = s.letter_counts[j] - s.blanks[j];
+                let blanks = s.blanks[j];
+                env.params.rack_tally[letter] -= real;
+                env.params.rack_tally[0] -= blanks;
+                for _ in 0..real {
+                    leave_idx =
+                        leave_idx.wrapping_sub(env.params.multi_leaves.place_value(letter as u8));
+                }
+                for _ in 0..blanks {
+                    leave_idx = leave_idx.wrapping_sub(env.params.multi_leaves.place_value(0));
+                }
+            }
+            let leave_value = leave_value_of::<BAG_TERM, _>(
+                env.params.multi_leaves,
+                env.params.board_snapshot.klv,
+                env.params.rack_tally,
+                leave_idx,
+                env.params.num_tiles_in_bag,
+                env.params.play_out_bonus,
+                env.alphabet,
+            );
+            for j in 0..s.letters.len() {
+                let letter = s.letters[j] as usize;
+                env.params.rack_tally[letter] += s.letter_counts[j] - s.blanks[j];
+                env.params.rack_tally[0] += s.blanks[j];
+            }
+            if !env.params.is_census && env.params.threshold != i32::MIN {
+                s.tile_values.clear();
+                for j in 0..s.letters.len() {
+                    let real = env.alphabet.score(s.letters[j]) as i32 * equity::SCALE;
+                    let blank = env.alphabet.scaled_score(0);
+                    for _ in 0..s.letter_counts[j] - s.blanks[j] {
+                        s.tile_values.push(real);
+                    }
+                    for _ in 0..s.blanks[j] {
+                        s.tile_values.push(blank);
+                    }
+                }
+                s.tile_values.sort_unstable_by(|a, b| b.cmp(a));
+                let bound = (s.tile_values.iter().zip(&s.sorted_weights))
+                    .fold(fixed + leave_value, |sum, (&value, &weight)| {
+                        sum + value * weight
+                    });
+                if bound < env.params.threshold {
+                    return;
+                }
+            }
+            s.value_left.clear();
+            s.value_left.resize(s.values.len(), 0);
+            for j in 0..s.letters.len() {
+                s.value_left[s.real_class[j] as usize] += s.letter_counts[j] - s.blanks[j];
+                s.value_left[s.blank_class[j] as usize] += s.blanks[j];
+            }
+            s.class_left.clone_from(&s.class_sizes);
+            s.matrix.clear();
+            s.matrix.resize(s.class_sizes.len() * s.values.len(), 0);
+            share_classes(s, 0, fixed, 0, leave_value);
+            return;
+        }
+        let count = s.letter_counts[i];
+        let real = env.params.rack_tally[s.letters[i] as usize].min(count);
+        let least = count - real;
+        if least > blanks_left {
+            return;
+        }
+        let most = if env.params.is_census {
+            least
+        } else {
+            count.min(blanks_left)
+        };
+        for blanks in least..=most {
+            s.blanks[i] = blanks;
+            designate_blanks::<BAG_TERM, _, _, _>(env, s, i + 1, blanks_left - blanks, fixed);
+        }
+        s.blanks[i] = 0;
+    }
+
+    fn share_classes(
+        s: &mut JumbledSplits,
+        cell: usize,
+        score: i32,
+        penalty: i32,
+        leave_value: i32,
+    ) {
+        let num_values = s.values.len();
+        if cell == s.matrix.len() {
+            let offset = s.member_data.len() as u32;
+            s.member_data.extend_from_slice(&s.blanks);
+            s.member_data.extend_from_slice(&s.matrix);
+            s.members
+                .push((score, score + leave_value + penalty, leave_value, offset));
+            return;
+        }
+        let (class, k) = (cell / num_values, cell % num_values);
+        let most = s.class_left[class].min(s.value_left[k]);
+        let least = if k + 1 == num_values {
+            s.class_left[class]
+        } else {
+            0
+        };
+        if least > most {
+            return;
+        }
+        let (value, vowel) = s.values[k];
+        for count in least..=most {
+            s.matrix[cell] = count;
+            s.class_left[class] -= count;
+            s.value_left[k] -= count;
+            share_classes(
+                s,
+                cell + 1,
+                score + count as i32 * value * s.class_weights[class],
+                penalty
+                    + if vowel {
+                        count as i32 * s.class_penalties[class]
+                    } else {
+                        0
+                    },
+                leave_value,
+            );
+            s.class_left[class] += count;
+            s.value_left[k] += count;
+        }
+        s.matrix[cell] = 0;
+    }
+
+    #[inline(always)]
+    fn take(s: &mut JumbledSplits, class: usize, j: usize, blank: bool, from: usize) -> bool {
+        let num_letters = s.letters.len();
+        let cell = class * s.values.len()
+            + if blank {
+                s.blank_class[j]
+            } else {
+                s.real_class[j]
+            } as usize;
+        let used = if blank {
+            s.blanks_used[j]
+        } else {
+            s.reals_used[j]
+        } + 1;
+        let placed = s.placed[cell] + 1;
+        let to = s.group.len();
+        for i in from..to {
+            let offset = s.group[i] as usize;
+            let blanks = s.member_data[offset + j];
+            let most = if blank {
+                blanks
+            } else {
+                s.letter_counts[j] - blanks
+            };
+            if used <= most && placed <= s.member_data[offset + num_letters + cell] {
+                s.group.push(offset as u32);
+            }
+        }
+        if s.group.len() == to {
+            return false;
+        }
+        if blank {
+            s.blanks_used[j] = used;
+        } else {
+            s.reals_used[j] = used;
+        }
+        s.placed[cell] = placed;
+        true
+    }
+
+    #[inline(always)]
+    fn untake(s: &mut JumbledSplits, class: usize, j: usize, blank: bool, to: usize) {
+        let cell = class * s.values.len()
+            + if blank {
+                s.blank_class[j]
+            } else {
+                s.real_class[j]
+            } as usize;
+        if blank {
+            s.blanks_used[j] -= 1;
+        } else {
+            s.reals_used[j] -= 1;
+        }
+        s.placed[cell] -= 1;
+        s.group.truncate(to);
+    }
+
+    fn assignable<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+        env: &Env<'_, CallbackType, N, L>,
+        s: &mut JumbledSplits,
+        at: usize,
+        from: usize,
+    ) -> bool {
+        if at == s.narrowed.len() {
+            return true;
+        }
+        let pos = s.narrowed[at] as usize;
+        let class = s.square_classes[pos] as usize;
+        let bits = env.params.cross_set_strip[s.squares[pos] as usize].bits;
+        let to = s.group.len();
+        for blank in [false, true] {
+            for j in 0..s.letters.len() {
+                if bits & (1 << s.letters[j]) == 0 || !take(s, class, j, blank, from) {
+                    continue;
+                }
+                let found = assignable(env, s, at + 1, to);
+                untake(s, class, j, blank, to);
+                if found {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn place_smallest<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        s: &mut JumbledSplits,
+        pos: usize,
+        from: usize,
+    ) -> bool {
+        if pos == s.squares.len() {
+            return true;
+        }
+        let idx = s.squares[pos] as usize;
+        let class = s.square_classes[pos] as usize;
+        let bits = env.params.cross_set_strip[idx].bits;
+        let narrowed_after = s.narrowed.partition_point(|&p| p as usize <= pos);
+        let to = s.group.len();
+        for blank in [false, true] {
+            for j in 0..s.letters.len() {
+                let letter = s.letters[j];
+                if (bits != 0 && bits & (1 << letter) == 0) || !take(s, class, j, blank, from) {
+                    continue;
+                }
+                let meets = assignable(env, s, narrowed_after, to);
+                if meets {
+                    env.params.word_strip_buffer[idx] = if blank { letter | 0x80 } else { letter };
+                }
+                let found = meets && place_smallest(env, s, pos + 1, to);
+                untake(s, class, j, blank, to);
+                if found {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn fill_span<
@@ -5794,6 +6274,14 @@ fn gen_jumbled_place_moves<
         square_weights: [0i32; JUMBLED_BOUND_SQUARES],
         span_leave: 0,
     };
+    let opening_penalty = |i: i8| {
+        let board_layout = env.params.board_snapshot.game_config.board_layout();
+        match opening {
+            Some(true) if board_layout.danger_star_down(i) => -equity::OPENING_HOTSPOT_PENALTY,
+            Some(false) if board_layout.danger_star_across(i) => -equity::OPENING_HOTSPOT_PENALTY,
+            _ => 0,
+        }
+    };
 
     // a span holds every tile it crosses, so its ends fix its forced letters
     let mut main_score_left = 0;
@@ -5860,6 +6348,71 @@ fn gen_jumbled_place_moves<
                     env.idx_left = idx_l;
                     env.idx_right = idx_r + 1;
                     env.num_played = num_played;
+                    let mut fixed = 0i32;
+                    if WALK != JUMBLED_EVERY_ARRANGEMENT {
+                        let mut word_multiplier = 1i32;
+                        let mut perpendicular = 0i32;
+                        for idx in idx_l..=idx_r {
+                            if env.params.board_strip[idx as usize] == 0 {
+                                word_multiplier *= env.params.remaining_word_multipliers_strip
+                                    [idx as usize]
+                                    as i32;
+                                perpendicular +=
+                                    env.params.perpendicular_scores_strip[idx as usize];
+                            }
+                        }
+                        fixed = (main_score_left + main_score_right) * word_multiplier
+                            + perpendicular
+                            + env
+                                .params
+                                .board_snapshot
+                                .game_config
+                                .num_played_bonus(num_played) as i32
+                                * equity::SCALE;
+                        let s = &mut env.params.jumbled.splits;
+                        s.squares.clear();
+                        s.square_classes.clear();
+                        s.class_weights.clear();
+                        s.class_penalties.clear();
+                        s.class_sizes.clear();
+                        s.narrowed.clear();
+                        for idx in idx_l..=idx_r {
+                            if env.params.board_strip[idx as usize] != 0 {
+                                continue;
+                            }
+                            let weight = env.params.remaining_tile_multipliers_strip[idx as usize]
+                                as i32
+                                * (word_multiplier
+                                    + env.params.perpendicular_word_multipliers_strip[idx as usize]
+                                        as i32);
+                            let penalty = opening_penalty(idx);
+                            let class = match (0..s.class_sizes.len()).find(|&c| {
+                                s.class_weights[c] == weight && s.class_penalties[c] == penalty
+                            }) {
+                                Some(c) => c,
+                                None => {
+                                    s.class_weights.push(weight);
+                                    s.class_penalties.push(penalty);
+                                    s.class_sizes.push(0);
+                                    s.class_sizes.len() - 1
+                                }
+                            };
+                            s.class_sizes[class] += 1;
+                            s.squares.push(idx);
+                            if env.params.cross_set_strip[idx as usize].bits != 0 {
+                                s.narrowed.push((s.squares.len() - 1) as u8);
+                            }
+                            s.square_classes.push(class as u8);
+                        }
+                        s.vowels_matter = s.class_penalties.iter().any(|&p| p != 0);
+                        s.sorted_weights.clear();
+                        s.sorted_weights.extend(
+                            s.square_classes
+                                .iter()
+                                .map(|&c| s.class_weights[c as usize]),
+                        );
+                        s.sorted_weights.sort_unstable_by(|a, b| b.cmp(a));
+                    }
                     // for a best move (a threshold, not the census), a
                     // multiset's bound: the span's fixed part with the best
                     // leave for its tiles, and its tiles' scores highest first
@@ -5959,6 +6512,10 @@ fn gen_jumbled_place_moves<
                                 continue;
                             }
                         }
+                        if WALK != JUMBLED_EVERY_ARRANGEMENT {
+                            walk_splits::<BAG_TERM, WALK, _, _, _>(&mut env, at, fixed);
+                            continue;
+                        }
                         for offset in 0..num_played as usize {
                             let tile = env.params.jumbled.multisets[at + offset];
                             env.unplaced[tile as usize] += 1;
@@ -6042,7 +6599,7 @@ fn gen_place_moves_lean<
             )
         }
         game_config::GameRules::Jumbled => {
-            gen_jumbled_place_moves::<BAG_TERM, _, _, _>(params, single_tile_plays)
+            gen_jumbled_place_moves::<BAG_TERM, _, _, _>(params, single_tile_plays, None)
         }
     }
 }
@@ -7703,6 +8260,24 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         census
     }
 
+    #[inline(always)]
+    pub fn gen_moves_filtered_lean_walked<'a, W: JumbledWalk, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlacePredicate<'_>,
+        adjust_leave_value: klv::AdjustLeave,
+        equity_predicate: EquityPredicate<'_>,
+    ) {
+        self.working_buffer.jumbled.walk = W::WALK;
+        self.gen_moves_filtered_lean(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+        );
+        self.working_buffer.jumbled.walk = JUMBLED_EVERY_ARRANGEMENT;
+    }
+
     // every play of at most a rack's tiles placeable from the tiles of pool
     // (blanks among them as 0). Each way of designating blanks is its own play.
     // found(down, lane, idx, word, score) is called once for each play; word
@@ -9127,6 +9702,7 @@ fn walk_jumbled_star_lanes<'a, N: kwg::Node, L: kwg::Node, G: LaneBits, const BA
                 best_leave_values: &working_buffer.best_leave_values,
             },
             !down,
+            Some(down),
         );
     }
 }
@@ -13967,6 +14543,147 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_once_per_score_is_every_arrangement_deduplicated() {
+        type Key = (bool, i8, i8, usize, Vec<u8>, i32, i32);
+        let fifteen = [
+            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
+            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
+        ];
+        let twenty_one = [
+            "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
+            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
+        ];
+        let mut repeated = 0usize;
+        for (gc, boards) in [
+            (
+                game_config::make_jumbled_english_game_config(),
+                &fifteen[..],
+            ),
+            (
+                game_config::make_jumbled_super_english_game_config(),
+                &twenty_one[..],
+            ),
+        ] {
+            let kwg = test_kad(&gc, SWEEP_WORDS);
+            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            for fen in boards {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                for rack in SWEEP_RACKS
+                    .iter()
+                    .chain(&["??AR", "??ERA", "???AT", "????E"])
+                {
+                    let rack = parse_test_rack(gc.alphabet(), rack);
+                    let board_snapshot = BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    };
+                    let mut move_generator = KurniaMoveGenerator::new(&gc);
+                    let mut generate = |once: bool, max_gen: usize| {
+                        let params = GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &rack,
+                            max_gen,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        };
+                        if once {
+                            move_generator.gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
+                                &params,
+                                PlacePredicate::AcceptAll,
+                                klv::AdjustLeave::Identity,
+                                EquityPredicate::AcceptAll,
+                            );
+                        } else {
+                            move_generator
+                                .gen_moves_filtered_lean_walked::<EveryArrangement, _, _>(
+                                    &params,
+                                    PlacePredicate::AcceptAll,
+                                    klv::AdjustLeave::Identity,
+                                    EquityPredicate::AcceptAll,
+                                );
+                        }
+                        move_generator
+                            .plays
+                            .iter()
+                            .filter_map(|p| match &p.play {
+                                Play::Place {
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    score,
+                                } => {
+                                    let mut letters = word
+                                        .iter()
+                                        .filter(|&&t| t != 0)
+                                        .map(|&t| t & 0x7f)
+                                        .collect::<Vec<_>>();
+                                    letters.sort_unstable();
+                                    let placed = word
+                                        .iter()
+                                        .filter(|&&t| t != 0)
+                                        .copied()
+                                        .collect::<Vec<_>>();
+                                    let key: Key = (
+                                        *down,
+                                        *lane,
+                                        *idx,
+                                        word.len(),
+                                        letters,
+                                        *score,
+                                        p.equity.raw(),
+                                    );
+                                    Some((key, placed))
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let mut smallest = std::collections::BTreeMap::<Key, Vec<u8>>::new();
+                    let every = generate(false, usize::MAX);
+                    for (key, placed) in every.iter().cloned() {
+                        let kept = smallest.entry(key).or_insert_with(|| placed.clone());
+                        if placed < *kept {
+                            *kept = placed;
+                        }
+                    }
+                    repeated += every.len() - smallest.len();
+                    let once = generate(true, usize::MAX);
+                    let made = once
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    assert_eq!(made.len(), once.len(), "{fen}: a tuple made twice");
+                    assert_eq!(made, smallest, "{fen}");
+                    let best = |plays: &[(Key, Vec<u8>)]| plays.iter().map(|(k, _)| k.6).max();
+                    let once5 = generate(true, 5);
+                    let every5 = generate(false, 5);
+                    assert_eq!(best(&once5), best(&every5), "{fen}");
+                    let mut tops = once5.iter().map(|(k, _)| k.6).collect::<Vec<_>>();
+                    let mut groups = made.keys().map(|k| k.6).collect::<Vec<_>>();
+                    groups.sort_unstable_by(|a, b| b.cmp(a));
+                    groups.truncate(tops.len());
+                    tops.sort_unstable_by(|a, b| b.cmp(a));
+                    assert_eq!(tops, groups, "{fen}");
+                }
+            }
+        }
+        assert!(
+            repeated > 0,
+            "no arrangement repeated a tuple, so the test proves nothing"
+        );
     }
 
     #[inline]
