@@ -4919,20 +4919,27 @@ impl<
             }
             let best = peg_bag_best(&mut state.reached, &state.valued);
             state.answer = Some((best, state.depth));
-            state.answered = state.valued.clone();
-            if state.pass_exact || state.depth == COMPLETE {
+            let done = state.pass_exact || state.depth == COMPLETE;
+            if !done {
+                // the next pass values the moves best first by this one, afresh
+                state.order = std::mem::take(&mut state.reached);
+                let valued = &state.valued;
+                state.order.sort_unstable_by(|&a, &b| {
+                    let (x, y) = (valued[a].as_ref().unwrap(), valued[b].as_ref().unwrap());
+                    (y.win.total_cmp(&x.win))
+                        .then(y.marg.total_cmp(&x.marg))
+                        .then(a.cmp(&b))
+                });
+            }
+            // the pass's values become the answer's, moved and not copied; the
+            // answer's before become the next pass's room, emptied
+            std::mem::swap(&mut state.answered, &mut state.valued);
+            state.valued.clear();
+            state.valued.resize_with(state.answered.len(), || None);
+            if done {
                 state.done = true;
                 break;
             }
-            // the next pass values the moves best first by this one, afresh
-            state.order = std::mem::take(&mut state.reached);
-            let valued = &state.valued;
-            state.order.sort_unstable_by(|&a, &b| {
-                let (x, y) = (valued[a].as_ref().unwrap(), valued[b].as_ref().unwrap());
-                (y.win.total_cmp(&x.win))
-                    .then(y.marg.total_cmp(&x.marg))
-                    .then(a.cmp(&b))
-            });
             state.next = 0;
             state.pass_exact = true;
             state.searched.deepen();
