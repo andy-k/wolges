@@ -1784,7 +1784,7 @@ struct BagLimits {
     stopped: std::cell::Cell<bool>, // a limit stopped it
     refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
     memory_stopped: std::cell::Cell<bool>, // the limit that stopped it was the memory's
-    estimates: bool,            // the passes estimate (PegBagProgress::set_estimates)
+    estimates: bool,
 }
 
 impl BagLimits {
@@ -5273,7 +5273,11 @@ impl<
     where
         N: Sync,
     {
-        self.resume_peg(&mut PegBagProgress::new(position)?, limits, threads)
+        self.resume_peg(
+            &mut PegBagProgress::new(position, PegBagChoices::WHOLE)?,
+            limits,
+            threads,
+        )
     }
 
     // the search with tiles in the bag that progress holds, going on from where
@@ -6594,17 +6598,32 @@ impl PegBagPosition {
     }
 }
 
+// part: (k, n) values only the splits whose index is k mod n; the n parts'
+// rows, merged by their deals, are the whole search's. estimates: passes
+// follow plies only to their depth, valuing a cut-short line by its score
+#[derive(Clone, Copy)]
+pub struct PegBagChoices {
+    pub part: (usize, usize),
+    pub estimates: bool,
+}
+
+impl PegBagChoices {
+    pub const WHOLE: Self = Self {
+        part: (0, 1),
+        estimates: false,
+    };
+}
+
 // a search with tiles in the bag that goes on across solves (as one with a tile
 // in the bag does, PegProgress): its position, each split of the tiles the
 // mover cannot see (the opponent's rack, the bag's counts, the deals giving
-// it), how far it has got, and the endgames and nodes
-// its solves searched on the thread solving it, and whether its passes estimate
-// (set_estimates)
+// it), what it is, how far it has got, and the endgames and nodes its solves
+// searched on the thread solving it
 pub struct PegBagProgress {
     position: PegBagPosition,
     splits: Vec<(Vec<u8>, Vec<u8>, u64)>,
     moves_at: (Vec<u8>, Vec<u8>), // the whole's first split, the moves made at it
-    part: (usize, usize),         // k of n (part)
+    part: (usize, usize),
     estimates: bool,
     state: PegBagState,
     endgames: u64,
@@ -6616,7 +6635,7 @@ impl PegBagProgress {
     // a search of the position, not yet begun; an error for a bag that the
     // tiles the mover cannot see do not fill, or that holds none
     #[inline]
-    pub fn new(mut position: PegBagPosition) -> error::Returns<Self> {
+    pub fn new(mut position: PegBagPosition, choices: PegBagChoices) -> error::Returns<Self> {
         let unseen = (position.unseen_tally.iter())
             .map(|&count| count as usize)
             .sum::<usize>();
@@ -6626,6 +6645,10 @@ impl PegBagProgress {
                 position.bag_size
             )
             .into());
+        }
+        let (k, n) = choices.part;
+        if k >= n {
+            return Err(format!("part: k below n, found {k} of {n}").into());
         }
         position.mover_rack.sort_unstable();
         let mut splits: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
@@ -6644,12 +6667,16 @@ impl PegBagProgress {
             .first()
             .map(|(rack, bag, _)| (rack.clone(), bag.clone()))
             .unwrap_or_default();
+        let splits = (splits.into_iter().enumerate())
+            .filter(|(i, _)| i % n == k)
+            .map(|(_, split)| split)
+            .collect();
         Ok(Self {
             position,
             splits,
             moves_at,
-            part: (0, 1),
-            estimates: false,
+            part: choices.part,
+            estimates: choices.estimates,
             state: Default::default(),
             endgames: 0,
             nodes: 0,
@@ -6657,48 +6684,10 @@ impl PegBagProgress {
         })
     }
 
-    // made part k of n before it begins: it values only the splits whose index
-    // (in the order every part makes them) is k mod n, so n searches, one a
-    // part, value every split between them once, each move's rows (its splits
-    // with their deals, margins, chances, and draws) its own; the rows of all n
-    // merged, weighed by their deals, are the whole search's. A part given no
-    // split values each move over none (no rows)
-    #[inline]
-    pub fn part(&mut self, k: usize, n: usize) -> error::Returns<()> {
-        if k >= n {
-            return Err(format!("part: k below n, found {k} of {n}").into());
-        }
-        if !self.state.moves.is_empty() {
-            return Err("part: before the search begins".into());
-        }
-        let splits = std::mem::take(&mut self.splits);
-        self.splits = (splits.into_iter().enumerate())
-            .filter(|(i, _)| i % n == k)
-            .map(|(_, split)| split)
-            .collect();
-        self.part = (k, n);
-        Ok(())
-    }
-
     // the part it is, k of n (0 of 1 when whole)
     #[inline(always)]
     pub fn part_of(&self) -> (usize, usize) {
         self.part
-    }
-
-    // whether its passes estimate, from the next solve on (not unless set): the
-    // search then deepens, limits or none, and each pass follows no more of the
-    // plies before the bag empties than its depth, a move at that depth whose
-    // line leaves tiles in the bag valued by its equity (what it scores and the
-    // value of its leave by the search's leaves, an empty table, so its score
-    // alone), so the first passes give every move a value soon, exchanges too.
-    // A value so cut short is not exact, nor is an answer holding one; later
-    // passes follow more plies, until every line reaches the bag's end and the
-    // answer is exact, as one not estimating. Set before the first solve, as a
-    // pass under way was begun one way
-    #[inline]
-    pub fn set_estimates(&mut self, estimates: bool) {
-        self.estimates = estimates;
     }
 
     // the endgames its solves searched on the thread solving it, and their
@@ -14969,7 +14958,8 @@ mod tests {
         egs: &mut EndgameSolver<'_, kwg::Node24, kwg::Node24>,
         position: super::PegBagPosition,
     ) -> (super::PegBagResult, Vec<super::PegBagRows>) {
-        let mut progress = super::PegBagProgress::new(position).unwrap();
+        let mut progress =
+            super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
         let result = (egs.resume_peg(&mut progress, &super::Limits::NONE, 1))
             .unwrap()
             .unwrap();
@@ -15011,9 +15001,12 @@ mod tests {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             let position = bag_position(&board, &[5, 20], &unseen_tally, 2, equity::Equity::ZERO);
-            let mut progress = super::PegBagProgress::new(position).unwrap();
+            let choices = super::PegBagChoices {
+                part: part.unwrap_or((0, 1)),
+                estimates: false,
+            };
+            let mut progress = super::PegBagProgress::new(position, choices).unwrap();
             if let Some((k, n)) = part {
-                progress.part(k, n).unwrap();
                 assert_eq!(progress.part_of(), (k, n));
             }
             let result = (egs.resume_peg(&mut progress, &super::Limits::NONE, 1))
@@ -15381,7 +15374,8 @@ mod tests {
             let mut position =
                 bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
             position.model = model;
-            let mut progress = super::PegBagProgress::new(position).unwrap();
+            let mut progress =
+                super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
             let result = egs
                 .resume_peg(&mut progress, &super::Limits::NONE, threads)
                 .unwrap()
@@ -15405,12 +15399,14 @@ mod tests {
         }
         let position = bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
         let (mut egs, _) = listened();
-        let mut whole = super::PegBagProgress::new(position.clone()).unwrap();
+        let mut whole =
+            super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE).unwrap();
         let whole = egs
             .resume_peg(&mut whole, &super::Limits::NONE, 1)
             .unwrap()
             .unwrap();
-        let mut progress = super::PegBagProgress::new(position).unwrap();
+        let mut progress =
+            super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
         let one_state = super::Limits {
             time: None,
             states: Some(1),
@@ -15596,7 +15592,9 @@ mod tests {
                     states: None,
                     memory,
                 };
-                let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                let mut progress =
+                    super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
+                        .unwrap();
                 let found = egs.resume_peg(&mut progress, &limits, 1).unwrap().unwrap();
                 if time.is_some() {
                     assert!(!found.exact && !found.out_of_memory);
@@ -15666,7 +15664,11 @@ mod tests {
                             equity::Equity::ZERO,
                         );
                         position.model = model;
-                        let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                        let mut progress = super::PegBagProgress::new(
+                            position.clone(),
+                            super::PegBagChoices::WHOLE,
+                        )
+                        .unwrap();
                         let full = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
                         let full = full.unwrap().unwrap();
                         let full_rows =
@@ -15681,8 +15683,11 @@ mod tests {
                         };
                         let kept_full = kept(&progress);
                         for threads in [1, 3] {
-                            let mut progress =
-                                super::PegBagProgress::new(position.clone()).unwrap();
+                            let mut progress = super::PegBagProgress::new(
+                                position.clone(),
+                                super::PegBagChoices::WHOLE,
+                            )
+                            .unwrap();
                             let held = egs
                                 .resume_peg(&mut progress, &small, threads)
                                 .unwrap()
@@ -15713,8 +15718,11 @@ mod tests {
                             if kept(&progress) < kept_full {
                                 gave_up += 1;
                             }
-                            let mut progress =
-                                super::PegBagProgress::new(position.clone()).unwrap();
+                            let mut progress = super::PegBagProgress::new(
+                                position.clone(),
+                                super::PegBagChoices::WHOLE,
+                            )
+                            .unwrap();
                             let stopped = egs
                                 .resume_peg(&mut progress, &past, threads)
                                 .unwrap()
@@ -16305,7 +16313,9 @@ mod tests {
                         .unwrap()
                         .unwrap();
                     assert!(result.exact);
-                    let progress = super::PegBagProgress::new(position.clone()).unwrap();
+                    let progress =
+                        super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
+                            .unwrap();
                     let mut reference = BagReference {
                         gc: &gc,
                         kwg: &kwg,
@@ -16527,7 +16537,9 @@ mod tests {
                     position.model = super::PegModel::InfoSets;
                     let (result, rows) = solve_peg_rows(&mut egs, position.clone());
                     assert!(result.exact);
-                    let progress = super::PegBagProgress::new(position.clone()).unwrap();
+                    let progress =
+                        super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
+                            .unwrap();
                     let mut reference = BagReference {
                         gc: &gc,
                         kwg: &kwg,
@@ -16720,7 +16732,9 @@ mod tests {
                     let position = bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
                     let full = solve_peg_rows(&mut egs, position.clone());
                     assert!(full.0.exact && full.0.depth == super::COMPLETE);
-                    let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                    let mut progress =
+                        super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
+                            .unwrap();
                     let deep = egs.resume_peg(&mut progress, &deepening, 1);
                     let deep = deep.unwrap().unwrap();
                     let deep_rows = moves_rows(&mut egs, &mut progress, &deep, &deepening);
@@ -16729,7 +16743,11 @@ mod tests {
                     // on one thread and on three, each with its own share of
                     // the moves: the same answers
                     for threads in [1, 3] {
-                        let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                        let mut progress = super::PegBagProgress::new(
+                            position.clone(),
+                            super::PegBagChoices::WHOLE,
+                        )
+                        .unwrap();
                         let on_threads = egs
                             .resume_peg(&mut progress, &super::Limits::NONE, threads)
                             .unwrap()
@@ -16740,8 +16758,11 @@ mod tests {
                         assert!(on_threads.0.exact && same(&on_threads, &full));
                         assert!(on_threads.0.moves.len() == full.0.moves.len());
                         for limits in [&one_state, &no_time] {
-                            let mut progress =
-                                super::PegBagProgress::new(position.clone()).unwrap();
+                            let mut progress = super::PegBagProgress::new(
+                                position.clone(),
+                                super::PegBagChoices::WHOLE,
+                            )
+                            .unwrap();
                             let stopped = egs
                                 .resume_peg(&mut progress, limits, threads)
                                 .unwrap()
@@ -16830,9 +16851,14 @@ mod tests {
                         let (full, full_rows) = solve_peg_rows(&mut egs, position.clone());
                         assert!(full.exact && full.depth == super::COMPLETE);
                         for threads in [1, 3] {
-                            let mut progress =
-                                super::PegBagProgress::new(position.clone()).unwrap();
-                            progress.set_estimates(true);
+                            let mut progress = super::PegBagProgress::new(
+                                position.clone(),
+                                super::PegBagChoices {
+                                    part: (0, 1),
+                                    estimates: true,
+                                },
+                            )
+                            .unwrap();
                             let estimated = egs
                                 .resume_peg(&mut progress, &super::Limits::NONE, threads)
                                 .unwrap()
@@ -16897,8 +16923,14 @@ mod tests {
                     let mut position =
                         bag_position(&board, &rack, &unseen_tally, bag_size, equity::Equity::ZERO);
                     position.model = model;
-                    let mut progress = super::PegBagProgress::new(position).unwrap();
-                    progress.set_estimates(true);
+                    let mut progress = super::PegBagProgress::new(
+                        position,
+                        super::PegBagChoices {
+                            part: (0, 1),
+                            estimates: true,
+                        },
+                    )
+                    .unwrap();
                     let t0 = std::time::Instant::now();
                     let result = egs
                         .resume_peg(&mut progress, &limits, threads)
