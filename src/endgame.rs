@@ -1420,6 +1420,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     searched: u64,      // this solve's nodes, for progress
     cut_short: bool,    // a limit stopped this pass
     movegen_cut: bool,
+    memory_cut: bool, // the memory limit, not time nor states, stopped this solve
     progress: Option<ProgressFn>,
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
     in_bag_moves: Option<(usize, usize)>, // and its root's moves valued, of all
@@ -1483,6 +1484,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             searched: 0,
             cut_short: false,
             movegen_cut: false,
+            memory_cut: false,
             progress: None,
             in_bag: None,
             in_bag_moves: None,
@@ -1558,7 +1560,8 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             cadence = self.cadence;
         }
         self.next_look = self.nodes + cadence;
-        self.memory_passed()
+        self.memory_cut = self.memory_passed();
+        self.memory_cut
     }
 }
 
@@ -1673,6 +1676,7 @@ struct BagLimits {
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
     stopped: std::cell::Cell<bool>, // a limit stopped it
     refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
+    memory_stopped: std::cell::Cell<bool>, // the limit that stopped it was the memory's
     estimates: bool,            // the passes estimate (PegBagProgress::set_estimates)
 }
 
@@ -1694,6 +1698,7 @@ impl BagLimits {
             may_stop: std::cell::Cell::new(false),
             stopped: std::cell::Cell::new(false),
             refused: std::cell::Cell::new(false),
+            memory_stopped: std::cell::Cell::new(false),
             estimates: false,
         }
     }
@@ -1737,6 +1742,7 @@ impl BagLimits {
             may_stop: std::cell::Cell::new(false),
             stopped: std::cell::Cell::new(false),
             refused: std::cell::Cell::new(false),
+            memory_stopped: std::cell::Cell::new(false),
             estimates: clock.estimates,
         }
     }
@@ -1756,18 +1762,22 @@ impl BagLimits {
 
     // whether the memory limit cut the search short
     #[inline(always)]
-    fn out_of_memory(&self, exact: bool) -> bool {
-        self.refused.get() || (!exact && self.memory.is_some_and(|memory| memory.passed(0)))
+    fn out_of_memory(&self) -> bool {
+        self.refused.get() || self.memory_stopped.get()
     }
 
-    // whether any limit has passed, on the table the endgames share
+    // whether any limit has passed, on the table the endgames share; the memory
+    // is looked at last, and noted as the one past only when no other is
     #[inline(always)]
     fn passed(&self, table: &Table) -> bool {
-        self.time.is_some_and(|time| self.t0.elapsed() >= time)
+        if self.time.is_some_and(|time| self.t0.elapsed() >= time)
             || self.states.is_some_and(|states| table.held >= states)
-            || self
-                .memory
-                .is_some_and(|memory| memory.passed(table.leaving()))
+        {
+            return true;
+        }
+        let memory = (self.memory).is_some_and(|memory| memory.passed(table.leaving()));
+        self.memory_stopped.set(self.memory_stopped.get() | memory);
+        memory
     }
 }
 
@@ -2975,6 +2985,7 @@ impl<
         work_buffer.memory_limit = limits.memory;
         work_buffer.can_grow = true;
         work_buffer.searched = 0;
+        work_buffer.memory_cut = false;
         work_buffer.finished = 0;
         work_buffer.root_best = NO_PLAY;
         work_buffer.answer = None;
@@ -3086,7 +3097,7 @@ impl<
                         depth: work_buffer.finished,
                         exact: false,
                         partway: work_buffer.proven.map(|_| max_depth),
-                        out_of_memory: work_buffer.movegen_cut,
+                        out_of_memory: work_buffer.movegen_cut || work_buffer.memory_cut,
                         out_of_memory_in_moves: work_buffer.movegen_cut
                             && work_buffer.finished == 0,
                     });
@@ -3115,7 +3126,7 @@ impl<
                     depth: max_depth,
                     exact: false,
                     partway: None,
-                    out_of_memory: false,
+                    out_of_memory: self.work_buffer.memory_cut,
                     out_of_memory_in_moves: false,
                 });
             }
@@ -3131,15 +3142,19 @@ impl<
     }
 
     #[inline(always)]
-    fn past_a_limit(&self) -> bool {
-        let work_buffer = &self.work_buffer;
-        work_buffer
+    fn past_a_limit(&mut self) -> bool {
+        let work_buffer = &mut self.work_buffer;
+        if work_buffer
             .time_limit
             .is_some_and(|limit| work_buffer.t0.is_some_and(|t0| t0.elapsed() >= limit))
             || work_buffer
                 .state_limit
                 .is_some_and(|limit| work_buffer.table.held >= limit)
-            || work_buffer.memory_passed()
+        {
+            return true;
+        }
+        work_buffer.memory_cut = work_buffer.memory_passed();
+        work_buffer.memory_cut
     }
 
     // search the position to solve to depth within alpha and beta
@@ -4470,6 +4485,10 @@ impl<
         work_buffer.in_bag_moves = None;
         work_buffer.depth_cap = COMPLETE;
         let solved = solved?;
+        let memory = !solved.exact && solved.out_of_memory;
+        limits
+            .memory_stopped
+            .set(limits.memory_stopped.get() | memory);
         if may_stop && !solved.exact && solved.depth < limits.depth.get() {
             limits.stopped.set(true);
             return Err("a limit stopped the search".into());
@@ -5086,7 +5105,9 @@ impl<
         self.work_buffer.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
         progress.nodes += limits.nodes.get();
-        Ok(Ok(result?))
+        let mut result = result?;
+        result.out_of_memory = limits.out_of_memory();
+        Ok(Ok(result))
     }
 
     // the search with any number of tiles in the bag: the mover commits to a
@@ -5251,8 +5272,7 @@ impl<
         match found {
             Ok(found) => Ok(Ok(found)),
             Err(_) if limits.stopped.get() => Ok(Err(PegBagRowsMissing::Stopped {
-                out_of_memory: limits.refused.get()
-                    || limits.memory.is_some_and(|memory| memory.passed(0)),
+                out_of_memory: limits.out_of_memory(),
             })),
             Err(e) => Err(e),
         }
@@ -5404,7 +5424,7 @@ impl<
                         best,
                         0,
                         false,
-                        limits.out_of_memory(false),
+                        limits.out_of_memory(),
                     ));
                 }
                 break;
@@ -5446,7 +5466,7 @@ impl<
             Some(best),
             depth,
             exact,
-            limits.out_of_memory(exact),
+            limits.out_of_memory(),
         ))
     }
 
@@ -5516,6 +5536,7 @@ impl<
         let moves_valued = AtomicUsize::new(state.reached.len());
         let stop = AtomicBool::new(false);
         let refused = AtomicBool::new(false); // any thread's memory limit stopped it
+        let memory_stopped = AtomicBool::new(false);
         let on_one_clock = limits.on_one_clock();
         let (order, moves) = (&state.order, &state.moves);
         // each task's hand-over (HandOver), and how many tasks that hand the
@@ -5564,6 +5585,7 @@ impl<
                     Err(_) if limits.stopped.get() => {
                         stop.store(true, Relaxed);
                         refused.fetch_or(limits.refused.get(), Relaxed);
+                        memory_stopped.fetch_or(limits.memory_stopped.get(), Relaxed);
                         return Ok((mine, true));
                     }
                     Err(e) => {
@@ -5605,6 +5627,7 @@ impl<
                     Err(_) if limits.stopped.get() => {
                         stop.store(true, Relaxed);
                         refused.fetch_or(limits.refused.get(), Relaxed);
+                        memory_stopped.fetch_or(limits.memory_stopped.get(), Relaxed);
                         return Ok((mine, true));
                     }
                     Err(e) => {
@@ -5613,6 +5636,7 @@ impl<
                     }
                 }
             }
+            memory_stopped.fetch_or(limits.memory_stopped.get(), Relaxed);
             Ok((mine, false))
         };
         let valued = &state.searched;
@@ -5704,6 +5728,9 @@ impl<
         state.lanes = pools;
         if refused.load(Relaxed) {
             limits.refused.set(true);
+        }
+        if memory_stopped.load(Relaxed) {
+            limits.memory_stopped.set(true);
         }
         let mut stopped = false;
         let mut found = cells_of(Some(tasks), None)?;
@@ -5805,6 +5832,7 @@ impl<
                 committed: false,
                 exact,
                 depth: limits.depth.get(),
+                out_of_memory: false,
             })
         };
         let deepens = limits.deepens();
@@ -5825,6 +5853,7 @@ impl<
                         committed: false,
                         exact: false,
                         depth: 0,
+                        out_of_memory: false,
                     });
                 }
                 Err(e) => return Err(e),
@@ -6105,6 +6134,7 @@ impl<
                         committed: true,
                         exact: false,
                         depth: 0,
+                        out_of_memory: false,
                     });
                 }
                 if state.answer.is_none() {
@@ -6204,6 +6234,7 @@ fn peg_result(
         committed: true,
         exact,
         depth,
+        out_of_memory: false,
     }
 }
 
@@ -6319,6 +6350,7 @@ pub struct PegResult {
     pub committed: bool,
     pub exact: bool, // false when a limit stopped it short of solving every endgame inside it
     pub depth: i8,   // the pass answered from: 0 none finished, i8::MAX one to the end
+    pub out_of_memory: bool, // the memory limit stopped it, or refused it room
 }
 
 // a move's value in the committed model: the share of the bag's tiles it wins
@@ -15291,6 +15323,55 @@ mod tests {
         assert!(table.held == 3 && table.get(last).is_none());
     }
 
+    #[test]
+    #[inline]
+    fn a_bag_search_stopped_by_time_holding_its_memory_is_not_out_of_memory() {
+        fn all_held() -> usize {
+            usize::MAX
+        }
+        let memory = Some(super::MemoryLimit {
+            bytes: 1,
+            held: all_held,
+        });
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [1u8, 8, 20, 20] {
+            unseen_tally[tile as usize] += 1;
+        }
+        let (mut by_time, mut by_memory) = (0, 0);
+        for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+            let mut position =
+                bag_position(&board, &[1, 2], &unseen_tally, 3, equity::Equity::ZERO);
+            position.model = model;
+            // on one thread: more take room for their tasks, which the memory
+            // limit refuses before the time is looked at
+            for time in [None, Some(std::time::Duration::ZERO)] {
+                let limits = super::Limits {
+                    time,
+                    states: None,
+                    memory,
+                };
+                let mut progress = super::PegBagProgress::new(position.clone()).unwrap();
+                progress.set_threads(1);
+                let found = egs.resume_peg(&mut progress, &limits).unwrap().unwrap();
+                if time.is_some() {
+                    assert!(!found.exact && !found.out_of_memory);
+                    by_time += 1;
+                } else if found.out_of_memory {
+                    by_memory += 1;
+                }
+            }
+        }
+        assert_eq!(by_time, 2);
+        assert!(by_memory > 0, "the memory limit alone stopped no search");
+    }
+
     // past the limit from the start, no table grows
     #[test]
     #[inline]
@@ -15396,9 +15477,11 @@ mod tests {
                                 super::PegBagProgress::new(position.clone()).unwrap();
                             progress.set_threads(threads);
                             let stopped = egs.resume_peg(&mut progress, &past).unwrap().unwrap();
-                            // holding no rows, a search can end exact past the
-                            // limit; one it cuts short says so
-                            assert!(stopped.out_of_memory != stopped.exact);
+                            if stopped.out_of_memory {
+                                assert!(!stopped.exact, "{unseen:?} {x} {y} {threads}");
+                            } else {
+                                assert!(stopped.exact, "{unseen:?} {x} {y} {threads}");
+                            }
                             for shard in progress.state.searched.shards.iter() {
                                 let shard = shard.lock().unwrap();
                                 assert!(shard.nodes.entries.len() == 4);
