@@ -38,20 +38,14 @@ pub fn live_pool_into(
     }
 }
 
-#[derive(Clone)]
-struct CrossSet {
-    bits: u64,
-    score: i32,
-}
-
-// the letters a play may put on a square, a bit each: a tile's own letter, else
-// those its cross set allows, every letter when nothing crosses it; selected by
-// masks, with no branch
+// the letters a play may put on a square no cross word reaches, a bit each: a
+// tile's own letter, else every letter. An empty square's bit 0 says a cross
+// word reaches it; its cross set then has bit 0 set, so a dead square is 1 and
+// a cross set allowing every letter of a 64-tile alphabet is not free.
 #[inline(always)]
-fn allowed_letters(tile: u8, cross_bits: u64) -> u64 {
-    let empty = cross_bits | ((cross_bits == 0) as u64).wrapping_neg();
+fn unhooked_letters(tile: u8) -> u64 {
     let on_tile = ((tile != 0) as u64).wrapping_neg();
-    (1u64 << (tile & 0x7f)) & on_tile | empty & !on_tile
+    (1u64 << (tile & 0x7f)) & on_tile | !1 & !on_tile
 }
 
 #[derive(Clone)]
@@ -465,7 +459,7 @@ struct RcsLane {
     valid: bool,
     stamp: (u64, u64), // who found its spans and when (rcs_owner, rcs_rev)
     tiles: Vec<u8>,
-    cross_bits: Vec<u64>,
+    allowed: Vec<u64>,
     word_multipliers: Vec<i8>,
     tile_multipliers: Vec<i8>,
     perpendicular_word_multipliers: Vec<i8>,
@@ -490,7 +484,7 @@ impl Clone for RcsLane {
         self.valid = source.valid;
         self.stamp = source.stamp;
         self.tiles.clone_from(&source.tiles);
-        self.cross_bits.clone_from(&source.cross_bits);
+        self.allowed.clone_from(&source.allowed);
         self.word_multipliers.clone_from(&source.word_multipliers);
         self.tile_multipliers.clone_from(&source.tile_multipliers);
         self.perpendicular_word_multipliers
@@ -598,15 +592,15 @@ impl BagTerm {
 // This is not enforced.
 struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool> {
     rack_tally: [u8; MAX_ALPHABET_LEN],
-    word_buffer_for_across_plays: Box<[u8]>,     // r*c
-    word_buffer_for_down_plays: Box<[u8]>,       // c*r
-    cross_set_for_across_plays: Box<[CrossSet]>, // r*c
-    cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
+    word_buffer_for_across_plays: Box<[u8]>,  // r*c
+    word_buffer_for_down_plays: Box<[u8]>,    // c*r
+    cross_score_for_across_plays: Box<[i32]>, // r*c (the cross word's tiles' score)
+    cross_score_for_down_plays: Box<[i32]>,   // c*r
     cached_cross_set_for_across_plays: Box<[CachedCrossSet]>, // c*r
     cached_cross_set_for_down_plays: Box<[CachedCrossSet]>, // r*c
     cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
     cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>, // r*c (perpendicular strips)
-    prev_board_tiles: Box<[u8]>,                 // r*c (previous board tiles for dirty tracking)
+    prev_board_tiles: Box<[u8]>,              // r*c (previous board tiles for dirty tracking)
     dirty_rows: G,
     dirty_cols: G,
     lane_rows: G,
@@ -621,7 +615,7 @@ struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool> {
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
     perpendicular_scores_for_down_plays: Box<[i32]>,   // c*r
-    allowed_for_across_plays: Box<[u64]>,              // r*c (allowed_letters)
+    allowed_for_across_plays: Box<[u64]>,              // r*c (unhooked_letters or a cross set)
     allowed_for_down_plays: Box<[u64]>,                // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
@@ -683,8 +677,8 @@ impl<G: LaneBits, const BAG_TERM: bool> Clone for WorkingBuffer<G, BAG_TERM> {
             rack_tally: self.rack_tally,
             word_buffer_for_across_plays: self.word_buffer_for_across_plays.clone(),
             word_buffer_for_down_plays: self.word_buffer_for_down_plays.clone(),
-            cross_set_for_across_plays: self.cross_set_for_across_plays.clone(),
-            cross_set_for_down_plays: self.cross_set_for_down_plays.clone(),
+            cross_score_for_across_plays: self.cross_score_for_across_plays.clone(),
+            cross_score_for_down_plays: self.cross_score_for_down_plays.clone(),
             cached_cross_set_for_across_plays: self.cached_cross_set_for_across_plays.clone(),
             cached_cross_set_for_down_plays: self.cached_cross_set_for_down_plays.clone(),
             cross_set_buffer_for_across_plays: self.cross_set_buffer_for_across_plays.clone(),
@@ -781,10 +775,10 @@ impl<G: LaneBits, const BAG_TERM: bool> Clone for WorkingBuffer<G, BAG_TERM> {
             .clone_from(&source.word_buffer_for_across_plays);
         self.word_buffer_for_down_plays
             .clone_from(&source.word_buffer_for_down_plays);
-        self.cross_set_for_across_plays
-            .clone_from(&source.cross_set_for_across_plays);
-        self.cross_set_for_down_plays
-            .clone_from(&source.cross_set_for_down_plays);
+        self.cross_score_for_across_plays
+            .clone_from(&source.cross_score_for_across_plays);
+        self.cross_score_for_down_plays
+            .clone_from(&source.cross_score_for_down_plays);
         self.cached_cross_set_for_across_plays
             .clone_from(&source.cached_cross_set_for_across_plays);
         self.cached_cross_set_for_down_plays
@@ -890,10 +884,8 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
             rack_tally: [0u8; MAX_ALPHABET_LEN],
             word_buffer_for_across_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
             word_buffer_for_down_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
-            cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
-                .into_boxed_slice(),
-            cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
-                .into_boxed_slice(),
+            cross_score_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
+            cross_score_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             cached_cross_set_for_across_plays: vec![
                 CachedCrossSet {
                     p_left: 0,
@@ -953,8 +945,8 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
                 .into_boxed_slice(),
             perpendicular_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             perpendicular_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
-            allowed_for_across_plays: vec![0u64; rows_times_cols].into_boxed_slice(),
-            allowed_for_down_plays: vec![0u64; rows_times_cols].into_boxed_slice(),
+            allowed_for_across_plays: vec![!1u64; rows_times_cols].into_boxed_slice(),
+            allowed_for_down_plays: vec![!1u64; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             board_tile_score: 0,
@@ -1335,6 +1327,29 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
         self.used_tile_scores_shadowr.clear();
     }
 
+    // an empty board's star takes every letter and is an anchor, so it is
+    // given as a cross set of every letter with no cross word to score
+    #[inline]
+    fn activate_star(&mut self, board_layout: &crate::board_layout::BoardLayout) {
+        let star_row = board_layout.star_row();
+        let star_col = board_layout.star_col();
+        let dim = board_layout.dim();
+        let transposed_dim = matrix::Dim {
+            rows: dim.cols,
+            cols: dim.rows,
+        };
+        let idx = dim.at_row_col(star_row, star_col);
+        self.allowed_for_across_plays[idx] = u64::MAX;
+        self.perpendicular_word_multipliers_for_across_plays[idx] = 0;
+        self.perpendicular_scores_for_across_plays[idx] = 0;
+        if !board_layout.is_symmetric() {
+            let idx = transposed_dim.at_row_col(star_col, star_row);
+            self.allowed_for_down_plays[idx] = u64::MAX;
+            self.perpendicular_word_multipliers_for_down_plays[idx] = 0;
+            self.perpendicular_scores_for_down_plays[idx] = 0;
+        }
+    }
+
     #[inline]
     fn init_after_cross_sets<const D: usize, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -1362,15 +1377,15 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
                 for i in 0..strider.len() {
                     let idx = strider.at(i);
                     let premium = &premiums[idx];
-                    let cross_set = &mut self.cross_set_for_across_plays[idx];
+                    let allowed = &mut self.allowed_for_across_plays[idx];
                     if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                        cross_set.bits = 1;
+                        *allowed = 1;
                     }
                     let effective_pwm = self.remaining_word_multipliers_for_across_plays[idx]
-                        & -(cross_set.bits as i8 & 1);
+                        & -(*allowed as i8 & 1);
                     self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_across_plays[idx] =
-                        cross_set.score * effective_pwm as i32;
+                        self.cross_score_for_across_plays[idx] * effective_pwm as i32;
                 }
             }
         }
@@ -1389,27 +1404,26 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
                 for i in 0..strider.len() {
                     let idx = strider.at(i);
                     let premium = &transposed_premiums[idx];
-                    let cross_set = &mut self.cross_set_for_down_plays[idx];
+                    let allowed = &mut self.allowed_for_down_plays[idx];
                     if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                        cross_set.bits = 1;
+                        *allowed = 1;
                     }
-                    let effective_pwm = self.remaining_word_multipliers_for_down_plays[idx]
-                        & -(cross_set.bits as i8 & 1);
+                    let effective_pwm =
+                        self.remaining_word_multipliers_for_down_plays[idx] & -(*allowed as i8 & 1);
                     self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_down_plays[idx] =
-                        cross_set.score * effective_pwm as i32;
+                        self.cross_score_for_down_plays[idx] * effective_pwm as i32;
                 }
             }
         }
     }
 
-    // a lane's span sums and its squares' allowed letters (only the anagram
-    // tables' path reads either), filled once a generation, when a span of it
-    // is read: where the sums start in span_prefix, and the lane's index in
-    // span_lanes. Sums kept from an earlier generation are taken again when the
-    // table walk has checked its lanes this generation and found this one as it
-    // kept it (rcs_placements), the sums filled while it was so, by the same
-    // tables and keys (source)
+    // a lane's span sums (only the anagram tables' path reads them), filled
+    // once a generation, when a span of it is read: where the sums start in
+    // span_prefix, and the lane's index in span_lanes. Sums kept from an
+    // earlier generation are taken again when the table walk has checked its
+    // lanes this generation and found this one as it kept it (rcs_placements),
+    // the sums filled while it was so, by the same tables and keys (source)
     #[inline(always)]
     fn fill_span_lane<const D: usize, W: LaneBits, P: alphagram::KeyPlaces>(
         &mut self,
@@ -1453,11 +1467,10 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
             self.span_lanes[lane_at].turn = self.span_turn;
             return (at, lane_at);
         }
-        let (board_strip, cross_sets, face_values, perpendicular_scores, word_multipliers) = if down
-        {
+        let (board_strip, allowed, face_values, perpendicular_scores, word_multipliers) = if down {
             (
                 &self.transposed_board_tiles[start..start + len],
-                &self.cross_set_for_down_plays[start..start + len],
+                &self.allowed_for_down_plays[start..start + len],
                 &self.face_value_scores_for_down_plays[start..start + len],
                 &self.perpendicular_scores_for_down_plays[start..start + len],
                 &self.remaining_word_multipliers_for_down_plays[start..start + len],
@@ -1465,16 +1478,11 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
         } else {
             (
                 &board_tiles[start..start + len],
-                &self.cross_set_for_across_plays[start..start + len],
+                &self.allowed_for_across_plays[start..start + len],
                 &self.face_value_scores_for_across_plays[start..start + len],
                 &self.perpendicular_scores_for_across_plays[start..start + len],
                 &self.remaining_word_multipliers_for_across_plays[start..start + len],
             )
-        };
-        let allowed = if down {
-            &mut self.allowed_for_down_plays[start..start + len]
-        } else {
-            &mut self.allowed_for_across_plays[start..start + len]
         };
         let out = &mut self.span_prefix[at..at + len + 1];
         let mut sum = SpanPrefix::new();
@@ -1491,13 +1499,12 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
         out[0] = sum;
         for j in 0..len {
             let b = board_strip[j];
-            allowed[j] = allowed_letters(b, cross_sets[j].bits);
             if b != 0 {
                 sum.face += face_values[j];
                 sum.key += places.place_value(b & 0x7f);
             } else {
-                let bits = cross_sets[j].bits;
-                sum.free += (bits == 0) as u8;
+                let bits = allowed[j];
+                sum.free += (bits & 1 == 0) as u8;
                 sum.dead += (bits == 1) as u8;
                 sum.played += 1;
                 sum.perp += perpendicular_scores[j];
@@ -1572,7 +1579,8 @@ pub struct BoardSnapshot<'a, N: kwg::Node, L: kwg::Node> {
 fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
-    cross_sets: &'a mut [CrossSet],
+    allowed: &'a mut [u64],
+    cross_scores: &'a mut [i32],
     output_strider: matrix::Strider,
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
@@ -1668,14 +1676,13 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 }
                 cached_cross_sets[j as usize - 1].bits = bits;
             }
-            for _ in wi..j - 1 {
-                cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+            for i in wi..j - 1 {
+                allowed[wp] = unhooked_letters(board_strip[i as usize]);
+                cross_scores[wp] = 0;
                 wp += step;
             }
-            cross_sets[wp] = CrossSet {
-                bits,
-                score: cross_set_buffer[j as usize].score,
-            };
+            allowed[wp] = bits;
+            cross_scores[wp] = cross_set_buffer[j as usize].score;
             wi = j;
             wp += step;
         }
@@ -1743,14 +1750,14 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 }
                 cached_cross_sets[j as usize - 1].bits = bits;
             }
-            for _ in wi..j - 1 {
-                cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+            for i in wi..j - 1 {
+                allowed[wp] = unhooked_letters(board_strip[i as usize]);
+                cross_scores[wp] = 0;
                 wp += step;
             }
-            cross_sets[wp] = CrossSet {
-                bits,
-                score: cross_set_buffer[prev_j as usize].score + cross_set_buffer[j as usize].score,
-            };
+            allowed[wp] = bits;
+            cross_scores[wp] =
+                cross_set_buffer[prev_j as usize].score + cross_set_buffer[j as usize].score;
             wi = j;
             wp += step;
             prev_j = j;
@@ -1770,20 +1777,20 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             }
             cached_cross_sets[j as usize].bits = bits;
         }
-        for _ in wi..j {
-            cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+        for i in wi..j {
+            allowed[wp] = unhooked_letters(board_strip[i as usize]);
+            cross_scores[wp] = 0;
             wp += step;
         }
-        cross_sets[wp] = CrossSet {
-            bits,
-            score: cross_set_buffer[prev_j as usize].score,
-        };
+        allowed[wp] = bits;
+        cross_scores[wp] = cross_set_buffer[prev_j as usize].score;
         wi = j + 1;
         wp += step;
         j = cross_set_buffer[j as usize].end_range;
     }
-    for _ in wi..len {
-        cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+    for i in wi..len {
+        allowed[wp] = unhooked_letters(board_strip[i as usize]);
+        cross_scores[wp] = 0;
         wp += step;
     }
 }
@@ -1792,7 +1799,8 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
-    cross_sets: &'a mut [CrossSet],
+    allowed: &'a mut [u64],
+    cross_scores: &'a mut [i32],
     output_strider: matrix::Strider,
     used_letters_tally: &'a mut [u8],
 ) {
@@ -1805,13 +1813,13 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     for i in 0..len {
         let b = board_strip[i as usize];
         if b != 0 {
-            cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+            allowed[wp] = unhooked_letters(b);
+            cross_scores[wp] = 0;
         } else if prev_wp != !0 && (i + 1 >= len || board_strip[i as usize + 1] == 0) {
             // this is the matching right side of a lone island.
             // reuse the computed left side's cross set.
-            cross_sets[wp] = CrossSet {
-                ..cross_sets[prev_wp]
-            };
+            allowed[wp] = allowed[prev_wp];
+            cross_scores[wp] = cross_scores[prev_wp];
             prev_wp = !0;
         } else {
             let mut score = 0i32;
@@ -1836,10 +1844,11 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             if k == j + 1 {
-                cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+                allowed[wp] = !1;
+                cross_scores[wp] = 0;
             } else {
-                let bits = kwg.compute_alpha_cross_set(used_letters_tally);
-                cross_sets[wp] = CrossSet { bits, score };
+                allowed[wp] = kwg.compute_alpha_cross_set(used_letters_tally);
+                cross_scores[wp] = score;
                 // if j == i, this is the left side of a possible lone island.
                 // otherwise set to !0.
                 prev_wp = wp | ((j == i) as isize - 1) as usize;
@@ -1851,11 +1860,13 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 // nibble keys come with classic games only
 fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
-    cross_sets: &'a mut [CrossSet],
+    allowed: &'a mut [u64],
+    cross_scores: &'a mut [i32],
     output_strider: matrix::Strider,
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
@@ -1865,7 +1876,8 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
         return gen_classic_cross_set(
             board_snapshot,
             board_strip,
-            cross_sets,
+            allowed,
+            cross_scores,
             output_strider,
             cross_set_buffer,
             cached_cross_sets,
@@ -1875,7 +1887,8 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
         game_config::GameRules::Classic => gen_classic_cross_set(
             board_snapshot,
             board_strip,
-            cross_sets,
+            allowed,
+            cross_scores,
             output_strider,
             cross_set_buffer,
             cached_cross_sets,
@@ -1883,7 +1896,8 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
         game_config::GameRules::Jumbled => gen_jumbled_cross_set(
             board_snapshot,
             board_strip,
-            cross_sets,
+            allowed,
+            cross_scores,
             output_strider,
             used_letters_tally,
         ),
@@ -1982,7 +1996,7 @@ struct GenPlacePlacementsParams<'a, C: SpanCheck = ()> {
     rack_tally: &'a mut [u8],
     used_tile_scores_shadowl: &'a mut ShadowScores,
     used_tile_scores_shadowr: &'a mut ShadowScores,
-    cross_set_strip: &'a [CrossSet],
+    allowed_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
@@ -2507,7 +2521,7 @@ fn gen_place_placements_impl<
             }
 
             // place a tile at [idx] since it is still in bounds.
-            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            let this_cross_bits = env.params.allowed_strip[idx as usize];
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
@@ -2662,7 +2676,7 @@ fn gen_place_placements_impl<
             }
 
             // place a tile at [idx] since it is still in bounds.
-            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            let this_cross_bits = env.params.allowed_strip[idx as usize];
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
@@ -2829,8 +2843,8 @@ fn gen_place_placements_impl<
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
             let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8; // shadowing
             for anchor in (leftmost..rightmost).rev() {
-                let cross_set_bits = env.params.cross_set_strip[anchor as usize].bits;
-                if cross_set_bits != 0 {
+                let cross_set_bits = env.params.allowed_strip[anchor as usize];
+                if cross_set_bits & 1 != 0 {
                     if rightmost - leftmost < 2 {
                         // not enough room for 2-tile words
                         break;
@@ -2889,7 +2903,7 @@ fn $name<
     if D != 0 {
         // the lane's length is a constant of this instance
         assert_eq!(params.board_strip.len(), D);
-        assert_eq!(params.cross_set_strip.len(), D);
+        assert_eq!(params.allowed_strip.len(), D);
         assert_eq!(params.remaining_word_multipliers_strip.len(), D);
         assert_eq!(params.remaining_tile_multipliers_strip.len(), D);
         assert_eq!(params.perpendicular_word_multipliers_strip.len(), D);
@@ -3106,7 +3120,7 @@ fn $name<
             }
 
             // place a tile at [idx] since it is still in bounds.
-            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            let this_cross_bits = env.params.allowed_strip[idx as usize];
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
@@ -3261,7 +3275,7 @@ fn $name<
             }
 
             // place a tile at [idx] since it is still in bounds.
-            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            let this_cross_bits = env.params.allowed_strip[idx as usize];
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
@@ -3428,8 +3442,8 @@ fn $name<
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
             let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8; // shadowing
             for anchor in (leftmost..rightmost).rev() {
-                let cross_set_bits = env.params.cross_set_strip[anchor as usize].bits;
-                if cross_set_bits != 0 {
+                let cross_set_bits = env.params.allowed_strip[anchor as usize];
+                if cross_set_bits & 1 != 0 {
                     if rightmost - leftmost < 2 {
                         // not enough room for 2-tile words
                         break;
@@ -3546,7 +3560,7 @@ struct GenPlaceMovesParams<
 > {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
-    cross_set_strip: &'a [CrossSet],
+    allowed_strip: &'a [u64],
     cross_set_buffer_strip: &'a [CrossSetComputation], // cached GADDAG state per position
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -3581,7 +3595,6 @@ struct TableWalkParams<
 > {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
-    cross_set_strip: &'a [CrossSet],
     allowed_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -3841,17 +3854,14 @@ fn gen_classic_place_moves_lean<
             if p <= 0 {
                 return;
             }
-            let mut this_cross_bits = strip_at!(env.params.cross_set_strip, idx).bits;
-            if this_cross_bits == 1 {
+            let allowed = *strip_at!(env.params.allowed_strip, idx);
+            if allowed == 1 {
                 // already handled '@'
                 return;
-            } else if this_cross_bits != 0 {
-                // turn off bit 0 so it cannot match later
-                this_cross_bits &= !1;
-            } else {
-                this_cross_bits = !1;
-                is_unique = true;
-            };
+            }
+            is_unique |= allowed & 1 == 0;
+            // turn off bit 0 so it cannot match later
+            let this_cross_bits = allowed & !1;
             let mut candidates = this_cross_bits
                 & if env.params.rack_tally[0] > 0 {
                     env.letter_bits
@@ -4061,11 +4071,9 @@ fn gen_classic_place_moves_lean<
 
         let mut this_cross_bits = 0;
         if idx >= env.params.leftmost {
-            let bits = strip_at!(env.params.cross_set_strip, idx).bits;
-            if bits == 0 {
-                this_cross_bits = !1;
-                is_unique = true;
-            } else if bits != 1 {
+            let bits = *strip_at!(env.params.allowed_strip, idx);
+            if bits != 1 {
+                is_unique |= bits & 1 == 0;
                 // turn off bit 0 so it cannot match later
                 this_cross_bits = bits & !1;
             }
@@ -4270,7 +4278,7 @@ fn gen_classic_place_moves_lean<
         assert!(0 <= p.leftmost && p.leftmost <= p.anchor && p.anchor < p.rightmost);
         assert!(
             end <= p.board_strip.len()
-                && end <= p.cross_set_strip.len()
+                && end <= p.allowed_strip.len()
                 && end <= p.cross_set_buffer_strip.len()
                 && end <= p.remaining_word_multipliers_strip.len()
                 && end <= p.remaining_tile_multipliers_strip.len()
@@ -4680,8 +4688,8 @@ fn span_sets_u16(
         while empty != 0 {
             let idx = empty.trailing_zeros() as usize;
             empty &= empty - 1;
-            let bits = params.cross_set_strip[idx].bits;
-            blank_ok |= if bits == 0 { letters } else { bits & letters };
+            let bits = params.allowed_strip[idx];
+            blank_ok |= bits & letters;
         }
     }
     (word_multiplier, blank_ok)
@@ -4714,8 +4722,8 @@ fn span_sets_u32(
         while empty != 0 {
             let idx = empty.trailing_zeros() as usize;
             empty &= empty - 1;
-            let bits = params.cross_set_strip[idx].bits;
-            blank_ok |= if bits == 0 { letters } else { bits & letters };
+            let bits = params.allowed_strip[idx];
+            blank_ok |= bits & letters;
         }
     }
     (word_multiplier, blank_ok)
@@ -4982,8 +4990,8 @@ fn gen_classic_place_moves<
                 &[alphagram::Nibble::MAX_COUNT; alphagram::Nibble::TILES]
             ));
         } else {
-            let bits = params.cross_set_strip[idx].bits;
-            if bits == 0 {
+            let bits = params.allowed_strip[idx];
+            if bits & 1 == 0 {
                 e.free_squares += 1;
                 e.blank_ok = letters;
             } else if bits == 1 {
@@ -5047,8 +5055,8 @@ fn gen_classic_place_moves<
             while empty != 0 {
                 let idx = empty.trailing_zeros() as usize;
                 empty &= empty - 1;
-                let bits = env.params.cross_set_strip[idx].bits;
-                blank_ok |= if bits == 0 { letters } else { bits & letters };
+                let bits = env.params.allowed_strip[idx];
+                blank_ok |= bits & letters;
             }
         }
         (word_multiplier, blank_ok)
@@ -5702,13 +5710,9 @@ fn gen_jumbled_place_moves<
                 return;
             }
         }
-        let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
-        // bit 0 and the star's !1 are no letters; unplaced_bits drops them
-        let mut usable = if this_cross_bits == 0 {
-            !1
-        } else {
-            this_cross_bits & !1
-        } & env.unplaced_bits;
+        let this_cross_bits = env.params.allowed_strip[idx as usize];
+        // bit 0 is no letter; unplaced_bits drops it
+        let mut usable = this_cross_bits & env.unplaced_bits;
         let new_word_multiplier =
             acc.word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
         let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
@@ -5807,12 +5811,12 @@ fn gen_jumbled_place_moves<
             forced_epoch += 1;
             main_score_left += env.params.face_value_scores_strip[idx_l as usize];
         } else {
-            let bits = env.params.cross_set_strip[idx_l as usize].bits;
+            let bits = env.params.allowed_strip[idx_l as usize];
             if bits == 1 {
                 // no letter can go here, so no span reaches past it.
                 break;
             }
-            if bits == 0 {
+            if bits & 1 == 0 {
                 free_left = true;
             }
             empty_left += 1;
@@ -5991,11 +5995,11 @@ fn gen_jumbled_place_moves<
                     forced_epoch += 1;
                     main_score_right += env.params.face_value_scores_strip[next as usize];
                 } else {
-                    let bits = env.params.cross_set_strip[next as usize].bits;
+                    let bits = env.params.allowed_strip[next as usize];
                     if bits == 1 {
                         break;
                     }
-                    if bits == 0 {
+                    if bits & 1 == 0 {
                         free_right = true;
                     }
                     empty_right += 1;
@@ -6117,10 +6121,10 @@ fn gen_place_moves_at_lean<
             } else {
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end]
             },
-            cross_set_strip: if placement.down {
-                &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
+            allowed_strip: if placement.down {
+                &working_buffer.allowed_for_down_plays[strip_range_start..strip_range_end]
             } else {
-                &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
+                &working_buffer.allowed_for_across_plays[strip_range_start..strip_range_end]
             },
             cross_set_buffer_strip: if placement.down {
                 &working_buffer.cross_set_buffer_for_across_plays
@@ -6294,11 +6298,6 @@ fn gen_place_moves_at<
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
             } else {
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end]
-            },
-            cross_set_strip: if placement.down {
-                &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
             allowed_strip: if placement.down {
                 &working_buffer.allowed_for_down_plays[strip_range_start..strip_range_end]
@@ -6857,7 +6856,8 @@ pub struct BoardState {
     board_tiles: Box<[u8]>,
     transposed_board_tiles: Box<[u8]>,
     counts: (u16, i32, u16, i32), // tiles and face values, now and as kept
-    cross_sets: [Box<[CrossSet]>; 2], // across plays', then down plays'
+    allowed: [Box<[u64]>; 2],     // across plays', then down plays'
+    cross_scores: [Box<[i32]>; 2],
     cached_cross_sets: [Box<[CachedCrossSet]>; 2],
     cross_set_buffers: [Box<[CrossSetComputation]>; 2],
     word_multipliers: [Box<[i8]>; 2],
@@ -6935,8 +6935,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             w.prev_tile_count,
             w.prev_tile_score,
         );
-        copy_board_part(&mut state.cross_sets[0], &w.cross_set_for_across_plays);
-        copy_board_part(&mut state.cross_sets[1], &w.cross_set_for_down_plays);
+        copy_board_part(&mut state.allowed[0], &w.allowed_for_across_plays);
+        copy_board_part(&mut state.allowed[1], &w.allowed_for_down_plays);
+        copy_board_part(&mut state.cross_scores[0], &w.cross_score_for_across_plays);
+        copy_board_part(&mut state.cross_scores[1], &w.cross_score_for_down_plays);
         copy_board_part(
             &mut state.cached_cross_sets[0],
             &w.cached_cross_set_for_across_plays,
@@ -7089,8 +7091,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             w.prev_tile_count,
             w.prev_tile_score,
         ) = state.counts;
-        copy_board_part(&mut w.cross_set_for_across_plays, &state.cross_sets[0]);
-        copy_board_part(&mut w.cross_set_for_down_plays, &state.cross_sets[1]);
+        copy_board_part(&mut w.allowed_for_across_plays, &state.allowed[0]);
+        copy_board_part(&mut w.allowed_for_down_plays, &state.allowed[1]);
+        copy_board_part(&mut w.cross_score_for_across_plays, &state.cross_scores[0]);
+        copy_board_part(&mut w.cross_score_for_down_plays, &state.cross_scores[1]);
         copy_board_part(
             &mut w.cached_cross_set_for_across_plays,
             &state.cached_cross_sets[0],
@@ -8596,7 +8600,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.cross_set_for_across_plays,
+                &mut working_buffer.allowed_for_across_plays,
+                &mut working_buffer.cross_score_for_across_plays,
                 dim.down(col),
                 &mut working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -8611,7 +8616,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.cross_set_for_down_plays,
+                &mut working_buffer.allowed_for_down_plays,
+                &mut working_buffer.cross_score_for_down_plays,
                 transposed_dim.down(row),
                 &mut working_buffer.cross_set_buffer_for_down_plays
                     [strip_range_start..strip_range_end],
@@ -8620,13 +8626,16 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
                 &mut working_buffer.used_letters_tally,
             );
         }
+        // a square no cross word reaches has bit 0 clear, and gives 0
+        let hooked = |bits: u64| bits & (bits & 1).wrapping_neg();
         for row in 0..dim.rows {
             for col in 0..dim.cols {
                 found(
                     dim.at_row_col(row, col),
-                    working_buffer.cross_set_for_across_plays[dim.at_row_col(row, col)].bits,
-                    working_buffer.cross_set_for_down_plays[transposed_dim.at_row_col(col, row)]
-                        .bits,
+                    hooked(working_buffer.allowed_for_across_plays[dim.at_row_col(row, col)]),
+                    hooked(
+                        working_buffer.allowed_for_down_plays[transposed_dim.at_row_col(col, row)],
+                    ),
                 );
             }
         }
@@ -8937,7 +8946,8 @@ fn lean_cross_sets<
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.cross_set_for_across_plays,
+                &mut working_buffer.allowed_for_across_plays,
+                &mut working_buffer.cross_score_for_across_plays,
                 dim.down(col),
                 &mut working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -8959,7 +8969,8 @@ fn lean_cross_sets<
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.cross_set_for_down_plays,
+                &mut working_buffer.allowed_for_down_plays,
+                &mut working_buffer.cross_score_for_down_plays,
                 transposed_dim.down(row),
                 &mut working_buffer.cross_set_buffer_for_down_plays
                     [strip_range_start..strip_range_end],
@@ -8969,17 +8980,6 @@ fn lean_cross_sets<
             );
         }
     }
-    if working_buffer.num_tiles_on_board == 0 {
-        // empty board activates star
-        let star_row = board_layout.star_row();
-        let star_col = board_layout.star_col();
-        if !board_layout.is_symmetric() {
-            working_buffer.cross_set_for_down_plays
-                [transposed_dim.at_row_col(star_col, star_row)] = CrossSet { bits: !1, score: 0 };
-        }
-        working_buffer.cross_set_for_across_plays[dim.at_row_col(star_row, star_col)] =
-            CrossSet { bits: !1, score: 0 };
-    }
 
     if dirty_rows != G::from(0) || dirty_cols != G::from(0) {
         working_buffer.prev_board_tiles[..area]
@@ -8988,6 +8988,9 @@ fn lean_cross_sets<
         working_buffer.prev_tile_score = working_buffer.board_tile_score;
     }
     working_buffer.init_after_cross_sets::<D, _, _>(board_snapshot, dirty_cols, dirty_rows);
+    if working_buffer.num_tiles_on_board == 0 {
+        working_buffer.activate_star(board_layout);
+    }
 }
 
 // the opening's penalty for each vowel a play on an empty board puts on one of
@@ -9071,10 +9074,10 @@ fn walk_jumbled_star_lanes<'a, N: kwg::Node, L: kwg::Node, G: LaneBits, const BA
                 } else {
                     &board_snapshot.board_tiles[start..end]
                 },
-                cross_set_strip: if down {
-                    &working_buffer.cross_set_for_down_plays[start..end]
+                allowed_strip: if down {
+                    &working_buffer.allowed_for_down_plays[start..end]
                 } else {
-                    &working_buffer.cross_set_for_across_plays[start..end]
+                    &working_buffer.allowed_for_across_plays[start..end]
                 },
                 cross_set_buffer_strip: if down {
                     &working_buffer.cross_set_buffer_for_across_plays[start..end]
@@ -9455,14 +9458,14 @@ fn gen_empty_board_place_moves_made<
             let len = if down { dim.rows } else { dim.cols };
             let start = lane as usize * len as usize;
             let end = start + len as usize;
-            let cross_sets = if down {
-                &working_buffer.cross_set_for_down_plays[start..end]
+            let allowed = if down {
+                &working_buffer.allowed_for_down_plays[start..end]
             } else {
-                &working_buffer.cross_set_for_across_plays[start..end]
+                &working_buffer.allowed_for_across_plays[start..end]
             };
             let mut open = 0u128;
-            for (i, cross_set) in cross_sets.iter().enumerate() {
-                open |= ((cross_set.bits != 1) as u128) << i;
+            for (i, &bits) in allowed.iter().enumerate() {
+                open |= ((bits != 1) as u128) << i;
             }
             StarLane {
                 down,
@@ -9606,7 +9609,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                cross_set_strip: &working_buffer.cross_set_for_across_plays
+                allowed_strip: &working_buffer.allowed_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_across_plays
@@ -9663,7 +9666,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                cross_set_strip: &working_buffer.cross_set_for_down_plays
+                allowed_strip: &working_buffer.allowed_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
@@ -9835,10 +9838,10 @@ fn kurnia_gen_raw_place_moves<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                cross_set_strip: if down {
-                    &working_buffer.cross_set_for_down_plays[start..end]
+                allowed_strip: if down {
+                    &working_buffer.allowed_for_down_plays[start..end]
                 } else {
-                    &working_buffer.cross_set_for_across_plays[start..end]
+                    &working_buffer.allowed_for_across_plays[start..end]
                 },
                 remaining_word_multipliers_strip: if down {
                     &working_buffer.remaining_word_multipliers_for_down_plays[start..end]
@@ -9888,14 +9891,14 @@ fn kurnia_gen_raw_place_moves<
         } else {
             &board_snapshot.board_tiles[start..end]
         };
-        let (cross_set_strip, cross_set_buffer_strip) = if down {
+        let (allowed_strip, cross_set_buffer_strip) = if down {
             (
-                &working_buffer.cross_set_for_down_plays[start..end],
+                &working_buffer.allowed_for_down_plays[start..end],
                 &working_buffer.cross_set_buffer_for_across_plays[start..end],
             )
         } else {
             (
-                &working_buffer.cross_set_for_across_plays[start..end],
+                &working_buffer.allowed_for_across_plays[start..end],
                 &working_buffer.cross_set_buffer_for_down_plays[start..end],
             )
         };
@@ -9934,7 +9937,7 @@ fn kurnia_gen_raw_place_moves<
                 &mut GenPlaceMovesParams {
                     board_snapshot,
                     board_strip,
-                    cross_set_strip,
+                    allowed_strip,
                     cross_set_buffer_strip,
                     remaining_word_multipliers_strip: word_multipliers,
                     remaining_tile_multipliers_strip: tile_multipliers,
@@ -10049,18 +10052,20 @@ fn kurnia_gen_one_tile_moves<
         // the lane's strips, and by square the cross sets the other way, which
         // say the letters that make the lane's word there and what its tiles
         // score
-        let (board_strip, cross_set_strip, words_cross_sets, stride) = if down {
+        let (board_strip, allowed_strip, words_allowed, words_scores, stride) = if down {
             (
                 &working_buffer.transposed_board_tiles[start..end],
-                &working_buffer.cross_set_for_down_plays[start..end],
-                &working_buffer.cross_set_for_across_plays[lane..],
+                &working_buffer.allowed_for_down_plays[start..end],
+                &working_buffer.allowed_for_across_plays[lane..],
+                &working_buffer.cross_score_for_across_plays[lane..],
                 cols,
             )
         } else {
             (
                 &board_snapshot.board_tiles[start..end],
-                &working_buffer.cross_set_for_across_plays[start..end],
-                &working_buffer.cross_set_for_down_plays[lane..],
+                &working_buffer.allowed_for_across_plays[start..end],
+                &working_buffer.allowed_for_down_plays[lane..],
+                &working_buffer.cross_score_for_down_plays[lane..],
                 rows,
             )
         };
@@ -10093,14 +10098,13 @@ fn kurnia_gen_one_tile_moves<
         };
         // the plays on square idx of the word from word_start to word_end
         let mut play_at = |idx: usize, word_start: usize, word_end: usize| {
-            let bits = cross_set_strip[idx].bits;
-            if bits == 1 || (down && bits != 0) {
+            let bits = allowed_strip[idx];
+            if bits == 1 || (down && bits & 1 != 0) {
                 return;
             }
-            let words = &words_cross_sets[idx * stride];
-            let mut fits = words.bits & letters & if bits == 0 { !0 } else { bits };
+            let mut fits = words_allowed[idx * stride] & letters & bits;
             let tile_value = value * tile_multipliers[idx] as i32;
-            let score = (words.score + tile_value) * word_multipliers[idx] as i32
+            let score = (words_scores[idx * stride] + tile_value) * word_multipliers[idx] as i32
                 + perpendicular_scores[idx]
                 + tile_value * perpendicular_word_multipliers[idx] as i32
                 + bonus;
@@ -10209,7 +10213,7 @@ struct RcsGeometry<'a> {
     kept: &'a mut RcsLane,
     multi_jumps: &'a [MultiJump],
     tiles: &'a [u8],
-    cross_sets: &'a [CrossSet],
+    allowed: &'a [u64],
     word_multipliers: &'a [i8],
     tile_multipliers: &'a [i8],
     perpendicular_word_multipliers: &'a [i8],
@@ -10344,7 +10348,7 @@ impl RcsGeometry<'_> {
     // the square idx taken by a tile: false for a dead one (the walk ends)
     #[inline(always)]
     fn take(&self, walk: &mut RcsWalk, is_unique: &mut bool, idx: i8) -> bool {
-        let bits = self.cross_sets[idx as usize].bits;
+        let bits = self.allowed[idx as usize];
         if bits & 1 == 0 {
             *is_unique = true;
         } else if bits == 1 {
@@ -10441,10 +10445,10 @@ impl RcsGeometry<'_> {
     fn find(&mut self, lists: &mut RcsLists) {
         assert!(self.tiles.len() <= u64::BITS as usize);
         lists.hooks = self
-            .cross_sets
+            .allowed
             .iter()
             .enumerate()
-            .fold(0, |hooks, (i, cross_set)| hooks | (cross_set.bits & 1) << i);
+            .fold(0, |hooks, (i, &bits)| hooks | (bits & 1) << i);
         let mut leftmost = self.tiles.len() as i8;
         loop {
             let mut rightmost = leftmost;
@@ -10457,8 +10461,8 @@ impl RcsGeometry<'_> {
             {
                 let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8;
                 for anchor in (leftmost..rightmost).rev() {
-                    let bits = self.cross_sets[anchor as usize].bits;
-                    if bits != 0 {
+                    let bits = self.allowed[anchor as usize];
+                    if bits & 1 != 0 {
                         if rightmost - leftmost < 2 {
                             break;
                         }
@@ -10544,7 +10548,7 @@ fn rcs_placements<
                 }
                 let idx = row * cols + col;
                 if !kept.valid
-                    || kept.cross_bits[col] != working_buffer.cross_set_for_across_plays[idx].bits
+                    || kept.allowed[col] != working_buffer.allowed_for_across_plays[idx]
                     || kept.perpendicular_scores[col]
                         != working_buffer.perpendicular_scores_for_across_plays[idx]
                     || kept.perpendicular_word_multipliers[col]
@@ -10565,7 +10569,7 @@ fn rcs_placements<
                 }
                 let idx = col * rows + row;
                 if !kept.valid
-                    || kept.cross_bits[row] != working_buffer.cross_set_for_down_plays[idx].bits
+                    || kept.allowed[row] != working_buffer.allowed_for_down_plays[idx]
                     || kept.perpendicular_scores[row]
                         != working_buffer.perpendicular_scores_for_down_plays[idx]
                     || kept.perpendicular_word_multipliers[row]
@@ -10642,10 +10646,10 @@ fn rcs_placements<
         } else {
             &board_snapshot.board_tiles[start..end]
         };
-        let cross_sets = if down {
-            &working_buffer.cross_set_for_down_plays[start..end]
+        let allowed = if down {
+            &working_buffer.allowed_for_down_plays[start..end]
         } else {
-            &working_buffer.cross_set_for_across_plays[start..end]
+            &working_buffer.allowed_for_across_plays[start..end]
         };
         let (word_multipliers, tile_multipliers, perpendicular_word_multipliers) = if down {
             (
@@ -10680,10 +10684,10 @@ fn rcs_placements<
                     )
                     && same_lane::<D, _>(&kept.perpendicular_scores, perpendicular_scores)
                     && kept
-                        .cross_bits
+                        .allowed
                         .iter()
-                        .zip(cross_sets)
-                        .all(|(&bits, cross_set)| bits == cross_set.bits)),
+                        .zip(allowed)
+                        .all(|(&kept_bits, &bits)| kept_bits == bits)),
             "a kept lane's inputs changed unmarked"
         );
         if stale || !kept.valid {
@@ -10702,7 +10706,7 @@ fn rcs_placements<
                 kept: &mut kept,
                 multi_jumps: &jumps,
                 tiles,
-                cross_sets,
+                allowed,
                 word_multipliers,
                 tile_multipliers,
                 perpendicular_word_multipliers,
@@ -10715,9 +10719,8 @@ fn rcs_placements<
             kept.hooks = lists.hooks;
             kept.tiles.clear();
             kept.tiles.extend_from_slice(tiles);
-            kept.cross_bits.clear();
-            kept.cross_bits
-                .extend(cross_sets.iter().map(|cross_set| cross_set.bits));
+            kept.allowed.clear();
+            kept.allowed.extend_from_slice(allowed);
             kept.word_multipliers.clear();
             kept.word_multipliers.extend_from_slice(word_multipliers);
             kept.tile_multipliers.clear();
@@ -10742,7 +10745,7 @@ fn rcs_placements<
         while hooks != 0 {
             let idx = hooks.trailing_zeros() as usize;
             hooks &= hooks - 1;
-            let fits = cross_sets[idx].bits & rack_bits;
+            let fits = allowed[idx] & rack_bits;
             unfillable |= ((fits == 0) as u64) << idx;
             caps[idx] = rack_tiles
                 .iter()
@@ -10865,7 +10868,8 @@ fn kurnia_gen_place_moves_iter<
             gen_cross_set::<T, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.cross_set_for_across_plays,
+                &mut working_buffer.allowed_for_across_plays,
+                &mut working_buffer.cross_score_for_across_plays,
                 dim.down(col),
                 &mut working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -10887,7 +10891,8 @@ fn kurnia_gen_place_moves_iter<
             gen_cross_set::<T, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.cross_set_for_down_plays,
+                &mut working_buffer.allowed_for_down_plays,
+                &mut working_buffer.cross_score_for_down_plays,
                 transposed_dim.down(row),
                 &mut working_buffer.cross_set_buffer_for_down_plays
                     [strip_range_start..strip_range_end],
@@ -10897,17 +10902,6 @@ fn kurnia_gen_place_moves_iter<
             );
         }
     }
-    if working_buffer.num_tiles_on_board == 0 {
-        // empty board activates star
-        let star_row = board_layout.star_row();
-        let star_col = board_layout.star_col();
-        if !board_layout.is_symmetric() {
-            working_buffer.cross_set_for_down_plays
-                [transposed_dim.at_row_col(star_col, star_row)] = CrossSet { bits: !1, score: 0 };
-        }
-        working_buffer.cross_set_for_across_plays[dim.at_row_col(star_row, star_col)] =
-            CrossSet { bits: !1, score: 0 };
-    }
 
     if dirty_rows != G::from(0) || dirty_cols != G::from(0) {
         working_buffer.prev_board_tiles[..area]
@@ -10916,6 +10910,9 @@ fn kurnia_gen_place_moves_iter<
         working_buffer.prev_tile_score = working_buffer.board_tile_score;
     }
     working_buffer.init_after_cross_sets::<D, _, _>(board_snapshot, dirty_cols, dirty_rows);
+    if working_buffer.num_tiles_on_board == 0 {
+        working_buffer.activate_star(board_layout);
+    }
 
     let feasible_lengths = feasible_lengths_of_subracks::<T>(
         board_snapshot.anagrams,
@@ -10959,7 +10956,7 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                cross_set_strip: &working_buffer.cross_set_for_across_plays
+                allowed_strip: &working_buffer.allowed_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_across_plays
@@ -11026,7 +11023,7 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                cross_set_strip: &working_buffer.cross_set_for_down_plays
+                allowed_strip: &working_buffer.allowed_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
@@ -13542,7 +13539,8 @@ mod tests {
 
         let len = gc.board_layout().dim().cols as usize;
         let output_strider = gc.board_layout().dim().across(0);
-        let mut cross_sets = vec![CrossSet { bits: 0, score: 0 }; len];
+        let mut allowed = vec![!1u64; len];
+        let mut cross_scores = vec![0i32; len];
         let mut cross_set_buffer = vec![
             CrossSetComputation {
                 score: 0,
@@ -13566,25 +13564,27 @@ mod tests {
         gen_classic_cross_set(
             &board_snapshot,
             &board_strip,
-            &mut cross_sets,
+            &mut allowed,
+            &mut cross_scores,
             output_strider.clone(),
             &mut cross_set_buffer,
             &mut cached_cross_sets,
         );
-        assert_eq!(cross_sets[1].score, natural_a_score);
-        assert_eq!(cross_sets[3].score, natural_a_score);
+        assert_eq!(cross_scores[1], natural_a_score);
+        assert_eq!(cross_scores[3], natural_a_score);
 
         board_strip[2] = blank_a;
         gen_classic_cross_set(
             &board_snapshot,
             &board_strip,
-            &mut cross_sets,
+            &mut allowed,
+            &mut cross_scores,
             output_strider,
             &mut cross_set_buffer,
             &mut cached_cross_sets,
         );
-        assert_eq!(cross_sets[1].score, 0);
-        assert_eq!(cross_sets[3].score, 0);
+        assert_eq!(cross_scores[1], 0);
+        assert_eq!(cross_scores[3], 0);
     }
     #[inline]
     fn word_of(formatted: &str) -> String {
@@ -14514,6 +14514,70 @@ mod tests {
         }
     }
 
+    // with a 64-tile alphabet, a square whose perpendicular word allows every
+    // letter is constrained, not free, in the table walk as in its sums
+    #[test]
+    #[inline]
+    fn a_cross_set_allowing_all_63_letters_is_not_a_free_square() {
+        let mut gc = game_config::make_english_game_config();
+        let tiles = std::iter::once("?\t?\t2\t0\t0\t0\t0\n".to_string())
+            .chain((1..64).map(|i| format!("L{i}\tl{i}\t1\t1\t0\t0\t0\n")))
+            .collect::<String>();
+        let game_config::GameConfig::Static(rules) = &mut gc;
+        rules.alphabet = alphabet::Alphabet::new_static_from_text(&tiles).unwrap();
+        assert_eq!(gc.alphabet().len(), 64);
+        let mut words = Vec::<bites::Bites>::new();
+        for a in 1..64u8 {
+            for b in 1..64u8 {
+                words.push([a, b][..].into());
+            }
+        }
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let dim = gc.board_layout().dim();
+        let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        board_tiles[dim.at_row_col(7, 7)] = 1;
+        let plays = |anagrams| {
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &[2, 3],
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            (move_generator.plays.iter())
+                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .collect::<Vec<_>>()
+        };
+        let walked = plays(Some(&held));
+        assert!(!walked.is_empty());
+        assert_eq!(walked, plays(None));
+    }
+
     // a generator kept across boards, some generated with the tables and some
     // without (so with no look by the table walk at its lanes), boards coming
     // back to one seen before, generates as a fresh one each time: span sums
@@ -15028,15 +15092,15 @@ mod tests {
                 } else {
                     board_tiles[start..end].to_vec()
                 };
-                let (cross_sets, word_multipliers, tile_multipliers) = if down {
+                let (allowed, word_multipliers, tile_multipliers) = if down {
                     (
-                        &wb.cross_set_for_down_plays[start..end],
+                        &wb.allowed_for_down_plays[start..end],
                         &wb.remaining_word_multipliers_for_down_plays[start..end],
                         &wb.remaining_tile_multipliers_for_down_plays[start..end],
                     )
                 } else {
                     (
-                        &wb.cross_set_for_across_plays[start..end],
+                        &wb.allowed_for_across_plays[start..end],
                         &wb.remaining_word_multipliers_for_across_plays[start..end],
                         &wb.remaining_tile_multipliers_for_across_plays[start..end],
                     )
@@ -15061,7 +15125,7 @@ mod tests {
                         rack_tally: &mut without_limit,
                         used_tile_scores_shadowl: &mut wb.used_tile_scores_shadowl,
                         used_tile_scores_shadowr: &mut wb.used_tile_scores_shadowr,
-                        cross_set_strip: cross_sets,
+                        allowed_strip: allowed,
                         remaining_word_multipliers_strip: word_multipliers,
                         remaining_tile_multipliers_strip: tile_multipliers,
                         perpendicular_word_multipliers_strip: perpendicular_word_multipliers,
@@ -15091,7 +15155,7 @@ mod tests {
                     kept: &mut kept,
                     multi_jumps: &wb.lane_scaffold[at].multi_jumps,
                     tiles: &lane_tiles,
-                    cross_sets,
+                    allowed,
                     word_multipliers,
                     tile_multipliers,
                     perpendicular_word_multipliers,
@@ -15225,7 +15289,7 @@ mod tests {
     if D != 0 {
         // the lane's length is a constant of this instance
         assert_eq!(params.board_strip.len(), D);
-        assert_eq!(params.cross_set_strip.len(), D);
+        assert_eq!(params.allowed_strip.len(), D);
         assert_eq!(params.remaining_word_multipliers_strip.len(), D);
         assert_eq!(params.remaining_tile_multipliers_strip.len(), D);
         assert_eq!(params.perpendicular_word_multipliers_strip.len(), D);
