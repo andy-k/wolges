@@ -292,6 +292,24 @@ impl<L: kwg::Node> Klv<L> {
         Self::from_bytes_alloc(&buf)
     }
 
+    // empty's, or None where it found no room or the layout has no empty node
+    #[inline]
+    pub fn try_empty() -> Option<Self> {
+        let node = L::new(L::pack(0, false, true, 0)?);
+        let mut nodes = Vec::new();
+        let mut counts = Vec::new();
+        nodes.try_reserve_exact(2).ok()?;
+        counts.try_reserve_exact(2).ok()?;
+        nodes.extend([node; 2]);
+        counts.extend([0u32; 2]);
+        Some(Klv {
+            kwg: kwg::Kwg(nodes.into_boxed_slice()),
+            counts: counts.into_boxed_slice(),
+            leaves: Box::new([]),
+            racks: None,
+        })
+    }
+
     #[inline(always)]
     pub fn leave(&self, leave_idx: u32) -> i32 {
         self.leaves[leave_idx as usize]
