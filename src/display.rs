@@ -548,6 +548,55 @@ mod tests {
 
     #[test]
     #[inline]
+    fn every_bundled_tile_prints_and_reads_back() {
+        for (name, make) in alphabet::ALPHABETS {
+            let alphabet = make();
+            let len = alphabet.len();
+            let (rows, cols) = (2, (len - 1) as i8);
+            let area = (rows as isize * cols as isize) as usize;
+            let board_layout = board_layout::make_test_board_layout(
+                vec![
+                    board_layout::Premium {
+                        word_multiplier: 1,
+                        tile_multiplier: 1,
+                    };
+                    area
+                ]
+                .into_boxed_slice(),
+                matrix::Dim { rows, cols },
+                0,
+                0,
+            );
+            let board_tiles = (1..len)
+                .chain((1..len).map(|tile| tile | 0x80))
+                .collect::<Vec<_>>();
+            let fen = BoardFenner::new(&alphabet, &board_layout, &board_tiles).to_string();
+            let mut fen_parser = BoardFenParser::new(&alphabet, &board_layout);
+            let digit_label = board_tiles.iter().any(|&tile| {
+                alphabet
+                    .of_board(tile)
+                    .is_some_and(|label| label.starts_with(|c: char| c.is_ascii_digit()))
+            });
+            assert_eq!(digit_label, *name == "hex", "{name}");
+            if !digit_label {
+                assert_eq!(
+                    fen_parser.parse(&fen).ok(),
+                    Some(&board_tiles[..]),
+                    "{name}: {fen}"
+                );
+            }
+            let rack = (0..len).collect::<Vec<_>>();
+            let text = alphabet.fmt_rack(&rack).to_string();
+            let mut read = Vec::new();
+            alphabet::AlphabetReader::new_for_racks(&alphabet)
+                .set_word(&text, &mut read)
+                .unwrap();
+            assert_eq!(read, rack, "{name}: {text}");
+        }
+    }
+
+    #[test]
+    #[inline]
     fn a_padded_display_pads_the_text_it_writes() {
         assert_eq!(format!("[{:^6}]", column(27)), "[  AB  ]");
         assert_eq!(format!("[{:>4.1}]", column(27)), "[   A]");
