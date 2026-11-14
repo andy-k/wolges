@@ -2324,6 +2324,47 @@ mod tests {
         }
     }
 
+    #[inline]
+    fn best_retired_share(k: usize, gap: f64, budget: u64, decisions: u64) -> f64 {
+        let z = paired_z(budget);
+        let mut rng = simmer::DefaultRng::seed_from_u64(k as u64);
+        let mut normal = || {
+            let u: f64 = 1.0 - rand::RngExt::random::<f64>(&mut rng);
+            let v: f64 = rand::RngExt::random::<f64>(&mut rng);
+            (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        };
+        let mut best_retired = 0u64;
+        for _ in 0..decisions {
+            let mut candidates = (0..k).map(|i| candidate_from(i, &[])).collect::<Vec<_>>();
+            let mut retired = Vec::new();
+            for iter in 1..=budget {
+                let shared = normal();
+                for candidate in candidates.iter_mut() {
+                    let mean = if candidate.play_index == 0 { gap } else { 0.0 };
+                    let value = mean + shared + normal();
+                    candidate.stats.update(value);
+                    candidate.objectives.push(value);
+                }
+                if iter % PRUNE_CADENCE == 0 && candidates.len() > 1 {
+                    retire_paired(&mut candidates, &mut retired, z);
+                }
+            }
+            if retired.iter().any(|candidate| candidate.play_index == 0) {
+                best_retired += 1;
+            }
+        }
+        best_retired as f64 / decisions as f64
+    }
+
+    #[test]
+    #[inline]
+    fn retire_paired_retires_the_first_of_two_tied_at_most_one_time_in_twenty() {
+        let decisions = 400;
+        let share = best_retired_share(2, 0.0, 256, decisions);
+        let bound = 0.05 + 3.0 * (0.05 * 0.95 / decisions as f64).sqrt();
+        assert!(share <= bound, "{share}");
+    }
+
     #[test]
     #[inline]
     fn retire_paired_keeps_survivors_in_order() {
