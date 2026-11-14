@@ -227,6 +227,24 @@ pub fn paired_z_among(budget: u64, candidates: usize) -> f64 {
 }
 
 #[inline]
+pub fn z_among(z: f64, candidates: usize) -> f64 {
+    let others = candidates.saturating_sub(1).max(1) as f64;
+    let (mut lo, mut hi) = (0.0f64, 0.5f64);
+    loop {
+        let mid = 0.5 * (lo + hi);
+        if mid <= lo || mid >= hi {
+            break;
+        }
+        if -normal_quantile(mid) > z {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    -normal_quantile(hi / others)
+}
+
+#[inline]
 pub fn paired_z(budget: u64) -> f64 {
     paired_z_among(budget, 2)
 }
@@ -2513,6 +2531,9 @@ mod tests {
         let z = paired_z(1000);
         assert!((z + normal_quantile(0.05 / 62.0)).abs() < 1e-12);
         assert!(3.1 < z && z < 3.2, "{z}");
+        assert!((z_among(z, 2) - z).abs() < 1e-8, "{}", z_among(z, 2));
+        assert!((z_among(z, 16) - paired_z_among(1000, 16)).abs() < 1e-8);
+        assert!((z_among(1.959_963_984_540_054, 1) - 1.959_963_984_540_054).abs() < 1e-8);
         let z = paired_z_among(1000, 16);
         assert!((z + normal_quantile(0.05 / (62.0 * 15.0))).abs() < 1e-12);
     }
