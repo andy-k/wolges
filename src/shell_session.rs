@@ -2084,18 +2084,16 @@ impl Session {
                     arm_tables,
                     self.run_letters()?,
                     &endgame_state,
-                    self.quiet,
                 )?;
-                let play = solver.best_move_to_win(
-                    endgame_state.turn,
-                    equity::Equity::new(lead),
-                    &endgame::Limits {
-                        time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
-                        states: None,
-                        memory: self.memory,
-                        clock: None,
-                    },
-                )?;
+                let limits = endgame::Limits {
+                    time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
+                    states: None,
+                    memory: self.memory,
+                    clock: None,
+                };
+                let play = listened(&mut solver, self.quiet, |solver| {
+                    solver.best_move_to_win(endgame_state.turn, equity::Equity::new(lead), &limits)
+                })?;
                 return Ok(play.ok_or("the solve found no move")?);
             }
         }
@@ -3132,14 +3130,13 @@ fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usi
 }
 
 // a solver of the side to move's endgame, once the bag is empty and both racks
-// are known, printing its progress unless quiet
+// are known
 fn endgame_solver(
     game_config: &'static game_config::GameConfig,
     kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
     run_letters: kwg::RunLetters,
     state: &game_state::GameState,
-    quiet: bool,
 ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
     if !state.bag.is_empty() {
         return Err("the bag is not empty, and an endgame needs it to be".into());
@@ -3158,13 +3155,22 @@ fn endgame_solver(
         state.pass_turns,
         state.zero_turns,
     );
-    if !quiet {
-        solver.report_progress(endgame_watch::ticking(|progress, elapsed| {
-            writeln!(std::io::stderr(), "endgame: {}", progress.after(elapsed))?;
-            Ok(())
-        }));
-    }
     Ok(solver)
+}
+
+fn listened<T>(
+    solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
+    quiet: bool,
+    f: impl FnOnce(&mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>) -> T,
+) -> T {
+    if quiet {
+        return f(solver);
+    }
+    let watch = endgame_watch::ticking(|progress, elapsed| {
+        writeln!(std::io::stderr(), "endgame: {}", progress.after(elapsed))?;
+        Ok(())
+    });
+    solver.listening(watch, f)
 }
 
 // solve the side to move's endgame, as endgame_solver makes it, within the
@@ -3181,8 +3187,10 @@ fn solve_endgame(
     endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
     endgame::Solved,
 )> {
-    let mut solver = endgame_solver(game_config, kwg, arm_tables, run_letters, state, quiet)?;
-    let solved = solver.solve_within(state.turn, limits)?;
+    let mut solver = endgame_solver(game_config, kwg, arm_tables, run_letters, state)?;
+    let solved = listened(&mut solver, quiet, |solver| {
+        solver.solve_within(state.turn, limits)
+    })?;
     Ok((solver, solved))
 }
 
