@@ -1289,6 +1289,7 @@ impl Session {
                         time: Some(std::time::Duration::from_secs_f64(seconds)),
                         states: None,
                         memory: self.memory,
+                        clock: None,
                     },
                     self.quiet,
                 )?;
@@ -2076,6 +2077,7 @@ impl Session {
                         time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
                         states: None,
                         memory: self.memory,
+                        clock: None,
                     },
                 )?;
                 return Ok(play.ok_or("the solve found no move")?);
@@ -5180,6 +5182,7 @@ mod tests {
                 time: Some(std::time::Duration::from_secs(5)),
                 states: None,
                 memory: None,
+                clock: None,
             },
             false,
         )
