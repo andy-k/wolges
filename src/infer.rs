@@ -1633,6 +1633,97 @@ mod tests {
 
     #[test]
     #[inline]
+    fn the_sheet_and_generating_each_rack_weigh_racks_alike() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let alphabet = game_config.alphabet();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let mut square = 0;
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                if square < 79 {
+                    board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+                    square += 1;
+                }
+            }
+        }
+        board_tiles[7 * 15 + 7] = board_tiles[2];
+        board_tiles.copy_within(3..79, 2);
+        board_tiles[78] = 0;
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let mut pool = game_config.tiles_off_board(&board_tiles).unwrap();
+        game_config.take_rack(&mut pool, &[26]).unwrap();
+        let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+        let mut tables = InferTables::new(&game_config, &klv).unwrap();
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        infer_sheet_for(
+            &mut move_generator,
+            &board_tiles,
+            SpellTables {
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &klv,
+                lat: &tables.lat,
+            },
+            &pool,
+            true,
+            (&mut tables.movegen_rack, &mut tables.blank_deltas),
+            &mut tables.sheet,
+        );
+        let ln_binom = LnBinom::new(pool_size);
+        let is = InferSheet {
+            lat: &tables.lat,
+            sheet: &tables.sheet,
+            leave: &tables.leave,
+            ln_binom: &ln_binom,
+        };
+        let mut one_t = vec![0u8; pool.len()];
+        one_t[20] = 1;
+        let none = vec![0u8; pool.len()];
+        let tiles = |which: usize| match which {
+            0 => MoveTiles::Placed(&one_t),
+            1 => MoveTiles::Placed(&none),
+            _ => MoveTiles::Exchanged(which * 3 - 5),
+        };
+        for (which, value) in [(0, 2_000), (1, 0), (2, 0), (4, 0)] {
+            let mut by_sheet = Vec::new();
+            weigh_racks(
+                &is,
+                &pool,
+                tiles(which),
+                value,
+                1,
+                &mut |rank, ln_prior, gap, kept| {
+                    by_sheet.push((rank, ln_prior.to_bits(), gap, kept));
+                },
+            );
+            assert!(by_sheet.iter().any(|&(_, _, gap, _)| gap != by_sheet[0].2));
+            let mut by_generation = Vec::new();
+            weigh_racks_by_generation::<true, _, _, _, true, true>(
+                &mut move_generator,
+                &board_snapshot,
+                &is,
+                &pool,
+                tiles(which),
+                value,
+                &mut |rank, ln_prior, gap, kept| {
+                    by_generation.push((rank, ln_prior.to_bits(), gap, kept));
+                },
+            );
+            assert_eq!(by_generation, by_sheet, "{which}");
+        }
+    }
+
+    #[test]
+    #[inline]
     fn each_prefix_of_size_cuts_the_tallies_where_it_is_told() {
         // the tallies of m tiles from a pool, walked prefix by prefix from any
         // letter k, are each_tally_of_size's in its order; k 0 is one prefix
