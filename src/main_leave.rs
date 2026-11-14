@@ -67,6 +67,79 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
     })
 }
 
+#[inline]
+fn census_snapshot_name(path: &str) -> Option<(String, usize)> {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    name.strip_prefix("census-gen-")
+        .and_then(|r| r.strip_suffix(".klv2"))
+        .and_then(|r| r.split_once('-'))
+        .filter(|(rid, _)| u64::from_str_radix(rid, 16).is_ok())
+        .and_then(|(rid, gg)| Some((rid.to_owned(), gg.parse::<usize>().ok()?)))
+}
+
+#[inline]
+fn part_path(path: &str) -> String {
+    format!("{path}.part")
+}
+
+#[inline]
+fn write_whole_new(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let part = part_path(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    if let Err(e) = std::fs::hard_link(&part, path) {
+        std::fs::remove_file(&part)?;
+        return Err(e);
+    }
+    std::fs::remove_file(&part)?;
+    let parent = match std::path::Path::new(path).parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => std::path::Path::new("."),
+    };
+    if let Ok(dir) = std::fs::File::open(parent) {
+        dir.sync_all()?;
+    }
+    Ok(())
+}
+
+#[inline]
+fn write_whole(desired: &str, bytes: &[u8]) -> error::Returns<String> {
+    if desired == "-" {
+        make_writer(desired)?.write_all(bytes)?;
+        return Ok(desired.to_owned());
+    }
+    write_whole_claimed(desired, bytes)
+}
+
+#[inline]
+fn write_whole_claimed(desired: &str, bytes: &[u8]) -> error::Returns<String> {
+    for n in 0u32.. {
+        let path = numbered_output_path(desired, n);
+        match write_whole_new(&path, bytes) {
+            Ok(()) => {
+                if n != 0 {
+                    writeln!(
+                        boxed_stdout_or_stderr(),
+                        "warning: {desired} already exists; writing {path} instead"
+                    )?;
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    unreachable!()
+}
+
 // the given seed, else one drawn from the system
 #[inline]
 fn seed_or_random(seed: Option<u64>) -> error::Returns<u64> {
@@ -86,35 +159,32 @@ fn run_stamp() -> String {
 }
 
 #[inline]
-fn claim_output_path(desired: &str) -> std::io::Result<String> {
-    use std::fmt::Write as _;
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(desired)
-    {
-        Ok(_) => return Ok(desired.to_owned()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
+fn numbered_output_path(desired: &str, n: u32) -> String {
+    if n == 0 {
+        return desired.to_owned();
     }
-
     let dot = desired.rfind('.').unwrap_or(desired.len());
     let (stem, ext) = (&desired[..dot], &desired[dot..]);
-    let mut buf = String::with_capacity(desired.len() + 4);
-    for n in 1u32.. {
-        buf.clear();
-        let _ = write!(buf, "{stem}_{n}{ext}");
+    format!("{stem}_{n}{ext}")
+}
+
+#[inline]
+fn claim_output_path(desired: &str) -> std::io::Result<String> {
+    for n in 0u32.. {
+        let path = numbered_output_path(desired, n);
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&buf)
+            .open(&path)
         {
             Ok(_) => {
-                writeln!(
-                    boxed_stdout_or_stderr(),
-                    "warning: {desired} already exists; writing {buf} instead"
-                )?;
-                return Ok(buf);
+                if n != 0 {
+                    writeln!(
+                        boxed_stdout_or_stderr(),
+                        "warning: {desired} already exists; writing {path} instead"
+                    )?;
+                }
+                return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -3370,14 +3440,13 @@ fn census_sheet_reuse_plan(board_counts: &[u64]) -> (Vec<usize>, usize) {
 }
 
 #[inline]
-fn write_census_klv2(
+fn census_klv2_bytes(
     lat: &census::MultisetLattice,
     value_mp: &dyn Fn(usize) -> f64,
     baseline_mp: f64,
     is_valued: &dyn Fn(usize) -> bool,
     full: bool,
-    path: &str,
-) -> error::Returns<usize> {
+) -> error::Returns<(Vec<u8>, usize)> {
     let rack_size = lat.rack_size();
 
     let max_keep = if full {
@@ -3453,8 +3522,7 @@ fn write_census_klv2(
         w += 4;
     }
     assert_eq!(w, bin.len());
-    make_writer(path)?.write_all(&bin)?;
-    Ok(leave_values.len())
+    Ok((bin, leave_values.len()))
 }
 
 struct CensusParams {
@@ -3731,6 +3799,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // leaves, and which of them its generations valued
     let continued = match &continue_state {
         Some(path) => {
+            if path.ends_with(".part") {
+                wolges::return_error!(format!("{path} is a part file, not a census state"))
+            }
             let st = census_state_from_bytes(&std::fs::read(path)?, path)?;
             if seed.is_some_and(|s| s != st.seed) {
                 return Err(format!("a continued census keeps its seed, {}", st.seed).into());
@@ -3814,17 +3885,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut tally_buf = vec![0u8; num_letters];
 
     let (start_gen, census_run_epoch, resumed) = if let Some(path) = resume {
-        let name = std::path::Path::new(&path)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let Some((rid, num)) = name
-            .strip_prefix("census-gen-")
-            .and_then(|r| r.strip_suffix(".klv2"))
-            .and_then(|r| r.split_once('-'))
-            .filter(|(rid, _)| u64::from_str_radix(rid, 16).is_ok())
-            .and_then(|(rid, gg)| Some((rid.to_owned(), gg.parse::<usize>().ok()?)))
-        else {
+        let Some((rid, num)) = census_snapshot_name(&path) else {
             wolges::return_error!(format!(
                 "--resume wants a census-gen-<stamp>-<generation>.klv2 snapshot, got {path}"
             ))
@@ -4363,32 +4424,27 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             let lv = leave_lock.read().unwrap();
                             let desired =
                                 format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
-                            let p = claim_output_path(&desired).unwrap_or(desired);
-                            match write_census_klv2(
+                            let p = match census_klv2_bytes(
                                 &lat,
                                 &|i| lv[i] as f64,
                                 0.0,
                                 &|i| ever[i],
                                 true, // resume snapshots stay full
-                                &p,
-                            ) {
-                                Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
+                            )
+                            .and_then(|(bin, nk)| Ok((write_whole_claimed(&desired, &bin)?, nk)))
+                            {
+                                Ok((p, nk)) => { writeln!(boxed_stdout_or_stderr(),
  "census: persisted gen {} -> {p} ({nk} leaves)",
-                                    gen_idx + 1).ok(); },
+                                    gen_idx + 1).ok(); p },
                                 Err(e) => { writeln!(boxed_stdout_or_stderr(),
  "census: gen {} klv2 persist failed: {e}",
-                                    gen_idx + 1).ok(); },
-                            }
+                                    gen_idx + 1).ok(); desired },
+                            };
                             let q = census_means_path(&p);
                             let bytes =
                                 census_means_bytes(&lat, &ever, &leave_exact.lock().unwrap());
-                            match std::fs::OpenOptions::new()
-                                .write(true)
-                                .create_new(true)
-                                .open(&q)
-                                .and_then(|mut f| f.write_all(&bytes))
-                            {
-                                Ok(()) => { writeln!(boxed_stdout_or_stderr(),
+                            match write_whole(&q, &bytes) {
+                                Ok(q) => { writeln!(boxed_stdout_or_stderr(),
  "census: persisted gen {} means -> {q}",
                                     gen_idx + 1).ok(); },
                                 Err(e) => { writeln!(boxed_stdout_or_stderr(),
@@ -4480,7 +4536,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         baseline / equity::SCALE as f64,
     )?;
 
-    let klv_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.klv2"))?;
     let is_valued = |idx: usize| {
         if multigen {
             ever[idx]
@@ -4488,7 +4543,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             accum_cnt[idx] > 0
         }
     };
-    let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, full, &klv_name)?;
+    let (klv_bin, n_klv) = census_klv2_bytes(&lat, &value_mp, baseline, &is_valued, full)?;
+    let klv_name =
+        write_whole_claimed(&format!("census-leaves-{census_run_epoch}.klv2"), &klv_bin)?;
     writeln!(
         boxed_stdout_or_stderr(),
         "census: wrote klv2 to {klv_name} ({n_klv} leaves)"
@@ -4582,17 +4639,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             }
             (leave, exact, accum_cnt.iter().map(|&c| c > 0).collect())
         };
-        let state_name = claim_output_path(&format!("census-state-{census_run_epoch}.bin"))?;
-        make_writer(&state_name)?.write_all(&census_state_bytes(&CensusState {
-            num_letters,
-            rack_size,
-            freqs: base_freqs,
-            seed,
-            gens: gens as u64,
-            leave,
-            exact,
-            ever,
-        }))?;
+        let state_name = write_whole_claimed(
+            &format!("census-state-{census_run_epoch}.bin"),
+            &census_state_bytes(&CensusState {
+                num_letters,
+                rack_size,
+                freqs: base_freqs,
+                seed,
+                gens: gens as u64,
+                leave,
+                exact,
+                ever,
+            }),
+        )?;
         writeln!(
             boxed_stdout_or_stderr(),
             "census: wrote its state after {gens} {} to {state_name}",
@@ -9056,14 +9115,14 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         if baseline.is_nan() {
             return Err("the tiles not on the board cannot fill a rack".into());
         }
-        let written = write_census_klv2(
+        let (bin, written) = census_klv2_bytes(
             lat,
             &|idx| value[idx],
             baseline,
             &|idx| !value[idx].is_nan(),
             false,
-            path,
         )?;
+        let path = write_whole(path, &bin)?;
         writeln!(
             std::io::stdout(),
             "dynamic leaves: wrote {written} to {path}, keeping nothing worth {:.3}",
@@ -10824,5 +10883,91 @@ WCMP_P1_SCORE 402.000000
         each_mangling(tiles.as_bytes(), &mut rng, &mut |b| {
             let _ = alphabet::Alphabet::new_static_from_text(&String::from_utf8_lossy(b));
         });
+    }
+
+    #[test]
+    fn a_resume_takes_no_part_file() {
+        assert_eq!(
+            census_snapshot_name("dir/census-gen-6ae6-04.klv2"),
+            Some(("6ae6".to_owned(), 4))
+        );
+        let part = part_path("dir/census-gen-6ae6-04.klv2");
+        assert_eq!(part, "dir/census-gen-6ae6-04.klv2.part");
+        assert_eq!(census_snapshot_name(&part), None);
+        assert_eq!(
+            census_means_path("dir/census-gen-6ae6-04.klv2"),
+            "dir/census-gen-6ae6-04.means"
+        );
+    }
+
+    fn write_whole_dir(name: &str) -> String {
+        let dir = format!(
+            "{}/target/write_whole-{}-{name}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_whole_steps_past_an_empty_target() {
+        let dir = write_whole_dir("empty");
+        let path = format!("{dir}/out");
+        std::fs::write(&path, b"").unwrap();
+        let got = write_whole(&path, b"abc").unwrap();
+        assert_eq!(got, format!("{dir}/out_1"));
+        assert_eq!(std::fs::read(&got).unwrap(), b"abc");
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        assert!(!std::path::Path::new(&part_path(&path)).exists());
+        assert!(!std::path::Path::new(&part_path(&got)).exists());
+        std::fs::remove_file(&got).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_whole_steps_past_a_stale_part() {
+        let dir = write_whole_dir("stale");
+        let path = format!("{dir}/out");
+        let part = part_path(&path);
+        std::fs::write(&part, b"old").unwrap();
+        let got = write_whole(&path, b"abc").unwrap();
+        assert_eq!(got, format!("{dir}/out_1"));
+        assert_eq!(std::fs::read(&got).unwrap(), b"abc");
+        assert_eq!(std::fs::read(&part).unwrap(), b"old");
+        assert!(!std::path::Path::new(&path).exists());
+        std::fs::remove_file(&got).unwrap();
+        std::fs::remove_file(&part).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_whole_leaves_only_the_whole_target() {
+        let dir = write_whole_dir("whole");
+        let path = format!("{dir}/out");
+        assert_eq!(write_whole(&path, b"abc").unwrap(), path);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        assert!(!std::path::Path::new(&part_path(&path)).exists());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_whole_claimed_steps_past_a_target_and_a_part() {
+        let dir = write_whole_dir("claimed");
+        let path = format!("{dir}/out.bin");
+        let taken = format!("{dir}/out_1.bin");
+        std::fs::write(&path, b"").unwrap();
+        std::fs::write(part_path(&taken), b"old").unwrap();
+        let got = write_whole_claimed(&path, b"abc").unwrap();
+        assert_eq!(got, format!("{dir}/out_2.bin"));
+        assert_eq!(std::fs::read(&got).unwrap(), b"abc");
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        assert!(!std::path::Path::new(&part_path(&got)).exists());
+        std::fs::remove_file(&got).unwrap();
+        std::fs::remove_file(part_path(&taken)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
     }
 }
