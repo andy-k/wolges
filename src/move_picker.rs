@@ -340,7 +340,7 @@ fn limit_surviving_candidates(
 // 5250 / (share + 200), six fewer with a blank off, fit by the clock on two to
 // eight threads with budgets of 100 to 3000
 #[inline]
-fn late_graph_pays(bag: usize, blank_off_board: bool, budget: u64, threads: usize) -> bool {
+pub fn late_graph_pays(bag: usize, blank_off_board: bool, budget: u64, threads: usize) -> bool {
     if threads <= 1 {
         let blank_shift = if blank_off_board { 7.0 } else { 0.0 };
         return bag as f64 <= 25.0 - 3000.0 / (budget as f64 + 200.0) - blank_shift;
