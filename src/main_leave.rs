@@ -10647,4 +10647,116 @@ WCMP_P1_SCORE 402.000000
             "{known} known, {unknown} unknown"
         );
     }
+
+    fn each_mangling(
+        seed: &[u8],
+        rng: &mut rand_xoshiro::Xoshiro256PlusPlus,
+        f: &mut impl FnMut(&[u8]),
+    ) {
+        for len in 0..=seed.len() {
+            f(&seed[..len]);
+        }
+        let mut buf = seed.to_vec();
+        for at in 0..buf.len() {
+            for b in [0u8, 1, 0x7f, 0x80, 0xff, buf[at] ^ 1] {
+                let was = buf[at];
+                buf[at] = b;
+                f(&buf);
+                buf[at] = was;
+            }
+        }
+        for _ in 0..seed.len() {
+            let mut buf = seed[..rng.random_range(0..=seed.len())].to_vec();
+            for _ in 0..rng.random_range(1..=buf.len().max(1)) {
+                if let Some(at) = (!buf.is_empty()).then(|| rng.random_range(0..buf.len())) {
+                    buf[at] = rng.random();
+                }
+            }
+            f(&buf);
+            let noise = (0..rng.random_range(0..=seed.len()))
+                .map(|_| rng.random())
+                .collect::<Vec<u8>>();
+            f(&noise);
+        }
+    }
+
+    #[test]
+    fn readers_refuse_mangled_bytes_without_a_panic() {
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
+        let mut words = [&[1u8, 20][..], &[5, 1, 20], &[20, 5, 1], &[1], &[3, 1, 20]]
+            .iter()
+            .map(|&word| word.into())
+            .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        assert!(kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).is_ok());
+        each_mangling(&kwg_bytes, &mut rng, &mut |b| {
+            let _ = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(b);
+            let _ = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b);
+        });
+
+        let leaves_kwg = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let mut klv_bytes = Vec::new();
+        klv_bytes.extend_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+        klv_bytes.extend_from_slice(&leaves_kwg);
+        klv_bytes.extend_from_slice(&(words.len() as u32).to_le_bytes());
+        for v in 0..words.len() {
+            klv_bytes.extend_from_slice(&(v as f32 - 2.5).to_le_bytes());
+        }
+        assert!(klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes).is_ok());
+        each_mangling(&klv_bytes, &mut rng, &mut |b| {
+            let _ = klv::Klv::<kwg::Node24>::from_bytes_alloc(b);
+            let _ = klv::Klv::<kwg::Node22>::from_bytes_alloc(b);
+        });
+
+        let mut acc = win_pct::WinPctAccumulator::new();
+        for &v in &[-120, -40, -5, 0, 5, 40, 120] {
+            acc.record(50, 7, 7, 0, v);
+            acc.record(80, 7, 6, 3, v / 2 + 3);
+        }
+        let mut csv = Vec::new();
+        acc.to_csv(&mut csv).unwrap();
+        assert!(win_pct::WinPctTable::from_csv(&csv[..]).is_ok());
+        each_mangling(&csv, &mut rng, &mut |b| {
+            let _ = win_pct::WinPctTable::from_csv(b);
+        });
+
+        let lat = census::MultisetLattice::new(3, 2).unwrap();
+        let st = CensusState {
+            num_letters: 3,
+            rack_size: 2,
+            freqs: vec![2, 3, 4],
+            seed: 7,
+            gens: 2,
+            leave: (0..lat.len() as i32).collect(),
+            exact: (0..lat.len()).map(|i| i as f64 * 0.5).collect(),
+            ever: (0..lat.len()).map(|i| i % 2 == 0).collect(),
+        };
+        let state_bytes = census_state_bytes(&st);
+        assert!(census_state_from_bytes(&state_bytes, "state").is_ok());
+        each_mangling(&state_bytes, &mut rng, &mut |b| {
+            let _ = census_state_from_bytes(b, "state");
+        });
+
+        let mut tiles = String::from("?\t?\t2\t0\t0\t0\t0\n");
+        for i in 1..5 {
+            tiles.push_str(&format!("T{i}\tt{i}\t1\t{i}\t0\t0\t0\n"));
+        }
+        assert!(alphabet::Alphabet::new_static_from_text(&tiles).is_ok());
+        each_mangling(tiles.as_bytes(), &mut rng, &mut |b| {
+            let _ = alphabet::Alphabet::new_static_from_text(&String::from_utf8_lossy(b));
+        });
+    }
 }
