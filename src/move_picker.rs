@@ -1803,10 +1803,13 @@ impl<
         let threads = 1;
         let (tables, infer_generator) = match &mut self.infer {
             Some(infer) => infer,
-            infer @ None => infer.insert((
-                infer::InferTables::new(self.game_config, self.klv)?,
-                movegen::KurniaMoveGenerator::new(self.game_config),
-            )),
+            infer @ None => {
+                self.game_config.supports(game_config::Op::Inference)?;
+                infer.insert((
+                    infer::InferTables::new(self.game_config, self.klv)?,
+                    movegen::KurniaMoveGenerator::new(self.game_config),
+                ))
+            }
         };
         infer::kept_leaves(
             tables,

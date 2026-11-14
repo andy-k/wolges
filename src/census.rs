@@ -2,7 +2,7 @@
 
 pub const UNPLAYABLE: i32 = i32::MIN / 2;
 
-const MAX_LETTERS: usize = 64;
+pub const MAX_LETTERS: usize = 64;
 
 pub struct MultisetLattice {
     num_letters: usize,
@@ -12,14 +12,22 @@ pub struct MultisetLattice {
     steps: RankSteps,
 }
 
+#[inline]
+pub fn check_letters(num_letters: usize) -> crate::error::Returns<()> {
+    if !(1..=MAX_LETTERS).contains(&num_letters) {
+        return Err(
+            format!("a census counts 1 to {MAX_LETTERS} letters, not {num_letters}").into(),
+        );
+    }
+    Ok(())
+}
+
 impl MultisetLattice {
+    // num_letters must have passed check_letters where its tool sets up (an
+    // inference's, by GameConfig::supports(Op::Inference)), as this is made
+    // for each inference
     #[inline(always)]
     pub fn new(num_letters: usize, rack_size: usize) -> crate::error::Returns<Self> {
-        if !(1..=MAX_LETTERS).contains(&num_letters) {
-            return Err(
-                format!("a census counts 1 to {MAX_LETTERS} letters, not {num_letters}").into(),
-            );
-        }
         let n_max = rack_size + num_letters;
 
         let pascal = crate::prob::Pascal::with_rows(n_max + 1);
@@ -1536,10 +1544,12 @@ mod tests {
     #[test]
     #[inline]
     fn a_lattice_counts_one_to_sixty_four_letters() {
-        assert!(MultisetLattice::new(0, 7).is_err());
+        assert!(check_letters(0).is_err());
+        assert!(check_letters(1).is_ok());
+        assert!(check_letters(64).is_ok());
+        assert!(check_letters(65).is_err());
         assert!(MultisetLattice::new(1, 7).is_ok());
         assert!(MultisetLattice::new(64, 1).is_ok());
-        assert!(MultisetLattice::new(65, 1).is_err());
         assert!(MultisetLattice::new(64, 255).is_err());
     }
 

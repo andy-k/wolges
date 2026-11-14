@@ -1207,6 +1207,7 @@ fn run(
             }
         }
         Task::Racks(a) => {
+            game_config.supports(game_config::Op::Tables)?;
             let klv = read_klv(&game_config, &a.klv)?;
             let table = racks::RackTable::build(&klv, &game_config, threads)?;
             let mut out = std::io::BufWriter::new(std::fs::File::create(&a.out)?);
@@ -3920,6 +3921,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
 
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     writeln!(
@@ -7202,6 +7204,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let phase = BoardPhase::of_board(&board_tiles, &game_config);
     let unseen_tally = game_config.tiles_off_board(&board_tiles)?;
     let unseen: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let can_exchange =
         bag_size(&board_tiles, &game_config) >= game_config.exchange_tile_limit() as i64;
@@ -7617,6 +7620,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
             params.play
         ));
     }
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
@@ -7838,6 +7842,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     writeln!(std::io::stdout(), "seed: {seed}")?;
     let num_letters = game_config.alphabet().len() as usize;
     let rack_size = game_config.rack_size() as usize;
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
@@ -8300,6 +8305,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     for line in board_lines(&std::fs::read_to_string(boards_path)?) {
         boards.push(fen_parser.parse(line)?.to_vec());
     }
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
@@ -8533,6 +8539,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     writeln!(std::io::stdout(), "seed: {seed}")?;
     let num_letters = game_config.alphabet().len() as usize;
     let rack_size = game_config.rack_size() as usize;
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
@@ -8802,6 +8809,7 @@ fn lattice_leaves<L: kwg::Node>(
     rack_size: usize,
     threads: usize,
 ) -> error::Returns<(census::MultisetLattice, census::AddTable, Vec<i32>)> {
+    census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let full_v = full_rack_values(&lat, klv)?;
     let add = census::AddTable::new_with_threads(&lat, threads);
@@ -9582,6 +9590,7 @@ fn compare_seats<
         if matches!(p0_picker, SeatPicker::Dynamic) || matches!(p1_picker, SeatPicker::Dynamic) {
             let num_letters = game_config.alphabet().len() as usize;
             let rack_size = game_config.rack_size() as usize;
+            census::check_letters(num_letters)?;
             let lat = census::MultisetLattice::new(num_letters, rack_size)?;
             let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
                 SeatPicker::Dynamic => full_rack_values(&lat, klv),

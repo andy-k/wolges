@@ -714,6 +714,7 @@ pub struct InferTables {
 }
 
 impl InferTables {
+    // the game config must have passed supports(Op::Inference) at init
     pub fn new<L: kwg::Node>(
         game_config: &game_config::GameConfig,
         klv: &klv::Klv<L>,
