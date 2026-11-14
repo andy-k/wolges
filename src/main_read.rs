@@ -1726,6 +1726,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
     make_alphabet: AlphabetMaker,
 ) -> error::Returns<()> {
     match task {
+        Task::Hash { input, out } => {
+            let bytes = read_to_end(&mut make_reader(&input)?)?;
+            let mut hasher = fash::MyHasher::default();
+            std::hash::Hasher::write(&mut hasher, &bytes);
+            writeln!(
+                make_writer(&out)?,
+                "{input:?}[{} bytes {:016x}]",
+                bytes.len(),
+                std::hash::Hasher::finish(&hasher)
+            )?;
+            Ok(())
+        }
         Task::Klv { klv, leaves, out } => {
             // klv16: same as klv1, but scales by 8.0 instead of 256.0.
             // for use with olaugh/magpie-retro.
@@ -3025,6 +3037,13 @@ impl WordGraph {
 
 #[derive(clap::Subcommand)]
 enum Task {
+    #[command(about = "print a file's length and digest, as a run line prints them")]
+    Hash {
+        #[arg(help = "the file to hash (- for stdin)")]
+        input: String,
+        #[arg(default_value = "-", help = "where to write the digest")]
+        out: String,
+    },
     #[command(about = "read klv/klv2 file")]
     Klv {
         #[arg(
