@@ -781,10 +781,11 @@ impl<
     // board, found once an iteration lane by lane, best first, as far as a
     // candidate needs them (exchanges apart, a forced pass ending them); the
     // lanes the zone touches are generated on the board as it is, with the
-    // exchanges, and a forced pass when nothing else. The better of the two by
-    // equity, then by the play's own order, is what a whole generation keeps,
-    // since of equal equities it keeps the smaller play whichever it finds
-    // first; a forced pass yields to any play.
+    // exchanges unless ply 1 is past the horizon, and a forced pass when
+    // nothing else. The better of the two by equity, then by the play's own
+    // order, is what a whole generation keeps, since of equal equities it
+    // keeps the smaller play whichever it finds first; a forced pass yields to
+    // any play.
     #[inline]
     fn reply_at_ply_one<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -871,8 +872,11 @@ impl<
             },
             rack: &self.game_state.players[self.game_state.turn as usize].rack,
             max_gen: 1,
-            num_exchanges_by_this_player: self.game_state.players[self.game_state.turn as usize]
-                .num_exchanges,
+            num_exchanges_by_this_player: if self.num_sim_plies == 0 {
+                game_config.exchanges_allowed_per_player()
+            } else {
+                self.game_state.players[self.game_state.turn as usize].num_exchanges
+            },
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         };
@@ -1317,6 +1321,52 @@ mod tests {
             );
             assert_eq!(simmer.game_state.bag.len(), bag_len, "{bag_len}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_reply_past_its_horizon_with_a_small_bag_never_exchanges() {
+        // with no words each seat could only exchange or pass; full racks let
+        // the generator count the bag from the board
+        let mut game_config = game_config::make_english_game_config();
+        let game_config::GameConfig::Static(rules) = &mut game_config;
+        rules.num_passes_to_end = 0;
+        rules.num_zeros_to_end = 0;
+        let rack_size = game_config.rack_size() as usize;
+        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let mut game_state = a_bag_emptied_onto_the_board(&game_config);
+        let on_board = game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+        let taken = on_board + 3 - 3 * rack_size..on_board;
+        let mut tiles = game_state.board_tiles[taken.clone()].to_vec();
+        game_state.board_tiles[taken].fill(0);
+        game_state
+            .bag
+            .set_from_iter(tiles.split_off(2 * rack_size - 3));
+        let opponent_tiles = tiles.split_off(rack_size - 2);
+        game_state.players[0].rack.extend_from_slice(&tiles);
+        game_state.players[1]
+            .rack
+            .extend_from_slice(&opponent_tiles);
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.reseed(5);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(0, false, &[]));
+        simmer.prepare_iteration();
+        simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+            .unwrap();
+        assert!(simmer.reply_equity().is_some());
+        assert!(
+            simmer
+                .game_state
+                .players
+                .iter()
+                .all(|player| player.num_exchanges == 0)
+        );
     }
 
     #[test]
