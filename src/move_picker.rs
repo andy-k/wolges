@@ -289,6 +289,17 @@ pub fn paired_difference(
 // out: its objective minus the leader's is below 0 even at the top of its
 // interval
 #[inline]
+pub fn student_t_of_normal_by_abramowitz_stegun_26_7_5(z: f64, degrees_of_freedom: f64) -> f64 {
+    let x2 = z * z;
+    let g1 = (x2 + 1.0) * z / 4.0;
+    let g2 = ((5.0 * x2 + 16.0) * x2 + 3.0) * z / 96.0;
+    let g3 = (((3.0 * x2 + 19.0) * x2 + 17.0) * x2 - 15.0) * z / 384.0;
+    let g4 = ((((79.0 * x2 + 776.0) * x2 + 1482.0) * x2 - 1920.0) * x2 - 945.0) * z / 92160.0;
+    let v = degrees_of_freedom;
+    z + (g1 + (g2 + (g3 + g4 / v) / v) / v) / v
+}
+
+#[inline]
 pub fn behind_paired(
     objectives: &[f64],
     first_iter: u64,
@@ -297,7 +308,8 @@ pub fn behind_paired(
     z: f64,
 ) -> bool {
     let diff = paired_difference(objectives, first_iter, lead_objectives, lead_first_iter);
-    diff.count() >= 2.0 && diff.ci_max(z) < 0.0
+    let n = diff.count();
+    n >= 2.0 && diff.ci_max(student_t_of_normal_by_abramowitz_stegun_26_7_5(z, n - 1.0)) < 0.0
 }
 
 // compare each candidate with the leader (the highest mean) on the iterations
@@ -2423,6 +2435,20 @@ mod tests {
                 paired_z_among(budget, candidates)
             });
             assert!(share <= bound, "{k}: {share}");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn student_t_matches_known_values() {
+        for (p, df, t) in [
+            (0.975, 15.0, 2.131_449_545_559),
+            (0.9995, 15.0, 4.072_765_195_915),
+            (0.975, 63.0, 1.998_340_542_520),
+            (0.9999, 255.0, 3.773_802_433_763),
+        ] {
+            let found = student_t_of_normal_by_abramowitz_stegun_26_7_5(normal_quantile(p), df);
+            assert!((found - t).abs() / t < 1e-3, "{p} {df}: {found}");
         }
     }
 
