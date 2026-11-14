@@ -478,7 +478,7 @@ fn run_batch<N: kwg::Node>(
         egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
         reserve_table(&mut egs, solving);
         let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| {
-            egs.solve_within(player, &solving.limits)
+            egs.solve_within_on_threads(player, &solving.limits, solving.threads)
         };
         let solved = if solving.quiet {
             solve(&mut egs)
@@ -538,7 +538,8 @@ struct Cli {
     lean: bool,
     #[arg(
         long,
-        help = "worker threads with two or more tiles in the bag [default: every core]"
+        help = "worker threads; with no tile in the bag, only with no time or state limit \
+                [default: every core]"
     )]
     threads: Option<std::num::NonZeroUsize>,
     #[arg(
@@ -1872,7 +1873,7 @@ fn solve_position<N: kwg::Node>(
                 solving.scoreless[0],
                 solving.scoreless[1],
             );
-            let solved = egs.evaluate(0, &solving.limits)?;
+            let solved = egs.evaluate_on_threads(0, &solving.limits, solving.threads)?;
             if let Some(future_margin) = solved.value {
                 let total_margin =
                     equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
