@@ -11169,7 +11169,7 @@ impl RcsGeometry<'_> {
     // the shadow pass's anchors, in its order (a lane holds at most 64 squares,
     // so a walk at most 64 taken); the lists are the caller's, made once for
     // every lane (a walk reads only the entries it wrote), their hooks set here
-    #[inline(always)]
+    #[inline(never)]
     fn find(&mut self, lists: &mut RcsLists) {
         assert!(self.tiles.len() <= u64::BITS as usize);
         lists.hooks = self
