@@ -664,6 +664,7 @@ struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool> {
     bounds_at: usize,               // the popped lean placement's block, or usize::MAX
     used_letters_tally: Vec<u8>,
     jumbled: JumbledMultisets,                  // jumbled mode only
+    pool: PoolScratch,                          // the pool walks'
     used_tile_scores_shadowl: ShadowScores,     // for shadow_play_left, premultiplied by SCALE
     used_tile_scores_shadowr: ShadowScores,     // for shadow_play_right, premultiplied by SCALE
     rack_tally_shadowl: [u8; MAX_ALPHABET_LEN], // for shadow_play_left
@@ -763,6 +764,7 @@ impl<G: LaneBits, const BAG_TERM: bool> Clone for WorkingBuffer<G, BAG_TERM> {
             bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
             jumbled: self.jumbled.clone(),
+            pool: PoolScratch::default(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl,
@@ -1007,6 +1009,7 @@ impl<G: LaneBits, const BAG_TERM: bool> WorkingBuffer<G, BAG_TERM> {
             bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
             jumbled: JumbledMultisets::new(),
+            pool: PoolScratch::default(),
             used_tile_scores_shadowl: ShadowScores::new(),
             used_tile_scores_shadowr: ShadowScores::new(),
             rack_tally_shadowl: [0u8; MAX_ALPHABET_LEN],
@@ -5499,6 +5502,11 @@ struct JumbledMultisets {
     seen: u64,
 }
 
+#[derive(Clone, Default)]
+struct PoolScratch {
+    walked: Vec<u8>,
+}
+
 const JUMBLED_EVERY_ARRANGEMENT: u8 = 0;
 const JUMBLED_ONCE_PER_SCORE: u8 = 1;
 const JUMBLED_ONCE_PER_RACK_TILES: u8 = 2;
@@ -8565,6 +8573,22 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         );
     }
 
+    // the rack a pool's walk takes, at most a rack's of each tile, tallied in
+    // tally, in the generator's own buffer; None where it found no room
+    fn pool_rack(&mut self, pool: &[u8], rack_size: u8, tally: &mut [u8]) -> Option<Vec<u8>> {
+        for &tile in pool {
+            tally[tile as usize] = tally[tile as usize].saturating_add(1);
+        }
+        let mut walked = std::mem::take(&mut self.working_buffer.pool.walked);
+        walked.clear();
+        walked.extend(
+            (0u8..).zip(tally.iter()).flat_map(|(tile, &count)| {
+                std::iter::repeat_n(tile, count.min(rack_size) as usize)
+            }),
+        );
+        Some(walked)
+    }
+
     pub fn pool_plays_through<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -8613,6 +8637,65 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
                 },
             );
         }
+    }
+
+    pub fn pool_plays_spans_through_top<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (row, col): (i8, i8),
+        most: usize,
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) {
+        let game_config = board_snapshot.game_config;
+        if !matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+            self.pool_plays_spans_through(board_snapshot, pool, (row, col), found);
+            return;
+        }
+        let rack_size = game_config.rack_size();
+        let mut tally = [0u8; MAX_ALPHABET_LEN];
+        let tally = &mut tally[..game_config.alphabet().len() as usize];
+        let Some(walked) = self.pool_rack(pool, rack_size, tally) else {
+            return;
+        };
+        let params = GenMovesParams {
+            board_snapshot,
+            rack: &walked,
+            max_gen: most,
+            num_exchanges_by_this_player: i16::MAX,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        let walk = self.working_buffer.jumbled.walk;
+        for (lanes, through) in [((1u128 << row, 0), col), ((0, 1u128 << col), row)] {
+            self.working_buffer.lane_rows = G::of_u128(lanes.0);
+            self.working_buffer.lane_cols = G::of_u128(lanes.1);
+            self.working_buffer.jumbled.walk = JUMBLED_ONCE_PER_RACK_TILES;
+            self.working_buffer.jumbled.through = Some(through);
+            self.gen_sheet_impl(
+                &params,
+                PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                    let (along, at) = if down { (col, row) } else { (row, col) };
+                    let kept = word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize
+                        && lane == along
+                        && at >= idx
+                        && word.get((at - idx) as usize).is_some_and(|&tile| tile != 0);
+                    if kept {
+                        found(down, lane, idx, word, score);
+                    }
+                    kept
+                }),
+                klv::AdjustLeave::Identity,
+                EquityPredicate::AcceptAll,
+                false,
+            );
+            self.working_buffer.jumbled.through = None;
+            self.working_buffer.jumbled.walk = walk;
+            self.working_buffer.lane_rows = !G::from(0);
+            self.working_buffer.lane_cols = !G::from(0);
+        }
+        self.working_buffer.pool.walked = walked;
+        self.plays.clear();
     }
 
     pub fn pool_plays_window<N: kwg::Node, L: kwg::Node>(
@@ -16258,6 +16341,30 @@ mod tests {
                             want.sort_unstable();
                             spans.sort_unstable();
                             assert_eq!(spans, want, "{jumbled} {step} {pool:?} {row} {col}");
+                            let rank = |a: &Found, b: &Found| {
+                                (b.4, a.0, a.1, a.2, &a.3).cmp(&(a.4, b.0, b.1, b.2, &b.3))
+                            };
+                            want.sort_unstable_by(rank);
+                            for most in [1, 3, 10] {
+                                let mut top = Vec::<Found>::new();
+                                generator.pool_plays_spans_through_top(
+                                    &board_snapshot,
+                                    pool,
+                                    (row, col),
+                                    most,
+                                    |down, lane, idx, word, score| {
+                                        top.push((down, lane, idx, word.to_vec(), score));
+                                    },
+                                );
+                                top.sort_unstable_by(rank);
+                                top.truncate(most);
+                                let mut wanted = want.clone();
+                                wanted.truncate(most);
+                                assert_eq!(
+                                    top, wanted,
+                                    "{jumbled} {step} {pool:?} {row} {col} {most}"
+                                );
+                            }
                             squares_with_plays += usize::from(!want.is_empty());
                         }
                     }
