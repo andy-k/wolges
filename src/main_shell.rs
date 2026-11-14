@@ -15,7 +15,7 @@ use std::io::Write;
     version = wolges::VERSION
 )]
 struct Cli {
-    #[arg(long, help = "print no progress")]
+    #[arg(long, help = "print no progress (until progress on)")]
     quiet: bool,
     #[arg(
         long,
