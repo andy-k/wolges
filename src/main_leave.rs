@@ -203,13 +203,67 @@ fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     }
 }
 
+static INPUT_DIGESTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[inline]
+fn note_input(path: &str, len: usize, hasher: &wolges::fash::MyHasher) {
+    let digest = format!(
+        "{path:?}[{len} bytes {:016x}]",
+        std::hash::Hasher::finish(hasher)
+    );
+    if let Ok(mut digests) = INPUT_DIGESTS.lock() {
+        digests.push(digest);
+    }
+}
+
+#[inline]
+fn read_input(path: &str) -> Result<Vec<u8>, std::io::Error> {
+    let bytes = std::fs::read(path)?;
+    let mut hasher = wolges::fash::MyHasher::default();
+    std::hash::Hasher::write(&mut hasher, &bytes);
+    note_input(path, bytes.len(), &hasher);
+    Ok(bytes)
+}
+
+struct DigestReader<R: std::io::Read> {
+    path: String,
+    inner: R,
+    len: usize,
+    hasher: wolges::fash::MyHasher,
+}
+
+impl<R: std::io::Read> std::io::Read for DigestReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        std::hash::Hasher::write(&mut self.hasher, &buf[..n]);
+        self.len += n;
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Read> Drop for DigestReader<R> {
+    fn drop(&mut self) {
+        note_input(&self.path, self.len, &self.hasher);
+    }
+}
+
+#[inline]
+fn digest_reader<R: std::io::Read + 'static>(path: &str, inner: R) -> Box<dyn std::io::Read> {
+    Box::new(DigestReader {
+        path: path.to_owned(),
+        inner,
+        len: 0,
+        hasher: wolges::fash::MyHasher::default(),
+    })
+}
+
 // support "-" to mean stdin.
 #[inline]
 fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
     Ok(if filename == "-" {
-        Box::new(std::io::stdin())
+        digest_reader(filename, std::io::stdin())
     } else {
-        Box::new(std::fs::File::open(filename)?)
+        digest_reader(filename, std::fs::File::open(filename)?)
     })
 }
 
@@ -254,7 +308,7 @@ fn read_klv(
     let klv = if path == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
-        klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
+        klv::kbwg_from_bytes_alloc(read_input(path)?)?
     };
     game_config.check_klv(&klv)?;
     Ok(klv)
@@ -1102,10 +1156,7 @@ fn run(
                         );
                     }
                     let mut klv = read_klv(&game_config, &a.klv0)?;
-                    klv.set_racks(racks::RackTable::read(
-                        &game_config,
-                        &std::fs::read(racks)?,
-                    )?);
+                    klv.set_racks(racks::RackTable::read(&game_config, &read_input(racks)?)?);
                     let klv = std::sync::Arc::new(klv);
                     (std::sync::Arc::clone(&klv), klv)
                 }
@@ -1549,6 +1600,20 @@ fn run(
     }
 }
 
+fn write_run_line() -> error::Returns<()> {
+    let mut line = format!("run: {}", wolges::VERSION);
+    for arg in std::env::args() {
+        write!(line, " {arg:?}")?;
+    }
+    if let Ok(digests) = INPUT_DIGESTS.lock() {
+        for digest in digests.iter() {
+            write!(line, " {digest}")?;
+        }
+    }
+    writeln!(boxed_stdout_or_stderr(), "{line}")?;
+    Ok(())
+}
+
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
     let t0 = std::time::Instant::now();
@@ -1559,7 +1624,9 @@ fn main() -> error::Returns<()> {
     let threads = cli
         .threads
         .map_or_else(wolges::parallelism::available, std::num::NonZeroUsize::get);
-    run(cli.task, game_config, threads, cli.kbwg)?;
+    let ran = run(cli.task, game_config, threads, cli.kbwg);
+    write_run_line()?;
+    ran?;
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
 }
@@ -3802,7 +3869,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             if path.ends_with(".part") {
                 wolges::return_error!(format!("{path} is a part file, not a census state"))
             }
-            let st = census_state_from_bytes(&std::fs::read(path)?, path)?;
+            let st = census_state_from_bytes(&read_input(path)?, path)?;
             if seed.is_some_and(|s| s != st.seed) {
                 return Err(format!("a continued census keeps its seed, {}", st.seed).into());
             }
@@ -3891,7 +3958,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             ))
         };
         // a snapshot is a klv2 file, its leaves' graph a kwg's
-        let mut bytes = std::fs::read(&path)?;
+        let mut bytes = read_input(&path)?;
         klv::repack_in_place::<kwg::Node22, L>(&mut bytes)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes)?;
         game_config.check_klv(&resume_klv)?;
@@ -3917,7 +3984,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         // wrote it kept them (census_means_bytes)
         let mut exact = leave_cur.iter().map(|&v| v as f64).collect::<Vec<_>>();
         let means = census_means_path(&path);
-        match std::fs::read(&means) {
+        match read_input(&means) {
             Ok(bytes) => census_means_from_bytes(&lat, &ever, &bytes, &mut exact, &means)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => writeln!(
                 boxed_stdout_or_stderr(),
