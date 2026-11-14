@@ -58,9 +58,16 @@ static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 
 // support "-" to mean stdout.
 #[inline]
-fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
-    Ok(if filename == "-" {
+fn use_writer(filename: &str) {
+    if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    use_writer(filename);
+    Ok(if filename == "-" {
         Box::new(std::io::stdout())
     } else {
         Box::new(std::fs::File::create(filename)?)
@@ -6548,6 +6555,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let game_config = std::sync::Arc::new(game_config);
     let seed = seed_or_random(seed)?;
     let num_threads = threads.max(1).min(num_games.max(1) as usize);
+    use_writer(out_path);
     writeln!(
         boxed_stdout_or_stderr(),
         "winpct: seed {seed}, {num_games} games, {num_threads} threads"
