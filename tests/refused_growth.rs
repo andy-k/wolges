@@ -187,7 +187,7 @@ fn a_one_in_bag_solve_refused_its_largest_growth_answers_as_before() {
             .ok()
             .unwrap();
         let answer = (result.win_pct, result.expected_margin);
-        (answer, result.exact)
+        (answer, result.exact, result.out_of_memory)
     };
     let (want, largest) = largest_in(solve);
     assert!(want.1);
