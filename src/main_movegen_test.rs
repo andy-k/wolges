@@ -457,22 +457,29 @@ fn run(
                 rack_lengths,
                 klv,
             };
-            let lines = |g: &movegen::KurniaMoveGenerator, equity: bool| {
-                let mut list = g
-                    .plays
-                    .iter()
-                    .map(|p| {
-                        if equity {
-                            format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot))
-                        } else {
-                            format!("{}", p.play.fmt(&board_snapshot))
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                if !equity {
-                    list.sort_unstable();
+            let digest = |g: &movegen::KurniaMoveGenerator, head: usize| {
+                use std::hash::{Hash, Hasher};
+                let mut ordered = std::hash::DefaultHasher::new();
+                let mut head_ordered = std::hash::DefaultHasher::new();
+                let mut unordered = 0u64;
+                let mut line = String::new();
+                for (i, p) in g.plays.iter().enumerate() {
+                    line.clear();
+                    write!(line, "{}", p.play.fmt(&board_snapshot)).unwrap();
+                    let mut one = std::hash::DefaultHasher::new();
+                    line.hash(&mut one);
+                    unordered = unordered.wrapping_add(one.finish());
+                    (p.equity.raw(), &line).hash(&mut ordered);
+                    if i < head {
+                        (p.equity.raw(), &line).hash(&mut head_ordered);
+                    }
                 }
-                list
+                (
+                    g.plays.len(),
+                    ordered.finish(),
+                    unordered,
+                    head_ordered.finish(),
+                )
             };
             let generate = |g: &mut movegen::KurniaMoveGenerator, max_gen: usize| {
                 let params = movegen::GenMovesParams {
@@ -488,10 +495,11 @@ fn run(
                 } else {
                     g.gen_moves_unfiltered_lean(&params);
                 }
-                lines(g, true)
+                digest(g, case.max_gen)
             };
             let all = generate(&mut move_generator, usize::MAX);
             let capped = generate(&mut move_generator, case.max_gen);
+            let mut differs = Vec::new();
             if tables {
                 move_generator.gen_moves_raw_all_unsorted(
                     &board_snapshot,
@@ -507,17 +515,11 @@ fn run(
                     case.pass_policy,
                 );
             }
-            let raw = lines(&move_generator, false);
-            let mut all_set = all
-                .iter()
-                .map(|l| l.split_once(' ').unwrap().1.to_string())
-                .collect::<Vec<_>>();
-            all_set.sort_unstable();
-            let mut differs = Vec::new();
-            if capped[..] != all[..case.max_gen.min(all.len())] {
+            let raw = digest(&move_generator, 0);
+            if (capped.0, capped.1) != (case.max_gen.min(all.0), all.3) {
                 differs.push("capped is not the head of all");
             }
-            if raw != all_set {
+            if (raw.0, raw.2) != (all.0, all.2) {
                 differs.push("raw is not all");
             }
             match &first_all {
