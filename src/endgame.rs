@@ -3255,14 +3255,18 @@ impl<
         self.work_buffer.searched
     }
 
-    // send every later solve's progress to the given listener, at every node
-    // and at each finished depth; until then it goes nowhere
+    // every solve f makes sends its progress to the listener, at every node
+    // and at each finished depth; outside f it goes nowhere
     #[inline(always)]
-    pub fn report_progress(
+    pub fn listening<T>(
         &mut self,
         progress: impl FnMut(&Progress) -> error::Returns<()> + 'static,
-    ) {
-        self.work_buffer.progress = Some(Box::new(progress));
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let before = self.work_buffer.progress.replace(Box::new(progress));
+        let made = f(self);
+        self.work_buffer.progress = before;
+        made
     }
 
     #[inline(always)]
@@ -11159,19 +11163,21 @@ mod tests {
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let seen = finished.clone();
-            egs.report_progress(move |p: &super::Progress| {
+            let heard = move |p: &super::Progress| {
                 if let Some(value) = p.value {
                     seen.borrow_mut().push((p.depth, value, p.held));
                 }
                 Ok(())
-            });
+            };
             let never = super::Limits {
                 time: None,
                 states: Some(usize::MAX),
                 memory: None,
                 clock: None,
             };
-            let every = egs.solve_within(0, &never).unwrap();
+            let every = egs
+                .listening(heard, |egs| egs.solve_within(0, &never))
+                .unwrap();
             let finished = finished.borrow();
             assert!(
                 every.exact
@@ -11393,12 +11399,16 @@ mod tests {
             movegen += egs.work_buffer.dur_movegen;
         }
         assert_eq!(movegen, std::time::Duration::ZERO, "no listener, no clock");
-        egs.report_progress(|_: &super::Progress| Ok(()));
-        for (_, pos) in &positions {
-            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            egs.solve(0).unwrap();
-            movegen += egs.work_buffer.dur_movegen;
-        }
+        egs.listening(
+            |_: &super::Progress| Ok(()),
+            |egs| {
+                for (_, pos) in &positions {
+                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    egs.solve(0).unwrap();
+                    movegen += egs.work_buffer.dur_movegen;
+                }
+            },
+        );
         assert!(movegen > std::time::Duration::ZERO, "a listener, the time");
     }
 
@@ -12022,21 +12032,22 @@ mod tests {
                 // the shallowest depth the step searched at any node
                 let shallowest = std::rc::Rc::new(std::cell::Cell::new(i8::MAX));
                 let seen = shallowest.clone();
-                egs.report_progress(move |progress| {
+                let heard = move |progress: &super::Progress| {
                     seen.set(seen.get().min(progress.depth));
                     Ok(())
-                });
+                };
                 let limits = super::Limits {
                     time: None,
                     states: Some(egs.work_buffer.table.held + 30),
                     memory: None,
                     clock: None,
                 };
-                let solved = match finished {
-                    Some(finished) => egs.solve_within_after(0, &limits, finished),
-                    None => egs.solve_within(0, &limits),
-                }
-                .unwrap();
+                let solved = egs
+                    .listening(heard, |egs| match finished {
+                        Some(finished) => egs.solve_within_after(0, &limits, finished),
+                        None => egs.solve_within(0, &limits),
+                    })
+                    .unwrap();
                 kept = Some(egs.take_table());
                 if let Some((depth, _)) = finished {
                     assert!(
@@ -12301,21 +12312,23 @@ mod tests {
         let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(gc, kwg, arm_tables).unwrap();
         let endgames = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let heard = endgames.clone();
-        egs.report_progress(move |p: &super::Progress| {
+        let listener = move |p: &super::Progress| {
             if let Some(n) = p.endgames {
                 heard.set(heard.get().max(n + 1));
             }
             Ok(())
-        });
+        };
         let result = egs
-            .solve_peg_one_in_bag(
-                0,
-                board,
-                mover_rack,
-                unseen_tally,
-                equity::Equity::ZERO,
-                limits,
-            )
+            .listening(listener, |egs| {
+                egs.solve_peg_one_in_bag(
+                    0,
+                    board,
+                    mover_rack,
+                    unseen_tally,
+                    equity::Equity::ZERO,
+                    limits,
+                )
+            })
             .unwrap()
             .expect("both configs solve one in the bag");
         (result, endgames.get())
@@ -12838,21 +12851,22 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let heard = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let counter = heard.clone();
-        egs.report_progress(move |p: &super::Progress| {
+        let listener = move |p: &super::Progress| {
             if p.value.is_none() {
                 counter.set(counter.get() + 1);
             }
             Ok(())
+        };
+        egs.listening(listener, |egs| {
+            egs.init(&board, [&[1, 2, 8], &[1, 20]]); // A B H, A T
+            egs.solve(0).unwrap();
+            assert!(egs.searched() > 1, "{} nodes", egs.searched());
+            assert_eq!(egs.searched(), heard.get());
+            heard.set(0);
+            egs.init(&board, [&[1, 2, 8], &[1, 20]]);
+            egs.solve(0).unwrap();
+            assert_eq!(egs.searched(), heard.get());
         });
-        egs.init(&board, [&[1, 2, 8], &[1, 20]]); // A B H, A T
-        egs.solve(0).unwrap();
-        assert!(egs.searched() > 1, "{} nodes", egs.searched());
-        assert_eq!(egs.searched(), heard.get());
-        // a solve begun again counts its own nodes
-        heard.set(0);
-        egs.init(&board, [&[1, 2, 8], &[1, 20]]);
-        egs.solve(0).unwrap();
-        assert_eq!(egs.searched(), heard.get());
     }
 
     // a search with a tile in the bag counts, over every step, the endgames it
@@ -12893,12 +12907,12 @@ mod tests {
                     assert!(egs.give_table(table).is_ok());
                 }
                 let counter = heard.clone();
-                egs.report_progress(move |p: &super::Progress| {
+                let listener = move |p: &super::Progress| {
                     if p.value.is_none() {
                         counter.set(counter.get() + 1);
                     }
                     Ok(())
-                });
+                };
                 let (endgames_before, _) = progress.searched();
                 let limits = super::Limits {
                     time: None,
@@ -12907,7 +12921,9 @@ mod tests {
                     clock: None,
                 };
                 let got = egs
-                    .resume_peg_one_in_bag(&mut progress, &limits)
+                    .listening(listener, |egs| {
+                        egs.resume_peg_one_in_bag(&mut progress, &limits)
+                    })
                     .unwrap()
                     .expect("both configs solve one in the bag");
                 kept = Some(egs.take_table());
@@ -12953,27 +12969,31 @@ mod tests {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             let nodes = std::rc::Rc::new(std::cell::Cell::new(0u64));
-            let heard = nodes.clone();
-            egs.report_progress(move |p: &super::Progress| {
-                if p.value.is_none() {
-                    heard.set(heard.get() + 1);
+            let heard = || {
+                let heard = nodes.clone();
+                move |p: &super::Progress| {
+                    if p.value.is_none() {
+                        heard.set(heard.get() + 1);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            });
+            };
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             unseen_tally[8] = 1; // H
             unseen_tally[20] = 1; // T
             let solve = |egs: &mut EndgameSolver<kwg::Node24, kwg::Node24>| {
                 nodes.set(0);
                 let result = egs
-                    .solve_peg_one_in_bag(
-                        0,
-                        &board,
-                        &[1, 2], // A B
-                        &unseen_tally,
-                        equity::Equity::ZERO,
-                        &super::Limits::NONE,
-                    )
+                    .listening(heard(), |egs| {
+                        egs.solve_peg_one_in_bag(
+                            0,
+                            &board,
+                            &[1, 2], // A B
+                            &unseen_tally,
+                            equity::Equity::ZERO,
+                            &super::Limits::NONE,
+                        )
+                    })
                     .unwrap()
                     .expect("both configs solve one in the bag");
                 (result.hypotheses, nodes.get())
@@ -13569,14 +13589,15 @@ mod tests {
                             .unwrap();
                     let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                     let finished = heard.clone();
-                    egs.report_progress(move |p: &super::Progress| {
+                    let listener = move |p: &super::Progress| {
                         if p.value.is_some() {
                             finished.borrow_mut().push(p.depth);
                         }
                         Ok(())
-                    });
+                    };
                     egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                    values.push(egs.solve_within(mover, limits).unwrap().value);
+                    let solved = egs.listening(listener, |egs| egs.solve_within(mover, limits));
+                    values.push(solved.unwrap().value);
                     depths.push(heard.borrow().clone());
                 }
                 assert!(
@@ -13668,16 +13689,18 @@ mod tests {
                     EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
                 let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let finished = heard.clone();
-                egs.report_progress(move |p: &super::Progress| {
+                let listener = move |p: &super::Progress| {
                     if let Some(value) = p.value {
                         finished.borrow_mut().push((p.depth, value));
                     }
                     Ok(())
-                });
+                };
                 egs.init(board, [&racks[0][..], &racks[1][..]]);
                 LOOKS.store(0, Relaxed);
                 FROM.store(from, Relaxed);
-                let solved = egs.solve_within(0, &limits).unwrap();
+                let solved = egs
+                    .listening(listener, |egs| egs.solve_within(0, &limits))
+                    .unwrap();
                 if solved.exact {
                     continue;
                 }
@@ -13773,13 +13796,14 @@ mod tests {
                 let mut egs = fresh(&pos);
                 let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let seen = heard.clone();
-                egs.report_progress(move |p: &super::Progress| {
+                let listener = move |p: &super::Progress| {
                     if p.value.is_some() {
                         seen.borrow_mut().push(p.held);
                     }
                     Ok(())
-                });
-                egs.solve_within(mover, &states(usize::MAX)).unwrap();
+                };
+                egs.listening(listener, |egs| egs.solve_within(mover, &states(usize::MAX)))
+                    .unwrap();
                 let (h1, h2) = match heard.borrow()[..] {
                     [h1, h2, ..] => (h1, h2),
                     _ => continue,
@@ -15106,18 +15130,17 @@ mod tests {
         for &tile in &[1u8, 2, 8] {
             unseen_tally[tile as usize] += 1; // A B H
         }
-        // a solver whose listener keeps each report's moves and line
         let listened = || {
-            let mut egs =
+            let egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let seen = heard.clone();
-            egs.report_progress(move |p: &super::Progress| {
+            let listener = move |p: &super::Progress| {
                 let line = p.after(std::time::Duration::ZERO).to_string();
                 seen.borrow_mut().push((p.moves, line));
                 Ok(())
-            });
-            (egs, heard)
+            };
+            (egs, heard, listener)
         };
         // every report's moves, each never fewer than the one before, and the
         // last report's count of moves valued
@@ -15143,14 +15166,16 @@ mod tests {
             ("info sets", super::PegModel::InfoSets, 1),
             ("random draws", super::PegModel::RandomDraws, 2),
         ] {
-            let (mut egs, heard) = listened();
+            let (mut egs, heard, listener) = listened();
             let mut position =
                 bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
             position.model = model;
             let mut progress =
                 super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
             let result = egs
-                .resume_peg(&mut progress, &super::Limits::NONE, threads)
+                .listening(listener, |egs| {
+                    egs.resume_peg(&mut progress, &super::Limits::NONE, threads)
+                })
                 .unwrap()
                 .unwrap();
             let last = checked(&heard.borrow(), result.moves.len());
@@ -15171,13 +15196,9 @@ mod tests {
             }
         }
         let position = bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
-        let (mut egs, _) = listened();
+        let (mut egs, _, listener) = listened();
         let mut whole =
             super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE).unwrap();
-        let whole = egs
-            .resume_peg(&mut whole, &super::Limits::NONE, 1)
-            .unwrap()
-            .unwrap();
         let mut progress =
             super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
         let one_state = super::Limits {
@@ -15186,32 +15207,41 @@ mod tests {
             memory: None,
             clock: None,
         };
-        let stopped = egs
-            .resume_peg(&mut progress, &one_state, 1)
-            .unwrap()
-            .unwrap();
-        assert!(!stopped.exact);
-        let resumed = egs
-            .resume_peg(&mut progress, &super::Limits::NONE, 2)
-            .unwrap()
-            .unwrap();
+        let (whole, resumed) = egs.listening(listener, |egs| {
+            let whole = egs
+                .resume_peg(&mut whole, &super::Limits::NONE, 1)
+                .unwrap()
+                .unwrap();
+            let stopped = egs
+                .resume_peg(&mut progress, &one_state, 1)
+                .unwrap()
+                .unwrap();
+            assert!(!stopped.exact);
+            let resumed = egs
+                .resume_peg(&mut progress, &super::Limits::NONE, 2)
+                .unwrap()
+                .unwrap();
+            (whole, resumed)
+        });
         assert!(resumed.exact);
         assert!(resumed.best_move == whole.best_move);
         assert_eq!(resumed.win_pct, whole.win_pct);
         assert_eq!(resumed.expected_margin, whole.expected_margin);
         // one tile in the bag: the committed model's moves are the pass and the
         // places
-        let (mut egs, heard) = listened();
+        let (mut egs, heard, listener) = listened();
         unseen_tally[2] = 0; // A H, one of them in the bag
         let result = egs
-            .solve_peg_one_in_bag(
-                0,
-                &board,
-                &[1, 2],
-                &unseen_tally,
-                equity::Equity::ZERO,
-                &super::Limits::NONE,
-            )
+            .listening(listener, |egs| {
+                egs.solve_peg_one_in_bag(
+                    0,
+                    &board,
+                    &[1, 2],
+                    &unseen_tally,
+                    equity::Equity::ZERO,
+                    &super::Limits::NONE,
+                )
+            })
             .unwrap()
             .unwrap();
         assert!(result.exact);
