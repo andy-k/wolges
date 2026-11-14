@@ -1586,8 +1586,8 @@ struct BagLimits {
     depth: std::cell::Cell<i8>, // the pass's depth, or the end for a search of one pass
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
     stopped: std::cell::Cell<bool>, // a limit stopped it
-    refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
-    estimates: bool,            // the passes estimate (PegBagProgress::set_estimates)
+    refused: std::cell::Cell<bool>,
+    estimates: bool, // the passes estimate (PegBagProgress::set_estimates)
 }
 
 impl BagLimits {
@@ -1655,9 +1655,6 @@ impl BagLimits {
         }
     }
 
-    // whether the memory limit leaves room for bytes more; if not, the search
-    // stops before it takes them (stopped and refused set), whether or not
-    // another limit may stop it: an error
     #[inline(always)]
     fn refuse(&self, bytes: usize) -> error::Returns<()> {
         if self.memory.is_some_and(|memory| bytes > memory.room()) {
@@ -4858,12 +4855,8 @@ impl<
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
-        // what each move took in each split, which orders the threads' tasks:
-        // kept only while the search runs on threads (a step may be given more
-        // threads than the one before, set_threads)
         let cells = state.moves.len().checked_mul(splits.len());
         if threads > 1 && cells != Some(state.took.len()) {
-            // none made, the next step tries again
             state.took = cells_of(cells, std::time::Duration::ZERO)?;
         }
         let score_diff = position.score_diff.raw() as f64;
@@ -4954,8 +4947,6 @@ impl<
                         .then(a.cmp(&b))
                 });
             }
-            // the pass's values become the answer's, moved and not copied; the
-            // answer's before become the next pass's room, emptied
             std::mem::swap(&mut state.answered, &mut state.valued);
             state.valued.clear();
             state.valued.resize_with(state.answered.len(), || None);
@@ -5017,8 +5008,6 @@ impl<
         let rest = state.order.len() - base;
         let num_splits = splits.len();
         let tasks = rest * num_splits;
-        // the tasks' order, what each found, and their hand-overs; the moves'
-        // splits not yet valued
         type Found = Option<(f64, f64, bool, Vec<PegBagDraw>)>;
         if limits
             .refuse(
@@ -5030,7 +5019,7 @@ impl<
             )
             .is_err()
         {
-            return Ok(true); // stopped, nothing valued
+            return Ok(true);
         }
         let next = AtomicUsize::new(0);
         // the tasks (each a move's place in the rest of the order and a split),
@@ -5047,7 +5036,7 @@ impl<
             .collect::<Vec<_>>();
         let moves_valued = AtomicUsize::new(state.reached.len());
         let stop = AtomicBool::new(false);
-        let refused = AtomicBool::new(false); // any thread's memory limit stopped it
+        let refused = AtomicBool::new(false);
         let on_one_clock = limits.on_one_clock();
         let (order, moves) = (&state.order, &state.moves);
         // each task's hand-over (HandOver), and how many tasks that hand the
@@ -5258,8 +5247,6 @@ impl<
                 && !stopped
                 && limits.refuse(rows_bytes(splits)).is_err()
             {
-                // no room for its rows: the pass stops, the move left for the
-                // next step
                 stopped = true;
             }
             if per_split.iter().all(Option::is_some) && !limits.refused.get() {
@@ -6110,9 +6097,6 @@ fn value_root_split<
     Ok((value, win, draws))
 }
 
-// the bytes valuing a move over these splits takes: each split's value as
-// found, and its row (the bag's tiles, the deals, the margin, the chance to
-// win, the draws' list)
 fn rows_bytes(splits: &[(Vec<u8>, Vec<u8>, u64)]) -> usize {
     let row = std::mem::size_of::<(f64, f64, Vec<PegBagDraw>)>()
         + std::mem::size_of::<(Vec<u8>, u64, equity::Equity)>()
@@ -6215,8 +6199,6 @@ struct PegBagValue {
     exact: bool,
 }
 
-// a move's rows, one a split, held once: the search's values share them with
-// every result given from them
 pub type PegBagRows<T> = std::sync::Arc<Vec<T>>;
 
 // a draw a move makes at the root with tiles left in the bag: the tiles it
@@ -6263,7 +6245,7 @@ pub struct PegBagResult {
     pub moves: Vec<PegBagMove>,
     pub exact: bool,
     pub depth: i8,
-    pub out_of_memory: bool, // the memory limit stopped the search, before it grew past it
+    pub out_of_memory: bool,
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
@@ -7764,8 +7746,6 @@ impl<
             let Some((win, margins)) = self.info_move(info, &moves[i], &splits, floor)? else {
                 continue;
             };
-            // only the moves at the best chance are read below: those the floor
-            // passes are let go as it rises, and none is kept below it
             if floor.is_none_or(|floor| win > floor) {
                 floor = Some(win);
                 valued.clear();
@@ -14161,8 +14141,6 @@ mod tests {
                 assert_eq!(progress.moves(), Some((all, all)), "{name}");
             }
         }
-        // a search stopped on one thread and resumed on two answers as one never
-        // stopped
         let position = bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
         let (mut egs, _) = listened();
         let mut whole = super::PegBagProgress::new(position.clone()).unwrap();
@@ -14320,13 +14298,7 @@ mod tests {
         assert!(table.held == 3 && table.get(last).is_none());
     }
 
-    // a search with tiles in the bag whose tables the memory limit holds to a
-    // few entries, so that they give up what they kept to keep more, answers as
-    // one with no limit does, under either model and on one thread or three,
-    // unless the limit leaves no room for its own lists: then it stops short
-    // and says so, never answering otherwise; so does the search with one tile
-    // in the bag and exchanges. Past the limit from the start, no table grows
-    // and the search stops, saying so
+    // Past the limit from the start, no table grows
     #[test]
     #[inline]
     fn a_bag_search_holding_a_few_entries_answers_as_one_with_no_limit() {
@@ -14399,9 +14371,6 @@ mod tests {
                                 super::PegBagProgress::new(position.clone()).unwrap();
                             progress.set_threads(threads);
                             let held = egs.resume_peg(&mut progress, &small).unwrap().unwrap();
-                            // a search whose own lists the limit has no room
-                            // for stops short and says so; one that fits
-                            // answers as one with no limit
                             if held.out_of_memory {
                                 assert!(!held.exact, "{unseen:?} {x} {y} {threads}");
                                 refused += 1;
@@ -14442,7 +14411,6 @@ mod tests {
         }
         assert_eq!(checked, 64);
         assert!(gave_up > 0, "no table gave up what it kept");
-        // each position is searched on one thread and on three
         assert!(refused < 2 * checked, "every search was refused room");
         // the search with one tile in the bag and exchanges, its memo held to
         // its first four entries, against one with no limit
