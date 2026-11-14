@@ -477,17 +477,22 @@ fn run_batch<N: kwg::Node>(
         )?;
         egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
         reserve_table(&mut egs, solving);
-        if !solving.quiet {
-            egs.report_progress(endgame_watch::ticking(move |progress, elapsed| {
+        let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| {
+            egs.solve_within(player, &solving.limits)
+        };
+        let solved = if solving.quiet {
+            solve(&mut egs)
+        } else {
+            let watch = endgame_watch::ticking(move |progress, elapsed| {
                 writeln!(
                     boxed_stdout_or_stderr(),
                     "{line_index}: {}",
                     progress.after(elapsed)
                 )?;
                 Ok(())
-            }));
-        }
-        let solved = egs.solve_within(player, &solving.limits)?;
+            });
+            egs.listening(watch, solve)
+        }?;
         let elapsed = t0.elapsed();
         if solved.exact {
             writeln!(
@@ -1629,285 +1634,289 @@ fn solve_position<N: kwg::Node>(
         &arm_tables,
     )?;
     reserve_table(&mut egs, solving);
-    if !solving.quiet {
-        egs.report_progress(endgame_watch::ticking(|progress, elapsed| {
-            writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
-            Ok(())
-        }));
-    }
-    if bag_size > 1 {
-        let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
-        egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
-        let mut progress = endgame::PegBagProgress::new(
-            endgame::PegBagPosition {
-                mover: 0,
-                board: board_tiles.to_vec(),
-                mover_rack: question.rack.to_vec(),
-                unseen_tally: available_tally.to_vec(),
-                bag_size,
-                score_diff: scaled_score_diff,
-                exchanges: [0, 0],
-                model: solving.peg_model,
-            },
-            endgame::PegBagChoices::WHOLE,
-        )?;
-        let result = egs.resume_peg(&mut progress, &solving.limits, solving.threads)?;
-        let result = match result {
-            Ok(result) => result,
-            Err(unsupported) => {
-                writeln!(std::io::stdout(), "peg: {unsupported}")?;
-                return Ok(());
-            }
-        };
-        // a move as the lines below name it
-        let named = |play: &movegen::Play| match play {
-            movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
-            movegen::Play::Exchange { tiles } => {
-                format!("exchange {}", alphabet.fmt_rack(tiles))
-            }
-            movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            } => {
-                let coord = if *down {
-                    format!("{}{}", display::column(*lane), idx + 1)
-                } else {
-                    format!("{}{}", lane + 1, display::column(*idx))
-                };
-                let mut word_str = String::new();
-                for &t in word.iter() {
-                    if t == 0 {
-                        word_str.push('.');
+    let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| -> error::Returns<()> {
+        if bag_size > 1 {
+            let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
+            egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
+            let mut progress = endgame::PegBagProgress::new(
+                endgame::PegBagPosition {
+                    mover: 0,
+                    board: board_tiles.to_vec(),
+                    mover_rack: question.rack.to_vec(),
+                    unseen_tally: available_tally.to_vec(),
+                    bag_size,
+                    score_diff: scaled_score_diff,
+                    exchanges: [0, 0],
+                    model: solving.peg_model,
+                },
+                endgame::PegBagChoices::WHOLE,
+            )?;
+            let result = egs.resume_peg(&mut progress, &solving.limits, solving.threads)?;
+            let result = match result {
+                Ok(result) => result,
+                Err(unsupported) => {
+                    writeln!(std::io::stdout(), "peg: {unsupported}")?;
+                    return Ok(());
+                }
+            };
+            let named = |play: &movegen::Play| match play {
+                movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
+                movegen::Play::Exchange { tiles } => {
+                    format!("exchange {}", alphabet.fmt_rack(tiles))
+                }
+                movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } => {
+                    let coord = if *down {
+                        format!("{}{}", display::column(*lane), idx + 1)
                     } else {
-                        word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
+                        format!("{}{}", lane + 1, display::column(*idx))
+                    };
+                    let mut word_str = String::new();
+                    for &t in word.iter() {
+                        if t == 0 {
+                            word_str.push('.');
+                        } else {
+                            word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
+                        }
                     }
+                    format!(
+                        "{coord} {word_str} (scores {})",
+                        equity::Equity::new(*score)
+                    )
                 }
-                format!(
-                    "{coord} {word_str} (scores {})",
-                    equity::Equity::new(*score)
-                )
-            }
-        };
-        writeln!(
-            std::io::stdout(),
-            "peg: model = {}; best move = {}",
-            match solving.peg_model {
-                endgame::PegModel::InfoSets => "each move chosen blind until the bag empties",
-                endgame::PegModel::RandomDraws => {
-                    "random draws, a fast approximation (the first move blind, both racks then \
-                     known, each draw averaged over every set of tiles it may bring)"
-                }
-            },
-            result.best_move.as_ref().map_or_else(
-                || "none: a limit stopped the search before it valued one".to_string(),
-                named
-            ),
-        )?;
-        if result.best_move.is_none() {
-            writeln!(
-                std::io::stdout(),
-                "peg: {bag_size} tiles in the bag of {} unseen tiles (current score \
-                 {score_diff:+}): no move valued yet",
-                oppo_rack.len(),
-            )?;
-            return Ok(());
-        }
-        let (splits, deals) = progress.splits();
-        writeln!(
-            std::io::stdout(),
-            "peg: {bag_size} tiles in the bag, {splits} distinct splits over {deals} deals of {} \
-             unseen tiles (current score {score_diff:+})",
-            oppo_rack.len(),
-        )?;
-        let best = result.best_move.as_ref().unwrap();
-        let rows = egs.peg_bag_rows(&mut progress, best, 0..splits, &solving.limits)?;
-        let hypotheses = match rows {
-            Ok(rows) => rows.hypotheses,
-            Err(missing) => {
-                writeln!(
-                    std::io::stdout(),
-                    "peg: no rows of the best move: {missing:?}"
-                )?;
-                Vec::new()
-            }
-        };
-        for (bag, ways, value) in hypotheses.iter() {
-            let mut opp = Vec::new();
-            for (u, &c) in available_tally.iter().enumerate() {
-                let in_bag = bag.iter().filter(|&&t| t as usize == u).count() as u8;
-                opp.extend(std::iter::repeat_n(u as u8, (c - in_bag) as usize));
-            }
-            writeln!(
-                std::io::stdout(),
-                "  bag={} (x{ways}): opp rack [{}] -> mean game margin {value:>4}",
-                alphabet.fmt_rack(bag),
-                alphabet.fmt_rack(&opp),
-            )?;
-        }
-        writeln!(
-            std::io::stdout(),
-            "peg: win% {:.4}, expected game margin {}",
-            result.win_pct * 100.0,
-            result.expected_margin,
-        )?;
-        writeln!(std::io::stdout(), "peg: each move valued, best first:")?;
-        for valued in &result.moves {
-            writeln!(
-                std::io::stdout(),
-                "  {}: win% {:.4}, expected game margin {}",
-                named(&valued.play),
-                valued.win_pct * 100.0,
-                valued.expected_margin,
-            )?;
-        }
-        if !result.exact {
-            say_where_a_limit_stopped(result.depth)?;
-        }
-    } else if bag_size == 1 {
-        let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
-        egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
-        let result = egs.solve_peg_one_in_bag(
-            0,
-            &board_tiles,
-            &question.rack,
-            &available_tally,
-            scaled_score_diff,
-            &solving.limits,
-        )?;
-
-        let result = match result {
-            Ok(result) => result,
-            Err(unsupported) => {
-                writeln!(std::io::stdout(), "peg: {unsupported}")?;
-                return Ok(());
-            }
-        };
-        let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
-
-        match &result.best_move {
-            Some(endgame::PegMove::Pass) => {
-                writeln!(
-                    std::io::stdout(),
-                    "peg: model = committed; best move = pass"
-                )?;
-            }
-            Some(endgame::PegMove::Place(movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            })) => {
-                let coord = if *down {
-                    format!("{}{}", display::column(*lane), idx + 1)
-                } else {
-                    format!("{}{}", lane + 1, display::column(*idx))
-                };
-                let mut word_str = String::new();
-                for &t in word.iter() {
-                    if t == 0 {
-                        word_str.push('.');
-                    } else {
-                        word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
-                    }
-                }
-                writeln!(
-                    std::io::stdout(),
-                    "peg: model = committed; best move = {coord} {word_str} (scores {})",
-                    equity::Equity::new(*score),
-                )?;
-            }
-            Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
-            None => {
-                writeln!(
-                    std::io::stdout(),
-                    "peg: model = clairvoyant bound (exchange-legal config; not the in-game value)"
-                )?;
-            }
-        }
-        writeln!(
-            std::io::stdout(),
-            "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
-             (current score {score_diff:+})",
-            result.hypotheses.len(),
-            total_unseen,
-        )?;
-        for &(bag_tile, weight, value) in &result.hypotheses {
-            let mut opp = Vec::new();
-            for (u, &c) in available_tally.iter().enumerate() {
-                let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
-                opp.extend(std::iter::repeat_n(u as u8, take));
-            }
-
-            let outcome = match value.cmp(&equity::Equity::ZERO) {
-                std::cmp::Ordering::Greater => "win",
-                std::cmp::Ordering::Equal => "draw",
-                std::cmp::Ordering::Less => "loss",
             };
             writeln!(
                 std::io::stdout(),
-                "  bag={} (x{}): opp rack [{}] -> game margin {:>4} ({})",
-                alphabet.of_rack(bag_tile).unwrap_or("?"),
-                weight,
-                alphabet.fmt_rack(&opp),
-                value,
-                outcome,
+                "peg: model = {}; best move = {}",
+                match solving.peg_model {
+                    endgame::PegModel::InfoSets => "each move chosen blind until the bag empties",
+                    endgame::PegModel::RandomDraws => {
+                        "random draws, a fast approximation (the first move blind, both racks then \
+                         known, each draw averaged over every set of tiles it may bring)"
+                    }
+                },
+                result.best_move.as_ref().map_or_else(
+                    || "none: a limit stopped the search before it valued one".to_string(),
+                    named
+                ),
             )?;
-        }
-        writeln!(
-            std::io::stdout(),
-            "peg: win% {:.4}, expected game margin {}",
-            result.win_pct * 100.0,
-            result.expected_margin,
-        )?;
-        if !result.exact {
-            say_where_a_limit_stopped(result.depth)?;
-        }
-    } else {
-        egs.init_after_scoreless_turns(
-            &board_tiles,
-            [&question.rack, &oppo_rack],
-            solving.scoreless[0],
-            solving.scoreless[1],
-        );
-        let solved = egs.evaluate(0, &solving.limits)?;
-        if let Some(future_margin) = solved.value {
-            let total_margin =
-                equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
+            if result.best_move.is_none() {
+                writeln!(
+                    std::io::stdout(),
+                    "peg: {bag_size} tiles in the bag of {} unseen tiles (current score \
+                     {score_diff:+}): no move valued yet",
+                    oppo_rack.len(),
+                )?;
+                return Ok(());
+            }
+            let (splits, deals) = progress.splits();
             writeln!(
                 std::io::stdout(),
-                "total game margin (current score {score_diff:+} + future {future_margin}) = \
-                 {total_margin}",
+                "peg: {bag_size} tiles in the bag, {splits} distinct splits over {deals} deals of {} \
+                 unseen tiles (current score {score_diff:+})",
+                oppo_rack.len(),
             )?;
-        } else {
+            let best = result.best_move.as_ref().unwrap();
+            let rows = egs.peg_bag_rows(&mut progress, best, 0..splits, &solving.limits)?;
+            let hypotheses = match rows {
+                Ok(rows) => rows.hypotheses,
+                Err(missing) => {
+                    writeln!(
+                        std::io::stdout(),
+                        "peg: no rows of the best move: {missing:?}"
+                    )?;
+                    Vec::new()
+                }
+            };
+            for (bag, ways, value) in hypotheses.iter() {
+                let mut opp = Vec::new();
+                for (u, &c) in available_tally.iter().enumerate() {
+                    let in_bag = bag.iter().filter(|&&t| t as usize == u).count() as u8;
+                    opp.extend(std::iter::repeat_n(u as u8, (c - in_bag) as usize));
+                }
+                writeln!(
+                    std::io::stdout(),
+                    "  bag={} (x{ways}): opp rack [{}] -> mean game margin {value:>4}",
+                    alphabet.fmt_rack(bag),
+                    alphabet.fmt_rack(&opp),
+                )?;
+            }
             writeln!(
                 std::io::stdout(),
-                "total game margin (current score {score_diff:+} + future -) = -",
+                "peg: win% {:.4}, expected game margin {}",
+                result.win_pct * 100.0,
+                result.expected_margin,
             )?;
-        }
-        if let Some(partway) = solved.partway {
-            // the lines so far stop at the finished depth; this one starts with
-            // the stopped pass's answer
-            writeln!(
-                std::io::stdout(),
-                "a limit cut the solve short in depth {partway}: the future is the value there \
-                 of a move that beat depth {}'s best",
-                solved.depth,
+            writeln!(std::io::stdout(), "peg: each move valued, best first:")?;
+            for valued in &result.moves {
+                writeln!(
+                    std::io::stdout(),
+                    "  {}: win% {:.4}, expected game margin {}",
+                    named(&valued.play),
+                    valued.win_pct * 100.0,
+                    valued.expected_margin,
+                )?;
+            }
+            if !result.exact {
+                say_where_a_limit_stopped(result.depth)?;
+            }
+        } else if bag_size == 1 {
+            let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
+            egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
+            let result = egs.solve_peg_one_in_bag(
+                0,
+                &board_tiles,
+                &question.rack,
+                &available_tally,
+                scaled_score_diff,
+                &solving.limits,
             )?;
-            egs.print_best_line(0)?;
-        } else if !solved.exact {
-            writeln!(
-                std::io::stdout(),
-                "a limit cut the solve short: the future is depth {}'s value",
-                solved.depth,
-            )?;
-        }
-    }
 
-    Ok(())
+            let result = match result {
+                Ok(result) => result,
+                Err(unsupported) => {
+                    writeln!(std::io::stdout(), "peg: {unsupported}")?;
+                    return Ok(());
+                }
+            };
+            let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
+
+            match &result.best_move {
+                Some(endgame::PegMove::Pass) => {
+                    writeln!(
+                        std::io::stdout(),
+                        "peg: model = committed; best move = pass"
+                    )?;
+                }
+                Some(endgame::PegMove::Place(movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                })) => {
+                    let coord = if *down {
+                        format!("{}{}", display::column(*lane), idx + 1)
+                    } else {
+                        format!("{}{}", lane + 1, display::column(*idx))
+                    };
+                    let mut word_str = String::new();
+                    for &t in word.iter() {
+                        if t == 0 {
+                            word_str.push('.');
+                        } else {
+                            word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
+                        }
+                    }
+                    writeln!(
+                        std::io::stdout(),
+                        "peg: model = committed; best move = {coord} {word_str} (scores {})",
+                        equity::Equity::new(*score),
+                    )?;
+                }
+                Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
+                None => {
+                    writeln!(
+                        std::io::stdout(),
+                        "peg: model = clairvoyant bound (exchange-legal config; not the in-game value)"
+                    )?;
+                }
+            }
+            writeln!(
+                std::io::stdout(),
+                "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
+                 (current score {score_diff:+})",
+                result.hypotheses.len(),
+                total_unseen,
+            )?;
+            for &(bag_tile, weight, value) in &result.hypotheses {
+                let mut opp = Vec::new();
+                for (u, &c) in available_tally.iter().enumerate() {
+                    let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
+                    opp.extend(std::iter::repeat_n(u as u8, take));
+                }
+
+                let outcome = match value.cmp(&equity::Equity::ZERO) {
+                    std::cmp::Ordering::Greater => "win",
+                    std::cmp::Ordering::Equal => "draw",
+                    std::cmp::Ordering::Less => "loss",
+                };
+                writeln!(
+                    std::io::stdout(),
+                    "  bag={} (x{}): opp rack [{}] -> game margin {:>4} ({})",
+                    alphabet.of_rack(bag_tile).unwrap_or("?"),
+                    weight,
+                    alphabet.fmt_rack(&opp),
+                    value,
+                    outcome,
+                )?;
+            }
+            writeln!(
+                std::io::stdout(),
+                "peg: win% {:.4}, expected game margin {}",
+                result.win_pct * 100.0,
+                result.expected_margin,
+            )?;
+            if !result.exact {
+                say_where_a_limit_stopped(result.depth)?;
+            }
+        } else {
+            egs.init_after_scoreless_turns(
+                &board_tiles,
+                [&question.rack, &oppo_rack],
+                solving.scoreless[0],
+                solving.scoreless[1],
+            );
+            let solved = egs.evaluate(0, &solving.limits)?;
+            if let Some(future_margin) = solved.value {
+                let total_margin =
+                    equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
+                writeln!(
+                    std::io::stdout(),
+                    "total game margin (current score {score_diff:+} + future {future_margin}) = \
+                     {total_margin}",
+                )?;
+            } else {
+                writeln!(
+                    std::io::stdout(),
+                    "total game margin (current score {score_diff:+} + future -) = -",
+                )?;
+            }
+            if let Some(partway) = solved.partway {
+                // the lines so far stop at the finished depth; this one starts with
+                // the stopped pass's answer
+                writeln!(
+                    std::io::stdout(),
+                    "a limit cut the solve short in depth {partway}: the future is the value there \
+                     of a move that beat depth {}'s best",
+                    solved.depth,
+                )?;
+                egs.print_best_line(0)?;
+            } else if !solved.exact {
+                writeln!(
+                    std::io::stdout(),
+                    "a limit cut the solve short: the future is depth {}'s value",
+                    solved.depth,
+                )?;
+            }
+        }
+
+        Ok(())
+    };
+    if solving.quiet {
+        solve(&mut egs)
+    } else {
+        let watch = endgame_watch::ticking(|progress, elapsed| {
+            writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
+            Ok(())
+        });
+        egs.listening(watch, solve)
+    }
 }
 
 #[cfg(test)]
