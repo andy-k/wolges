@@ -1637,16 +1637,19 @@ fn solve_position<N: kwg::Node>(
     if bag_size > 1 {
         let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
         egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
-        let mut progress = endgame::PegBagProgress::new(endgame::PegBagPosition {
-            mover: 0,
-            board: board_tiles.to_vec(),
-            mover_rack: question.rack.to_vec(),
-            unseen_tally: available_tally.to_vec(),
-            bag_size,
-            score_diff: scaled_score_diff,
-            exchanges: [0, 0],
-            model: solving.peg_model,
-        })?;
+        let mut progress = endgame::PegBagProgress::new(
+            endgame::PegBagPosition {
+                mover: 0,
+                board: board_tiles.to_vec(),
+                mover_rack: question.rack.to_vec(),
+                unseen_tally: available_tally.to_vec(),
+                bag_size,
+                score_diff: scaled_score_diff,
+                exchanges: [0, 0],
+                model: solving.peg_model,
+            },
+            endgame::PegBagChoices::WHOLE,
+        )?;
         let result = egs.resume_peg(&mut progress, &solving.limits, solving.threads)?;
         let result = match result {
             Ok(result) => result,
