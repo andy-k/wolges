@@ -1376,6 +1376,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     nodes: u64,         // this pass's nodes, to space the looks at the clock
     searched: u64,      // this solve's nodes, for progress
     cut_short: bool,    // a limit stopped this pass
+    movegen_cut: bool,
     progress: Option<ProgressFn>,
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
     in_bag_moves: Option<(usize, usize)>, // and its root's moves valued, of all
@@ -1438,6 +1439,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             nodes: 0,
             searched: 0,
             cut_short: false,
+            movegen_cut: false,
             progress: None,
             in_bag: None,
             in_bag_moves: None,
@@ -1755,6 +1757,8 @@ pub struct Solved {
     pub depth: i8,
     pub exact: bool,
     pub partway: Option<i8>, // the depth stopped in, when its proved move answers
+    pub out_of_memory: bool,
+    pub out_of_memory_in_moves: bool,
 }
 
 // how far a solve has got, sent to its listener at every node, and at each
@@ -1830,16 +1834,29 @@ fn gen_raw_lanes<
     rack: &[u8],
     rows: u128,
     cols: u128,
-) {
-    match run_letter_bits {
-        Some(run_letter_bits) => generator.gen_moves_raw_lanes_unsorted_by_runs(
-            run_letter_bits,
-            board_snapshot,
-            rack,
-            rows,
-            cols,
-        ),
-        None => {
+    limit: Option<movegen::HeldBytes>,
+) -> bool {
+    match (run_letter_bits, limit) {
+        (Some(run_letter_bits), None) => {
+            generator.gen_moves_raw_lanes_unsorted_by_runs(
+                run_letter_bits,
+                board_snapshot,
+                rack,
+                rows,
+                cols,
+            );
+            false
+        }
+        (Some(run_letter_bits), Some(limit)) => generator
+            .gen_moves_raw_lanes_unsorted_by_runs_within(
+                run_letter_bits,
+                board_snapshot,
+                rack,
+                rows,
+                cols,
+                limit,
+            ),
+        (None, None) => {
             if LEAN {
                 generator.gen_moves_raw_lanes_unsorted_lean(
                     board_snapshot,
@@ -1859,6 +1876,10 @@ fn gen_raw_lanes<
                     cols,
                 )
             }
+            false
+        }
+        (None, Some(limit)) => {
+            generator.gen_moves_raw_lanes_unsorted_within(board_snapshot, rack, rows, cols, limit)
         }
     }
 }
@@ -2257,6 +2278,7 @@ impl<
             &work_buffer.racks[player_idx as usize],
             rows,
             cols,
+            None,
         );
         if let Some(t1) = t1 {
             work_buffer.dur_movegen += t1.elapsed();
@@ -2407,6 +2429,7 @@ impl<
             &work_buffer.racks[other as usize],
             !0,
             !0,
+            None,
         );
         let held = work_buffer.racks[other as usize].len();
         assert!(
@@ -2467,6 +2490,15 @@ impl<
         }
         work_buffer.generated += 1;
         work_buffer.serials[ply] = work_buffer.generated;
+        work_buffer.movegen_cut = false;
+        let leaving = work_buffer.table.leaving();
+        let dim = self.game_config.board_layout().dim();
+        let limit = work_buffer.memory_limit.map(|limit| movegen::HeldBytes {
+            held: limit.held,
+            bytes: limit.bytes.saturating_add(leaving),
+            kept: 2 * (std::mem::size_of::<Candidate>() + std::mem::size_of::<u128>())
+                + dim.rows.max(dim.cols) as usize,
+        });
         let kept_from = ply >= 2 && work_buffer.keeps[ply - 2];
         work_buffer.keeps[ply] = keeps;
         let (rows, cols) = if kept_from {
@@ -2574,7 +2606,7 @@ impl<
                     );
                     walker
                 });
-                gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                     walker,
                     work_buffer.run_letter_bits.as_deref(),
                     &movegen::BoardSnapshot {
@@ -2588,7 +2620,11 @@ impl<
                     &lane_pool.deal.pool,
                     new_rows,
                     new_cols,
+                    limit,
                 );
+                if work_buffer.movegen_cut {
+                    return;
+                }
                 if let Some(t1) = t1 {
                     work_buffer.dur_movegen += t1.elapsed();
                 }
@@ -2605,7 +2641,7 @@ impl<
             };
             // timed only while something listens
             let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
-            gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+            work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 &mut work_buffer.movegen,
                 work_buffer.run_letter_bits.as_deref(),
                 &movegen::BoardSnapshot {
@@ -2619,7 +2655,11 @@ impl<
                 &work_buffer.racks[player_idx as usize],
                 rack_walk_rows,
                 rack_walk_cols,
+                limit,
             );
+            if work_buffer.movegen_cut {
+                return;
+            }
             if let Some(t1) = t1 {
                 work_buffer.dur_movegen += t1.elapsed();
             }
@@ -2771,7 +2811,7 @@ impl<
         // the same moves
         #[cfg(debug_assertions)]
         if pooled {
-            gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+            work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 &mut work_buffer.movegen,
                 work_buffer.run_letter_bits.as_deref(),
                 &movegen::BoardSnapshot {
@@ -2785,7 +2825,11 @@ impl<
                 rack,
                 walk_rows,
                 walk_cols,
+                limit,
             );
+            if work_buffer.movegen_cut {
+                return;
+            }
             let mut walked = (work_buffer.movegen.plays.iter())
                 .filter_map(|valued| as_tuple(&valued.play))
                 .collect::<Vec<_>>();
@@ -2919,6 +2963,8 @@ impl<
                     depth: max_depth,
                     exact: false,
                     partway: None,
+                    out_of_memory: false,
+                    out_of_memory_in_moves: false,
                 });
             }
             max_depth = if every_depth || max_depth < 2 {
@@ -2963,6 +3009,9 @@ impl<
                         depth: work_buffer.finished,
                         exact: false,
                         partway: work_buffer.proven.map(|_| max_depth),
+                        out_of_memory: work_buffer.movegen_cut,
+                        out_of_memory_in_moves: work_buffer.movegen_cut
+                            && work_buffer.finished == 0,
                     });
                 }
                 Err(e) => return Err(e),
@@ -2989,6 +3038,8 @@ impl<
                     depth: max_depth,
                     exact: false,
                     partway: None,
+                    out_of_memory: false,
+                    out_of_memory_in_moves: false,
                 });
             }
         }
@@ -2997,6 +3048,8 @@ impl<
             depth: self.work_buffer.max_depth,
             exact: true,
             partway: None,
+            out_of_memory: false,
+            out_of_memory_in_moves: false,
         })
     }
 
@@ -3307,6 +3360,9 @@ impl<
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
         self.generate(0, player_idx, false);
+        if self.work_buffer.movegen_cut {
+            return Ok(false);
+        }
         let (valuation, after) = match play {
             movegen::Play::Exchange { .. } => {
                 if self.pass_ends_the_line(scoreless) {
@@ -3376,6 +3432,9 @@ impl<
         self.start_clock();
         self.reset_position();
         self.generate(0, player_idx, false);
+        if self.work_buffer.movegen_cut {
+            return Ok(Vec::new());
+        }
         let work_buffer = &mut self.work_buffer;
         order(
             &mut work_buffer.lists[0],
@@ -3416,6 +3475,9 @@ impl<
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
         self.generate(0, player_idx, false);
+        if self.work_buffer.movegen_cut {
+            return Ok((None, false));
+        }
         let (valuation, after) = match play {
             movegen::Play::Exchange { .. } => {
                 if self.pass_ends_the_line(scoreless) {
@@ -3610,6 +3672,12 @@ impl<
         // reuse. Sort lazily: with a table move, all of them, that one first;
         // else the first only, and the rest once it has not cut off
         self.generate(ply, player_idx, depth >= 3);
+        if self.work_buffer.movegen_cut {
+            let work_buffer = &mut self.work_buffer;
+            work_buffer.cut_short = true;
+            work_buffer.pending = Some((node, root));
+            return Err("a limit stopped the search".into());
+        }
         let table_first =
             table_play < PASS_PLAY && (table_play as usize) < self.work_buffer.orders[ply].len();
         let work_buffer = &mut self.work_buffer;
@@ -10957,10 +11025,9 @@ mod tests {
                 !solved.exact,
                 "[{name}] a memory limit passed cuts the solve short"
             );
-            assert_eq!(
-                (solved.depth, solved.value),
-                (finished[0].0, finished[0].1),
-                "[{name}] a memory limit passed answers the first depth"
+            assert!(
+                solved.out_of_memory && solved.out_of_memory_in_moves && solved.depth == 0,
+                "[{name}] a memory limit passed stops the first generation, no depth finished"
             );
 
             // a memory limit never reached changes nothing
@@ -13352,7 +13419,13 @@ mod tests {
                 // the depth is the deepest that finished, and the value is that
                 // depth's unless the stopped pass found a move worth more
                 let heard = heard.borrow();
-                let &(depth, value) = heard.last().unwrap();
+                let Some(&(depth, value)) = heard.last() else {
+                    assert!(
+                        solved.out_of_memory_in_moves && solved.depth == 0,
+                        "from look {from}: stopped before a depth finished, in a generation"
+                    );
+                    continue;
+                };
                 assert!(
                     solved.depth == depth
                         && (solved.value == value
