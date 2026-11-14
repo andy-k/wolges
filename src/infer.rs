@@ -1649,6 +1649,7 @@ mod tests {
                 }
             }
         }
+        // one A moved to the middle, so that the unseen Ts have somewhere to go
         board_tiles[7 * 15 + 7] = board_tiles[2];
         board_tiles.copy_within(3..79, 2);
         board_tiles[78] = 0;
