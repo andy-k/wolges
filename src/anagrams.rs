@@ -999,13 +999,24 @@ fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(g: &kwg::Kwg<N>, max_len: usize,
     }
     let root = g[0].arc_index();
     if root > 0 && max_len > 0 {
-        walk(g, root, max_len, &mut Vec::with_capacity(max_len), f);
+        walk(g, root, max_len, &mut Vec::new(), f);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_word_walk_of_any_length_holds_only_its_words() {
+        let words = three_letter_words();
+        let g = graph_of(&words);
+        for max_len in [3, usize::MAX] {
+            let mut found = 0;
+            for_each_word(&g, max_len, &mut |_| found += 1);
+            assert!(found >= words.len(), "{max_len}");
+        }
+    }
 
     #[inline]
     fn three_letter_words() -> Vec<Vec<u8>> {
