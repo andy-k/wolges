@@ -5492,16 +5492,27 @@ struct JumbledMultisets {
     window: std::ops::Range<u64>,
     through: Option<i8>,
     seen: u64,
+    held: bool,
 }
+
+#[derive(Clone)]
+pub struct PoolLists(JumbledMultisets);
 
 #[derive(Clone, Default)]
 struct PoolScratch {
     walked: Vec<u8>,
 }
 
+impl Default for PoolLists {
+    fn default() -> Self {
+        Self(JumbledMultisets::new())
+    }
+}
+
 const JUMBLED_EVERY_ARRANGEMENT: u8 = 0;
 const JUMBLED_ONCE_PER_SCORE: u8 = 1;
 const JUMBLED_ONCE_PER_RACK_TILES: u8 = 2;
+const JUMBLED_BEST_PER_RACK_TILES: u8 = 3;
 
 mod jumbled_walk {
     pub trait Sealed {}
@@ -5587,6 +5598,7 @@ struct JumbledSplits {
     sorted_weights: Vec<i32>,
     narrowed: Vec<u8>,
     tile_values: Vec<i32>,
+    starts: Vec<u32>,
 }
 
 impl JumbledMultisets {
@@ -5602,12 +5614,16 @@ impl JumbledMultisets {
             window: 0..u64::MAX,
             through: None,
             seen: 0,
+            held: false,
         }
     }
 
     // a new generation's rack: no set of forced letters is kept
     #[inline(always)]
     fn forget(&mut self) {
+        if self.held {
+            return;
+        }
         self.multisets.clear();
         self.kept.clear();
     }
@@ -5655,6 +5671,13 @@ fn gen_jumbled_place_moves<
         }
         JUMBLED_ONCE_PER_SCORE => {
             gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_ONCE_PER_SCORE, _, _, _>(
+                params,
+                single_tile_plays,
+                opening,
+            )
+        }
+        JUMBLED_BEST_PER_RACK_TILES => {
+            gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_BEST_PER_RACK_TILES, _, _, _>(
                 params,
                 single_tile_plays,
                 opening,
@@ -5853,7 +5876,13 @@ fn gen_jumbled_place_moves_walk<
         s.member_data.clear();
         s.blanks.clear();
         s.blanks.resize(num_letters, 0);
+        s.starts.clear();
         designate_blanks::<BAG_TERM, _, _, _>(env, &mut s, 0, env.params.rack_tally[0], fixed);
+        if WALK == JUMBLED_BEST_PER_RACK_TILES {
+            walk_best_splits(env, &mut s, cells, num_letters);
+            env.params.jumbled.splits = s;
+            return;
+        }
         s.order.clear();
         s.order.extend(0..s.members.len() as u32);
         let members = &s.members;
@@ -5909,6 +5938,67 @@ fn gen_jumbled_place_moves_walk<
             }
         }
         env.params.jumbled.splits = s;
+    }
+
+    // each designation's ways apart, best first: the first group that places is
+    // its rack tiles' best play, and the rest of its ways are not looked at
+    fn walk_best_splits<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        s: &mut JumbledSplits,
+        cells: usize,
+        num_letters: usize,
+    ) {
+        s.placed.clear();
+        s.placed.resize(cells, 0);
+        s.blanks_used.clear();
+        s.blanks_used.resize(num_letters, 0);
+        s.reals_used.clear();
+        s.reals_used.resize(num_letters, 0);
+        s.starts.push(s.members.len() as u32);
+        for d in 1..s.starts.len() {
+            let (from, to) = (s.starts[d - 1], s.starts[d]);
+            s.order.clear();
+            s.order.extend(from..to);
+            let members = &s.members;
+            s.order.sort_unstable_by(|&a, &b| {
+                let (a, b) = (&members[a as usize], &members[b as usize]);
+                (b.1, b.0).cmp(&(a.1, a.0))
+            });
+            let mut first = 0;
+            while first < s.order.len() {
+                let head = s.members[s.order[first] as usize];
+                let (score, equity, leave_value, _) = head;
+                let mut last = first + 1;
+                while last < s.order.len() && {
+                    let m = &s.members[s.order[last] as usize];
+                    (m.0, m.1) == (score, equity)
+                } {
+                    last += 1;
+                }
+                s.group.clear();
+                for i in first..last {
+                    s.group.push(s.members[s.order[i] as usize].3);
+                }
+                first = last;
+                if !env.params.is_census && score + leave_value < env.params.threshold {
+                    continue;
+                }
+                if place_smallest(env, s, 0, 0) {
+                    env.params.threshold = (env.params.callback)(
+                        env.idx_left,
+                        &env.params.word_strip_buffer
+                            [env.idx_left as usize..env.idx_right as usize],
+                        score,
+                        leave_value,
+                    );
+                    break;
+                }
+            }
+        }
     }
 
     fn designate_blanks<
@@ -5983,6 +6073,7 @@ fn gen_jumbled_place_moves_walk<
             s.class_left.clone_from(&s.class_sizes);
             s.matrix.clear();
             s.matrix.resize(s.class_sizes.len() * s.values.len(), 0);
+            s.starts.push(s.members.len() as u32);
             share_classes(s, 0, fixed, 0, leave_value);
             return;
         }
@@ -6484,6 +6575,13 @@ fn gen_jumbled_place_moves_walk<
                         });
                     for which in 0..env.params.jumbled.by_size[list].len() {
                         let at = env.params.jumbled.by_size[list][which] as usize;
+                        if WALK == JUMBLED_BEST_PER_RACK_TILES {
+                            let seen = env.params.jumbled.seen;
+                            env.params.jumbled.seen += 1;
+                            if !env.params.jumbled.window.contains(&seen) {
+                                continue;
+                            }
+                        }
                         if WALK == JUMBLED_ONCE_PER_RACK_TILES {
                             let seen = env.params.jumbled.seen;
                             env.params.jumbled.seen += 1;
@@ -8646,6 +8744,65 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         }
         self.working_buffer.pool.walked = walked;
         self.plays.clear();
+    }
+
+    pub fn pool_plays_best_window<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (rows, cols): (u128, u128),
+        window: std::ops::Range<u64>,
+        lists: &mut PoolLists,
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) -> u64 {
+        let game_config = board_snapshot.game_config;
+        if !matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+            return self.pool_plays_window(board_snapshot, pool, (rows, cols), window, None, found);
+        }
+        let rack_size = game_config.rack_size();
+        let mut tally = [0u8; MAX_ALPHABET_LEN];
+        let tally = &mut tally[..game_config.alphabet().len() as usize];
+        let Some(walked) = self.pool_rack(pool, rack_size, tally) else {
+            return 0;
+        };
+        let params = GenMovesParams {
+            board_snapshot,
+            rack: &walked,
+            max_gen: 1,
+            num_exchanges_by_this_player: i16::MAX,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.jumbled.held = !self.working_buffer.jumbled.kept.is_empty();
+        let walk = self.working_buffer.jumbled.walk;
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
+        self.working_buffer.jumbled.walk = JUMBLED_BEST_PER_RACK_TILES;
+        self.working_buffer.jumbled.window = window;
+        self.working_buffer.jumbled.seen = 0;
+        self.gen_sheet_impl(
+            &params,
+            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                if word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize {
+                    found(down, lane, idx, word, score);
+                }
+                false
+            }),
+            klv::AdjustLeave::Identity,
+            EquityPredicate::RejectAll,
+            false,
+        );
+        let seen = self.working_buffer.jumbled.seen;
+        self.working_buffer.jumbled.window = 0..u64::MAX;
+        self.working_buffer.jumbled.seen = 0;
+        self.working_buffer.jumbled.walk = walk;
+        self.working_buffer.jumbled.held = false;
+        std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.pool.walked = walked;
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
+        seen
     }
 
     pub fn pool_plays_window<N: kwg::Node, L: kwg::Node>(
@@ -16213,6 +16370,104 @@ mod tests {
             collapsed > 0,
             "no arrangement was collapsed, so the test proves nothing"
         );
+    }
+
+    #[test]
+    fn a_pools_best_plays_by_window_answer_as_all_its_plays() {
+        type Found = (bool, i8, i8, Vec<u8>, i32);
+        type Answer = (
+            std::collections::BTreeMap<Vec<u8>, i32>,
+            std::collections::BTreeMap<usize, i32>,
+            std::collections::BTreeMap<(Vec<u8>, usize), i32>,
+        );
+        let gc = game_config::make_jumbled_english_game_config();
+        let kwg = test_kad(&gc, SWEEP_WORDS);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let dim = gc.board_layout().dim();
+        let cols = dim.cols as usize;
+        let placed = parse_test_rack(gc.alphabet(), "AEST");
+        let pools = ["AERT?", "ACERST", "AEERT??"].map(|pool| parse_test_rack(gc.alphabet(), pool));
+        let mut board_tiles = vec![0u8; dim.rows as usize * cols];
+        let mut generator = KurniaMoveGenerator::new(&gc);
+        let add = |answer: &mut Answer, (down, lane, idx, word, score): &Found| {
+            let mut key = (word.iter().filter(|&&t| t != 0))
+                .map(|&t| if t & 0x80 != 0 { 0 } else { t })
+                .collect::<Vec<_>>();
+            key.sort_unstable();
+            let best = answer.0.entry(key.clone()).or_insert(*score);
+            *best = (*best).max(*score);
+            for (i, &t) in word.iter().enumerate() {
+                if t != 0 {
+                    let at = if *down {
+                        (*idx as usize + i) * cols + *lane as usize
+                    } else {
+                        *lane as usize * cols + *idx as usize + i
+                    };
+                    let best = answer.1.entry(at).or_insert(*score);
+                    *best = (*best).max(*score);
+                    let best = answer.2.entry((key.clone(), at)).or_insert(*score);
+                    *best = (*best).max(*score);
+                }
+            }
+        };
+        let mut fewer = 0;
+        for step in 0..=4 {
+            if step > 0 {
+                let at = dim.at_row_col(7, (step + 5) as i8);
+                board_tiles[at] = placed[(step - 1) as usize % placed.len()];
+            }
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            for pool in &pools {
+                let mut all = Vec::<Found>::new();
+                generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                    all.push((down, lane, idx, word.to_vec(), score));
+                });
+                let mut want: Answer = Default::default();
+                for found in &all {
+                    add(&mut want, found);
+                }
+                let mut best = Vec::<Found>::new();
+                let mut lists = PoolLists::default();
+                for lane in 0..(dim.rows + dim.cols) as u32 {
+                    let masks = if lane < dim.rows as u32 {
+                        (1 << lane, 0)
+                    } else {
+                        (0, 1 << (lane - dim.rows as u32))
+                    };
+                    let mut from = 0;
+                    loop {
+                        let seen = generator.pool_plays_best_window(
+                            &board_snapshot,
+                            pool,
+                            masks,
+                            from..from + 3,
+                            &mut lists,
+                            |down, lane, idx, word, score| {
+                                best.push((down, lane, idx, word.to_vec(), score));
+                            },
+                        );
+                        from += 3;
+                        if from >= seen {
+                            break;
+                        }
+                    }
+                }
+                let mut answer: Answer = Default::default();
+                for found in &best {
+                    add(&mut answer, found);
+                }
+                assert_eq!(answer, want, "{step} {pool:?}");
+                fewer += all.len() - best.len();
+            }
+        }
+        assert!(fewer > 0);
     }
 
     #[test]
