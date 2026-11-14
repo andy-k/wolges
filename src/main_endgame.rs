@@ -538,8 +538,8 @@ struct Cli {
     lean: bool,
     #[arg(
         long,
-        help = "worker threads; with no tile in the bag, only with no time or state limit \
-                [default: every core]"
+        help = "worker threads; with one tile in the bag or none, only with no time or \
+                state limit [default: every core]"
     )]
     threads: Option<std::num::NonZeroUsize>,
     #[arg(
@@ -1769,13 +1769,16 @@ fn solve_position<N: kwg::Node>(
         } else if bag_size == 1 {
             let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
             egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
-            let result = egs.solve_peg_one_in_bag(
-                0,
-                &board_tiles,
-                &question.rack,
-                &available_tally,
-                scaled_score_diff,
+            let result = egs.resume_peg_one_in_bag_on_threads(
+                &mut endgame::PegProgress::new(
+                    0,
+                    &board_tiles,
+                    &question.rack,
+                    &available_tally,
+                    scaled_score_diff,
+                ),
                 &solving.limits,
+                solving.threads,
             )?;
 
             let result = match result {

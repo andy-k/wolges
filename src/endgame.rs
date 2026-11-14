@@ -229,6 +229,20 @@ impl Table {
         })
     }
 
+    // the table as with_buckets makes one of this many buckets (at least one),
+    // emptied in place where it has that many and is not growing
+    #[inline]
+    fn empty_to(&mut self, buckets: usize) {
+        let buckets = buckets.max(1);
+        if self.buckets.len() != buckets || self.growing() {
+            *self = Self::with_buckets(buckets).unwrap_or_else(Self::new);
+            return;
+        }
+        self.buckets.fill([0; 8]);
+        self.held = 0;
+        self.generation = 0;
+    }
+
     // the positions the table has room for
     #[inline(always)]
     fn room(&self) -> usize {
@@ -5432,6 +5446,18 @@ impl<
         )
     }
 
+    pub fn resume_peg_one_in_bag_on_threads(
+        &mut self,
+        progress: &mut PegProgress,
+        limits: &Limits,
+        threads: usize,
+    ) -> error::Returns<Result<PegResult, PegUnsupported>> {
+        self.work_buffer.threads = threads;
+        let result = self.resume_peg_one_in_bag(progress, limits);
+        self.work_buffer.threads = 1;
+        result
+    }
+
     // the search with a tile in the bag that progress holds, going on from
     // where the last solve given it stopped
     #[inline]
@@ -6258,6 +6284,7 @@ impl<
         if !LEAN {
             self.swap_lanes(&mut sub);
         }
+        sub.work_buffer.threads = self.work_buffer.threads;
         let result = Self::peg_committed_by(
             &mut sub,
             &self.klv,
@@ -6331,6 +6358,84 @@ impl<
         or.extend_from_slice(opp_rack);
         sub.set_scoreless_turns(0, 0);
         Ok(*score as f32 - sub.solve_in_bag(mover ^ 1, limits, exact)?)
+    }
+
+    // a place a limit stopped is left none
+    fn peg_places_on_threads(
+        sub: &mut Self,
+        position: &PegPosition<'_>,
+        score_diff: f32,
+        limits: &BagLimits,
+        moves: &[PegMove],
+    ) -> Vec<Option<PegValue>> {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        // each thread's solver, made at its first solve and kept for the next
+        let mut helpers = std::mem::take(&mut sub.helpers);
+        helpers.resize_with(sub.work_buffer.threads, || None);
+        let (gc, kwg, arm_tables) = (sub.game_config, sub.kwg, sub.arm_tables);
+        let run_letters = &sub.run_letters;
+        let clock = limits.on_one_clock();
+        let deal = &sub.work_buffer.lane_pool.deal;
+        let buckets = sub.work_buffer.table.buckets.len();
+        let next = &AtomicUsize::new(0);
+        let helped = std::thread::scope(|s| {
+            let handles = (helpers.into_iter())
+                .map(|helper| {
+                    s.spawn(move || {
+                        let mut found = Vec::new();
+                        let limits = BagLimits::on_the_clock(clock);
+                        let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper)
+                        else {
+                            return (found, 0, 0, None);
+                        };
+                        // empty, with this solver's room, as each solve's
+                        own.work_buffer.table.empty_to(buckets);
+                        if !LEAN {
+                            own.pool_lanes_as(deal);
+                        }
+                        let mut opp_rack = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Relaxed);
+                            let Some(cand) = moves.get(i) else {
+                                break;
+                            };
+                            let PegMove::Place(play) = cand else {
+                                continue;
+                            };
+                            let value = peg_value(
+                                position.unseen,
+                                score_diff,
+                                &mut opp_rack,
+                                |_, drawn, opp_rack, exact| {
+                                    Self::peg_place_endgame(
+                                        &mut own, position, play, drawn, opp_rack, &limits, exact,
+                                    )
+                                },
+                            );
+                            let Ok(value) = value else {
+                                break;
+                            };
+                            found.push((i, value));
+                        }
+                        let (endgames, nodes) = (limits.endgames.get(), limits.nodes.get());
+                        (found, endgames, nodes, Some(own.into_helper()))
+                    })
+                })
+                .collect::<Vec<_>>();
+            (handles.into_iter())
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let mut ready = vec![None; moves.len()];
+        for (found, endgames, nodes, helper) in helped {
+            for (i, value) in found {
+                ready[i] = Some(value);
+            }
+            limits.endgames.set(limits.endgames.get() + endgames);
+            limits.nodes.set(limits.nodes.get() + nodes);
+            sub.helpers.push(helper);
+        }
+        ready
     }
 
     // the committed model's search, its endgames solved by sub: the move with
@@ -6410,6 +6515,13 @@ impl<
 
         // the tile's opponent rack, made once and refilled for each tile
         let mut opp_rack = Vec::new();
+
+        // one pass: each move's value is exact, so the same on any thread
+        let mut ready = Vec::new();
+        if !deepens && sub.work_buffer.threads > 1 && state.next == 0 {
+            ready = Self::peg_places_on_threads(sub, position, score_diff, limits, &state.moves);
+        }
+
         let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
             peg_value(
                 unseen,
@@ -6479,7 +6591,11 @@ impl<
                 limits
                     .may_stop
                     .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
-                match value_move(&state.moves[i], &mut state.passing) {
+                let valued = match ready.get_mut(i).and_then(Option::take) {
+                    Some(value) => Ok(value),
+                    None => value_move(&state.moves[i], &mut state.passing),
+                };
+                match valued {
                     Ok(value) => {
                         state.pass_exact &= value.exact;
                         state.valued[i] = Some(value);
@@ -9692,6 +9808,74 @@ mod tests {
                         "[{name}] mover {mover} threads {threads}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_one_in_bag_solve_on_threads_finds_one_threads_answer() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let named = |play: &PegMove| match play {
+            PegMove::Pass => None,
+            PegMove::Place(movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            }) => Some((*down, *lane, *idx, word[..].to_vec(), *score)),
+            PegMove::Place(movegen::Play::Exchange { .. }) => unreachable!("not a place"),
+        };
+        let solved = |board: &[u8], rack: &[u8], unseen_tally: &[u8], threads: usize| {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut progress =
+                super::PegProgress::new(0, board, rack, unseen_tally, equity::Equity::ZERO);
+            let result = egs
+                .resume_peg_one_in_bag_on_threads(&mut progress, &super::Limits::NONE, threads)
+                .unwrap()
+                .expect("english one-in-bag is always solvable");
+            let moves = (result.moves.iter())
+                .map(|m| {
+                    (
+                        named(&m.play),
+                        m.win_pct,
+                        m.expected_margin,
+                        m.hypotheses.clone(),
+                        m.exact,
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                result.win_pct,
+                result.expected_margin,
+                result.hypotheses,
+                result.best_move.as_ref().map(named),
+                moves,
+                result.exact,
+            )
+        };
+        for (name, pos) in all_positions() {
+            let Some((&kept, rack)) = pos.racks[0].split_last() else {
+                continue;
+            };
+            if rack.is_empty() {
+                continue;
+            }
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in pos.racks[1].iter().chain([&kept]) {
+                unseen_tally[tile as usize] += 1;
+            }
+            let want = solved(&pos.board, rack, &unseen_tally, 1);
+            for threads in 2..4 {
+                assert!(
+                    solved(&pos.board, rack, &unseen_tally, threads) == want,
+                    "[{name}] threads {threads}"
+                );
             }
         }
     }
