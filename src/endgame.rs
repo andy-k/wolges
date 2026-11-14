@@ -765,9 +765,9 @@ impl KeyTable {
     }
 
     #[inline(always)]
-    fn insert(&mut self, key: u128, value: u32) {
-        if 2 * (self.held + 1) > self.keys.len() {
-            self.grow();
+    fn insert(&mut self, key: u128, value: u32) -> bool {
+        if 2 * (self.held + 1) > self.keys.len() && !self.grow() {
+            return false;
         }
         let mask = self.keys.len() - 1;
         let mut at = self.first(key);
@@ -777,18 +777,26 @@ impl KeyTable {
         self.held += (self.values[at] == NO_LIST) as usize;
         self.keys[at] = key;
         self.values[at] = value;
+        true
     }
 
-    fn grow(&mut self) {
+    fn grow(&mut self) -> bool {
         let size = (2 * self.keys.len()).max(1 << 10);
-        let keys = std::mem::replace(&mut self.keys, vec![0; size]);
-        let values = std::mem::replace(&mut self.values, vec![NO_LIST; size]);
+        let (mut keys, mut values) = (Vec::new(), Vec::new());
+        if keys.try_reserve_exact(size).is_err() || values.try_reserve_exact(size).is_err() {
+            return false;
+        }
+        keys.resize(size, 0);
+        values.resize(size, NO_LIST);
+        let keys = std::mem::replace(&mut self.keys, keys);
+        let values = std::mem::replace(&mut self.values, values);
         self.held = 0;
         for (key, value) in keys.into_iter().zip(values) {
             if value != NO_LIST {
                 self.insert(key, value);
             }
         }
+        true
     }
 
     // the bytes it holds
@@ -1105,10 +1113,16 @@ impl LanePool {
         memory_limit: Option<MemoryLimit>,
         num_rows: usize,
     ) -> bool {
-        if !self.room_for(memory_limit, plays.len(), self.fresh.len()) {
+        if !self.room_for(memory_limit, plays.len(), self.fresh.len())
+            || !self.record_lists(plays, num_rows)
+        {
             self.let_go();
             return false;
         }
+        true
+    }
+
+    fn record_lists(&mut self, plays: &[movegen::ValuedMove], num_rows: usize) -> bool {
         let Self {
             places,
             moves,
@@ -1128,11 +1142,20 @@ impl LanePool {
             sorting,
             ..
         } = self;
-        moves.reserve(plays.len());
-        needs.reserve(plays.len());
-        ends.reserve(plays.len());
-        entries.reserve(plays.len());
-        lists.reserve(fresh.len());
+        by_slot.clear();
+        hashes.clear();
+        sorting.clear();
+        if moves.try_reserve(plays.len()).is_err()
+            || needs.try_reserve(plays.len()).is_err()
+            || ends.try_reserve(plays.len()).is_err()
+            || entries.try_reserve(plays.len()).is_err()
+            || lists.try_reserve(fresh.len()).is_err()
+            || by_slot.try_reserve(plays.len()).is_err()
+            || hashes.try_reserve(plays.len()).is_err()
+            || sorting.try_reserve(plays.len()).is_err()
+        {
+            return false;
+        }
         known.resize_with(slot_lists.len(), KeyTable::default);
         let slot_of = |play: &movegen::Play| match play {
             movegen::Play::Place { down, lane, .. } => {
@@ -1207,7 +1230,9 @@ impl LanePool {
                                     movegen::Play::Exchange { .. } => 0,
                                 };
                                 moves.push((play.clone(), placed as u8));
-                                known[slot].insert(hash, id);
+                                if !known[slot].insert(hash, id) {
+                                    return false;
+                                }
                                 id
                             }
                         };
@@ -1218,11 +1243,15 @@ impl LanePool {
                     }
                     let list = lists.len() as u32;
                     lists.push([first_group as u32, needs.len() as u32, first_entry as u32]);
-                    contents.insert(key, list);
+                    if !contents.insert(key, list) {
+                        return false;
+                    }
                     list
                 }
             };
-            keys.insert(slot_keys[slot], list);
+            if !keys.insert(slot_keys[slot], list) {
+                return false;
+            }
             slot_lists[slot] = list;
         }
         true
