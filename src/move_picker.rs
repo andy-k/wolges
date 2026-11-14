@@ -2420,6 +2420,7 @@ mod tests {
     fn retire_paired_retires_the_first_of_two_tied_at_most_one_time_in_twenty() {
         let decisions = 400;
         let share = best_retired_share(2, 0.0, 256, decisions);
+        // one in twenty, and three standard errors of so many decisions
         let bound = 0.05 + 3.0 * (0.05 * 0.95 / decisions as f64).sqrt();
         assert!(share <= bound, "{share}");
     }

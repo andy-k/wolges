@@ -13511,6 +13511,12 @@ mod tests {
         rack
     }
 
+    // every placement on the board by brute force, with no word graph: each
+    // line, each start, each way to fill its empty squares from the rack (a
+    // blank as each letter), kept when every word of two or more tiles it forms
+    // is in words, it forms one, and it touches a tile on the board or (on an
+    // empty board) covers the star; scored square by square. Each as its tiles
+    // by square and its score, in millipoints
     #[inline]
     fn reference_placements(
         gc: &game_config::GameConfig,
@@ -13533,6 +13539,8 @@ mod tests {
             held[tile as usize] += 1;
         }
         let mut found = std::collections::BTreeSet::new();
+        // the tiles of the word through square at on the line of step (row,
+        // col), the placed ones read from placed
         let word_at = |at: (i8, i8), step: (i8, i8), placed: &[(usize, u8)]| {
             let tile_at = |r: i8, c: i8| -> Option<(usize, u8)> {
                 if r < 0 || c < 0 || r >= dim.rows || c >= dim.cols {
@@ -13576,6 +13584,8 @@ mod tests {
             }
             sum * times
         };
+        // on an empty symmetric board, a down placement is an across one
+        // mirrored, and only the across ones are listed
         let directions: &[bool] = if empty_board && layout.is_symmetric() {
             &[false]
         } else {
@@ -13589,6 +13599,8 @@ mod tests {
             };
             for r0 in 0..dim.rows {
                 for c0 in 0..dim.cols {
+                    // a line's placements from (r0, c0) on, its squares filled
+                    // in order: tiles placed so far, the main word so far
                     let mut stack = vec![((r0, c0), Vec::<(usize, u8)>::new(), Vec::<u8>::new())];
                     while let Some(((r, c), placed, main)) = stack.pop() {
                         let on_board = r < dim.rows && c < dim.cols;

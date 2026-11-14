@@ -884,6 +884,8 @@ impl<
         self.reply_equity
     }
 
+    // the mover's score and last leave's value less the best opponent's: in a
+    // game of more than two, the margin over whichever opponent is ahead
     #[inline(always)]
     pub fn final_equity_spread(&self) -> error::Returns<i32> {
         let mut best_opponent_equity = i32::MIN;

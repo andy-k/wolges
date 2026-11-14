@@ -117,6 +117,7 @@ fn write_whole_new(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+// "-" is stdout; else desired, or the first free numbered name beside it
 #[inline]
 fn write_whole(desired: &str, bytes: &[u8]) -> error::Returns<String> {
     if desired == "-" {
@@ -126,6 +127,7 @@ fn write_whole(desired: &str, bytes: &[u8]) -> error::Returns<String> {
     write_whole_claimed(desired, bytes)
 }
 
+// desired, else the first free numbered name beside it
 #[inline]
 fn write_whole_claimed(desired: &str, bytes: &[u8]) -> error::Returns<String> {
     for n in 0u32.. {

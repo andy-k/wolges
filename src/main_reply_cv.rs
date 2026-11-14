@@ -8,7 +8,8 @@
 // lean arm): each rollout's objective, spread, and chance to win, with its
 // reply's equity at ply 1 (Simmer::reply_equity). It prints how many plain
 // iterations one with the control variate is worth (1 / (1 - rho^2)), for each
-// candidate alone and as its difference from the best.
+// candidate alone and as its difference from the best, and the same with the
+// exact reply's time counted against the rollouts' (net).
 //
 //   reply-cv <kwg> <klv2> <candidates> <iterations> <plies|max> <seed:turns>...
 use rand::prelude::*;
@@ -154,6 +155,8 @@ impl Moments {
         1.0 / (1.0 - self.rho() * self.rho())
     }
 
+    // worth, the exact reply's time counted: the plain iterations the same
+    // wall time buys, over those spent on the rollouts alone
     fn worth_per_second(&self, rollouts_secs: f64, reply_secs: f64) -> f64 {
         self.worth() * rollouts_secs / (rollouts_secs + reply_secs)
     }
