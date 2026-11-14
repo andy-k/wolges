@@ -5554,6 +5554,11 @@ struct JumbledMultisets {
     seen: u64,
     held: bool,
     floor: i32, // a threshold the walk starts from, set only inside a call
+
+    part: (u64, u32), // the (multiset, blank choice) a part walk starts from
+    budget: u64,      // blank choices a part walk has left
+    designation: u32, // the current multiset's next blank choice
+    stopped: Option<(u64, u32)>, // where a part walk stopped
 }
 
 #[derive(Clone)]
@@ -5570,6 +5575,18 @@ struct PoolScratch {
 // a windowed top walk's threshold so far, carried from one window to the next
 #[derive(Clone, Copy)]
 pub struct PoolFloor(i32);
+
+// where a part walk of a window stopped: the multiset, and its blank choice
+// the next part starts from
+#[derive(Clone, Copy, Default)]
+pub struct PoolPart(Option<(u64, u32)>);
+
+impl PoolPart {
+    // the multiset the walk stopped in, none when it walked its window
+    pub fn stopped_at(&self) -> Option<u64> {
+        self.0.map(|(at, _)| at)
+    }
+}
 
 impl Default for PoolFloor {
     fn default() -> Self {
@@ -5691,6 +5708,10 @@ impl JumbledMultisets {
             seen: 0,
             held: false,
             floor: i32::MIN,
+            part: (0, 0),
+            budget: u64::MAX,
+            designation: 0,
+            stopped: None,
         }
     }
 
@@ -6127,6 +6148,20 @@ fn gen_jumbled_place_moves_walk<
         fixed: i32,
     ) {
         if i == s.letters.len() {
+            let jumbled = &mut env.params.jumbled;
+            if jumbled.walk == JUMBLED_BEST_PER_RACK_TILES {
+                let at = (jumbled.seen - 1, jumbled.designation);
+                jumbled.designation += 1;
+                if jumbled.stopped.is_some() || at < jumbled.part {
+                    return;
+                }
+                if jumbled.budget == 0 {
+                    jumbled.stopped = Some(at);
+                    jumbled.window.end = at.0 + 1;
+                    return;
+                }
+                jumbled.budget -= 1;
+            }
             let mut leave_idx = env.params.multi_leaves.pass_leave_idx();
             for j in 0..s.letters.len() {
                 let letter = s.letters[j] as usize;
@@ -6713,6 +6748,7 @@ fn gen_jumbled_place_moves_walk<
                             if !env.params.jumbled.window.contains(&seen) {
                                 continue;
                             }
+                            env.params.jumbled.designation = 0;
                         }
                         if WALK == JUMBLED_ONCE_PER_RACK_TILES {
                             let seen = env.params.jumbled.seen;
@@ -8996,6 +9032,35 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.pool.walked = walked;
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
+        seen
+    }
+
+    // as pool_plays_best_window, walking at most budget (1 or more) blank
+    // choices, from where part says the walk before stopped if the window
+    // starts there; part then says where this one stopped
+    #[allow(clippy::too_many_arguments)]
+    pub fn pool_plays_best_part<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        lanes: (u128, u128),
+        window: std::ops::Range<u64>,
+        budget: u64,
+        (lists, part): (&mut PoolLists, &mut PoolPart),
+        found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) -> u64 {
+        let jumbled = &mut lists.0;
+        jumbled.part = match part.0 {
+            Some((at, from)) if at == window.start => (at, from),
+            _ => (0, 0),
+        };
+        jumbled.budget = budget.max(1);
+        jumbled.stopped = None;
+        let seen = self.pool_plays_best_window(board_snapshot, pool, lanes, window, lists, found);
+        let jumbled = &mut lists.0;
+        part.0 = jumbled.stopped.take();
+        jumbled.part = (0, 0);
+        jumbled.budget = u64::MAX;
         seen
     }
 
@@ -16742,6 +16807,83 @@ mod tests {
             collapsed > 0,
             "no arrangement was collapsed, so the test proves nothing"
         );
+    }
+
+    // a lane walked in parts of 1 or 2 blank choices, each part from where the
+    // one before stopped, offers the plays the whole lane does, in its order
+    #[test]
+    fn a_pools_best_plays_walked_in_parts_are_the_whole_walks() {
+        type Found = (bool, i8, i8, Vec<u8>, i32);
+        let gc = game_config::make_jumbled_english_game_config();
+        let kwg = test_kad(&gc, SWEEP_WORDS);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let dim = gc.board_layout().dim();
+        let cols = dim.cols as usize;
+        let placed = parse_test_rack(gc.alphabet(), "AEST");
+        let pools = ["AERT?", "ACERST", "AEERT??"].map(|pool| parse_test_rack(gc.alphabet(), pool));
+        let mut board_tiles = vec![0u8; dim.rows as usize * cols];
+        let mut generator = KurniaMoveGenerator::new(&gc);
+        let mut split = 0;
+        for step in 0..=4 {
+            if step > 0 {
+                let at = dim.at_row_col(7, (step + 5) as i8);
+                board_tiles[at] = placed[(step - 1) as usize % placed.len()];
+            }
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            for pool in &pools {
+                for lane in 0..(dim.rows + dim.cols) as u32 {
+                    let masks = if lane < dim.rows as u32 {
+                        (1 << lane, 0)
+                    } else {
+                        (0, 1 << (lane - dim.rows as u32))
+                    };
+                    let mut whole = Vec::<Found>::new();
+                    generator.pool_plays_best_window(
+                        &board_snapshot,
+                        pool,
+                        masks,
+                        0..u64::MAX,
+                        &mut PoolLists::default(),
+                        |down, lane, idx, word, score| {
+                            whole.push((down, lane, idx, word.to_vec(), score));
+                        },
+                    );
+                    for budget in [1, 2] {
+                        let mut parts = Vec::<Found>::new();
+                        let mut lists = PoolLists::default();
+                        let mut part = PoolPart::default();
+                        let mut from = 0;
+                        loop {
+                            generator.pool_plays_best_part(
+                                &board_snapshot,
+                                pool,
+                                masks,
+                                from..u64::MAX,
+                                budget,
+                                (&mut lists, &mut part),
+                                |down, lane, idx, word, score| {
+                                    parts.push((down, lane, idx, word.to_vec(), score));
+                                },
+                            );
+                            let Some(at) = part.stopped_at() else {
+                                break;
+                            };
+                            split += usize::from(at == from);
+                            from = at;
+                        }
+                        assert_eq!(parts, whole, "{step} {pool:?} {lane} {budget}");
+                    }
+                }
+            }
+        }
+        assert!(split > 0, "no multiset was walked in parts");
     }
 
     #[test]
