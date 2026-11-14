@@ -6282,6 +6282,57 @@ impl<
         result
     }
 
+    fn peg_place_endgame(
+        sub: &mut Self,
+        position: &PegPosition<'_>,
+        play: &movegen::Play,
+        drawn: u8,
+        opp_rack: &[u8],
+        limits: &BagLimits,
+        exact: &mut bool,
+    ) -> error::Returns<f32> {
+        let movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            score,
+        } = play
+        else {
+            unreachable!("Place candidate always holds a Play::Place")
+        };
+        let PegPosition {
+            mover,
+            board,
+            mover_rack,
+            ..
+        } = *position;
+        // the position after the place, made in the solver's own (as init
+        // makes it, with no scoreless turns before it)
+        let nb = &mut sub.board_tiles;
+        nb.clear();
+        nb.extend_from_slice(board);
+        let mr = &mut sub.racks[mover as usize];
+        mr.clear();
+        mr.extend_from_slice(mover_rack);
+        let strider = sub.game_config.board_layout().dim().lane(*down, *lane);
+        for (i, &tile) in (*idx..).zip(word.iter()) {
+            if tile != 0 {
+                nb[strider.at(i)] = tile;
+                let b = tile & !((tile as i8) >> 7) as u8;
+                let p = mr.iter().rposition(|&x| x == b).unwrap();
+                mr[p] = 0x80;
+            }
+        }
+        mr.retain(|&x| x != 0x80);
+        mr.push(drawn);
+        let or = &mut sub.racks[(mover ^ 1) as usize];
+        or.clear();
+        or.extend_from_slice(opp_rack);
+        sub.set_scoreless_turns(0, 0);
+        Ok(*score as f32 - sub.solve_in_bag(mover ^ 1, limits, exact)?)
+    }
+
     // the committed model's search, its endgames solved by sub: the move with
     // the most wins, then the best mean margin, ties going to the move
     // generated first (the pass, then the places). Deepening, the first pass
@@ -6312,7 +6363,6 @@ impl<
         let arm_tables = sub.arm_tables;
         let alphabet = gc.alphabet();
         let opp = mover ^ 1;
-        let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
         // a pass answering the game's last turn, if that was a pass, ends it
         let pass_passes = scoreless[0].saturating_add(1);
         let pass_zeros = scoreless[1].saturating_add(1);
@@ -6358,113 +6408,67 @@ impl<
             state.depth = if deepens { 1 } else { COMPLETE };
         }
 
+        // the tile's opponent rack, made once and refilled for each tile
+        let mut opp_rack = Vec::new();
         let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
-            let mut exact = true;
-            let mut win = 0.0f32;
-            let mut marg = 0.0f32;
-            let mut hyps: Vec<(u8, u32, equity::Equity)> = Vec::with_capacity(unseen.len());
-            for &(t, w) in unseen {
-                let drawn = t & !((t as i8) >> 7) as u8;
-
-                let mut opp_rack: Vec<u8> = Vec::new();
-                for &(u, c) in unseen {
-                    let take = if u == t { c - 1 } else { c };
-                    for _ in 0..take {
-                        opp_rack.push(u);
-                    }
-                }
-                let v = match cand {
-                    PegMove::Place(movegen::Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        score,
-                    }) => {
-                        let mut nb = board.to_vec();
-                        let mut mr = mover_rack.to_vec();
-                        let strider = gc.board_layout().dim().lane(*down, *lane);
-                        for (i, &tile) in (*idx..).zip(word.iter()) {
-                            if tile != 0 {
-                                nb[strider.at(i)] = tile;
-                                let b = tile & !((tile as i8) >> 7) as u8;
-                                let p = mr.iter().rposition(|&x| x == b).unwrap();
-                                mr[p] = 0x80;
-                            }
+            peg_value(
+                unseen,
+                score_diff,
+                &mut opp_rack,
+                |t, drawn, opp_rack, exact| {
+                    Ok(match cand {
+                        PegMove::Place(play) => Self::peg_place_endgame(
+                            sub, position, play, drawn, opp_rack, limits, exact,
+                        )?,
+                        // the pass ends the game at once when it brings the
+                        // scoreless turns to the config's count, each losing
+                        // their rack
+                        PegMove::Pass if pass_ends_the_game => {
+                            (alphabet.scaled_rack_score(opp_rack)
+                                - alphabet.scaled_rack_score(mover_rack))
+                                as f32
                         }
-                        mr.retain(|&x| x != 0x80);
-                        mr.push(drawn);
-                        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
-                        r2[mover as usize] = mr;
-                        r2[opp as usize] = opp_rack;
-                        sub.init(&nb, [&r2[0], &r2[1]]);
-                        *score as f32 - sub.solve_in_bag(opp, limits, &mut exact)?
-                    }
-                    // the pass ends the game at once when it brings the scoreless
-                    // turns to the config's count, each losing their rack
-                    PegMove::Pass if pass_ends_the_game => {
-                        (alphabet.scaled_rack_score(&opp_rack)
-                            - alphabet.scaled_rack_score(mover_rack)) as f32
-                    }
-                    PegMove::Pass => {
-                        // PEG2-7: with two or more in the bag, draw every tile from the SAME end -- pop,
-                        // the back -- and store a scenario reversed to match. Do NOT reuse Bag::replenish
-                        // for the enumeration: it pops for even players and shifts for odd ones, which on
-                        // a reversed bag hands p1 the leftover instead of the next popped tile.
-                        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
-                        r2[mover as usize] = mover_rack.to_vec();
-                        r2[opp as usize] = opp_rack;
-                        let mut search = OneInBag {
-                            gc,
-                            kwg,
-                            arm_tables,
-                            klv,
-                            sub: &mut *sub,
-                            mg: &mut *mg,
-                            memo: BagTable::default(),
-                            limits,
-                            exact: true,
-                            line: Some(&mut *line),
-                        };
-                        let v = -Self::one_in_bag_minimax(
-                            &mut search,
-                            board,
-                            &r2,
-                            OneInBagTurn {
-                                mover: opp,
-                                bag_tile: t,
-                                passes: pass_passes,
-                                zeros: pass_zeros,
-                                answering: true,
-                            },
-                        )?;
-                        exact &= search.exact;
-                        v
-                    }
-                    PegMove::Place(_) => {
-                        unreachable!("Place candidate always holds a Play::Place")
-                    }
-                };
-                let vv = v + score_diff;
-                marg += w as f32 * vv;
-                win += w as f32
-                    * if vv > 0.0 {
-                        1.0
-                    } else if vv == 0.0 {
-                        0.5
-                    } else {
-                        0.0
-                    };
-                hyps.push((t, w, to_equity(vv)));
-            }
-            win /= total;
-            marg /= total;
-            Ok(PegValue {
-                win,
-                marg,
-                hyps,
-                exact,
-            })
+                        PegMove::Pass => {
+                            // PEG2-7: with two or more in the bag, draw every
+                            // tile from the same end -- pop, the back -- and
+                            // store a scenario reversed to match. Do NOT reuse
+                            // Bag::replenish for the enumeration: it pops for
+                            // even players and shifts for odd ones, which on a
+                            // reversed bag hands p1 the leftover instead of
+                            // the next popped tile.
+                            let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+                            r2[mover as usize] = mover_rack.to_vec();
+                            r2[opp as usize] = opp_rack.to_vec();
+                            let mut search = OneInBag {
+                                gc,
+                                kwg,
+                                arm_tables,
+                                klv,
+                                sub: &mut *sub,
+                                mg: &mut *mg,
+                                memo: BagTable::default(),
+                                limits,
+                                exact: true,
+                                line: Some(&mut *line),
+                            };
+                            let v = -Self::one_in_bag_minimax(
+                                &mut search,
+                                board,
+                                &r2,
+                                OneInBagTurn {
+                                    mover: opp,
+                                    bag_tile: t,
+                                    passes: pass_passes,
+                                    zeros: pass_zeros,
+                                    answering: true,
+                                },
+                            )?;
+                            *exact &= search.exact;
+                            v
+                        }
+                    })
+                },
+            )
         };
 
         while !state.done {
@@ -6550,6 +6554,52 @@ impl<
             exact,
         ))
     }
+}
+
+fn peg_value(
+    unseen: &[(u8, u32)],
+    score_diff: f32,
+    opp_rack: &mut Vec<u8>, // the caller's, refilled for each tile
+    mut endgame: impl FnMut(u8, u8, &[u8], &mut bool) -> error::Returns<f32>,
+) -> error::Returns<PegValue> {
+    let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
+    let mut exact = true;
+    let mut win = 0.0f32;
+    let mut marg = 0.0f32;
+    let mut hyps: Vec<(u8, u32, equity::Equity)> = Vec::with_capacity(unseen.len());
+    // the opponent's rack for each tile in the bag, in the caller's buffer:
+    // every tile unseen but the one drawn
+    for &(t, w) in unseen {
+        let drawn = t & !((t as i8) >> 7) as u8;
+
+        opp_rack.clear();
+        for &(u, c) in unseen {
+            let take = if u == t { c - 1 } else { c };
+            for _ in 0..take {
+                opp_rack.push(u);
+            }
+        }
+        let v = endgame(t, drawn, opp_rack, &mut exact)?;
+        let vv = v + score_diff;
+        marg += w as f32 * vv;
+        win += w as f32
+            * if vv > 0.0 {
+                1.0
+            } else if vv == 0.0 {
+                0.5
+            } else {
+                0.0
+            };
+        hyps.push((t, w, to_equity(vv)));
+    }
+    win /= total;
+    marg /= total;
+    Ok(PegValue {
+        win,
+        marg,
+        hyps,
+        exact,
+    })
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
