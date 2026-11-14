@@ -84,9 +84,59 @@ pub struct PlyPlayed {
 // inference's are by every sim given them), so that a weighted draw is a binary
 // search
 #[derive(Clone)]
-struct KeptLeaves {
-    seat: u8,
-    leaves: std::sync::Arc<infer::PackedLeaves>,
+pub struct KeptLeaves {
+    pub seat: u8,
+    pub leaves: std::sync::Arc<infer::PackedLeaves>,
+}
+
+impl KeptLeaves {
+    // a leave of weight 0 is never dealt
+    #[inline]
+    pub fn listed(seat: u8, kept_leaves: &[(Vec<u8>, f64)]) -> Self {
+        let mut leaves = infer::PackedLeaves::new();
+        for (leave, weight) in kept_leaves {
+            if *weight > 0.0 {
+                // an infinite weight would leave no total to draw against
+                (leaves.push(leave, *weight)).expect("a kept leave's weight is finite");
+            }
+        }
+        Self {
+            seat,
+            leaves: std::sync::Arc::new(leaves),
+        }
+    }
+}
+
+// num_sim_plies: the plies each rollout plays past its candidate (then on
+// while the bag is empty). kept_leaves: the leaves the next seat may have
+// kept, with weights, one dealt to it first each iteration. packed: the leaves
+// another seat may have kept, shared not copied, each in place of any given
+// before it for its seat. opponents_pass: every seat but the mover's passes on
+// each of its turns in a rollout
+pub struct SimChoices<'a> {
+    pub num_sim_plies: usize,
+    pub report_win_prob: bool,
+    pub kept_leaves: &'a [(Vec<u8>, f64)],
+    pub packed: &'a [KeptLeaves],
+    pub opponents_pass: bool,
+}
+
+impl<'a> SimChoices<'a> {
+    // none packed, the opponents not passing
+    #[inline(always)]
+    pub fn new(
+        num_sim_plies: usize,
+        report_win_prob: bool,
+        kept_leaves: &'a [(Vec<u8>, f64)],
+    ) -> Self {
+        Self {
+            num_sim_plies,
+            report_win_prob,
+            kept_leaves,
+            packed: &[],
+            opponents_pass: false,
+        }
+    }
 }
 
 // Simmer can only be reused for the same game_config and kwg.
@@ -252,57 +302,36 @@ impl<
         clone.prepare(
             game_config,
             &self.initial_game_state,
-            self.num_sim_plies,
-            self.wants_win_prob,
-            &[],
+            &SimChoices {
+                packed: &self.kept,
+                opponents_pass: self.opponents_pass,
+                ..SimChoices::new(self.num_sim_plies, self.wants_win_prob, &[])
+            },
         );
-        clone.kept.clone_from(&self.kept);
-        clone.opponents_pass = self.opponents_pass;
         // one census a preparation, whichever of its clones takes it
         clone.census = self.census.clone();
         clone.census_taken.clone_from(&self.census_taken);
         clone
     }
 
-    // the leaves a seat other than the mover's may have kept, with weights, one
-    // of them dealt to it first each iteration, the rest of its rack from the
-    // bag; in place of any set for that seat before. prepare sets the next
-    // seat's (the opponent's in a game of two), clearing the others'; so set
-    // any other seat's after it
-    #[inline]
-    pub fn set_kept_leaves(&mut self, seat: u8, kept_leaves: &[(Vec<u8>, f64)]) {
-        let mut leaves = infer::PackedLeaves::new();
-        for (leave, weight) in kept_leaves {
-            if *weight > 0.0 {
-                // an infinite weight would leave no total to draw against
-                (leaves.push(leave, *weight)).expect("a kept leave's weight is finite");
-            }
-        }
-        self.set_packed_kept_leaves(seat, std::sync::Arc::new(leaves));
+    #[inline(always)]
+    pub fn kept_leaves(&self) -> &[KeptLeaves] {
+        &self.kept
     }
 
-    // as set_kept_leaves, the leaves packed and shared with whatever else holds
-    // them (a list of millions, as an inference's may be, is not copied); a
-    // leave of weight 0 is never dealt
+    #[inline(always)]
+    pub fn opponents_pass(&self) -> bool {
+        self.opponents_pass
+    }
+
+    // in place of any kept for its seat before
     #[inline]
-    pub fn set_packed_kept_leaves(
-        &mut self,
-        seat: u8,
-        leaves: std::sync::Arc<infer::PackedLeaves>,
-    ) {
-        self.kept.retain(|kept| kept.seat != seat);
-        if leaves.total() > 0.0 {
-            self.kept.push(KeptLeaves { seat, leaves });
+    fn keep(&mut self, kept: KeptLeaves) {
+        self.kept.retain(|other| other.seat != kept.seat);
+        if kept.leaves.total() > 0.0 {
+            self.kept.push(kept);
             self.kept.sort_by_key(|kept| kept.seat);
         }
-    }
-
-    // whether every seat but the mover's passes on each of its turns in a
-    // rollout: a play valued as if the opponent could make nothing of what it
-    // leaves. Off unless set; prepare leaves it as it is.
-    #[inline(always)]
-    pub fn set_opponents_pass(&mut self, opponents_pass: bool) {
-        self.opponents_pass = opponents_pass;
     }
 
     #[inline(always)]
@@ -310,13 +339,11 @@ impl<
         &mut self,
         game_config: &game_config::GameConfig,
         game_state: &game_state::GameState,
-        num_sim_plies: usize,
-        report_win_prob: bool,
-        kept_leaves: &[(Vec<u8>, f64)], // the leaves the next seat may have kept, with weights
+        choices: &SimChoices<'_>,
     ) {
         self.kept.clear();
         let next_seat = (game_state.turn + 1) % game_state.players.len() as u8;
-        self.set_kept_leaves(next_seat, kept_leaves);
+        self.keep(KeptLeaves::listed(next_seat, choices.kept_leaves));
         self.initial_game_state.clone_from(game_state);
         self.game_state.clone_from(game_state);
         self.initial_score_spread = game_state.current_player().score
@@ -326,8 +353,12 @@ impl<
                 .map(|(_, player)| player.score)
                 .max()
                 .unwrap_or(0);
-        self.wants_win_prob = report_win_prob;
-        self.set_num_sim_plies(game_config, num_sim_plies);
+        self.wants_win_prob = choices.report_win_prob;
+        self.weigh_num_sim_plies(game_config, choices.num_sim_plies);
+        for kept in choices.packed {
+            self.keep(kept.clone());
+        }
+        self.opponents_pass = choices.opponents_pass;
         self.census = Default::default();
         self.census_taken = None;
     }
@@ -385,15 +416,9 @@ impl<
         )
     }
 
-    // the plies each rollout plays past its candidate from the next one on
-    // (past them it plays on while the bag is empty), with the weight of the
-    // chance to win, which reads them; a prepared sim's own otherwise
+    // the plies and the weight of the chance to win, which reads them
     #[inline(always)]
-    pub fn set_num_sim_plies(
-        &mut self,
-        game_config: &game_config::GameConfig,
-        num_sim_plies: usize,
-    ) {
+    fn weigh_num_sim_plies(&mut self, game_config: &game_config::GameConfig, num_sim_plies: usize) {
         self.num_sim_plies = num_sim_plies;
         self.num_tiles_that_matter = num_sim_plies.saturating_mul(game_config.rack_size() as usize);
         let mut num_unseen_tiles = self.initial_game_state.bag.len();
@@ -1010,7 +1035,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(99);
-        simmer.prepare(&game_config, &game_state, 0, false, &[]);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(0, false, &[]));
         simmer.prepare_iteration();
 
         let exchanged =
@@ -1079,7 +1104,7 @@ mod tests {
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 2, false, &[]);
+            simmer.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
             simmer.reseed(seed);
             simmer.prepare_iteration();
 
@@ -1098,7 +1123,7 @@ mod tests {
         let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         let mut simmer = Simmer::new(&game_config).unwrap();
-        simmer.prepare(&game_config, &game_state, 2, false, &[]);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;
         let my = simmer.game_state.players[turn].rack.len();
@@ -1165,7 +1190,7 @@ mod tests {
         game_state.players[1].score = 250 * equity::SCALE;
         game_state.players[2].score = 270 * equity::SCALE;
         let mut simmer = Simmer::new(&game_config).unwrap();
-        simmer.prepare(&game_config, &game_state, 2, false, &[]);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
         assert_eq!(simmer.initial_game_state.turn, 0);
         assert_eq!(simmer.initial_score_spread, 30 * equity::SCALE);
         simmer.last_seen_leave_values[0] = 5 * equity::SCALE;
@@ -1241,7 +1266,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(5);
-        simmer.prepare(&game_config, &game_state, 2, false, &[]);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
         simmer.prepare_iteration();
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
@@ -1279,7 +1304,7 @@ mod tests {
             game_state.bag.set_from_iter(bag);
             let mut simmer = Simmer::new(&game_config).unwrap();
             simmer.reseed(5);
-            simmer.prepare(&game_config, &game_state, 0, false, &[]);
+            simmer.prepare(&game_config, &game_state, &SimChoices::new(0, false, &[]));
             simmer.prepare_iteration();
             let game_ended = simmer
                 .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
@@ -1333,7 +1358,7 @@ mod tests {
         };
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(5);
-        simmer.prepare(&game_config, &game_state, 0, false, &[]);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(0, false, &[]));
         simmer.prepare_iteration();
         let game_ended = simmer
             .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
@@ -1376,8 +1401,14 @@ mod tests {
             let arm_tables = anagrams::ArmTables::build(&kwg, game_config, false).unwrap();
             let mut simmer = Simmer::new(game_config).unwrap();
             simmer.reseed(5);
-            simmer.prepare(game_config, &game_state, plies, false, &[]);
-            simmer.set_opponents_pass(opponents_pass);
+            simmer.prepare(
+                game_config,
+                &game_state,
+                &SimChoices {
+                    opponents_pass,
+                    ..SimChoices::new(plies, false, &[])
+                },
+            );
             simmer.prepare_iteration();
             let game_ended = simmer
                 .simulate(game_config, &kwg, &arm_tables, &klv, &pass)
@@ -1416,7 +1447,11 @@ mod tests {
             (Vec::new(), 1.0),
         ];
         let mut simmer = Simmer::new(&game_config).unwrap();
-        simmer.prepare(&game_config, &game_state, 2, false, &kept_leaves);
+        simmer.prepare(
+            &game_config,
+            &game_state,
+            &SimChoices::new(2, false, &kept_leaves),
+        );
         for seed in 0..20 {
             simmer.reseed(seed);
             simmer.prepare_iteration();
@@ -1472,7 +1507,7 @@ mod tests {
             }
 
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 4, false, &[]);
+            simmer.prepare(&game_config, &game_state, &SimChoices::new(4, false, &[]));
             let pristine = simmer.prepared_state().clone();
             let draws = 1000;
             let mut shared = 0;
@@ -1546,9 +1581,11 @@ mod tests {
         simmer.prepare(
             &game_config,
             &game_state,
-            4,
-            false,
-            &[(vowels.clone(), 3.0), (consonants.clone(), 1.0)],
+            &SimChoices::new(
+                4,
+                false,
+                &[(vowels.clone(), 3.0), (consonants.clone(), 1.0)],
+            ),
         );
         let pristine = simmer.prepared_state().clone();
         let (mut drew_vowels, mut drew_consonants) = (0, 0);
@@ -1573,7 +1610,7 @@ mod tests {
         );
 
         // a new prepare forgets them
-        simmer.prepare(&game_config, &game_state, 4, false, &[]);
+        simmer.prepare(&game_config, &game_state, &SimChoices::new(4, false, &[]));
         assert!(simmer.kept.is_empty());
     }
 
@@ -1601,10 +1638,23 @@ mod tests {
         }
         let packed = std::sync::Arc::new(packed);
         let mut from_list = Simmer::new(&game_config).unwrap();
-        from_list.prepare(&game_config, &game_state, 4, false, &listed);
+        from_list.prepare(
+            &game_config,
+            &game_state,
+            &SimChoices::new(4, false, &listed),
+        );
         let mut from_packed = Simmer::new(&game_config).unwrap();
-        from_packed.prepare(&game_config, &game_state, 4, false, &[]);
-        from_packed.set_packed_kept_leaves(opponent, packed.clone());
+        from_packed.prepare(
+            &game_config,
+            &game_state,
+            &SimChoices {
+                packed: &[KeptLeaves {
+                    seat: opponent,
+                    leaves: packed.clone(),
+                }],
+                ..SimChoices::new(4, false, &[])
+            },
+        );
         assert_eq!(std::sync::Arc::strong_count(&packed), 2);
         let pristine = from_list.prepared_state().clone();
         for seed in 0..200 {
@@ -1622,7 +1672,17 @@ mod tests {
         // leaves of no weight at all leave the seat dealt from the bag alone
         let mut weightless = infer::PackedLeaves::new();
         weightless.push(&rack[..2], 0.0).unwrap();
-        from_packed.set_packed_kept_leaves(opponent, std::sync::Arc::new(weightless));
+        from_packed.prepare(
+            &game_config,
+            &game_state,
+            &SimChoices {
+                packed: &[KeptLeaves {
+                    seat: opponent,
+                    leaves: std::sync::Arc::new(weightless),
+                }],
+                ..SimChoices::new(4, false, &[])
+            },
+        );
         assert!(from_packed.kept.is_empty());
     }
 
@@ -1630,7 +1690,7 @@ mod tests {
     #[inline]
     fn each_seat_keeps_the_leave_set_for_it_in_a_game_of_three() {
         // in a game of three, prepare's leaves are the next seat's;
-        // set_kept_leaves gives the other one its own. Each is dealt its known
+        // packed gives the other one its own. Each is dealt its known
         // tiles first, every iteration, the mover's rack untouched
         let mut game_config = game_config::make_english_game_config();
         let game_config::GameConfig::Static(rules) = &mut game_config;
@@ -1669,8 +1729,14 @@ mod tests {
         // seat after it a Q and a J, one each
         let (next, after) = (vec![26u8, 26, 26], vec![17u8, 10]);
         let mut simmer = Simmer::new(&game_config).unwrap();
-        simmer.prepare(&game_config, &game_state, 2, false, &[(next, 1.0)]);
-        simmer.set_kept_leaves(2, &[(after.clone(), 1.0)]);
+        simmer.prepare(
+            &game_config,
+            &game_state,
+            &SimChoices {
+                packed: &[KeptLeaves::listed(2, &[(after.clone(), 1.0)])],
+                ..SimChoices::new(2, false, &[(next, 1.0)])
+            },
+        );
         for seed in 0..50 {
             simmer.reseed(seed);
             simmer.prepare_iteration();
@@ -1768,7 +1834,7 @@ mod tests {
             }
             let mut simmer = Simmer::new(&game_config).unwrap();
             simmer.reseed(seed);
-            simmer.prepare(&game_config, &game_state, 2, false, &[]);
+            simmer.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
             simmer.prepare_iteration();
             let initial = simmer.initial_game_state.clone();
             field.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -1903,8 +1969,8 @@ mod tests {
             });
             let mut full = Simmer::new(&game_config).unwrap();
             let mut lean = Simmer::new(&game_config).unwrap();
-            full.prepare(&game_config, &game_state, 2, true, &[]);
-            lean.prepare(&game_config, &game_state, 2, true, &[]);
+            full.prepare(&game_config, &game_state, &SimChoices::new(2, true, &[]));
+            lean.prepare(&game_config, &game_state, &SimChoices::new(2, true, &[]));
             let pristine = full.prepared_state().clone();
             for iteration in 0..4 {
                 for simmer in [&mut full, &mut lean] {
@@ -1969,7 +2035,7 @@ mod tests {
                 dynamic_leaves: None,
             });
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 3, true, &[]);
+            simmer.prepare(&game_config, &game_state, &SimChoices::new(3, true, &[]));
             simmer.reseed(seed);
             simmer.prepare_iteration();
             let turn = game_state.turn as usize;
@@ -2041,10 +2107,10 @@ mod tests {
                 dynamic_leaves: None,
             });
             let mut set = Simmer::new(&game_config).unwrap();
-            set.prepare(&game_config, &game_state, 2, false, &[]);
-            set.set_num_sim_plies(&game_config, 4);
+            set.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
+            set.prepare(&game_config, &game_state, &SimChoices::new(4, false, &[]));
             let mut made = Simmer::new(&game_config).unwrap();
-            made.prepare(&game_config, &game_state, 4, false, &[]);
+            made.prepare(&game_config, &game_state, &SimChoices::new(4, false, &[]));
             assert_eq!(set.win_prob_weightage, made.win_prob_weightage);
             for candidate in field.plays.iter().map(|m| &m.play) {
                 let mut rolled = Vec::new();
@@ -2100,8 +2166,14 @@ mod tests {
                 dynamic_leaves: None,
             });
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 4, true, &[]);
-            simmer.set_opponents_pass(true);
+            simmer.prepare(
+                &game_config,
+                &game_state,
+                &SimChoices {
+                    opponents_pass: true,
+                    ..SimChoices::new(4, true, &[])
+                },
+            );
             simmer.reseed(seed);
             simmer.prepare_iteration();
             for candidate in field.plays.iter().map(|m| &m.play) {
@@ -2154,14 +2226,23 @@ mod tests {
                 dynamic_leaves: None,
             });
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 3, true, &[]);
-            simmer.reseed(seed);
-            simmer.prepare_iteration();
+            let prepare = |simmer: &mut Simmer, opponents_pass| {
+                simmer.prepare(
+                    &game_config,
+                    &game_state,
+                    &SimChoices {
+                        opponents_pass,
+                        ..SimChoices::new(3, true, &[])
+                    },
+                );
+                simmer.reseed(seed);
+                simmer.prepare_iteration();
+            };
             for candidate in field.plays.iter().map(|m| &m.play) {
                 if !matches!(candidate, movegen::Play::Place { .. }) {
                     continue;
                 }
-                simmer.set_opponents_pass(false);
+                prepare(&mut simmer, false);
                 simmer
                     .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
                     .unwrap();
@@ -2174,7 +2255,7 @@ mod tests {
                 if reply.score > 0 {
                     scored += 1;
                 }
-                simmer.set_opponents_pass(true);
+                prepare(&mut simmer, true);
                 simmer
                     .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
                     .unwrap();
@@ -2210,7 +2291,11 @@ mod tests {
                 game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
                 for plies in [0, 2] {
                     let mut simmer = Simmer::new(&game_config).unwrap();
-                    simmer.prepare(&game_config, &game_state, plies, true, &[]);
+                    simmer.prepare(
+                        &game_config,
+                        &game_state,
+                        &SimChoices::new(plies, true, &[]),
+                    );
                     let pristine = simmer.prepared_state().clone();
                     let mut after = Vec::new();
                     for challenged_off in [false, true] {
