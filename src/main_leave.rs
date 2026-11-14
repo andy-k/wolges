@@ -9905,6 +9905,12 @@ fn compare_seats<
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut inline_15 = (!LEAN)
+                    .then(|| movegen::InlineGenerator::<225>::try_new(&game_config).ok())
+                    .flatten();
+                let mut inline_21 = (!LEAN)
+                    .then(|| movegen::InlineGenerator::<441>::try_new(&game_config).ok())
+                    .flatten();
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
                 let mut driver_p0 = seat_picker(
                     p0_picker,
@@ -10009,36 +10015,46 @@ fn compare_seats<
                                     )),
                                 ));
                             }
-                            if HASTY_ONLY || matches!(driver, move_picker::MovePicker::Hasty) {
-                                let gen_params = movegen::GenMovesParams {
-                                    board_snapshot: &board_snapshot,
-                                    rack: &game_state.current_player().rack,
-                                    max_gen: 1,
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                    dynamic_leaves: None,
-                                };
-                                if LEAN {
-                                    move_generator.gen_moves_unfiltered_lean(&gen_params);
+                            let plays =
+                                if HASTY_ONLY || matches!(driver, move_picker::MovePicker::Hasty) {
+                                    let gen_params = movegen::GenMovesParams {
+                                        board_snapshot: &board_snapshot,
+                                        rack: &game_state.current_player().rack,
+                                        max_gen: 1,
+                                        num_exchanges_by_this_player: game_state
+                                            .current_player()
+                                            .num_exchanges,
+                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                        dynamic_leaves: None,
+                                    };
+                                    if LEAN {
+                                        move_generator.gen_moves_unfiltered_lean(&gen_params);
+                                        &move_generator.plays
+                                    } else if let Some(g) = &mut inline_15 {
+                                        g.gen_moves_unfiltered(&gen_params);
+                                        &g.plays
+                                    } else if let Some(g) = &mut inline_21 {
+                                        g.gen_moves_unfiltered(&gen_params);
+                                        &g.plays
+                                    } else {
+                                        move_generator.gen_moves_unfiltered(&gen_params);
+                                        &move_generator.plays
+                                    }
                                 } else {
-                                    move_generator.gen_moves_unfiltered(&gen_params);
-                                }
-                            } else {
-                                driver.pick_a_move_after(
-                                    &mut filtered_movegen,
-                                    &mut move_generator,
-                                    &board_snapshot,
-                                    &game_state,
-                                    &game_state.current_player().rack,
-                                    last_play.as_ref().map(|play| move_picker::LastMove {
-                                        board_before: &last_board,
-                                        play,
-                                    }),
-                                )?;
-                            }
-                            let play = &move_generator.plays[0].play;
+                                    driver.pick_a_move_after(
+                                        &mut filtered_movegen,
+                                        &mut move_generator,
+                                        &board_snapshot,
+                                        &game_state,
+                                        &game_state.current_player().rack,
+                                        last_play.as_ref().map(|play| move_picker::LastMove {
+                                            board_before: &last_board,
+                                            play,
+                                        }),
+                                    )?;
+                                    &move_generator.plays
+                                };
+                            let play = &plays[0].play;
                             if !HASTY_ONLY {
                                 last_board.copy_from_slice(&game_state.board_tiles);
                                 last_play = Some(play.clone());
