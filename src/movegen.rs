@@ -11545,12 +11545,12 @@ fn rcs_lane_placements(
             &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
         let mut bound = span.fixed + best_leave_values[span.num_played as usize];
         let mut best_scores = 0i32;
-        let mut capped = 0i32;
+        let mut capped = 0i64;
         let mut least = 0i32;
         for (&score, &taken) in descending_scores.iter().zip(multipliers) {
             best_scores += score;
-            capped = capped.saturating_add(caps[taken.idx()]);
-            let next_least = best_scores.min(capped);
+            capped += caps[taken.idx() % caps.len()] as i64;
+            let next_least = (best_scores as i64).min(capped) as i32;
             bound += taken.multiplier() * (next_least - least);
             least = next_least;
         }
