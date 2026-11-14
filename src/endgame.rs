@@ -4809,6 +4809,12 @@ impl<
                 exchanges: position.exchanges,
             }
         };
+        // a wasm build has no threads
+        let threads = if cfg!(target_family = "wasm") {
+            1
+        } else {
+            (*threads).max(1)
+        };
         if state.moves.is_empty() {
             // the moves are the same whatever the split: they read only the
             // board, the mover's rack, and how many tiles the bag holds (so a
@@ -4833,24 +4839,18 @@ impl<
                 });
             }
             state.valued = state.moves.iter().map(|_| None).collect();
-            let cells = state.moves.len().checked_mul(splits.len());
-            match cells_of(cells, std::time::Duration::ZERO) {
-                Ok(took) => state.took = took,
-                Err(e) => {
-                    state.moves.clear();
-                    return Err(e);
-                }
-            }
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
+        // what each move took in each split, which orders the threads' tasks:
+        // kept only while the search runs on threads (a step may be given more
+        // threads than the one before, set_threads)
+        let cells = state.moves.len().checked_mul(splits.len());
+        if threads > 1 && cells != Some(state.took.len()) {
+            // none made, the next step tries again
+            state.took = cells_of(cells, std::time::Duration::ZERO)?;
+        }
         let score_diff = position.score_diff.raw() as f64;
-        // a wasm build has no threads
-        let threads = if cfg!(target_family = "wasm") {
-            1
-        } else {
-            (*threads).max(1)
-        };
         if state.searched.shards.is_empty() {
             state.searched = BagValued::new(threads);
         }
@@ -14080,6 +14080,32 @@ mod tests {
                 assert_eq!(progress.moves(), Some((all, all)), "{name}");
             }
         }
+        // a search stopped on one thread and resumed on two answers as one never
+        // stopped
+        let position = bag_position(&board, &[1, 2], &unseen_tally, 2, equity::Equity::ZERO);
+        let (mut egs, _) = listened();
+        let mut whole = super::PegBagProgress::new(position.clone()).unwrap();
+        let whole = egs
+            .resume_peg(&mut whole, &super::Limits::NONE)
+            .unwrap()
+            .unwrap();
+        let mut progress = super::PegBagProgress::new(position).unwrap();
+        let one_state = super::Limits {
+            time: None,
+            states: Some(1),
+            memory: None,
+        };
+        let stopped = egs.resume_peg(&mut progress, &one_state).unwrap().unwrap();
+        assert!(!stopped.exact);
+        progress.set_threads(2);
+        let resumed = egs
+            .resume_peg(&mut progress, &super::Limits::NONE)
+            .unwrap()
+            .unwrap();
+        assert!(resumed.exact);
+        assert!(resumed.best_move == whole.best_move);
+        assert_eq!(resumed.win_pct, whole.win_pct);
+        assert_eq!(resumed.expected_margin, whole.expected_margin);
         // one tile in the bag: the committed model's moves are the pass and the
         // places
         let (mut egs, heard) = listened();
