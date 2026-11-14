@@ -210,8 +210,17 @@ pub fn print_board(
     board_layout: &board_layout::BoardLayout,
     board_tiles: &[u8],
 ) -> std::io::Result<()> {
+    write_board(&mut std::io::stdout(), alphabet, board_layout, board_tiles)
+}
+
+pub fn write_board(
+    out: &mut dyn std::io::Write,
+    alphabet: &alphabet::Alphabet,
+    board_layout: &board_layout::BoardLayout,
+    board_tiles: &[u8],
+) -> std::io::Result<()> {
     write!(
-        std::io::stdout(),
+        out,
         "{}",
         BoardPrinter {
             alphabet,

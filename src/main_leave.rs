@@ -8819,7 +8819,7 @@ fn print_rack_keeps<L: kwg::Node>(
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     writeln!(
-        std::io::stdout(),
+        boxed_stdout_or_stderr(),
         "  keep                 static    dynamic     delta"
     )?;
     let mut distinct: Vec<(u8, u8)> = Vec::new();
@@ -8869,13 +8869,13 @@ fn print_rack_keeps<L: kwg::Node>(
         let scale = equity::SCALE as f64;
         if dynamic == census::UNPLAYABLE {
             writeln!(
-                std::io::stdout(),
+                boxed_stdout_or_stderr(),
                 "  {kept:<16} {:>10.3}  undrawable",
                 static_value as f64 / scale,
             )?;
         } else {
             writeln!(
-                std::io::stdout(),
+                boxed_stdout_or_stderr(),
                 "  {kept:<16} {:>10.3} {:>10.3} {:>9.3}",
                 static_value as f64 / scale,
                 dynamic as f64 / scale,
@@ -8958,7 +8958,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
     });
     for play in &move_generator.plays {
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "  {:>9.3}  {}",
             play.equity.raw() as f64 / equity::SCALE as f64,
             play.play.fmt(board_snapshot),
@@ -8990,6 +8990,9 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         lean,
     }: PositionParams<'_>,
 ) -> error::Returns<()> {
+    if let Some(path) = dynamic_out {
+        use_writer(path);
+    }
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
@@ -9000,7 +9003,12 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     let rack_size = game_config.rack_size() as usize;
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
     let board_tiles = fen_parser.parse(fen)?.to_vec();
-    display::print_board(alphabet, board_layout, &board_tiles)?;
+    display::write_board(
+        &mut boxed_stdout_or_stderr(),
+        alphabet,
+        board_layout,
+        &board_tiles,
+    )?;
 
     let off_board = game_config.tiles_off_board(&board_tiles)?;
     let mut unseen = off_board.clone();
@@ -9013,12 +9021,12 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     let unseen_size: usize = unseen.iter().map(|&c| c as usize).sum();
     if rack.is_some() {
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "unseen: {unseen_size} tiles, the bag and the other racks"
         )?;
     } else {
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "not on the board: {unseen_size} tiles, the bag and every rack"
         )?;
     }
@@ -9040,29 +9048,33 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         ));
     }
     for line in cells.chunks(8) {
-        writeln!(std::io::stdout(), "  {}", line.join("  ").trim_end())?;
+        writeln!(boxed_stdout_or_stderr(), "  {}", line.join("  ").trim_end())?;
     }
     writeln!(
-        std::io::stdout(),
+        boxed_stdout_or_stderr(),
         "  vowels {vowels}, consonants {consonants}, blanks {}",
         unseen[0]
     )?;
     if rack.is_some() {
         let others = (game_config.num_players() as usize).saturating_sub(1) * rack_size;
         if unseen_size > others {
-            writeln!(std::io::stdout(), "  in the bag: {}", unseen_size - others)?;
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "  in the bag: {}",
+                unseen_size - others
+            )?;
         } else if game_config.num_players() == 2 {
             let mut other = Vec::new();
             for (tile, &count) in (0u8..).zip(unseen.iter()) {
                 other.extend(std::iter::repeat_n(tile, count as usize));
             }
             writeln!(
-                std::io::stdout(),
+                boxed_stdout_or_stderr(),
                 "  the bag is empty: the other rack is {}",
                 alphabet.fmt_rack(&other)
             )?;
         } else {
-            writeln!(std::io::stdout(), "  the bag is empty")?;
+            writeln!(boxed_stdout_or_stderr(), "  the bag is empty")?;
         }
     }
 
@@ -9097,12 +9109,12 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     }
     if not_words.is_empty() {
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "words: {num_words}, every one in the lexicon"
         )?;
     } else {
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "words: {num_words}, {} not in the lexicon: {}",
             not_words.len(),
             not_words.join(" ")
@@ -9110,7 +9122,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     }
     let shape = board_shape(board_layout, &board_tiles);
     writeln!(
-        std::io::stdout(),
+        boxed_stdout_or_stderr(),
         "shape: {} tiles, mean word length {:.3}, perimeter per tile {:.3}, radius of gyration {:.3}, {} holes",
         shape.area,
         if shape.num_words > 0 {
@@ -9131,7 +9143,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         match lattice_leaves(&klv, num_letters, rack_size, threads) {
             Ok(lattice) => Some(lattice),
             Err(e) if dynamic_out.is_none() => {
-                writeln!(std::io::stdout(), "no dynamic leaves: {e}")?;
+                writeln!(boxed_stdout_or_stderr(), "no dynamic leaves: {e}")?;
                 None
             }
             Err(e) => return Err(e),
@@ -9150,7 +9162,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "rack {rack}: the best {num_moves} moves by the leaves"
         )?;
         print_moves(
@@ -9162,7 +9174,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         )?;
         if let Some((lat, add, full_v)) = &lattice {
             writeln!(
-                std::io::stdout(),
+                boxed_stdout_or_stderr(),
                 "rack {rack}: the best {num_moves} moves by dynamic leaves"
             )?;
             print_moves(
@@ -9178,7 +9190,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
                 }),
             )?;
             writeln!(
-                std::io::stdout(),
+                boxed_stdout_or_stderr(),
                 "rack {rack}: every subrack kept, {unseen_size} tiles unseen"
             )?;
             print_rack_keeps(alphabet, &klv, lat, add, full_v, &unseen, &rack_tiles)?;
@@ -9199,7 +9211,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         )?;
         let path = write_whole(path, &bin)?;
         writeln!(
-            std::io::stdout(),
+            boxed_stdout_or_stderr(),
             "dynamic leaves: wrote {written} to {path}, keeping nothing worth {:.3}",
             baseline / equity::SCALE as f64
         )?;
