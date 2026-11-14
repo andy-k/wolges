@@ -1145,6 +1145,32 @@ mod tests {
 
     #[test]
     #[inline]
+    fn in_a_game_of_three_the_spread_is_over_the_opponent_ahead_by_equity() {
+        let mut game_config = game_config::make_english_game_config();
+        let game_config::GameConfig::Static(rules) = &mut game_config;
+        rules.num_players = 3;
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = DefaultRng::seed_from_u64(1);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.players[0].score = 300 * equity::SCALE;
+        game_state.players[1].score = 250 * equity::SCALE;
+        game_state.players[2].score = 270 * equity::SCALE;
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.prepare(&game_config, &game_state, 2, false, &[]);
+        assert_eq!(simmer.initial_game_state.turn, 0);
+        assert_eq!(simmer.initial_score_spread, 30 * equity::SCALE);
+        simmer.last_seen_leave_values[0] = 5 * equity::SCALE;
+        simmer.last_seen_leave_values[1] = 30 * equity::SCALE;
+        simmer.last_seen_leave_values[2] = 0;
+        assert_eq!(simmer.final_equity_spread().unwrap(), 25 * equity::SCALE);
+        assert_eq!(
+            simmer.final_spread_and_leaves().unwrap(),
+            (50 * equity::SCALE, -25 * equity::SCALE)
+        );
+    }
+
+    #[test]
+    #[inline]
     fn final_spread_and_leaves_sum_to_final_equity_spread() {
         let (mut simmer, _, _, _) = prepared_simmer();
         let turn = simmer.initial_game_state.turn as usize;
