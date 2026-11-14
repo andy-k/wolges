@@ -5493,6 +5493,7 @@ struct JumbledMultisets {
     through: Option<i8>,
     seen: u64,
     held: bool,
+    floor: i32, // a threshold the walk starts from, set only inside a call
 }
 
 #[derive(Clone)]
@@ -5501,6 +5502,16 @@ pub struct PoolLists(JumbledMultisets);
 #[derive(Clone, Default)]
 struct PoolScratch {
     walked: Vec<u8>,
+}
+
+// a windowed top walk's threshold so far, carried from one window to the next
+#[derive(Clone, Copy)]
+pub struct PoolFloor(i32);
+
+impl Default for PoolFloor {
+    fn default() -> Self {
+        Self(i32::MIN)
+    }
 }
 
 impl Default for PoolLists {
@@ -5615,6 +5626,7 @@ impl JumbledMultisets {
             through: None,
             seen: 0,
             held: false,
+            floor: i32::MIN,
         }
     }
 
@@ -8851,6 +8863,80 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         self.plays.clear();
     }
 
+    // as pool_plays_top, a window of the lanes' multisets at a time, from the
+    // threshold the windows before it reached (floor, carried in and out): the
+    // windows of every lane, together, offer every play of the pool's top most
+    #[allow(clippy::too_many_arguments)]
+    pub fn pool_plays_top_window<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        pool: &[u8],
+        (rows, cols): (u128, u128),
+        window: std::ops::Range<u64>,
+        most: usize,
+        (lists, floor): (&mut PoolLists, &mut PoolFloor),
+        mut found: impl FnMut(bool, i8, i8, &[u8], i32),
+    ) -> u64 {
+        let game_config = board_snapshot.game_config;
+        if !matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+            return self.pool_plays_window(board_snapshot, pool, (rows, cols), window, None, found);
+        }
+        let rack_size = game_config.rack_size();
+        let mut tally = [0u8; MAX_ALPHABET_LEN];
+        let tally = &mut tally[..game_config.alphabet().len() as usize];
+        let Some(walked) = self.pool_rack(pool, rack_size, tally) else {
+            return 0;
+        };
+        let params = GenMovesParams {
+            board_snapshot,
+            rack: &walked,
+            max_gen: most,
+            num_exchanges_by_this_player: i16::MAX,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.jumbled.held = !self.working_buffer.jumbled.kept.is_empty();
+        let walk = self.working_buffer.jumbled.walk;
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
+        self.working_buffer.jumbled.walk = JUMBLED_ONCE_PER_RACK_TILES;
+        self.working_buffer.jumbled.window = window;
+        self.working_buffer.jumbled.seen = 0;
+        self.working_buffer.jumbled.floor = floor.0;
+        self.gen_sheet_impl(
+            &params,
+            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                let kept = word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize;
+                if kept {
+                    found(down, lane, idx, word, score);
+                }
+                kept
+            }),
+            klv::AdjustLeave::Identity,
+            EquityPredicate::AcceptAll,
+            false,
+        );
+        let seen = self.working_buffer.jumbled.seen;
+        self.working_buffer.jumbled.floor = i32::MIN;
+        self.working_buffer.jumbled.window = 0..u64::MAX;
+        self.working_buffer.jumbled.seen = 0;
+        self.working_buffer.jumbled.walk = walk;
+        self.working_buffer.jumbled.held = false;
+        std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.pool.walked = walked;
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
+        if let Some(worst) = (self.plays.iter())
+            .filter(|play| matches!(play.play, Play::Place { .. }))
+            .nth(most.saturating_sub(1))
+        {
+            floor.0 = floor.0.max(worst.equity.raw());
+        }
+        self.plays.clear();
+        seen
+    }
+
     pub fn pool_plays_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -9448,6 +9534,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
             threshold.set(floor);
         }
+        threshold.set(
+            threshold
+                .get()
+                .max(equity::Equity::new(working_buffer.jumbled.floor)),
+        );
 
         // an empty board's leave value comes with the opening's penalty
         let found_place_move =
@@ -16530,6 +16621,7 @@ mod tests {
         let mut generator = KurniaMoveGenerator::new(&gc);
         let rank =
             |a: &Found, b: &Found| (b.4, a.0, a.1, a.2, &a.3).cmp(&(a.4, b.0, b.1, b.2, &b.3));
+        let mut pruned = 0;
         for step in 0..=4 {
             if step > 0 {
                 let at = dim.at_row_col(7, (step + 5) as i8);
@@ -16566,9 +16658,42 @@ mod tests {
                         all[..most.min(all.len())],
                         "{step} {pool:?} {most}"
                     );
+                    let mut windowed = Vec::<Found>::new();
+                    let mut floor = PoolFloor::default();
+                    for lane in 0..(dim.rows + dim.cols) as u32 {
+                        let masks = if lane < dim.rows as u32 {
+                            (1 << lane, 0)
+                        } else {
+                            (0, 1 << (lane - dim.rows as u32))
+                        };
+                        let mut lists = PoolLists::default();
+                        let mut from = 0;
+                        loop {
+                            let seen = generator.pool_plays_top_window(
+                                &board_snapshot,
+                                pool,
+                                masks,
+                                from..from + 3,
+                                most,
+                                (&mut lists, &mut floor),
+                                |down, lane, idx, word, score| {
+                                    windowed.push((down, lane, idx, word.to_vec(), score));
+                                },
+                            );
+                            from += 3;
+                            if from >= seen {
+                                break;
+                            }
+                        }
+                    }
+                    pruned += all.len() - windowed.len();
+                    windowed.sort_unstable_by(rank);
+                    windowed.truncate(most);
+                    assert_eq!(windowed, top, "{step} {pool:?} {most} windowed");
                 }
             }
         }
+        assert!(pruned > 0);
     }
 
     #[test]
