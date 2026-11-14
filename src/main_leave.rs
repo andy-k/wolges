@@ -3809,7 +3809,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let seed = seed_or_random(seed)?;
 
     // each multiset's leave from klv0, from one walk of its leaves
-    let mut leave_cur = vec![0i32; lat.len()];
+    let mut leave_cur = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave_cur, &arc_klv0);
     let mut tally_buf = vec![0u8; num_letters];
 
@@ -3837,7 +3837,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         // the snapshot holds every leave its generation or an earlier one
         // valued: those take its values and count as valued, and every other
         // multiset keeps leave0's value, all as in one unbroken run
-        let mut ever = vec![false; lat.len()];
+        let mut ever = lat.dense(false)?;
         for (leave, _) in klv::read_leaves_alloc::<L>(&bytes)? {
             if leave.len() > rack_size {
                 wolges::return_error!(format!(
@@ -3909,7 +3909,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // scatters starts: the same for a generation's boards, so worked out once a
     // generation
     let leave_max_lock = std::sync::RwLock::new(if scatter {
-        let mut leave_max = vec![0i32; lat.len()];
+        let mut leave_max = lat.dense(0i32)?;
         census::subset_max_transform(&lat, &add_table, &leave_cur, &mut leave_max);
         leave_max
     } else {
@@ -7006,7 +7006,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let can_exchange =
         bag_size(&board_tiles, &game_config) >= game_config.exchange_tile_limit() as i64;
     let sheet_floor = if can_exchange { 0 } else { i32::MIN / 4 };
-    let mut sheet = vec![sheet_floor; lat.len()];
+    let mut sheet = lat.dense(sheet_floor)?;
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     let mut movegen_rack = Vec::new();
     let mut blank_deltas = Vec::new();
@@ -7039,7 +7039,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             sheet[idx as usize] = 0;
         }
     }
-    let mut leave = vec![0i32; lat.len()];
+    let mut leave = lat.dense(0i32)?;
     match phase {
         BoardPhase::Opening | BoardPhase::Midgame => {
             census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
@@ -7418,7 +7418,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         ));
     }
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-    let mut leave = vec![0i32; lat.len()];
+    let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let ln_binom = LnBinom::new(pool_size);
     let can_exchange = bag >= game_config.exchange_tile_limit() as i64;
@@ -7639,16 +7639,18 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let num_letters = game_config.alphabet().len() as usize;
     let rack_size = game_config.rack_size() as usize;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-    let mut leave = vec![0i32; lat.len()];
+    let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
-    let dyn_ctx = matches!(mover, SeatPicker::Dynamic).then(|| {
-        (
+    let dyn_ctx = if matches!(mover, SeatPicker::Dynamic) {
+        Some((
             census::AddTable::new_with_threads(&lat, threads),
-            full_rack_values(&lat, &klv),
-        )
-    });
+            full_rack_values(&lat, &klv)?,
+        ))
+    } else {
+        None
+    };
     let dyn_ref = dyn_ctx.as_ref().map(|(add, full_v)| klv::DynamicLeavesRef {
         lat: &lat,
         add,
@@ -8099,9 +8101,9 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         boards.push(fen_parser.parse(line)?.to_vec());
     }
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-    let mut leave = vec![0i32; lat.len()];
+    let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
-    let no_leave = vec![0i32; lat.len()];
+    let no_leave = lat.dense(0i32)?;
     let ln_binom = LnBinom::new(alphabet.num_tiles() as usize);
     let t0 = std::time::Instant::now();
     let claimed = std::sync::atomic::AtomicUsize::new(0);
@@ -8332,9 +8334,9 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let num_letters = game_config.alphabet().len() as usize;
     let rack_size = game_config.rack_size() as usize;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-    let mut leave = vec![0i32; lat.len()];
+    let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
-    let no_leave = vec![0i32; lat.len()];
+    let no_leave = lat.dense(0i32)?;
     let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
     let t0 = std::time::Instant::now();
     let claimed_games = std::sync::atomic::AtomicU64::new(0);
@@ -8554,10 +8556,13 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 }
 
 #[inline]
-fn full_rack_values<L: kwg::Node>(lat: &census::MultisetLattice, klv: &klv::Klv<L>) -> Vec<i32> {
-    let mut full_v = vec![0i32; lat.len()];
+fn full_rack_values<L: kwg::Node>(
+    lat: &census::MultisetLattice,
+    klv: &klv::Klv<L>,
+) -> error::Returns<Vec<i32>> {
+    let mut full_v = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(lat, &mut full_v, klv);
-    full_v
+    Ok(full_v)
 }
 
 #[inline]
@@ -8598,7 +8603,7 @@ fn lattice_leaves<L: kwg::Node>(
     threads: usize,
 ) -> error::Returns<(census::MultisetLattice, census::AddTable, Vec<i32>)> {
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-    let full_v = full_rack_values(&lat, klv);
+    let full_v = full_rack_values(&lat, klv)?;
     let add = census::AddTable::new_with_threads(&lat, threads);
     Ok((lat, add, full_v))
 }
@@ -8695,11 +8700,11 @@ fn dynamic_leaves_of_pool(
     add: &census::AddTable,
     full_v: &[i32],
     pool: &[u8],
-) -> Vec<f64> {
+) -> error::Returns<Vec<f64>> {
     let n = lat.num_letters();
     let full_start = lat.full_rack_start();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
-    let mut value = vec![f64::NAN; lat.len()];
+    let mut value = lat.dense(f64::NAN)?;
     let mut tally = vec![0u8; n];
     for idx in (0..lat.len()).rev() {
         lat.unrank_into(idx, &mut tally);
@@ -8721,7 +8726,7 @@ fn dynamic_leaves_of_pool(
         }
         value[idx] = sum / left as f64;
     }
-    value
+    Ok(value)
 }
 
 // whether the lexicon holds the word; a jumbled lexicon holds alphagrams.
@@ -8985,7 +8990,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         }
     }
     if let (Some(path), Some((lat, add, full_v))) = (dynamic_out, &lattice) {
-        let value = dynamic_leaves_of_pool(lat, add, full_v, &off_board);
+        let value = dynamic_leaves_of_pool(lat, add, full_v, &off_board)?;
         let baseline = value[0];
         if baseline.is_nan() {
             return Err("the tiles not on the board cannot fill a rack".into());
@@ -9368,11 +9373,11 @@ fn compare_seats<
             let lat = census::MultisetLattice::new(num_letters, rack_size)?;
             let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
                 SeatPicker::Dynamic => full_rack_values(&lat, klv),
-                SeatPicker::Hasty | SeatPicker::Simmer | SeatPicker::Deft => Vec::new(),
+                SeatPicker::Hasty | SeatPicker::Simmer | SeatPicker::Deft => Ok(Vec::new()),
             };
             let full_v = [
-                full_v_of(p0_picker, &arc_klv0),
-                full_v_of(p1_picker, &arc_klv1),
+                full_v_of(p0_picker, &arc_klv0)?,
+                full_v_of(p1_picker, &arc_klv1)?,
             ];
             let add = census::AddTable::new_with_threads(&lat, num_threads);
             Some((lat, add, full_v))
@@ -10122,7 +10127,7 @@ WCMP_P1_SCORE 402.000000
             .collect::<Vec<_>>();
         let pool = [1u8, 2, 0, 3];
         let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
-        let value = dynamic_leaves_of_pool(&lat, &add, &full_v, &pool);
+        let value = dynamic_leaves_of_pool(&lat, &add, &full_v, &pool).unwrap();
         let mut tally = vec![0u8; lat.num_letters()];
         let mut checked = 0;
         for (idx, &got) in value.iter().enumerate() {
