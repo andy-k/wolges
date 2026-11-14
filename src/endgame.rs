@@ -1571,6 +1571,7 @@ pub struct Limits {
     pub time: Option<std::time::Duration>,
     pub states: Option<usize>, // a solve stops once the table holds this many positions
     pub memory: Option<MemoryLimit>,
+    pub clock: Option<Clock>, // std's if none; a wasm32 page must give one
 }
 
 impl Limits {
@@ -1578,6 +1579,7 @@ impl Limits {
         time: None,
         states: None,
         memory: None,
+        clock: None,
     };
 }
 
@@ -1683,12 +1685,12 @@ struct BagLimits {
 impl BagLimits {
     // its clock (std's if none is given) starts now
     #[inline(always)]
-    fn new(limits: &Limits, progress: Option<ProgressFn>, clock: Option<Clock>) -> Self {
+    fn new(limits: &Limits, progress: Option<ProgressFn>) -> Self {
         Self {
             time: limits.time,
             states: limits.states,
             memory: limits.memory,
-            t0: Started::now(clock),
+            t0: Started::now(limits.clock),
             dur_movegen: Default::default(),
             endgames: Default::default(),
             nodes: Default::default(),
@@ -3263,24 +3265,17 @@ impl<
         self.work_buffer.progress = Some(Box::new(progress));
     }
 
-    // read the time of later solves on this clock instead of std's, as a wasm32
-    // page must
     #[inline(always)]
-    pub fn set_clock(&mut self, clock: Clock) {
-        self.work_buffer.clock = Some(clock);
-    }
-
-    // a solve of its own starts its clock
-    #[inline(always)]
-    fn start_clock(&mut self) {
-        self.work_buffer.t0 = Some(Started::now(self.work_buffer.clock));
+    fn start_clock(&mut self, limits: &Limits) {
+        self.work_buffer.clock = limits.clock;
+        self.work_buffer.t0 = Some(Started::now(limits.clock));
         self.work_buffer.dur_movegen = Default::default();
     }
 
     // solve within the limits, also printing each finished depth's best line
     #[inline(always)]
     pub fn evaluate(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
-        self.start_clock();
+        self.start_clock(limits);
         self.run_id_loop(player_idx, true, limits, None, false)
     }
 
@@ -3293,7 +3288,7 @@ impl<
 
     #[inline(always)]
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
-        self.start_clock();
+        self.start_clock(limits);
         self.run_id_loop(player_idx, false, limits, None, true)
     }
 
@@ -3326,7 +3321,7 @@ impl<
         limits: &Limits,
         finished: (i8, equity::Equity),
     ) -> error::Returns<Solved> {
-        self.start_clock();
+        self.start_clock(limits);
         self.run_id_loop(player_idx, false, limits, Some(finished), true)
     }
 
@@ -3343,7 +3338,7 @@ impl<
         lead: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<Option<movegen::Play>> {
-        self.start_clock();
+        self.start_clock(limits);
         let margin = -lead.raw() as f32;
         let share = |part: u32, whole: u32| Limits {
             time: limits.time.map(|time| time * part / whole),
@@ -3351,6 +3346,7 @@ impl<
                 .states
                 .map(|states| states / whole as usize * part as usize),
             memory: limits.memory,
+            clock: limits.clock,
         };
         let mut winner = None;
         if (limits.time.is_some() || limits.states.is_some())
@@ -3525,7 +3521,7 @@ impl<
         player_idx: u8,
         limits: &Limits,
     ) -> error::Returns<Vec<FirstMove>> {
-        self.start_clock();
+        self.start_clock(limits);
         self.reset_position();
         self.generate(0, player_idx, false);
         if self.work_buffer.movegen_cut {
@@ -4410,11 +4406,8 @@ impl<
         player_idx: u8,
         bag_tile: u8,
     ) -> error::Returns<equity::Equity> {
-        let limits = BagLimits::new(
-            &Limits::NONE,
-            self.work_buffer.progress.take(),
-            self.work_buffer.clock,
-        );
+        self.work_buffer.clock = Limits::NONE.clock;
+        let limits = BagLimits::new(&Limits::NONE, self.work_buffer.progress.take());
         let mut exact = true;
         let value = self.one_in_bag(
             player_idx,
@@ -4471,6 +4464,7 @@ impl<
                 time: limits.time,
                 states: limits.states,
                 memory: limits.memory,
+                clock: None,
             },
             None,
             beta,
@@ -5085,11 +5079,8 @@ impl<
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
-        let limits = BagLimits::new(
-            limits,
-            self.work_buffer.progress.take(),
-            self.work_buffer.clock,
-        );
+        self.work_buffer.clock = limits.clock;
+        let limits = BagLimits::new(limits, self.work_buffer.progress.take());
 
         // the search's lane pool, kept with its progress between solves
         std::mem::swap(&mut self.work_buffer.lane_pool, &mut progress.lanes);
@@ -5153,11 +5144,8 @@ impl<
         if gc.num_passes_to_end() == 0 && gc.num_zeros_to_end() == 0 {
             return Ok(Err(PegUnsupported::PassWithoutForcedEnd));
         }
-        let mut limits = BagLimits::new(
-            limits,
-            self.work_buffer.progress.take(),
-            self.work_buffer.clock,
-        );
+        self.work_buffer.clock = limits.clock;
+        let mut limits = BagLimits::new(limits, self.work_buffer.progress.take());
         limits.estimates = progress.estimates;
         let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
             gc,
@@ -5210,7 +5198,7 @@ impl<
         let Some(splits) = progress.splits.get(rows).filter(|_| valued) else {
             return Ok(Err(PegBagRowsMissing::Unvalued));
         };
-        let mut limits = BagLimits::new(limits, None, self.work_buffer.clock);
+        let mut limits = BagLimits::new(limits, None);
         limits.estimates = progress.estimates;
         limits.depth.set(depth);
         limits.may_stop.set(true);
@@ -9775,6 +9763,7 @@ mod tests {
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let limits = super::Limits {
             time: Some(super::LOOK_EVERY * 16),
+            clock: Some(slow),
             ..super::Limits::NONE
         };
         let mut stopped = 0usize;
@@ -9785,7 +9774,6 @@ mod tests {
                     let mut solver =
                         EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
                             .unwrap();
-                    solver.set_clock(slow);
                     if let Some(table) = table.take() {
                         assert!(solver.give_table(table).is_ok());
                     }
@@ -11181,6 +11169,7 @@ mod tests {
                 time: None,
                 states: Some(usize::MAX),
                 memory: None,
+                clock: None,
             };
             let every = egs.solve_within(0, &never).unwrap();
             let finished = finished.borrow();
@@ -11207,6 +11196,7 @@ mod tests {
                 time: Some(std::time::Duration::ZERO),
                 states: None,
                 memory: None,
+                clock: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
@@ -11224,11 +11214,11 @@ mod tests {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            egs.set_clock(|| std::time::Duration::ZERO);
             let limits = super::Limits {
                 time: Some(std::time::Duration::from_nanos(1)),
                 states: None,
                 memory: None,
+                clock: Some(|| std::time::Duration::ZERO),
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
@@ -11253,6 +11243,7 @@ mod tests {
                     bytes: 1,
                     held: || usize::MAX,
                 }),
+                clock: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
@@ -11278,6 +11269,7 @@ mod tests {
                     bytes: usize::MAX,
                     held: || 0,
                 }),
+                clock: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
@@ -11298,6 +11290,7 @@ mod tests {
                     bytes: 1,
                     held: || 0,
                 }),
+                clock: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
@@ -11316,6 +11309,7 @@ mod tests {
                 time: None,
                 states: Some(finished[0].2 + 1),
                 memory: None,
+                clock: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             if !solved.exact {
@@ -11361,7 +11355,6 @@ mod tests {
                 seen.borrow_mut().push((p.endgames, p.value));
                 Ok(())
             })),
-            None,
         );
         let positions = all_positions();
         let mut egs =
@@ -11443,6 +11436,7 @@ mod tests {
                             time: Some(std::time::Duration::from_secs(2)),
                             states: None,
                             memory: None,
+                            clock: None,
                         },
                     )
                     .unwrap();
@@ -11858,8 +11852,8 @@ mod tests {
                     time: None,
                     states: None,
                     memory: Some(limit),
+                    clock: None,
                 },
-                None,
                 None,
             );
             let one = work_buffer.memory_passed();
@@ -11978,6 +11972,7 @@ mod tests {
                         time: None,
                         states: Some(egs.work_buffer.table.held + 30),
                         memory,
+                        clock: None,
                     };
                     let solved = egs.solve_within(0, &limits).unwrap();
                     kept = Some(egs.take_table());
@@ -12035,6 +12030,7 @@ mod tests {
                     time: None,
                     states: Some(egs.work_buffer.table.held + 30),
                     memory: None,
+                    clock: None,
                 };
                 let solved = match finished {
                     Some(finished) => egs.solve_within_after(0, &limits, finished),
@@ -12177,11 +12173,13 @@ mod tests {
             time: Some(std::time::Duration::ZERO),
             states: None,
             memory: None,
+            clock: None,
         };
         let one_state = super::Limits {
             time: None,
             states: Some(1),
             memory: None,
+            clock: None,
         };
         let no_memory = super::Limits {
             time: None,
@@ -12190,6 +12188,7 @@ mod tests {
                 bytes: 1,
                 held: || usize::MAX,
             }),
+            clock: None,
         };
         let tiles = [1u8, 2, 8, 20]; // A B H T
         let mut board = empty_board();
@@ -12333,11 +12332,13 @@ mod tests {
                 time: Some(std::time::Duration::from_secs(3600)),
                 states: None,
                 memory: None,
+                clock: None,
             },
             super::Limits {
                 time: None,
                 states: Some(usize::MAX),
                 memory: None,
+                clock: None,
             },
         ];
         let tiles = [1u8, 2, 8, 20]; // A B H T
@@ -12417,6 +12418,7 @@ mod tests {
                 bytes: super::POOL_SHARE,
                 held: || 0,
             }),
+            clock: None,
         };
         let tiles = [1u8, 2, 8, 20]; // A B H T
         let mut board = empty_board();
@@ -12459,6 +12461,7 @@ mod tests {
             time: Some(std::time::Duration::ZERO),
             states: None,
             memory: None,
+            clock: None,
         };
         let tiles = [1u8, 2, 8, 20]; // A B H T
         let mut board = empty_board();
@@ -12536,6 +12539,7 @@ mod tests {
                             time: None,
                             states: Some(states),
                             memory: None,
+                            clock: None,
                         });
                         if got.hypotheses.is_empty() {
                             // stopped before its first pass valued every tile
@@ -12600,8 +12604,9 @@ mod tests {
                             time: None,
                             states: states.map(|more| egs.work_buffer.table.held + more),
                             memory: None,
+                            clock: None,
                         };
-                        let limits = super::BagLimits::new(&limits, None, None);
+                        let limits = super::BagLimits::new(&limits, None);
                         limits.may_stop.set(true);
                         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
                         let mut search = super::OneInBag {
@@ -12715,6 +12720,7 @@ mod tests {
                             time: None,
                             states: Some(egs.work_buffer.table.held + 30),
                             memory: None,
+                            clock: None,
                         };
                         let got = egs
                             .resume_peg_one_in_bag(&mut progress, &limits)
@@ -12731,6 +12737,7 @@ mod tests {
                                         time: None,
                                         states: Some(egs.work_buffer.table.held),
                                         memory: None,
+                                        clock: None,
                                     },
                                 )
                                 .unwrap()
@@ -12897,6 +12904,7 @@ mod tests {
                     time: None,
                     states: Some(egs.work_buffer.table.held + 30),
                     memory: None,
+                    clock: None,
                 };
                 let got = egs
                     .resume_peg_one_in_bag(&mut progress, &limits)
@@ -13536,16 +13544,19 @@ mod tests {
                 bytes: usize::MAX,
                 held: || 0,
             }),
+            clock: None,
         };
         let states = super::Limits {
             time: None,
             states: Some(usize::MAX),
             memory: None,
+            clock: None,
         };
         let time = super::Limits {
             time: Some(std::time::Duration::from_secs(3600)),
             states: None,
             memory: None,
+            clock: None,
         };
         let mut skipped = 0usize;
         for (name, pos) in all_positions() {
@@ -13624,6 +13635,7 @@ mod tests {
                     }
                 },
             }),
+            clock: None,
         };
         // five-tile racks of a few letters (A B H S T), so passes last long
         // enough to be stopped within
@@ -13721,6 +13733,7 @@ mod tests {
             time: None,
             states: Some(cap),
             memory: None,
+            clock: None,
         };
         // a placing move's two-ply value, on a fresh solver
         let at_two = |pos: &Position, mover: u8, play: &movegen::Play| {
@@ -14047,6 +14060,7 @@ mod tests {
             time: None,
             states: Some(cap),
             memory: None,
+            clock: None,
         };
         let mut found = 0usize;
         let mut kept = 0usize;
@@ -14069,7 +14083,7 @@ mod tests {
                     let margin = exact + k * point;
                     let lead = equity::Equity::new(-margin as i32);
                     let mut asking = fresh(&pos);
-                    asking.start_clock();
+                    asking.start_clock(&super::Limits::NONE);
                     let won = asking
                         .ask_margin(mover, margin, &super::Limits::NONE)
                         .unwrap();
@@ -14087,7 +14101,7 @@ mod tests {
                     }
                     for cap in (1..=6).map(|j| (held >> j).max(8)) {
                         let mut asking = fresh(&pos);
-                        asking.start_clock();
+                        asking.start_clock(&super::Limits::NONE);
                         let won = asking.ask_margin(mover, margin, &states(cap / 4)).unwrap();
                         assert!(
                             won.is_none() || k < 0.0,
@@ -14612,7 +14626,7 @@ mod tests {
                                         &unseen_tally,
                                         equity::Equity::ZERO,
                                     ),
-                                    &super::BagLimits::new(&super::Limits::NONE, None, None),
+                                    &super::BagLimits::new(&super::Limits::NONE, None),
                                 )
                                 .unwrap();
 
@@ -14853,6 +14867,7 @@ mod tests {
             time: None,
             states: Some(20_000),
             memory: None,
+            clock: None,
         };
         let result = egs.solve_peg(position, &few, 1).unwrap().unwrap();
         assert!(!result.moves.is_empty());
@@ -14882,6 +14897,7 @@ mod tests {
             time: Some(std::time::Duration::from_millis(16)),
             states: None,
             memory: None,
+            clock: None,
         };
         for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
             let mut egs =
@@ -14920,6 +14936,7 @@ mod tests {
             time: Some(std::time::Duration::from_millis(16)),
             states: None,
             memory: None,
+            clock: None,
         };
         for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
             let mut egs =
@@ -14974,6 +14991,7 @@ mod tests {
             time: Some(std::time::Duration::from_millis(16)),
             states: None,
             memory: None,
+            clock: None,
         };
         let mut egs =
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -15166,6 +15184,7 @@ mod tests {
             time: None,
             states: Some(1),
             memory: None,
+            clock: None,
         };
         let stopped = egs
             .resume_peg(&mut progress, &one_state, 1)
@@ -15216,7 +15235,7 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let valued = super::BagValued::new(1);
-        let limits = super::BagLimits::new(&super::Limits::NONE, None, None);
+        let limits = super::BagLimits::new(&super::Limits::NONE, None);
         let mut search = super::BagSearch {
             gc: &gc,
             kwg: &kwg,
@@ -15346,6 +15365,7 @@ mod tests {
                     time,
                     states: None,
                     memory,
+                    clock: None,
                 };
                 let mut progress =
                     super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
@@ -15385,6 +15405,7 @@ mod tests {
                 bytes: BYTES,
                 held: none_held,
             }),
+            clock: None,
         };
         let past = super::Limits {
             time: None,
@@ -15393,6 +15414,7 @@ mod tests {
                 bytes: BYTES,
                 held: all_held,
             }),
+            clock: None,
         };
         let gc = game_config::make_english_game_config();
         let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
@@ -15512,6 +15534,7 @@ mod tests {
                 bytes: 4 * std::mem::size_of::<Option<(u64, f32)>>() + 1,
                 held: none_held,
             }),
+            clock: None,
         };
         let gc = game_config::make_exchange_test_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
@@ -15528,7 +15551,7 @@ mod tests {
                     let mut kept = [0; 2];
                     let mut values = [0.0; 2];
                     for (i, limits) in [&super::Limits::NONE, &four].into_iter().enumerate() {
-                        let limits = super::BagLimits::new(limits, None, None);
+                        let limits = super::BagLimits::new(limits, None);
                         let mut search = super::OneInBag {
                             gc: &gc,
                             kwg: &kwg,
@@ -16457,16 +16480,19 @@ mod tests {
             time: Some(std::time::Duration::from_secs(3600)),
             states: None,
             memory: None,
+            clock: None,
         };
         let one_state = super::Limits {
             time: None,
             states: Some(1),
             memory: None,
+            clock: None,
         };
         let no_time = super::Limits {
             time: Some(std::time::Duration::ZERO),
             states: None,
             memory: None,
+            clock: None,
         };
         let tiles = [1u8, 2, 8, 20]; // A B H T
         type Answer = (super::PegBagResult, Vec<super::PegBagRows>);
@@ -16660,6 +16686,7 @@ mod tests {
             time: Some(std::time::Duration::from_millis(100)),
             states: None,
             memory: None,
+            clock: None,
         };
         let mut checked = 0;
         for (unseen, bag_size) in [
