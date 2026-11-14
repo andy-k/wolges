@@ -622,11 +622,7 @@ struct Cli {
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
     let game_config = cli.game.make_game_config()?;
-    if game_config.num_players() != 2 {
-        wolges::return_error!(
-            "the endgame solver plays two seats, so it needs exactly 2 players".to_string()
-        );
-    }
+    game_config.supports(game_config::Op::Endgame)?;
     let solving = Solving {
         lean: cli.lean,
         limits: endgame::Limits {

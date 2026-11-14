@@ -1205,6 +1205,7 @@ fn run(
             }
         }
         Task::Racks(a) => {
+            game_config.supports(game_config::Op::Tables)?;
             let klv = read_klv(&game_config, &a.klv)?;
             let table = racks::RackTable::build(&klv, &game_config, threads)?;
             let mut out = std::io::BufWriter::new(std::fs::File::create(&a.out)?);
