@@ -616,8 +616,12 @@ struct Siblings {
     moves: Vec<(movegen::Play, u8)>, // each with the tiles it places
 }
 
+// the plays out a ply keeps of the opponent's (OutReplies)
 const OUT_SLOTS: usize = 4;
 
+// a play out by the opponent of a ply's mover, legal on that ply's position:
+// its score, its zone there (zone::footprint), and where it lies, to tell it
+// from another
 #[derive(Clone, Copy)]
 struct Out {
     score: i32,
@@ -627,6 +631,12 @@ struct Out {
     idx: i8,
 }
 
+// a node's plays out by the opponent, highest score first, found in its
+// children's lists: of, its list's serial; floor, the lists generated when its
+// last child was entered, so that the child's own list is told from an older
+// one. A play out its move leaves alone (no square of its zone filled) is still
+// the opponent's, at the same score, so the move is worth at most its score
+// minus that play's score minus twice the rack the mover keeps
 struct OutReplies {
     of: u64,
     floor: u64,
@@ -1357,9 +1367,9 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     serials: Vec<u64>,     // the serial of each ply's list
     siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
     singles: Vec<(u64, Vec<u32>)>, // each list's one-tile moves by place, and its serial
-    outs: Vec<OutReplies>,
-    out_skips: u64,
-    out_checks: u32,
+    outs: Vec<OutReplies>, // each ply's plays out by the opponent
+    out_skips: u64,        // the moves skipped so (OutReplies), over the solver's life
+    out_checks: u32,       // the skips a debug build checked by a solve of the reply
     lane_pool: LanePool,
     pool_walker: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // LanePool's walks
     #[cfg(test)]
@@ -1627,8 +1637,8 @@ struct BagLimits {
     depth: std::cell::Cell<i8>, // the pass's depth, or the end for a search of one pass
     may_stop: std::cell::Cell<bool>, // a limit may stop the search: it has an answer
     stopped: std::cell::Cell<bool>, // a limit stopped it
-    refused: std::cell::Cell<bool>,
-    estimates: bool, // the passes estimate (PegBagProgress::set_estimates)
+    refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
+    estimates: bool,            // the passes estimate (PegBagProgress::set_estimates)
 }
 
 impl BagLimits {
@@ -1696,6 +1706,9 @@ impl BagLimits {
         }
     }
 
+    // whether the memory limit leaves room for bytes more; if not, the search
+    // stops before it takes them (stopped and refused set), whether or not
+    // another limit may stop it: an error
     #[inline(always)]
     fn refuse(&self, bytes: usize) -> error::Returns<()> {
         if self.memory.is_some_and(|memory| bytes > memory.room()) {
@@ -2281,6 +2294,9 @@ impl<
         )
     }
 
+    // a child of ply's node about to be entered: that node's plays out, kept
+    // while its list is the one they were found for, and the lists generated so
+    // far, past which the child's own list is numbered
     #[inline(always)]
     fn enter_outs(&mut self, ply: usize) {
         let work_buffer = &mut self.work_buffer;
@@ -2295,6 +2311,11 @@ impl<
         outs.floor = work_buffer.generated;
     }
 
+    // the move ply's node searched below it taken back: the opponent's plays
+    // out in the reply's list, when the reply generated one, kept among the
+    // node's highest-scoring few when each is a play out on the node's own
+    // position too, at the same score: the move filled no square of its zone
+    // there, nor any square it plays through
     #[inline]
     fn harvest_outs(&mut self, ply: usize, depth: i8, play: &movegen::Play) {
         let work_buffer = &mut self.work_buffer;
@@ -2360,6 +2381,10 @@ impl<
         }
     }
 
+    // the cap on player_idx's move from ply, placed, scoring score: by the
+    // highest-scoring play out the node keeps that the move filled no square of
+    // the zone of (fills), its score minus that play's score minus twice the
+    // rack the mover keeps; with its slot, when no higher than alpha
     #[inline(always)]
     fn out_cap(
         &self,
@@ -2382,6 +2407,10 @@ impl<
         (cap <= alpha).then_some((k, cap))
     }
 
+    // a debug build's check of a skip (out_cap), the move placed: the play out
+    // is one of the opponent's on the position after it, at its score, and, for
+    // the first few skips of a solver, a solve of the reply from there values
+    // the move at no more than the cap; true, as it asserts the rest
     #[inline(never)]
     fn check_out_skip(
         &mut self,
@@ -2431,6 +2460,8 @@ impl<
             movegen::KurniaMoveGenerator::new_in(self.game_config),
         )
         .unwrap();
+        // the reply skips too, but solves no replies of its own to check its
+        // skips, lest the checks nest
         reply.work_buffer.out_checks = u32::MAX;
         let work_buffer = &self.work_buffer;
         reply.init(
@@ -3703,6 +3734,9 @@ impl<
                 // upper bound, as a fail low gives). Below the root only, where
                 // depth is at least 2
                 let Enter { alpha, beta, .. } = self.work_buffer.frames[t].node;
+                // a remembered play out the move leaves alone caps it, as the
+                // reply's search would take that play at that value; a cap no
+                // higher than alpha is used as one_tile_bound's is
                 if skip_outs
                     && let Some((k, cap)) = self.out_cap(ply, player_idx, score, alpha, &fills)
                 {
@@ -4418,6 +4452,7 @@ impl<
         work_buffer.serials = stopped.serials;
         work_buffer.siblings = stopped.siblings;
         work_buffer.generated = work_buffer.generated.max(stopped.generated);
+        // its plays out were not set aside, and those held are of other lists
         work_buffer.outs.clear();
     }
 
@@ -5087,8 +5122,12 @@ impl<
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
+        // what each move took in each split, which orders the threads' tasks:
+        // kept only while the search runs on threads (a step may be given more
+        // threads than the one before, set_threads)
         let cells = state.moves.len().checked_mul(splits.len());
         if threads > 1 && cells != Some(state.took.len()) {
+            // none made, the next step tries again
             state.took = cells_of(cells, std::time::Duration::ZERO)?;
         }
         let score_diff = position.score_diff.raw() as f64;
@@ -5240,6 +5279,8 @@ impl<
         let rest = state.order.len() - base;
         let num_splits = splits.len();
         let tasks = rest * num_splits;
+        // the tasks' order, what each found, and their hand-overs; the moves'
+        // splits not yet valued
         type Found = Option<(f64, f64, bool, Vec<PegBagDraw>)>;
         if limits
             .refuse(
@@ -5251,7 +5292,7 @@ impl<
             )
             .is_err()
         {
-            return Ok(true);
+            return Ok(true); // stopped, nothing valued
         }
         let next = AtomicUsize::new(0);
         // the tasks (each a move's place in the rest of the order and a split),
@@ -5268,7 +5309,7 @@ impl<
             .collect::<Vec<_>>();
         let moves_valued = AtomicUsize::new(state.reached.len());
         let stop = AtomicBool::new(false);
-        let refused = AtomicBool::new(false);
+        let refused = AtomicBool::new(false); // any thread's memory limit stopped it
         let on_one_clock = limits.on_one_clock();
         let (order, moves) = (&state.order, &state.moves);
         // each task's hand-over (HandOver), and how many tasks that hand the
@@ -5479,6 +5520,8 @@ impl<
                 && !stopped
                 && limits.refuse(rows_bytes(splits)).is_err()
             {
+                // no room for its rows: the pass stops, the move left for the
+                // next step
                 stopped = true;
             }
             if per_split.iter().all(Option::is_some) && !limits.refused.get() {
@@ -6329,6 +6372,9 @@ fn value_root_split<
     Ok((value, win, draws))
 }
 
+// the bytes valuing a move over these splits takes: each split's value as
+// found, and its row (the bag's tiles, the deals, the margin, the chance to
+// win, the draws' list)
 fn rows_bytes(splits: &[(Vec<u8>, Vec<u8>, u64)]) -> usize {
     let row = std::mem::size_of::<(f64, f64, Vec<PegBagDraw>)>()
         + std::mem::size_of::<(Vec<u8>, u64, equity::Equity)>()
@@ -6431,6 +6477,8 @@ struct PegBagValue {
     exact: bool,
 }
 
+// a move's rows, one a split, held once: the search's values share them with
+// every result given from them
 pub type PegBagRows<T> = std::sync::Arc<Vec<T>>;
 
 // a draw a move makes at the root with tiles left in the bag: the tiles it
@@ -6477,7 +6525,7 @@ pub struct PegBagResult {
     pub moves: Vec<PegBagMove>,
     pub exact: bool,
     pub depth: i8,
-    pub out_of_memory: bool,
+    pub out_of_memory: bool, // the memory limit stopped the search, before it grew past it
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
@@ -7978,6 +8026,8 @@ impl<
             let Some((win, margins)) = self.info_move(info, &moves[i], &splits, floor)? else {
                 continue;
             };
+            // only the moves at the best chance are read below: those the floor
+            // passes are let go as it rises, and none is kept below it
             if floor.is_none_or(|floor| win > floor) {
                 floor = Some(win);
                 valued.clear();
@@ -9223,6 +9273,9 @@ mod tests {
         assert!(below.iter().chain(&above).all(|&n| n > 0));
     }
 
+    // line, solved for mover from the position with no scoreless turns, is a
+    // best line by the reference: each ply's value is the reference's for its
+    // mover there, and each ply's move gets that value; its plies counted
     fn assert_a_best_line<N: kwg::Node, L: kwg::Node>(
         fixed: &mut Reference<'_, N, L>,
         board: &[u8],
@@ -14950,7 +15003,7 @@ mod tests {
         assert!(table.held == 3 && table.get(last).is_none());
     }
 
-    // Past the limit from the start, no table grows
+    // past the limit from the start, no table grows
     #[test]
     #[inline]
     fn a_bag_search_holding_a_few_entries_answers_as_one_with_no_limit() {
@@ -15063,6 +15116,7 @@ mod tests {
         }
         assert_eq!(checked, 64);
         assert!(gave_up > 0, "no table gave up what it kept");
+        // each position is searched on one thread and on three
         assert!(refused < 2 * checked, "every search was refused room");
         // the search with one tile in the bag and exchanges, its memo held to
         // its first four entries, against one with no limit

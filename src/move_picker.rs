@@ -328,6 +328,17 @@ fn limit_surviving_candidates(
     }
 }
 
+// whether a decision builds its late graph, the graph of the words the board
+// can still take. The build costs in proportion to the words it keeps (they
+// grow fast with the bag, more so with a blank to place) while the graph saves
+// in proportion to the rollouts the budget runs. On one thread the two meet
+// where the bag holds 25 - 3000 / (budget + 200) tiles, the budget in
+// iterations, or seven fewer while a blank is off the board. That is where they
+// met over classic games in ten lexicons on both boards with racks of seven to
+// nine tiles, jumbled games too. Over threads the build runs alone while the
+// threads share the saving, so each thread's share of the budget counts: 28 -
+// 5250 / (share + 200), six fewer with a blank off, fit by the clock on two to
+// eight threads with budgets of 100 to 3000
 #[inline]
 fn late_graph_pays(bag: usize, blank_off_board: bool, budget: u64, threads: usize) -> bool {
     if threads <= 1 {
@@ -1830,6 +1841,9 @@ impl<
         );
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
+        // late in the game, when it pays, the rollouts walk a graph of the
+        // words the board can still take, whatever comes to the racks; the
+        // generator keeps nothing of a graph it walked before
         #[cfg(not(target_family = "wasm"))]
         let threads = self.sim_threads;
         #[cfg(target_family = "wasm")]
@@ -2586,6 +2600,9 @@ mod tests {
         let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
+        // twelve tiles in the bag: past a rack's worth, at a bag where a
+        // decision of 1000 iterations builds its graph on one thread, not on
+        // eight (a blank is off the board)
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
         let board_snapshot = movegen::BoardSnapshot {
@@ -2632,6 +2649,8 @@ mod tests {
         let shared = decide(8);
         assert!(alone.late_graph.is_some());
         assert!(shared.late_graph.is_none());
+        // the rows do not depend on the threads, so the late graph's are the
+        // whole graph's
         assert_eq!(
             alone.leaderboard(usize::MAX),
             shared.leaderboard(usize::MAX)
