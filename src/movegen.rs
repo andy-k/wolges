@@ -5488,6 +5488,38 @@ mod jumbled_walk {
     pub trait Sealed {}
 }
 
+#[derive(Clone, Copy)]
+pub struct HeldBytes {
+    pub held: fn() -> usize,
+    pub bytes: usize,
+    pub kept: usize,
+}
+
+trait RawStop {
+    const STOPS: bool;
+    fn passed(&self, plays: usize, grown_bytes: usize) -> bool;
+}
+
+impl RawStop for () {
+    const STOPS: bool = false;
+
+    #[inline(always)]
+    fn passed(&self, _plays: usize, _grown_bytes: usize) -> bool {
+        false
+    }
+}
+
+impl RawStop for HeldBytes {
+    const STOPS: bool = true;
+
+    #[inline(always)]
+    fn passed(&self, plays: usize, grown_bytes: usize) -> bool {
+        let held = (self.held)();
+        held != 0
+            && held.saturating_add(plays.saturating_mul(grown_bytes + 2 * self.kept)) >= self.bytes
+    }
+}
+
 pub trait JumbledWalk: jumbled_walk::Sealed {
     const WALK: u8;
 }
@@ -7850,6 +7882,56 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         )
     }
 
+    #[inline(always)]
+    pub(crate) fn gen_moves_raw_lanes_unsorted_within<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        rows: u128,
+        cols: u128,
+        limit: HeldBytes,
+    ) -> bool {
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
+        let stopped = self.gen_moves_raw_all_unsorted_within(
+            board_snapshot,
+            rack,
+            0,
+            PassPolicy::AsACandidate,
+            (),
+            limit,
+        );
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
+        stopped
+    }
+
+    #[inline(always)]
+    pub(crate) fn gen_moves_raw_lanes_unsorted_by_runs_within<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        run_letter_bits: &'a [u64],
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        rows: u128,
+        cols: u128,
+        limit: HeldBytes,
+    ) -> bool {
+        debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
+        self.working_buffer.lane_rows = G::of_u128(rows);
+        self.working_buffer.lane_cols = G::of_u128(cols);
+        let stopped = self.gen_moves_raw_all_unsorted_within(
+            board_snapshot,
+            rack,
+            0,
+            PassPolicy::AsACandidate,
+            run_letter_bits,
+            limit,
+        );
+        self.working_buffer.lane_rows = !G::from(0);
+        self.working_buffer.lane_cols = !G::from(0);
+        stopped
+    }
+
     #[inline]
     fn gen_moves_raw_all_unsorted_impl<'a, R: 'a + RunLetters, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -7859,6 +7941,32 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         pass_policy: PassPolicy,
         runs: R,
     ) {
+        self.gen_moves_raw_all_unsorted_within(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+            runs,
+            (),
+        );
+    }
+
+    #[inline]
+    fn gen_moves_raw_all_unsorted_within<
+        'a,
+        R: 'a + RunLetters,
+        S: RawStop,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+        runs: R,
+        stop: S,
+    ) -> bool {
         self.plays.clear();
         let mut vec_moves = std::mem::take(&mut self.plays);
 
@@ -7871,8 +7979,19 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
+        let side = board_snapshot.game_config.board_layout().dim();
+        let grown_bytes = 2 * std::mem::size_of::<ValuedMove>() + side.rows.max(side.cols) as usize;
+        let mut stopped = false;
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: i32| {
+                if S::STOPS
+                    && (stopped
+                        || (vec_moves.len() == vec_moves.capacity()
+                            && stop.passed(vec_moves.capacity().max(1), grown_bytes)))
+                {
+                    stopped = true;
+                    return i32::MAX;
+                }
                 vec_moves.push(ValuedMove {
                     equity: equity::Equity::ZERO,
                     play: Play::Place {
@@ -7968,6 +8087,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         self.plays = vec_moves;
 
         working_buffer.multi_leaves = multi_leaves;
+        stopped
     }
 
     // the best one kept in one slot, more of them in a heap

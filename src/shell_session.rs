@@ -1295,7 +1295,9 @@ impl Session {
                 writeln!(
                     std::io::stdout(),
                     "the side to move gains {} on the spread from here, {}",
-                    solved.value,
+                    solved
+                        .value
+                        .map_or_else(|| "-".to_string(), |v| v.to_string()),
                     if solved.exact {
                         "exactly".to_string()
                     } else if let Some(partway) = solved.partway {
