@@ -1691,7 +1691,7 @@ fn solve_position<N: kwg::Node>(
             result.hypotheses.len(),
             oppo_rack.len(),
         )?;
-        for (bag, ways, value) in &result.hypotheses {
+        for (bag, ways, value) in result.hypotheses.iter() {
             let mut opp = Vec::new();
             for (u, &c) in available_tally.iter().enumerate() {
                 let in_bag = bag.iter().filter(|&&t| t as usize == u).count() as u8;

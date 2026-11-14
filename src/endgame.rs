@@ -6093,9 +6093,9 @@ fn peg_bag_value(
     PegBagValue {
         win: win / total as f64,
         marg: marg / total as f64,
-        hyps,
-        wins,
-        draws,
+        hyps: hyps.into(),
+        wins: wins.into(),
+        draws: draws.into(),
         exact,
     }
 }
@@ -6142,11 +6142,15 @@ struct PegBagState {
 struct PegBagValue {
     win: f64,
     marg: f64,
-    hyps: Vec<(Vec<u8>, u64, equity::Equity)>,
-    wins: Vec<f64>,              // each split's chance to win, as hyps lists them
-    draws: Vec<Vec<PegBagDraw>>, // each split's draws at the root, as hyps lists them
+    hyps: PegBagRows<(Vec<u8>, u64, equity::Equity)>,
+    wins: PegBagRows<f64>, // each split's chance to win, as hyps lists them
+    draws: PegBagRows<Vec<PegBagDraw>>, // each split's draws at the root, as hyps lists them
     exact: bool,
 }
+
+// a move's rows, one a split, held once: the search's values share them with
+// every result given from them
+pub type PegBagRows<T> = std::sync::Arc<Vec<T>>;
 
 // a draw a move makes at the root with tiles left in the bag: the tiles it
 // draws, the deals that give them, the margin then, and the chance to win
@@ -6169,9 +6173,9 @@ pub struct PegBagMove {
     pub play: movegen::Play,
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
-    pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
-    pub wins: Vec<f64>,
-    pub draws: Vec<Vec<PegBagDraw>>,
+    pub hypotheses: PegBagRows<(Vec<u8>, u64, equity::Equity)>,
+    pub wins: PegBagRows<f64>,
+    pub draws: PegBagRows<Vec<PegBagDraw>>,
     pub exact: bool,
 }
 
@@ -6185,9 +6189,9 @@ pub struct PegBagMove {
 pub struct PegBagResult {
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
-    pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
-    pub wins: Vec<f64>,
-    pub draws: Vec<Vec<PegBagDraw>>, // as PegBagMove's
+    pub hypotheses: PegBagRows<(Vec<u8>, u64, equity::Equity)>,
+    pub wins: PegBagRows<f64>,
+    pub draws: PegBagRows<Vec<PegBagDraw>>, // as PegBagMove's
     pub best_move: Option<movegen::Play>,
     pub moves: Vec<PegBagMove>,
     pub exact: bool,
@@ -6232,9 +6236,9 @@ fn peg_bag_result(
         expected_margin: value.map_or(equity::Equity::ZERO, |value| {
             equity::Equity::new(value.marg.round() as i32)
         }),
-        hypotheses: value.map_or_else(Vec::new, |value| value.hyps.clone()),
-        wins: value.map_or_else(Vec::new, |value| value.wins.clone()),
-        draws: value.map_or_else(Vec::new, |value| value.draws.clone()),
+        hypotheses: value.map_or_else(Default::default, |value| value.hyps.clone()),
+        wins: value.map_or_else(Default::default, |value| value.wins.clone()),
+        draws: value.map_or_else(Default::default, |value| value.draws.clone()),
         best_move: best.map(|best| moves[best].clone()),
         moves: (listed.into_iter())
             .map(|i| {
@@ -13718,7 +13722,7 @@ mod tests {
                 assert!(part.exact, "part {k} of {n}");
                 for valued in &part.moves {
                     let at = rows.entry(key(&valued.play)).or_insert_with(Vec::new);
-                    for (row, &win) in valued.hypotheses.iter().zip(&valued.wins) {
+                    for (row, &win) in valued.hypotheses.iter().zip(valued.wins.iter()) {
                         at.push((row.clone(), win));
                     }
                 }
@@ -13972,7 +13976,7 @@ mod tests {
                                 .map(|&(tile, ways, value)| (vec![tile], ways as u64, value))
                                 .collect::<Vec<_>>();
                             hyps.sort_unstable();
-                            let mut any_hyps = any.hypotheses.clone();
+                            let mut any_hyps = any.hypotheses.to_vec();
                             any_hyps.sort_unstable();
                             // the margins in each split are those of the move each
                             // picked; the moves agree, so the splits do
@@ -14626,7 +14630,7 @@ mod tests {
                 matches!(&result.best_move, Some(movegen::Play::Exchange { tiles }) if tiles.is_empty())
             );
             assert_eq!(result.moves.len(), 1);
-            let mut got = result.hypotheses.clone();
+            let mut got = result.hypotheses.to_vec();
             got.sort_unstable();
             let mut want = hyps.clone();
             want.sort_unstable();
@@ -15267,7 +15271,7 @@ mod tests {
         );
         assert!((result.win_pct - 0.5).abs() < 1e-9);
         assert_eq!(result.expected_margin, e(0));
-        let mut hyps = result.hypotheses.clone();
+        let mut hyps = result.hypotheses.to_vec();
         hyps.sort_unstable();
         assert_eq!(
             hyps,
