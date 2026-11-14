@@ -371,6 +371,7 @@ pub struct Simmer<
     ticked: u64,
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
+    late_board: Box<[u8]>,
 }
 
 // the opponent's last move and the board before it, from which a sim infers
@@ -475,6 +476,7 @@ impl<
             ticked: 0,
             infer: None,
             late_graph: None,
+            late_board: Box::default(),
         }
     }
 
@@ -1843,10 +1845,18 @@ impl<
             self.num_sim_iters,
             threads,
         );
-        if late || self.late_graph.is_some() {
+        let keep = late
+            && self.late_graph.is_some()
+            && (self.late_board.iter())
+                .zip(&game_state.board_tiles)
+                .all(|(&was, &is)| was == 0 || was == is);
+        if !keep && (late || self.late_graph.is_some()) {
             self.simmer.reset_for_another_kwg();
         }
-        self.late_graph = if late {
+        self.late_graph = if keep {
+            self.late_graph.take()
+        } else if late {
+            self.late_board.clone_from(&game_state.board_tiles);
             let mut words = Vec::<bites::Bites>::new();
             movegen::KurniaMoveGenerator::new(self.game_config).gen_remaining_words(
                 &movegen::BoardSnapshot {
@@ -2677,6 +2687,80 @@ mod tests {
             alone.leaderboard(usize::MAX),
             shared.leaderboard(usize::MAX)
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_decision_on_a_board_with_tiles_added_keeps_the_late_graph_and_decides_as_anew() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
+        let bag = game_state.bag.as_slice()[..12].to_vec();
+        game_state.bag.set_from_iter(bag);
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let gen_candidates = |move_generator: &mut movegen::KurniaMoveGenerator,
+                              game_state: &game_state::GameState| {
+            gen_simmer_candidates(
+                &mut move_filter::GenMoves::Unfiltered,
+                move_generator,
+                &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: &klv,
+                },
+                &game_state.current_player().rack,
+                0,
+                SIMMER_FIELD,
+                &mut Vec::new(),
+            );
+        };
+        let new_simmer = || {
+            let mut simmer = Simmer::<_, _, true>::new(
+                &game_config,
+                &kwg,
+                &arm_tables,
+                &klv,
+                SimmerParams {
+                    num_sim_iters: 1000,
+                    num_sim_plies: 2,
+                    sim_threads: 1,
+                    win_pct_table: None,
+                    quiet: true,
+                },
+            )
+            .unwrap();
+            simmer.reseed(11);
+            simmer
+        };
+        gen_candidates(&mut move_generator, &game_state);
+        let mut kept = new_simmer();
+        kept.begin_decision(&move_generator, &game_state, 32, &[])
+            .unwrap();
+        let first_board = game_state.board_tiles.clone();
+        let play = move_generator.plays[kept.best_so_far()].play.clone();
+        game_state.play(&game_config, &mut deal_rng, &play).unwrap();
+        game_state.next_turn();
+        assert_ne!(game_state.board_tiles, first_board);
+        gen_candidates(&mut move_generator, &game_state);
+        assert!(move_generator.plays.len() > 2);
+        kept.reseed(13);
+        kept.begin_decision(&move_generator, &game_state, 32, &[])
+            .unwrap();
+        let mut anew = new_simmer();
+        anew.reseed(13);
+        anew.begin_decision(&move_generator, &game_state, 32, &[])
+            .unwrap();
+        assert_eq!(kept.late_board, first_board);
+        assert_eq!(anew.late_board, game_state.board_tiles);
+        assert_eq!(kept.leaderboard(usize::MAX), anew.leaderboard(usize::MAX));
     }
 
     #[test]
