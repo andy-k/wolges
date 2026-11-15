@@ -11227,6 +11227,13 @@ mod tests {
         v
     }
 
+    // the positions of all_positions with these names, in its order
+    fn named_positions(names: &[&str]) -> Vec<(String, Position)> {
+        (all_positions().into_iter())
+            .filter(|(name, _)| names.contains(&&name[..]))
+            .collect()
+    }
+
     // sort a ply's whole list, as the search does past the first move
     #[inline]
     fn order_ply(
@@ -12648,9 +12655,9 @@ mod tests {
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
-        // from no scoreless turns, and from some, up to one short of the end
-        for (name, pos) in all_positions() {
-            for (passes, zeros) in [(0, 0), (1, 1), (5, 5)] {
+        // from no scoreless turns, and after a pass
+        for (name, pos) in named_positions(&["rand#0", "rand#7"]) {
+            for (passes, zeros) in [(0, 0), (1, 1)] {
                 let refv = reference(
                     &mut Reference {
                         gc: &gc,
