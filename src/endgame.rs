@@ -12655,17 +12655,18 @@ mod tests {
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
+        let mut fixed = Reference {
+            gc: &gc,
+            kwg: &kwg,
+            klv: &klv,
+            mg: &mut mg,
+            memo: Default::default(),
+        };
         // from no scoreless turns, and after a pass
         for (name, pos) in named_positions(&["rand#0", "rand#7"]) {
             for (passes, zeros) in [(0, 0), (1, 1)] {
                 let refv = reference(
-                    &mut Reference {
-                        gc: &gc,
-                        kwg: &kwg,
-                        klv: &klv,
-                        mg: &mut mg,
-                        memo: Default::default(),
-                    },
+                    &mut fixed,
                     &pos.board,
                     &pos.racks,
                     0,
@@ -16483,7 +16484,7 @@ mod tests {
         let committed = |board: &[u8],
                          mover_rack: &[u8],
                          unseen: &[(u8, u32)],
-                         mg: &mut movegen::KurniaMoveGenerator|
+                         fixed: &mut Reference<'_, kwg::Node24, kwg::Node24>|
          -> (f32, f32, bool, String) {
             let total: u32 = unseen.iter().map(|&(_, w)| w).sum();
             let mover = 0usize;
@@ -16496,9 +16497,14 @@ mod tests {
                 rack_lengths: None,
                 klv: &klv,
             };
-            mg.gen_moves_raw_all_unsorted(&snap, mover_rack, 0, movegen::PassPolicy::AsACandidate);
+            (fixed.mg).gen_moves_raw_all_unsorted(
+                &snap,
+                mover_rack,
+                0,
+                movegen::PassPolicy::AsACandidate,
+            );
             let mut cands: Vec<Option<movegen::Play>> = vec![None]; // None = pass
-            for vm in &mg.plays {
+            for vm in &fixed.mg.plays {
                 if let movegen::Play::Place { .. } = &vm.play {
                     cands.push(Some(vm.play.clone()));
                 }
@@ -16529,33 +16535,12 @@ mod tests {
                             apply_place(&gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                             nr[mover].push(drawn);
                             nr[opp] = opp_rack;
-                            *score as f32
-                                - reference(
-                                    &mut Reference {
-                                        gc: &gc,
-                                        kwg: &kwg,
-                                        klv: &klv,
-                                        mg,
-                                        memo: Default::default(),
-                                    },
-                                    &nb,
-                                    &nr,
-                                    opp,
-                                    0,
-                                    0,
-                                    false,
-                                )
+                            *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false)
                         }
                         _ => {
                             let nr = [mover_rack.to_vec(), opp_rack];
                             -reference_one_in_bag(
-                                &mut Reference {
-                                    gc: &gc,
-                                    kwg: &kwg,
-                                    klv: &klv,
-                                    mg,
-                                    memo: Default::default(),
-                                },
+                                fixed,
                                 board,
                                 &nr,
                                 super::OneInBagTurn {
@@ -16608,6 +16593,13 @@ mod tests {
             boards.push(("AT+HAT".into(), b));
         }
 
+        let mut fixed = Reference {
+            gc: &gc,
+            kwg: &kwg,
+            klv: &klv,
+            mg: &mut mg,
+            memo: Default::default(),
+        };
         let mut worst_gap = 0.0f32;
         let mut n_gap = 0;
         let mut n_gap_place = 0;
@@ -16637,7 +16629,7 @@ mod tests {
                         }
 
                         let (ref_win, ref_marg, _ref_place, _ref_label) =
-                            committed(board, mrack, &unseen, &mut mg);
+                            committed(board, mrack, &unseen, &mut fixed);
 
                         for (lean, arm_tables) in &arms {
                             let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
