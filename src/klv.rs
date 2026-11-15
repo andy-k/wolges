@@ -312,12 +312,15 @@ impl<L: kwg::Node> Klv<L> {
         })
     }
 
-    // every full rack's setup from these leaves (racks::RackTable::build's, or
-    // a file of one read), which a generation then reads for a full rack in
-    // place of walking the leaves' graph
+    // these leaves with every full rack's setup from them
+    // (racks::RackTable::build's, or a file of one read), which a generation
+    // then reads for a full rack in place of walking the leaves' graph
     #[inline]
-    pub fn set_racks(&mut self, racks: racks::RackTable) {
-        self.racks = Some(Box::new(racks));
+    pub fn with_racks(self, racks: racks::RackTable) -> Self {
+        Self {
+            racks: Some(Box::new(racks)),
+            ..self
+        }
     }
 
     #[inline(always)]
