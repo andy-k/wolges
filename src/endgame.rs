@@ -11450,6 +11450,20 @@ mod tests {
                     );
                     checked += 1;
                 }
+                // the pass is less the reply's solve, the reply's own pass
+                // ending the game
+                let passed = (cold_moves.iter())
+                    .find(|first| matches!(first.play, movegen::Play::Exchange { .. }))
+                    .unwrap();
+                let mut reply =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                reply.init_after_scoreless_turns(&pos.board, racks, 1, 1);
+                let replied = reply.solve(mover ^ 1).unwrap();
+                assert_eq!(
+                    passed.value,
+                    Some(equity::Equity::new(-replied.raw())),
+                    "[{name}] mover {mover}: the pass"
+                );
                 moves += cold_moves.len();
             }
         }
