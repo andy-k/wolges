@@ -122,7 +122,13 @@ impl RackTable {
                         let mut data = Vec::new();
                         for rank in from..to {
                             table_ref.unrank(rank as u64, &mut rack_tally);
-                            multi_leaves.init(&rack_tally, klv, true, klv::AdjustLeave::Identity);
+                            multi_leaves.init(
+                                &rack_tally,
+                                klv,
+                                true,
+                                klv::AdjustLeave::Identity,
+                                std::iter::empty(),
+                            );
                             let at = data.len();
                             for &leave_value in multi_leaves.leave_values() {
                                 data.extend_from_slice(&leave_value.to_le_bytes());
@@ -312,8 +318,14 @@ mod tests {
             table.unrank(rank as u64, &mut rack);
             assert_eq!(table.rank(&rack), Some(rank));
             let (setup_leaves, given) = table.get(&rack).unwrap();
-            walked.init(&rack, &klv, true, klv::AdjustLeave::Identity);
-            read.init_from_leaves(&rack, setup_leaves);
+            walked.init(
+                &rack,
+                &klv,
+                true,
+                klv::AdjustLeave::Identity,
+                std::iter::empty(),
+            );
+            read.init_from_leaves(&rack, setup_leaves, std::iter::empty());
             assert_eq!(read.leave_values(), walked.leave_values());
             assert_eq!(read.num_playeds(), walked.num_playeds());
             movegen::subrack_order(&walked, &rack, &mut order);
