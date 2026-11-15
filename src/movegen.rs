@@ -18855,7 +18855,7 @@ mod tests {
             // another takes some racks under the tables detected or under none.
             // Under jumbled rules a long rack with a blank has too many
             // arrangements to list again and again (and the tables are the rack
-            // lengths whatever is asked); a rack of every tile has leaves too
+            // lengths whatever is asked); a rack of 21 tiles has leaves too
             // many to be dense
             let first = ci == 0;
             let racks = if jumbled {
@@ -18864,7 +18864,7 @@ mod tests {
                 vec!["AEINRSTCS", "?EINRSTCA", "??TANS", "AE", "?A"]
             } else if first {
                 let mut racks = SWEEP_RACKS.to_vec();
-                racks.push("ABCDEFGHIJKLMNOPQRSTUVWXYZ?");
+                racks.push("AABCDEEFGHIJKLMNORST?");
                 racks
             } else {
                 vec![
@@ -18874,7 +18874,7 @@ mod tests {
                     "?AT",
                     "??TANS",
                     "AE",
-                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ?",
+                    "AABCDEEFGHIJKLMNORST?",
                 ]
             };
             let arms: &[(&str, &anagrams::ArmTables)] = if jumbled {
@@ -18952,6 +18952,11 @@ mod tests {
                             "{why}, fresh, at a cap of {max_gen}"
                         );
                     }
+                    assert_eq!(
+                        fresh.working_buffer.multi_leaves.is_dense(),
+                        rack.len() <= 9,
+                        "{why}, dense or not"
+                    );
                     let mut fresh = KurniaMoveGenerator::new(gc);
                     fresh.gen_moves_unfiltered_lean(&params(usize::MAX));
                     assert_eq!(
