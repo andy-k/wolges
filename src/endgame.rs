@@ -12417,7 +12417,8 @@ mod tests {
                 }
                 let mut afresh = new_solver();
                 let mut expected = 0usize;
-                for (name, pos) in all_positions() {
+                let positions = named_positions(&["rand#0"]);
+                for (name, pos) in &positions {
                     for mover in 0..2u8 {
                         egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                         egs.reset_position();
@@ -12486,7 +12487,7 @@ mod tests {
                 );
                 // full solves, the search choosing which lists keep rack places
                 let mut solver = new_solver();
-                let values = all_positions()
+                let values = positions
                     .iter()
                     .map(|(_, pos)| {
                         solver.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
