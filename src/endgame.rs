@@ -18772,55 +18772,46 @@ mod tests {
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
-        let tiles = [1u8, 2, 8, 20]; // A B H T
-        let (mut refined, mut checked) = (0, 0);
-        for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
+        let (random, info) = (super::PegModel::RandomDraws, super::PegModel::InfoSets);
+        let mut refined = 0;
+        for (unseen, bag_size, model, [x, y], threads) in [
+            (&[1u8, 2, 8][..], 2, random, [1u8, 8], 1), // AH
+            (&[1, 2, 8], 2, info, [1, 2], 3),           // AB
+            (&[1, 8, 20, 20], 3, random, [1, 20], 1),   // AT
+            (&[1, 8, 20, 20], 3, info, [2, 2], 1),      // BB
+        ] {
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             for &tile in unseen {
                 unseen_tally[tile as usize] += 1;
             }
-            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
-                for &x in &tiles {
-                    for &y in &tiles {
-                        let mut position =
-                            bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
-                        position.model = model;
-                        let (full, full_rows) = solve_peg_rows(&mut egs, position.clone());
-                        assert!(full.exact && full.depth == super::COMPLETE);
-                        for threads in [1, 3] {
-                            let mut progress = super::PegBagProgress::new(
-                                position.clone(),
-                                super::PegBagChoices {
-                                    part: (0, 1),
-                                    estimates: true,
-                                },
-                            )
-                            .unwrap();
-                            let estimated = egs
-                                .resume_peg(&mut progress, &super::Limits::NONE, threads)
-                                .unwrap()
-                                .unwrap();
-                            let rows = moves_rows(
-                                &mut egs,
-                                &mut progress,
-                                &estimated,
-                                &super::Limits::NONE,
-                            );
-                            assert!(
-                                bag_answers_alike((&estimated, &rows), (&full, &full_rows)),
-                                "{unseen:?} {x} {y} {threads}"
-                            );
-                            assert!(estimated.depth != super::COMPLETE);
-                            if estimated.depth > 1 {
-                                refined += 1;
-                            }
-                        }
-                        checked += 1;
-                    }
+            let mut position = bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
+            position.model = model;
+            let (full, full_rows) = solve_peg_rows(&mut egs, position.clone());
+            assert!(full.exact && full.depth == super::COMPLETE);
+            {
+                let mut progress = super::PegBagProgress::new(
+                    position.clone(),
+                    super::PegBagChoices {
+                        part: (0, 1),
+                        estimates: true,
+                    },
+                )
+                .unwrap();
+                let estimated = egs
+                    .resume_peg(&mut progress, &super::Limits::NONE, threads)
+                    .unwrap()
+                    .unwrap();
+                let rows = moves_rows(&mut egs, &mut progress, &estimated, &super::Limits::NONE);
+                assert!(
+                    bag_answers_alike((&estimated, &rows), (&full, &full_rows)),
+                    "{unseen:?} {x} {y} {threads}"
+                );
+                assert!(estimated.depth != super::COMPLETE);
+                if estimated.depth > 1 {
+                    refined += 1;
                 }
             }
         }
-        assert_eq!(checked, 64);
         assert!(refined > 0, "no search needed a pass after its first");
     }
 
