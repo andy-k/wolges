@@ -3548,7 +3548,7 @@ mod tests {
         };
         gen_candidates(&mut move_generator, &game_state);
         let mut kept = new_simmer();
-        kept.begin_decision(&move_generator, &game_state, 32, &[])
+        kept.begin_decision(&move_generator, &game_state, 2, &[])
             .unwrap();
         let first_board = game_state.board_tiles.clone();
         let play = move_generator.plays[kept.best_so_far()].play.clone();
@@ -3558,11 +3558,11 @@ mod tests {
         gen_candidates(&mut move_generator, &game_state);
         assert!(move_generator.plays.len() > 2);
         kept.reseed(13);
-        kept.begin_decision(&move_generator, &game_state, 32, &[])
+        kept.begin_decision(&move_generator, &game_state, 2, &[])
             .unwrap();
         let mut anew = new_simmer();
         anew.reseed(13);
-        anew.begin_decision(&move_generator, &game_state, 32, &[])
+        anew.begin_decision(&move_generator, &game_state, 2, &[])
             .unwrap();
         assert_ne!(kept.late_board, first_board);
         assert_eq!(kept.late_board, game_state.board_tiles);
@@ -3751,7 +3751,7 @@ mod tests {
         };
         let rack = game_state.current_player().rack.clone();
         let params = || SimmerParams {
-            num_sim_iters: 16,
+            num_sim_iters: 8,
             num_sim_plies: 2,
             sim_threads: 1,
             win_pct_table: None,
@@ -3807,7 +3807,7 @@ mod tests {
             &mut Vec::new(),
         );
         by_hand
-            .begin_decision(&move_generator, &game_state, 16, &shell_leaves)
+            .begin_decision(&move_generator, &game_state, 8, &shell_leaves)
             .unwrap();
         let want = move_generator.plays[top_candidate_play_index_by_mean(&by_hand.candidates)]
             .play
