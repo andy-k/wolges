@@ -12909,7 +12909,7 @@ mod tests {
             chosen
         };
         let mut scatter = 2u64;
-        let mut words_checked = 0;
+        let (mut words_checked, mut words_kept) = (0, 0);
         for _ in 0..10 {
             let mut board = vec![0u8; dim.rows as usize * dim.cols as usize];
             let mut left = (0..alphabet.len())
@@ -12951,6 +12951,7 @@ mod tests {
                     |word: &[u8]| kept.push(word.into()),
                 );
                 assert!(kept.windows(2).all(|pair| pair[0] < pair[1]));
+                words_kept += kept.len();
                 for _ in 0..3 {
                     let (mut line_board, mut line_left) = (board.clone(), left.clone());
                     for _ in 0..6 {
@@ -12974,6 +12975,8 @@ mod tests {
             }
         }
         assert!(words_checked > 0);
+        // as many as the prune keeps
+        assert_eq!(words_kept, 91021);
     }
 
     // on boards of random moves, each rack drawn from the tiles not on the
