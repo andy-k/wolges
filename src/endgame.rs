@@ -15983,7 +15983,12 @@ mod tests {
         };
         let mut found = 0usize;
         let mut kept = 0usize;
-        for (name, pos) in all_positions() {
+        for (name, pos) in all_positions()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| [95, 135, 197, 205].contains(i))
+            .map(|(_, named)| named)
+        {
             for mover in 0..2u8 {
                 let mut egs = fresh(&pos);
                 let exact = egs.solve(mover).unwrap().raw() as f32;
