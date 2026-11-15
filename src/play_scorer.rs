@@ -678,3 +678,61 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
 
     recounted_score
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{bites, build, klv};
+
+    #[test]
+    #[inline]
+    fn a_tile_onto_a_punctured_square_is_refused() {
+        let game_config = game_config::make_punctured_english_game_config();
+        let words: [bites::Bites; 1] = [[1u8, 20][..].into()];
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut game_state = game_state::GameState::new(&game_config);
+        game_state.players[0].rack = vec![1, 20];
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let at = |idx: i8| movegen::Play::Place {
+            down: false,
+            lane: 7,
+            idx,
+            word: [1, 20][..].into(),
+            score: 0,
+        };
+        let mut play_scorer = PlayScorer::new();
+        // F8 is a hole on this board; G8 and H8 take the star
+        assert_eq!(
+            play_scorer
+                .validate_play(&board_snapshot, &game_state, &at(4))
+                .err()
+                .unwrap()
+                .to_string(),
+            "cannot place a tile onto a punctured square"
+        );
+        assert!(
+            play_scorer
+                .validate_play(&board_snapshot, &game_state, &at(6))
+                .is_ok()
+        );
+    }
+}
