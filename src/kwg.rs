@@ -151,6 +151,27 @@ pub struct LetterBits {
     pub accepting_bits: Box<[u64]>,
 }
 
+// a graph's run letters (Kwg::run_letter_bits), found once where the graph
+// loads (Kwg::run_letters) for every solver of it to share: none for a graph
+// whose runs do not ascend (Kwg::runs_ascend). It names its graph by the
+// address of the graph's nodes, which stay put however the graph moves
+#[derive(Clone)]
+pub struct RunLetters {
+    bits: Option<std::sync::Arc<[u64]>>,
+    nodes: usize,
+}
+
+impl RunLetters {
+    // the run letters, if they are of this graph's nodes
+    #[inline(always)]
+    pub fn of<N: Node>(&self, kwg: &Kwg<N>) -> error::Returns<Option<&std::sync::Arc<[u64]>>> {
+        if self.nodes != kwg.0.as_ptr().addr() {
+            return Err("the run letters are of another graph".into());
+        }
+        Ok(self.bits.as_ref())
+    }
+}
+
 // kwg::Node22
 pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
 
@@ -351,6 +372,16 @@ impl<N: Node> Kwg<N> {
             letter_bits[i] = all_acc;
         }
         letter_bits
+    }
+
+    // the graph's run letters, for a graph whose runs ascend, found once where
+    // it loads for every solver of it (RunLetters)
+    #[inline]
+    pub fn run_letters(&self) -> RunLetters {
+        RunLetters {
+            bits: self.runs_ascend().then(|| self.run_letter_bits().into()),
+            nodes: self.0.as_ptr().addr(),
+        }
     }
 
     #[inline(always)]

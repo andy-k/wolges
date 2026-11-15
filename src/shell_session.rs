@@ -243,6 +243,7 @@ pub struct Session {
     kwg: Option<(String, &'static kwg::Kwg<kwg::Node24>)>,
     klv: &'static klv::Klv<kwg::Node24>,
     kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node24>>,
+    run_letters_found: std::collections::HashMap<usize, kwg::RunLetters>, // by graph's address
     klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node24>>,
     arm_tables_built: std::collections::HashMap<String, &'static anagrams::ArmTables>,
     rules_made: std::collections::HashMap<String, &'static game_config::GameConfig>,
@@ -447,6 +448,7 @@ impl Session {
             kwg: None,
             klv: none,
             kwgs_read: Default::default(),
+            run_letters_found: Default::default(),
             klvs_read: [("-".to_string(), none)].into_iter().collect(),
             arm_tables_built: Default::default(),
             rules_made: Default::default(),
@@ -1284,6 +1286,7 @@ impl Session {
                     self.game_config,
                     kwg,
                     arm_tables,
+                    self.run_letters()?,
                     &state,
                     &endgame::Limits {
                         time: Some(std::time::Duration::from_secs_f64(seconds)),
@@ -1412,6 +1415,9 @@ impl Session {
 
     fn use_kwg(&mut self, path: &str, kwg: &'static kwg::Kwg<kwg::Node24>) {
         self.kwg = Some((path.to_string(), kwg));
+        (self.run_letters_found)
+            .entry(std::ptr::from_ref(kwg).addr())
+            .or_insert_with(|| kwg.run_letters());
         self.move_generator.reset_for_another_kwg();
         self.infer_generator.reset_for_another_kwg();
     }
@@ -1457,6 +1463,12 @@ impl Session {
     // the word graph, or an error saying to read one
     fn kwg(&self) -> error::Returns<&'static kwg::Kwg<kwg::Node24>> {
         Ok(self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.1)
+    }
+
+    // the word graph's run letters, found as it was first used
+    fn run_letters(&self) -> error::Returns<kwg::RunLetters> {
+        let kwg = self.kwg()?;
+        Ok(self.run_letters_found[&std::ptr::from_ref(kwg).addr()].clone())
     }
 
     // the word graph's anagram tables, built at their first use
@@ -2069,6 +2081,7 @@ impl Session {
                     self.game_config,
                     kwg,
                     arm_tables,
+                    self.run_letters()?,
                     &endgame_state,
                     self.quiet,
                 )?;
@@ -3122,6 +3135,7 @@ fn endgame_solver(
     game_config: &'static game_config::GameConfig,
     kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
+    run_letters: kwg::RunLetters,
     state: &game_state::GameState,
     quiet: bool,
 ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
@@ -3129,7 +3143,13 @@ fn endgame_solver(
         return Err("the bag is not empty, and an endgame needs it to be".into());
     }
     game_config.supports(game_config::Op::Endgame)?;
-    let mut solver = endgame::EndgameSolver::new(game_config, kwg, arm_tables)?;
+    let mut solver = endgame::EndgameSolver::with_generator(
+        game_config,
+        kwg,
+        arm_tables,
+        run_letters,
+        movegen::KurniaMoveGenerator::new(game_config),
+    )?;
     solver.init_after_scoreless_turns(
         &state.board_tiles,
         [&state.players[0].rack, &state.players[1].rack],
@@ -3151,6 +3171,7 @@ fn solve_endgame(
     game_config: &'static game_config::GameConfig,
     kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
+    run_letters: kwg::RunLetters,
     state: &game_state::GameState,
     limits: &endgame::Limits,
     quiet: bool,
@@ -3158,7 +3179,7 @@ fn solve_endgame(
     endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
     endgame::Solved,
 )> {
-    let mut solver = endgame_solver(game_config, kwg, arm_tables, state, quiet)?;
+    let mut solver = endgame_solver(game_config, kwg, arm_tables, run_letters, state, quiet)?;
     let solved = solver.solve_within(state.turn, limits)?;
     Ok((solver, solved))
 }
@@ -5182,6 +5203,7 @@ mod tests {
             session.game_config,
             session.kwg().unwrap(),
             session.arm_tables().unwrap(),
+            session.run_letters().unwrap(),
             &session.state,
             &endgame::Limits {
                 time: Some(std::time::Duration::from_secs(5)),
