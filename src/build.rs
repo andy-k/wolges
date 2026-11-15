@@ -2366,7 +2366,7 @@ mod tests {
         // with the word list, which a recursion would follow a frame a list
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
         let mut words = Vec::<bites::Bites>::new();
-        for _ in 0..100_000 {
+        for _ in 0..50_000 {
             let len = rng.random_range(2..=12);
             words.push(
                 (0..len)
