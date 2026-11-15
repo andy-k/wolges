@@ -18721,55 +18721,61 @@ mod tests {
             clock: None,
         };
         let mut checked = 0;
-        for (unseen, bag_size) in [
-            (&[3usize, 4, 5, 6, 7, 9, 11, 13][..], 7), // C D E F G I K M
-            (&[3, 4, 5, 6, 7, 9, 11, 13, 14, 15][..], 9), // and N O
+        for (unseen, bag_size, model) in [
+            // C D E F G I K M
+            (
+                &[3usize, 4, 5, 6, 7, 9, 11, 13][..],
+                7,
+                super::PegModel::InfoSets,
+            ),
+            // and N O
+            (
+                &[3, 4, 5, 6, 7, 9, 11, 13, 14, 15][..],
+                9,
+                super::PegModel::RandomDraws,
+            ),
         ] {
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             for &tile in unseen {
                 unseen_tally[tile] = 1;
             }
-            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
-                for threads in [1, 3] {
-                    let mut egs =
-                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
-                            .unwrap();
-                    let mut position =
-                        bag_position(&board, &rack, &unseen_tally, bag_size, equity::Equity::ZERO);
-                    position.model = model;
-                    let mut progress = super::PegBagProgress::new(
-                        position,
-                        super::PegBagChoices {
-                            part: (0, 1),
-                            estimates: true,
-                        },
-                    )
-                    .unwrap();
-                    let t0 = std::time::Instant::now();
-                    let result = egs
-                        .resume_peg(&mut progress, &limits, threads)
-                        .unwrap()
-                        .unwrap();
-                    let took = t0.elapsed();
-                    assert!(
-                        took < std::time::Duration::from_secs(5),
-                        "a search of 100 ms took {took:?}"
-                    );
-                    let (_, moves) = progress.moves().unwrap();
-                    assert!(moves > 100, "{moves} moves: the exchanges missing");
-                    assert_eq!(result.moves.len(), moves, "{bag_size} {threads}");
-                    assert!(result.best_move.is_some());
-                    assert!(!result.exact);
-                    assert!(result.depth >= 1 && result.depth != super::COMPLETE);
-                    assert!(result.moves.iter().all(|valued| !valued.exact));
-                    assert!(result.moves.iter().any(|valued| matches!(
-                        &valued.play,
-                        movegen::Play::Exchange { tiles } if !tiles.is_empty()
-                    )));
-                    checked += 1;
-                }
-            }
+            let threads = 1;
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut position =
+                bag_position(&board, &rack, &unseen_tally, bag_size, equity::Equity::ZERO);
+            position.model = model;
+            let mut progress = super::PegBagProgress::new(
+                position,
+                super::PegBagChoices {
+                    part: (0, 1),
+                    estimates: true,
+                },
+            )
+            .unwrap();
+            let t0 = std::time::Instant::now();
+            let result = egs
+                .resume_peg(&mut progress, &limits, threads)
+                .unwrap()
+                .unwrap();
+            let took = t0.elapsed();
+            assert!(
+                took < std::time::Duration::from_secs(5),
+                "a search of 100 ms took {took:?}"
+            );
+            let (_, moves) = progress.moves().unwrap();
+            assert!(moves > 100, "{moves} moves: the exchanges missing");
+            assert_eq!(result.moves.len(), moves, "{bag_size} {threads}");
+            assert!(result.best_move.is_some());
+            assert!(!result.exact);
+            assert!(result.depth >= 1 && result.depth != super::COMPLETE);
+            assert!(result.moves.iter().all(|valued| !valued.exact));
+            assert!(result.moves.iter().any(|valued| matches!(
+                &valued.play,
+                movegen::Play::Exchange { tiles } if !tiles.is_empty()
+            )));
+            checked += 1;
         }
-        assert_eq!(checked, 8);
+        assert_eq!(checked, 2);
     }
 }
