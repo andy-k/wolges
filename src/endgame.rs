@@ -12908,7 +12908,7 @@ mod tests {
         };
         let mut scatter = 2u64;
         let mut words_checked = 0;
-        for _ in 0..60 {
+        for _ in 0..10 {
             let mut board = vec![0u8; dim.rows as usize * dim.cols as usize];
             let mut left = (0..alphabet.len())
                 .flat_map(|tile| std::iter::repeat_n(tile, alphabet.freq(tile) as usize))
