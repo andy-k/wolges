@@ -171,7 +171,7 @@ fn a_one_in_bag_solve_refused_its_largest_growth_answers_as_before() {
     let kwg = test_kwg(&gc, build::BuildContent::Gaddawg, &ENDGAME_WORDS);
     let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
     let board = endgame_board(&gc);
-    let rack = parse_test_rack(gc.alphabet(), "AAHST");
+    let rack = parse_test_rack(gc.alphabet(), "AAH");
     let mut unseen = vec![0u8; gc.alphabet().len() as usize];
     for tile in parse_test_rack(gc.alphabet(), "AABHLT") {
         unseen[tile as usize] += 1;
