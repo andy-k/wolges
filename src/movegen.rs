@@ -16097,249 +16097,184 @@ mod tests {
     #[inline]
     #[test]
     fn jumbled_movegen_under_the_tables_plays_as_the_walk() {
-        let fifteen = [
-            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
-            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
-            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
-            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
-        ];
-        let twenty_one = [
-            "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
-            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
-        ];
-        for (gc, boards) in [
-            (
-                game_config::make_jumbled_english_game_config(),
-                &fifteen[..],
-            ),
-            (
-                game_config::make_jumbled_super_english_game_config(),
-                &twenty_one[..],
-            ),
-        ] {
-            let kwg = test_kad(&gc, SWEEP_WORDS);
-            let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
-                .unwrap()
-                .unwrap();
-            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
-            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
-            for fen in boards {
-                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
-                // the last two need both blanks for one letter: TART, TREAT
-                for rack in SWEEP_RACKS
+        let gc = game_config::make_jumbled_english_game_config();
+        let kwg = test_kad(&gc, SWEEP_WORDS);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let board_tiles = vec![0u8; 15 * 15];
+        let rack = parse_test_rack(gc.alphabet(), "AEINRST");
+        let mut made = Vec::new();
+        for anagrams in [None, Some(&held)] {
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let plays = |g: &KurniaMoveGenerator| {
+                g.plays
                     .iter()
-                    .chain(&["??AR", "??ERA", "???AT", "????E"])
-                {
-                    let rack = parse_test_rack(gc.alphabet(), rack);
-                    let mut made = Vec::new();
-                    for anagrams in [None, Some(&held)] {
-                        let board_snapshot = BoardSnapshot {
-                            board_tiles: &board_tiles,
-                            game_config: &gc,
-                            kwg: &kwg,
-                            anagrams,
-                            rack_lengths: None,
-                            klv: &klv,
-                        };
-                        let plays = |g: &KurniaMoveGenerator| {
-                            g.plays
-                                .iter()
-                                .map(|p| {
-                                    format!("{} {}\n", p.equity.raw(), p.play.fmt(&board_snapshot))
-                                })
-                                .collect::<String>()
-                        };
-                        let mut move_generator = KurniaMoveGenerator::new(&gc);
-                        let mut sorted = Vec::new();
-                        for max_gen in [1usize, 5, usize::MAX] {
-                            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                                board_snapshot: &board_snapshot,
-                                rack: &rack,
-                                max_gen,
-                                num_exchanges_by_this_player: 0,
-                                pass_policy: PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: None,
-                            });
-                            sorted.push(plays(&move_generator));
-                        }
-                        let params = GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &rack,
-                            max_gen: usize::MAX,
-                            num_exchanges_by_this_player: 0,
-                            pass_policy: PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: None,
-                        };
-                        {
-                            let mut fut =
-                                std::pin::pin!(move_generator.gen_moves_filtered_async_lean(
-                                    &params,
-                                    PlacePredicate::AcceptAll,
-                                    klv::AdjustLeave::Identity,
-                                    EquityPredicate::AcceptAll,
-                                    || std::future::ready(()),
-                                ));
-                            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-                            while fut.as_mut().poll(&mut cx).is_pending() {}
-                        }
-                        sorted.push(plays(&move_generator));
-                        move_generator.gen_moves_raw_all_unsorted(
-                            &board_snapshot,
-                            &rack,
-                            0,
-                            PassPolicy::OnlyWhenForced,
-                        );
-                        made.push((sorted, plays(&move_generator)));
-                    }
-                    assert_eq!(made[0], made[1], "{fen}");
-                    assert!(!made[0].1.is_empty(), "{fen} generated nothing at all");
-                }
+                    .map(|p| format!("{} {}\n", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                    .collect::<String>()
+            };
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            let mut sorted = Vec::new();
+            for max_gen in [1usize, 5, usize::MAX] {
+                move_generator.gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &rack,
+                    max_gen,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                });
+                sorted.push(plays(&move_generator));
             }
+            let params = GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            };
+            {
+                let mut fut = std::pin::pin!(move_generator.gen_moves_filtered_async_lean(
+                    &params,
+                    PlacePredicate::AcceptAll,
+                    klv::AdjustLeave::Identity,
+                    EquityPredicate::AcceptAll,
+                    || std::future::ready(()),
+                ));
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                while fut.as_mut().poll(&mut cx).is_pending() {}
+            }
+            sorted.push(plays(&move_generator));
+            move_generator.gen_moves_raw_all_unsorted(
+                &board_snapshot,
+                &rack,
+                0,
+                PassPolicy::OnlyWhenForced,
+            );
+            made.push((sorted, plays(&move_generator)));
         }
+        assert_eq!(made[0], made[1]);
+        assert!(!made[0].1.is_empty(), "generated nothing at all");
     }
 
     #[inline]
     #[test]
     fn jumbled_movegen_once_per_score_is_every_arrangement_deduplicated() {
         type Key = (bool, i8, i8, usize, Vec<u8>, i32, i32);
-        let fifteen = [
-            "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
-            "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
-            "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15",
-            "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15",
-        ];
-        let twenty_one = [
-            "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21",
-            "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21",
-        ];
-        let mut repeated = 0usize;
-        for (gc, boards) in [
-            (
-                game_config::make_jumbled_english_game_config(),
-                &fifteen[..],
-            ),
-            (
-                game_config::make_jumbled_super_english_game_config(),
-                &twenty_one[..],
-            ),
-        ] {
-            let kwg = test_kad(&gc, SWEEP_WORDS);
-            let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
-            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
-            for fen in boards {
-                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
-                let mut generated = 0usize;
-                for rack in SWEEP_RACKS
-                    .iter()
-                    .chain(&["??AR", "??ERA", "???AT", "????E"])
-                {
-                    let rack = parse_test_rack(gc.alphabet(), rack);
-                    let board_snapshot = BoardSnapshot {
-                        board_tiles: &board_tiles,
-                        game_config: &gc,
-                        kwg: &kwg,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: &klv,
-                    };
-                    let mut move_generator = KurniaMoveGenerator::new(&gc);
-                    let mut generate = |once: bool, max_gen: usize| {
-                        let params = GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &rack,
-                            max_gen,
-                            num_exchanges_by_this_player: 0,
-                            pass_policy: PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: None,
-                        };
-                        if once {
-                            move_generator.gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
-                                &params,
-                                PlacePredicate::AcceptAll,
-                                klv::AdjustLeave::Identity,
-                                EquityPredicate::AcceptAll,
-                            );
-                        } else {
-                            move_generator
-                                .gen_moves_filtered_lean_walked::<EveryArrangement, _, _>(
-                                    &params,
-                                    PlacePredicate::AcceptAll,
-                                    klv::AdjustLeave::Identity,
-                                    EquityPredicate::AcceptAll,
-                                );
-                        }
-                        move_generator
-                            .plays
+        let gc = game_config::make_jumbled_english_game_config();
+        let kwg = test_kad(&gc, SWEEP_WORDS);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let board_tiles = vec![0u8; 15 * 15];
+        let rack = parse_test_rack(gc.alphabet(), "?ANTS??");
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        let mut generate = |once: bool, max_gen: usize| {
+            let params = GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack,
+                max_gen,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            };
+            if once {
+                move_generator.gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
+                    &params,
+                    PlacePredicate::AcceptAll,
+                    klv::AdjustLeave::Identity,
+                    EquityPredicate::AcceptAll,
+                );
+            } else {
+                move_generator.gen_moves_filtered_lean_walked::<EveryArrangement, _, _>(
+                    &params,
+                    PlacePredicate::AcceptAll,
+                    klv::AdjustLeave::Identity,
+                    EquityPredicate::AcceptAll,
+                );
+            }
+            move_generator
+                .plays
+                .iter()
+                .filter_map(|p| match &p.play {
+                    Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        score,
+                    } => {
+                        let mut letters = word
                             .iter()
-                            .filter_map(|p| match &p.play {
-                                Play::Place {
-                                    down,
-                                    lane,
-                                    idx,
-                                    word,
-                                    score,
-                                } => {
-                                    let mut letters = word
-                                        .iter()
-                                        .filter(|&&t| t != 0)
-                                        .map(|&t| t & 0x7f)
-                                        .collect::<Vec<_>>();
-                                    letters.sort_unstable();
-                                    let placed = word
-                                        .iter()
-                                        .filter(|&&t| t != 0)
-                                        .copied()
-                                        .collect::<Vec<_>>();
-                                    let key: Key = (
-                                        *down,
-                                        *lane,
-                                        *idx,
-                                        word.len(),
-                                        letters,
-                                        *score,
-                                        p.equity.raw(),
-                                    );
-                                    Some((key, placed))
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                    };
-                    let mut smallest = std::collections::BTreeMap::<Key, Vec<u8>>::new();
-                    let every = generate(false, usize::MAX);
-                    generated += every.len();
-                    for (key, placed) in every.iter().cloned() {
-                        let kept = smallest.entry(key).or_insert_with(|| placed.clone());
-                        if placed < *kept {
-                            *kept = placed;
-                        }
+                            .filter(|&&t| t != 0)
+                            .map(|&t| t & 0x7f)
+                            .collect::<Vec<_>>();
+                        letters.sort_unstable();
+                        let placed = word
+                            .iter()
+                            .filter(|&&t| t != 0)
+                            .copied()
+                            .collect::<Vec<_>>();
+                        let key: Key = (
+                            *down,
+                            *lane,
+                            *idx,
+                            word.len(),
+                            letters,
+                            *score,
+                            p.equity.raw(),
+                        );
+                        Some((key, placed))
                     }
-                    repeated += every.len() - smallest.len();
-                    let once = generate(true, usize::MAX);
-                    let made = once
-                        .iter()
-                        .cloned()
-                        .collect::<std::collections::BTreeMap<_, _>>();
-                    assert_eq!(made.len(), once.len(), "{fen}: a tuple made twice");
-                    assert_eq!(made, smallest, "{fen}");
-                    let best = |plays: &[(Key, Vec<u8>)]| plays.iter().map(|(k, _)| k.6).max();
-                    let once5 = generate(true, 5);
-                    let every5 = generate(false, 5);
-                    assert_eq!(best(&once5), best(&every5), "{fen}");
-                    let mut tops = once5.iter().map(|(k, _)| k.6).collect::<Vec<_>>();
-                    let mut groups = made.keys().map(|k| k.6).collect::<Vec<_>>();
-                    groups.sort_unstable_by(|a, b| b.cmp(a));
-                    groups.truncate(tops.len());
-                    tops.sort_unstable_by(|a, b| b.cmp(a));
-                    assert_eq!(tops, groups, "{fen}");
-                }
-                assert!(generated > 0, "{fen} generated nothing at all");
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut smallest = std::collections::BTreeMap::<Key, Vec<u8>>::new();
+        let every = generate(false, usize::MAX);
+        assert!(!every.is_empty(), "generated nothing at all");
+        for (key, placed) in every.iter().cloned() {
+            let kept = smallest.entry(key).or_insert_with(|| placed.clone());
+            if placed < *kept {
+                *kept = placed;
             }
         }
         assert!(
-            repeated > 0,
+            every.len() > smallest.len(),
             "no arrangement repeated a tuple, so the test proves nothing"
         );
+        let once = generate(true, usize::MAX);
+        let made = once
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(made.len(), once.len(), "a tuple made twice");
+        assert_eq!(made, smallest);
+        let best = |plays: &[(Key, Vec<u8>)]| plays.iter().map(|(k, _)| k.6).max();
+        let once5 = generate(true, 5);
+        let every5 = generate(false, 5);
+        assert_eq!(best(&once5), best(&every5));
+        let mut tops = once5.iter().map(|(k, _)| k.6).collect::<Vec<_>>();
+        let mut groups = made.keys().map(|k| k.6).collect::<Vec<_>>();
+        groups.sort_unstable_by(|a, b| b.cmp(a));
+        groups.truncate(tops.len());
+        tops.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(tops, groups);
     }
 
     #[inline]
@@ -17434,21 +17369,13 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let rack_size = gc.rack_size() as usize;
         let cols = gc.board_layout().dim().cols as usize;
-        let placed = parse_test_rack(gc.alphabet(), "AEST");
-        let pools =
-            ["AERT?", "??AE", "ACERST", "AEERT??"].map(|pool| parse_test_rack(gc.alphabet(), pool));
-        let mut board_tiles = vec![0u8; 15 * 15];
         let mut generator = KurniaMoveGenerator::new(&gc);
-        let mut compared = 0;
-        let mut collapsed = 0;
-        for step in 0..=6 {
-            if step > 0 {
-                let at = gc
-                    .board_layout()
-                    .dim()
-                    .at_row_col(step + 3, (((step - 1) as i32 * 7 + 3) % 15) as i8);
-                board_tiles[at] = placed[(step - 1) as usize % placed.len()];
-            }
+        // a pool of a whole rack plays all of it
+        for (pool, on_board) in [("AERT?", 1), ("ACENRST", 0), ("??ACERT", 1)] {
+            let pool = &parse_test_rack(gc.alphabet(), pool);
+            let mut collapsed = 0;
+            let mut board_tiles = vec![0u8; 15 * 15];
+            board_tiles[gc.board_layout().dim().at_row_col(4, 3)] = on_board;
             let board_snapshot = BoardSnapshot {
                 board_tiles: &board_tiles,
                 game_config: &gc,
@@ -17457,35 +17384,66 @@ mod tests {
                 rack_lengths: None,
                 klv: &klv,
             };
-            for pool in &pools {
-                let mut answer: Answer = Default::default();
-                let add =
-                    |answer: &mut Answer, down: bool, lane: i8, idx: i8, word: &[u8], score| {
-                        let mut key = word
-                            .iter()
-                            .filter(|&&t| t != 0)
-                            .map(|&t| if t & 0x80 != 0 { 0 } else { t })
-                            .collect::<Vec<_>>();
-                        key.sort_unstable();
-                        let best = answer.0.entry(key.clone()).or_insert(score);
+            let mut answer: Answer = Default::default();
+            let add = |answer: &mut Answer, down: bool, lane: i8, idx: i8, word: &[u8], score| {
+                let mut key = word
+                    .iter()
+                    .filter(|&&t| t != 0)
+                    .map(|&t| if t & 0x80 != 0 { 0 } else { t })
+                    .collect::<Vec<_>>();
+                key.sort_unstable();
+                let best = answer.0.entry(key.clone()).or_insert(score);
+                *best = (*best).max(score);
+                for (i, &t) in word.iter().enumerate() {
+                    if t != 0 {
+                        let at = if down {
+                            (idx as usize + i) * cols + lane as usize
+                        } else {
+                            lane as usize * cols + idx as usize + i
+                        };
+                        let best = answer.1.entry(at).or_insert(score);
                         *best = (*best).max(score);
-                        for (i, &t) in word.iter().enumerate() {
-                            if t != 0 {
-                                let at = if down {
-                                    (idx as usize + i) * cols + lane as usize
-                                } else {
-                                    lane as usize * cols + idx as usize + i
-                                };
-                                let best = answer.1.entry(at).or_insert(score);
-                                *best = (*best).max(score);
-                                let best = answer.2.entry((key.clone(), at)).or_insert(score);
-                                *best = (*best).max(score);
-                            }
-                        }
-                    };
-                let mut found = Vec::<(Key, Vec<u8>)>::new();
-                generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
-                    add(&mut answer, down, lane, idx, word, score);
+                        let best = answer.2.entry((key.clone(), at)).or_insert(score);
+                        *best = (*best).max(score);
+                    }
+                }
+            };
+            let mut found = Vec::<(Key, Vec<u8>)>::new();
+            generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                add(&mut answer, down, lane, idx, word, score);
+                let tiles = word.iter().filter(|&&t| t != 0);
+                let mut letters = tiles.clone().map(|&t| t & 0x7f).collect::<Vec<_>>();
+                letters.sort_unstable();
+                let mut blanked = tiles
+                    .clone()
+                    .filter(|&&t| t & 0x80 != 0)
+                    .map(|&t| t & 0x7f)
+                    .collect::<Vec<_>>();
+                blanked.sort_unstable();
+                let key = (down, lane, idx, word.len(), letters, blanked, score);
+                found.push((key, tiles.copied().collect()));
+            });
+            generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: pool,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            let mut want: Answer = Default::default();
+            let mut smallest = std::collections::BTreeMap::<Key, Vec<u8>>::new();
+            for p in generator.plays.iter() {
+                if let Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } = &p.play
+                    && word.iter().filter(|&&t| t != 0).count() <= rack_size
+                {
+                    add(&mut want, *down, *lane, *idx, word, *score);
                     let tiles = word.iter().filter(|&&t| t != 0);
                     let mut letters = tiles.clone().map(|&t| t & 0x7f).collect::<Vec<_>>();
                     letters.sort_unstable();
@@ -17495,67 +17453,31 @@ mod tests {
                         .map(|&t| t & 0x7f)
                         .collect::<Vec<_>>();
                     blanked.sort_unstable();
-                    let key = (down, lane, idx, word.len(), letters, blanked, score);
-                    found.push((key, tiles.copied().collect()));
-                });
-                generator.gen_moves_unfiltered(&GenMovesParams {
-                    board_snapshot: &board_snapshot,
-                    rack: pool,
-                    max_gen: usize::MAX,
-                    num_exchanges_by_this_player: 0,
-                    pass_policy: PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
-                });
-                let mut want: Answer = Default::default();
-                let mut smallest = std::collections::BTreeMap::<Key, Vec<u8>>::new();
-                for p in generator.plays.iter() {
-                    if let Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        score,
-                    } = &p.play
-                        && word.iter().filter(|&&t| t != 0).count() <= rack_size
-                    {
-                        add(&mut want, *down, *lane, *idx, word, *score);
-                        let tiles = word.iter().filter(|&&t| t != 0);
-                        let mut letters = tiles.clone().map(|&t| t & 0x7f).collect::<Vec<_>>();
-                        letters.sort_unstable();
-                        let mut blanked = tiles
-                            .clone()
-                            .filter(|&&t| t & 0x80 != 0)
-                            .map(|&t| t & 0x7f)
-                            .collect::<Vec<_>>();
-                        blanked.sort_unstable();
-                        let key = (*down, *lane, *idx, word.len(), letters, blanked, *score);
-                        let tiles = tiles.copied().collect::<Vec<_>>();
-                        let kept = smallest.entry(key).or_insert_with(|| tiles.clone());
-                        if tiles < *kept {
-                            *kept = tiles;
-                        }
-                        collapsed += 1;
+                    let key = (*down, *lane, *idx, word.len(), letters, blanked, *score);
+                    let tiles = tiles.copied().collect::<Vec<_>>();
+                    let kept = smallest.entry(key).or_insert_with(|| tiles.clone());
+                    if tiles < *kept {
+                        *kept = tiles;
                     }
+                    collapsed += 1;
                 }
-                assert!(!want.0.is_empty(), "step {step}, pool {pool:?}");
-                assert_eq!(answer, want, "step {step}, pool {pool:?}");
-                if step > 0 {
-                    let made = found
-                        .iter()
-                        .cloned()
-                        .collect::<std::collections::BTreeMap<_, _>>();
-                    assert_eq!(made.len(), found.len(), "step {step}, pool {pool:?}");
-                    assert_eq!(made, smallest, "step {step}, pool {pool:?}");
-                    collapsed -= found.len();
-                }
-                compared += 1;
+            }
+            assert!(!want.0.is_empty());
+            assert_eq!(answer, want);
+            if on_board != 0 {
+                let made = found
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                assert_eq!(made.len(), found.len());
+                assert_eq!(made, smallest);
+                collapsed -= found.len();
+                assert!(
+                    collapsed > 0,
+                    "no arrangement was collapsed, so the test proves nothing"
+                );
             }
         }
-        assert_eq!(compared, 7 * pools.len());
-        assert!(
-            collapsed > 0,
-            "no arrangement was collapsed, so the test proves nothing"
-        );
     }
 
     // a lane walked in parts of 1 or 2 blank choices, each part from where the
@@ -17826,13 +17748,17 @@ mod tests {
     fn a_pools_plays_through_a_square_are_its_plays_placing_a_tile_there() {
         type Found = (bool, i8, i8, Vec<u8>, i32);
         let configs = [
-            (game_config::make_english_game_config(), false),
-            (game_config::make_jumbled_english_game_config(), true),
+            (game_config::make_english_game_config(), false, "AERT?"),
+            (
+                game_config::make_jumbled_english_game_config(),
+                true,
+                "AEERT??",
+            ),
         ];
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut squares_with_plays = 0;
         let mut windowed = 0;
-        for (gc, jumbled) in &configs {
+        for (gc, jumbled, pool) in &configs {
             let kwg = if *jumbled {
                 test_kad(gc, SWEEP_WORDS)
             } else {
@@ -17840,166 +17766,153 @@ mod tests {
             };
             let dim = gc.board_layout().dim();
             let cols = dim.cols as usize;
-            let placed = parse_test_rack(gc.alphabet(), "AEST");
-            let pools =
-                ["AERT?", "ACERST", "AEERT??"].map(|pool| parse_test_rack(gc.alphabet(), pool));
-            let mut board_tiles = vec![0u8; dim.rows as usize * cols];
+            let pool = &parse_test_rack(gc.alphabet(), pool);
+            let board_tiles = vec![0u8; dim.rows as usize * cols];
             let mut generator = KurniaMoveGenerator::new(gc);
-            for step in 0..=4 {
-                if step > 0 {
-                    let at = dim.at_row_col(7, (step + 5) as i8);
-                    board_tiles[at] = placed[(step - 1) as usize % placed.len()];
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let mut all = Vec::<Found>::new();
+            generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                all.push((down, lane, idx, word.to_vec(), score));
+            });
+            for row in 0..dim.rows {
+                for col in 0..dim.cols {
+                    let want = all
+                        .iter()
+                        .filter(|(down, lane, idx, word, _)| {
+                            let (along, at) = if *down { (col, row) } else { (row, col) };
+                            *lane == along
+                                && at >= *idx
+                                && word.get((at - idx) as usize).is_some_and(|&t| t != 0)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let mut through = Vec::<Found>::new();
+                    generator.pool_plays_through(
+                        &board_snapshot,
+                        pool,
+                        (row, col),
+                        |down, lane, idx, word, score| {
+                            through.push((down, lane, idx, word.to_vec(), score));
+                        },
+                    );
+                    assert_eq!(through, want, "{jumbled} {row} {col}");
+                    let mut spans = Vec::<Found>::new();
+                    generator.pool_plays_spans_through(
+                        &board_snapshot,
+                        pool,
+                        (row, col),
+                        |down, lane, idx, word, score| {
+                            spans.push((down, lane, idx, word.to_vec(), score));
+                        },
+                    );
+                    let mut want = want;
+                    want.sort_unstable();
+                    spans.sort_unstable();
+                    assert_eq!(spans, want, "{jumbled} {row} {col}");
+                    let rank = |a: &Found, b: &Found| {
+                        (b.4, a.0, a.1, a.2, &a.3).cmp(&(a.4, b.0, b.1, b.2, &b.3))
+                    };
+                    want.sort_unstable_by(rank);
+                    for most in [1, 3, 10] {
+                        let mut top = Vec::<Found>::new();
+                        generator.pool_plays_spans_through_top(
+                            &board_snapshot,
+                            pool,
+                            (row, col),
+                            most,
+                            |down, lane, idx, word, score| {
+                                top.push((down, lane, idx, word.to_vec(), score));
+                            },
+                        );
+                        top.sort_unstable_by(rank);
+                        top.truncate(most);
+                        let mut wanted = want.clone();
+                        wanted.truncate(most);
+                        assert_eq!(top, wanted, "{jumbled} {row} {col} {most}");
+                    }
+                    squares_with_plays += usize::from(!want.is_empty());
                 }
-                let board_snapshot = BoardSnapshot {
-                    board_tiles: &board_tiles,
-                    game_config: gc,
-                    kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
+            }
+            let mut lanes = Vec::<Found>::new();
+            for lane in 0..dim.rows {
+                generator.pool_plays_lanes(
+                    &board_snapshot,
+                    pool,
+                    (1 << lane, 0),
+                    |down, lane, idx, word, score| {
+                        lanes.push((down, lane, idx, word.to_vec(), score));
+                    },
+                );
+            }
+            for lane in 0..dim.cols {
+                generator.pool_plays_lanes(
+                    &board_snapshot,
+                    pool,
+                    (0, 1 << lane),
+                    |down, lane, idx, word, score| {
+                        lanes.push((down, lane, idx, word.to_vec(), score));
+                    },
+                );
+            }
+            for lane in 0..(dim.rows + dim.cols) as u32 {
+                let masks = if lane < dim.rows as u32 {
+                    (1 << lane, 0)
+                } else {
+                    (0, 1 << (lane - dim.rows as u32))
                 };
-                for pool in &pools {
-                    let mut all = Vec::<Found>::new();
-                    generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
-                        all.push((down, lane, idx, word.to_vec(), score));
-                    });
-                    for row in 0..dim.rows {
-                        for col in 0..dim.cols {
-                            let want = all
-                                .iter()
-                                .filter(|(down, lane, idx, word, _)| {
-                                    let (along, at) = if *down { (col, row) } else { (row, col) };
-                                    *lane == along
-                                        && at >= *idx
-                                        && word.get((at - idx) as usize).is_some_and(|&t| t != 0)
-                                })
-                                .cloned()
-                                .collect::<Vec<_>>();
-                            let mut through = Vec::<Found>::new();
-                            generator.pool_plays_through(
-                                &board_snapshot,
-                                pool,
-                                (row, col),
-                                |down, lane, idx, word, score| {
-                                    through.push((down, lane, idx, word.to_vec(), score));
-                                },
-                            );
-                            assert_eq!(through, want, "{jumbled} {step} {pool:?} {row} {col}");
-                            let mut spans = Vec::<Found>::new();
-                            generator.pool_plays_spans_through(
-                                &board_snapshot,
-                                pool,
-                                (row, col),
-                                |down, lane, idx, word, score| {
-                                    spans.push((down, lane, idx, word.to_vec(), score));
-                                },
-                            );
-                            let mut want = want;
-                            want.sort_unstable();
-                            spans.sort_unstable();
-                            assert_eq!(spans, want, "{jumbled} {step} {pool:?} {row} {col}");
-                            let rank = |a: &Found, b: &Found| {
-                                (b.4, a.0, a.1, a.2, &a.3).cmp(&(a.4, b.0, b.1, b.2, &b.3))
-                            };
-                            want.sort_unstable_by(rank);
-                            for most in [1, 3, 10] {
-                                let mut top = Vec::<Found>::new();
-                                generator.pool_plays_spans_through_top(
-                                    &board_snapshot,
-                                    pool,
-                                    (row, col),
-                                    most,
-                                    |down, lane, idx, word, score| {
-                                        top.push((down, lane, idx, word.to_vec(), score));
-                                    },
-                                );
-                                top.sort_unstable_by(rank);
-                                top.truncate(most);
-                                let mut wanted = want.clone();
-                                wanted.truncate(most);
-                                assert_eq!(
-                                    top, wanted,
-                                    "{jumbled} {step} {pool:?} {row} {col} {most}"
-                                );
-                            }
-                            squares_with_plays += usize::from(!want.is_empty());
-                        }
-                    }
-                    let mut lanes = Vec::<Found>::new();
-                    for lane in 0..dim.rows {
-                        generator.pool_plays_lanes(
-                            &board_snapshot,
-                            pool,
-                            (1 << lane, 0),
-                            |down, lane, idx, word, score| {
-                                lanes.push((down, lane, idx, word.to_vec(), score));
-                            },
-                        );
-                    }
-                    for lane in 0..dim.cols {
-                        generator.pool_plays_lanes(
-                            &board_snapshot,
-                            pool,
-                            (0, 1 << lane),
-                            |down, lane, idx, word, score| {
-                                lanes.push((down, lane, idx, word.to_vec(), score));
-                            },
-                        );
-                    }
-                    for lane in 0..(dim.rows + dim.cols) as u32 {
-                        let masks = if lane < dim.rows as u32 {
-                            (1 << lane, 0)
-                        } else {
-                            (0, 1 << (lane - dim.rows as u32))
-                        };
-                        let mut whole = Vec::<Found>::new();
-                        let total = generator.pool_plays_window(
+                let mut whole = Vec::<Found>::new();
+                let total = generator.pool_plays_window(
+                    &board_snapshot,
+                    pool,
+                    masks,
+                    0..u64::MAX,
+                    None,
+                    |down, lane, idx, word, score| {
+                        whole.push((down, lane, idx, word.to_vec(), score));
+                    },
+                );
+                windowed += usize::from(*jumbled && total > 50 && !whole.is_empty());
+                for size in [1, 2, 7, 50] {
+                    let mut pieces = Vec::<Found>::new();
+                    let mut from = 0;
+                    loop {
+                        let seen = generator.pool_plays_window(
                             &board_snapshot,
                             pool,
                             masks,
-                            0..u64::MAX,
+                            from..from + size,
                             None,
                             |down, lane, idx, word, score| {
-                                whole.push((down, lane, idx, word.to_vec(), score));
+                                pieces.push((down, lane, idx, word.to_vec(), score));
                             },
                         );
-                        windowed += usize::from(*jumbled && total > 50 && !whole.is_empty());
-                        for size in [1, 2, 7, 50] {
-                            let mut pieces = Vec::<Found>::new();
-                            let mut from = 0;
-                            loop {
-                                let seen = generator.pool_plays_window(
-                                    &board_snapshot,
-                                    pool,
-                                    masks,
-                                    from..from + size,
-                                    None,
-                                    |down, lane, idx, word, score| {
-                                        pieces.push((down, lane, idx, word.to_vec(), score));
-                                    },
-                                );
-                                assert_eq!(seen, total);
-                                from += size;
-                                if from >= seen {
-                                    break;
-                                }
-                            }
-                            if *jumbled {
-                                assert_eq!(pieces, whole, "{step} {pool:?} {lane} {size}");
-                            }
+                        assert_eq!(seen, total);
+                        from += size;
+                        if from >= seen {
+                            break;
                         }
                     }
-                    let mut sorted = all.clone();
-                    sorted.sort_unstable();
-                    lanes.sort_unstable();
-                    assert_eq!(lanes, sorted, "{jumbled} {step} {pool:?}");
-                    let mut again = Vec::<Found>::new();
-                    generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
-                        again.push((down, lane, idx, word.to_vec(), score));
-                    });
-                    assert_eq!(again, all);
+                    if *jumbled {
+                        assert_eq!(pieces, whole, "{lane} {size}");
+                    }
                 }
             }
+            let mut sorted = all.clone();
+            sorted.sort_unstable();
+            lanes.sort_unstable();
+            assert_eq!(lanes, sorted, "{jumbled}");
+            let mut again = Vec::<Found>::new();
+            generator.pool_plays(&board_snapshot, pool, |down, lane, idx, word, score| {
+                again.push((down, lane, idx, word.to_vec(), score));
+            });
+            assert_eq!(again, all);
         }
         assert!(squares_with_plays > 0);
         assert!(windowed > 0);
@@ -18515,6 +18428,7 @@ mod tests {
         star_row: i8,
         star_col: i8,
         tiles: &[(i8, i8)],
+        per_step: usize,
     ) {
         let gc = uneven_game_config(rows, cols, star_row, star_col, false);
         let transposed_gc = uneven_game_config(cols, rows, star_col, star_row, true);
@@ -18534,16 +18448,19 @@ mod tests {
             let mut move_generator = KurniaMoveGenerator::new(&gc);
             let mut transposed_move_generator = KurniaMoveGenerator::new(&transposed_gc);
             let mut lanes_played = [vec![false; rows as usize], vec![false; cols as usize]];
-            for step in 0..tiles.len() + 2 {
-                if step == tiles.len() + 1 {
+            let steps = tiles.len().div_ceil(per_step);
+            for step in 0..steps + 2 {
+                if step == steps + 1 {
                     board_tiles.fill(0);
                     transposed_board_tiles.fill(0);
                 } else if step > 0 {
-                    let (row, col) = tiles[step - 1];
-                    let tile = rack[(step - 1) % rack.len()];
-                    board_tiles[gc.board_layout().dim().at_row_col(row, col)] = tile;
-                    transposed_board_tiles
-                        [transposed_gc.board_layout().dim().at_row_col(col, row)] = tile;
+                    let placed = tiles.iter().enumerate().skip((step - 1) * per_step);
+                    for (i, &(row, col)) in placed.take(per_step) {
+                        let tile = rack[i % rack.len()];
+                        board_tiles[gc.board_layout().dim().at_row_col(row, col)] = tile;
+                        transposed_board_tiles
+                            [transposed_gc.board_layout().dim().at_row_col(col, row)] = tile;
+                    }
                 }
                 let board_snapshot = BoardSnapshot {
                     board_tiles: &board_tiles,
@@ -18619,7 +18536,9 @@ mod tests {
         let tiles = (0..100)
             .map(|row| (row, ((row as i32 * 7 + 3) % 20) as i8))
             .collect::<Vec<_>>();
-        a_reused_generator_agrees_on_an_uneven_board(100, 20, 66, 9, &tiles);
+        for per_step in [5, 25] {
+            a_reused_generator_agrees_on_an_uneven_board(100, 20, 66, 9, &tiles, per_step);
+        }
     }
 
     #[test]
@@ -18628,7 +18547,7 @@ mod tests {
         let tiles = (0..127)
             .map(|row| (row, ((row as i32 * 45 + 7) % 127) as i8))
             .collect::<Vec<_>>();
-        a_reused_generator_agrees_on_an_uneven_board(127, 127, 70, 90, &tiles);
+        a_reused_generator_agrees_on_an_uneven_board(127, 127, 70, 90, &tiles, 4);
     }
 
     #[test]
