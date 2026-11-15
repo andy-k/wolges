@@ -1421,8 +1421,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     searched: u64,      // this solve's nodes, for progress
     cut_short: bool,    // a limit stopped this pass
     movegen_cut: bool,
-    memory_cut: bool, // the memory limit, not time nor states, stopped this solve
-    progress: Option<ProgressFn>,
+    memory_cut: bool,    // the memory limit, not time nor states, stopped this solve
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
     in_bag_moves: Option<(usize, usize)>, // and its root's moves valued, of all
     at_root: bool,       // the next node searched is the root of a pass
@@ -1489,7 +1488,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             cut_short: false,
             movegen_cut: false,
             memory_cut: false,
-            progress: None,
             in_bag: None,
             in_bag_moves: None,
             at_root: false,
@@ -1553,7 +1551,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             cut_short,
             movegen_cut,
             memory_cut,
-            progress,
             in_bag,
             in_bag_moves,
             at_root,
@@ -1593,7 +1590,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         *cut_short = false;
         *movegen_cut = false;
         *memory_cut = false;
-        *progress = None;
         *in_bag = None;
         *in_bag_moves = None;
         *at_root = false;
@@ -2143,7 +2139,8 @@ pub struct EndgameSolver<
     racks: [Vec<u8>; 2],
     scoreless: [u8; 2], // the passes and the zeros before the position to solve
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
-    kept_sub: Option<Box<Self>>, // the bag searches' solver, kept from call to call
+    progress: Option<ProgressFn>, // its listener, apart from the buffer
+    kept_sub: Option<Box<Self>>,  // the bag searches' solver, kept from call to call
     kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // and their generator
 }
 
@@ -2201,9 +2198,23 @@ impl<
             racks: [Vec::new(), Vec::new()],
             scoreless: [0, 0],
             work_buffer: WorkBuffer::new(movegen, run_letter_bits),
+            progress: None,
             kept_sub: None,
             kept_mg: None,
         })
+    }
+
+    // the solver as with_generator made it, for one kept from search to
+    // search, what it holds of its generator and its lists kept
+    // (WorkBuffer::renew)
+    #[inline]
+    fn renew(&mut self) {
+        self.board_tiles.clear();
+        self.racks[0].clear();
+        self.racks[1].clear();
+        self.scoreless = [0, 0];
+        self.progress = None;
+        self.work_buffer.renew();
     }
 
     // the solver of this one's bag searches, made at the first and kept for
@@ -2213,11 +2224,7 @@ impl<
     fn take_sub(&mut self) -> error::Returns<Box<Self>> {
         Ok(match self.kept_sub.take() {
             Some(mut sub) => {
-                sub.board_tiles.clear();
-                sub.racks[0].clear();
-                sub.racks[1].clear();
-                sub.scoreless = [0, 0];
-                sub.work_buffer.renew();
+                sub.renew();
                 sub
             }
             None => Box::new(Self::with_generator(
@@ -2484,7 +2491,7 @@ impl<
             return best as f32;
         }
         // timed only while something listens
-        let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
+        let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
         gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             &mut work_buffer.movegen,
             work_buffer.run_letter_bits.as_deref(),
@@ -2833,7 +2840,7 @@ impl<
                     }
                 }
                 // timed only while something listens
-                let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
+                let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
                 // its walks' rack is the whole pool, so its leaves' table is
                 // held to the pool's budget, and to the bound others keep
                 let budget = lane_pool.deal.budget;
@@ -2877,7 +2884,7 @@ impl<
                 (walk_rows, walk_cols)
             };
             // timed only while something listens
-            let t1 = (work_buffer.progress.is_some()).then(|| Started::now(work_buffer.clock));
+            let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
             work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 &mut work_buffer.movegen,
                 work_buffer.run_letter_bits.as_deref(),
@@ -3414,9 +3421,9 @@ impl<
         progress: impl FnMut(&Progress) -> error::Returns<()> + 'static,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let before = self.work_buffer.progress.replace(Box::new(progress));
+        let before = self.progress.replace(Box::new(progress));
         let made = f(self);
-        self.work_buffer.progress = before;
+        self.progress = before;
         made
     }
 
@@ -3868,7 +3875,7 @@ impl<
         let root = root.unwrap_or_else(|| std::mem::take(&mut self.work_buffer.at_root));
 
         // the listener, if any, hears every node
-        if self.work_buffer.progress.is_some() {
+        if self.progress.is_some() {
             self.report(None)?;
         }
         self.work_buffer.searched += 1;
@@ -4540,7 +4547,7 @@ impl<
     #[inline]
     fn report(&mut self, value: Option<equity::Equity>) -> error::Returns<()> {
         let work_buffer = &mut self.work_buffer;
-        match work_buffer.progress.as_mut() {
+        match self.progress.as_mut() {
             Some(progress_fn) => progress_fn(&Progress {
                 endgames: work_buffer.in_bag,
                 moves: work_buffer.in_bag_moves,
@@ -4562,7 +4569,7 @@ impl<
         bag_tile: u8,
     ) -> error::Returns<equity::Equity> {
         self.work_buffer.clock = Limits::NONE.clock;
-        let limits = BagLimits::new(&Limits::NONE, self.work_buffer.progress.take());
+        let limits = BagLimits::new(&Limits::NONE, self.progress.take());
         let mut exact = true;
         let value = self.one_in_bag(
             player_idx,
@@ -4571,7 +4578,7 @@ impl<
             &mut exact,
             &mut BagTable::default(),
         );
-        self.work_buffer.progress = limits.progress.take();
+        self.progress = limits.progress.take();
         value
     }
 
@@ -4610,7 +4617,7 @@ impl<
         work_buffer.dur_movegen = limits.dur_movegen.get();
         work_buffer.in_bag = Some(limits.endgames.get());
         work_buffer.in_bag_moves = limits.moves.get();
-        work_buffer.progress = limits.progress.take();
+        self.progress = limits.progress.take();
         work_buffer.depth_cap = limits.depth.get();
         let solved = self.run_id_loop_below(
             player_idx,
@@ -4628,7 +4635,7 @@ impl<
         limits.dur_movegen.set(work_buffer.dur_movegen);
         limits.endgames.set(limits.endgames.get() + 1);
         limits.nodes.set(limits.nodes.get() + work_buffer.searched);
-        limits.progress.set(work_buffer.progress.take());
+        limits.progress.set(self.progress.take());
         work_buffer.in_bag = None;
         work_buffer.in_bag_moves = None;
         work_buffer.depth_cap = COMPLETE;
@@ -5230,7 +5237,7 @@ impl<
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
         self.work_buffer.clock = limits.clock;
-        let limits = BagLimits::new(limits, self.work_buffer.progress.take());
+        let limits = BagLimits::new(limits, self.progress.take());
 
         // the search's lane pool, kept with its progress between solves
         std::mem::swap(&mut self.work_buffer.lane_pool, &mut progress.lanes);
@@ -5242,7 +5249,7 @@ impl<
             self.peg_committed_no_exchange(progress, &limits)
         };
         std::mem::swap(&mut self.work_buffer.lane_pool, &mut progress.lanes);
-        self.work_buffer.progress = limits.progress.take();
+        self.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
         progress.nodes += limits.nodes.get();
         let mut result = result?;
@@ -5295,7 +5302,7 @@ impl<
             return Ok(Err(PegUnsupported::PassWithoutForcedEnd));
         }
         self.work_buffer.clock = limits.clock;
-        let mut limits = BagLimits::new(limits, self.work_buffer.progress.take());
+        let mut limits = BagLimits::new(limits, self.progress.take());
         limits.estimates = progress.estimates;
         let mut sub = self.take_sub()?;
         let mut mg = self.take_mg();
@@ -5326,7 +5333,7 @@ impl<
         self.swap_tables(&mut sub)?;
         self.kept_sub = Some(sub);
         self.kept_mg = Some(mg);
-        self.work_buffer.progress = limits.progress.take();
+        self.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
         progress.nodes += limits.nodes.get();
         Ok(Ok(result?))
