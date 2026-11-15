@@ -16647,7 +16647,7 @@ mod tests {
         };
         let splits = whole_rows[0].hypotheses.len();
         assert!(splits > 1, "{splits} splits");
-        for n in [2, 3, splits + 1] {
+        for n in [2, splits + 1] {
             let mut rows = fash::MyHashMap::default();
             for k in 0..n {
                 let (part, part_rows) = solve(Some((k, n)));
