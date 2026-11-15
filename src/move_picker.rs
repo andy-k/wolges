@@ -173,6 +173,17 @@ fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+// where in [0, 1) the iteration's stratum is picked: steps of the golden ratio
+// from a start the decision seed sets, so any run of iterations meets each
+// stratum about as often as its chance
+#[inline(always)]
+pub fn stratum_at(decision_seed: u64, sim_iter: u64) -> f64 {
+    let bits = f64::MANTISSA_DIGITS;
+    let start = (mix(decision_seed, 0) >> (u64::BITS - bits)) as f64 / (1u64 << bits) as f64;
+    let step = (5f64.sqrt() - 1.0) / 2.0;
+    (start + sim_iter as f64 * step).fract()
+}
+
 // how many iterations apart the looks that retire candidates come
 pub const PRUNE_CADENCE: u64 = 16;
 
@@ -599,7 +610,7 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
         for sim_iter in lo + 1..=hi {
             simmer.restore_prepared(pristine);
             simmer.reseed(mix(self.decision_seed, sim_iter));
-            simmer.prepare_iteration();
+            simmer.prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)));
             for play in plays {
                 let (value, sim_spread, win_prob) = match self.late_graph {
                     Some((kwg, arm_tables)) => rollout_objective(
@@ -2034,7 +2045,8 @@ impl<
             self.iters_done = sim_iter;
             self.simmer.restore_prepared(&self.prepared_pristine);
             self.simmer.reseed(mix(self.decision_seed, sim_iter));
-            self.simmer.prepare_iteration();
+            self.simmer
+                .prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)));
             for candidate in candidates.iter_mut() {
                 let play = &move_generator.plays[candidate.play_index].play;
                 let (value, sim_spread, win_prob) = match &self.late_graph {
