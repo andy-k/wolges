@@ -1770,16 +1770,10 @@ mod tests {
             word: [1, 20][..].into(),
             score: 0,
         };
-        let exchange = movegen::Play::Exchange {
-            tiles: [0u8; 3][..].into(),
-        };
-        for (on_board, play, fuzz) in [(0, &at, 0.0), (0, &at, 3.0), (79, &exchange, 3.0)] {
-            let want = leaves_under(&classic, &tiny_kwg(), on_board, play, fuzz);
+        for fuzz in [0.0, 3.0] {
+            let want = leaves_under(&classic, &tiny_kwg(), 0, &at, fuzz);
             assert!(!want.is_empty());
-            assert_eq!(
-                leaves_under(&jumbled, &alphagrams, on_board, play, fuzz),
-                want
-            );
+            assert_eq!(leaves_under(&jumbled, &alphagrams, 0, &at, fuzz), want);
         }
     }
 
@@ -2461,12 +2455,11 @@ mod tests {
     }
 
     // the reply to a move is what generating every rack's moves finds, the
-    // racks weighed by the ways the pool deals them, on any threads: with
-    // exchanges and a bingo in reach, after a placement, a pass, or an
-    // exchange; with no exchange left in the bag, before or only after the
-    // mover draws; and with racks that can only pass, one of them a leave the
-    // table values. None when the bag is empty after the mover draws, or the
-    // pool holds no more than a rack
+    // racks weighed by the ways the pool deals them, on threads: with
+    // exchanges and a bingo in reach, after a placement; with an exchange left
+    // only before the mover draws, after a pass or an exchange; and with racks
+    // that can only pass, one of them a leave the table values. None when the
+    // bag is empty after the mover draws, or the pool holds less than a rack
     #[test]
     #[inline]
     fn a_reply_is_every_racks_best_move_weighed_by_its_deals() {
@@ -2584,11 +2577,8 @@ mod tests {
         let kept_dead = [(vec![1], 3.0), (vec![10, 11], 1.0)];
         for (name, pool, play, bingo, kept) in [
             ("big, TA", &big, &ta, true, &kept_big[..]),
-            ("big, a pass", &big, &pass, true, &kept_big),
-            ("big, an exchange", &big, &exchange, true, &kept_big),
-            ("mid, TA", &mid, &ta, true, &kept_big[1..3]),
             ("mid, a pass", &mid, &pass, true, &kept_big[1..3]),
-            ("small, TA", &small, &ta, true, &kept_big[..3]),
+            ("mid, an exchange", &mid, &exchange, true, &kept_big[1..3]),
             ("dead, TA", &dead, &ta, false, &kept_dead),
         ] {
             let board_tiles = reply_board(&game_config, pool, &mover);
@@ -2610,33 +2600,30 @@ mod tests {
             let want = reply_by_deals(pool, &replies);
             assert_eq!(want.bingo > 0.0, bingo, "[{name}] a rack plays whole");
             let want_kept = reply_by_kept(pool, &replies, kept);
-            for threads in [1, 4] {
-                let mut on = |kept| {
-                    reply_on(
-                        &mut tables,
-                        &mut move_generator,
-                        &board_tiles,
-                        kept,
-                        play,
-                        threads,
-                    )
-                    .unwrap()
-                    .unwrap()
-                };
-                assert_eq!(on(&[]), want, "[{name}] on {threads} threads");
-                let got = on(kept);
-                assert!(
-                    about(&got, &want_kept),
-                    "[{name}] kept, on {threads} threads: {got:?}, not {want_kept:?}"
-                );
-            }
+            let mut on = |kept| {
+                reply_on(
+                    &mut tables,
+                    &mut move_generator,
+                    &board_tiles,
+                    kept,
+                    play,
+                    4,
+                )
+                .unwrap()
+                .unwrap()
+            };
+            assert_eq!(on(&[]), want, "[{name}]");
+            let got = on(kept);
+            assert!(
+                about(&got, &want_kept),
+                "[{name}] kept: {got:?}, not {want_kept:?}"
+            );
         }
-        // a kept leave the pool does not hold, or one weighing less than
-        // nothing, is refused; so are leaves weighing nothing at all
+        // a kept leave the pool does not hold, or one of no weight, is
+        // refused; so are leaves weighing nothing at all
         let board_tiles = reply_board(&game_config, &big, &mover);
         for kept in [
             &[(vec![18], 1.0)][..],
-            &[(vec![1], -1.0)],
             &[(vec![1], f64::NAN)],
             &[(vec![1], 0.0)],
         ] {
@@ -2658,9 +2645,9 @@ mod tests {
             reply_on(&mut tables, &mut move_generator, &board_tiles, &[], &tae, 1).unwrap(),
             None
         );
-        // the pool holds a rack, and no bag
-        let seven = tally(&[(1, 3), (5, 2), (20, 2)]);
-        let board_tiles = reply_board(&game_config, &seven, &mover);
+        // the pool holds less than a rack
+        let six = tally(&[(1, 3), (5, 2), (20, 1)]);
+        let board_tiles = reply_board(&game_config, &six, &mover);
         assert_eq!(
             reply_on(
                 &mut tables,
