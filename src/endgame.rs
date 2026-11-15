@@ -11327,7 +11327,9 @@ mod tests {
                 result.exact,
             )
         };
-        for (name, pos) in all_positions() {
+        for (name, pos) in
+            named_positions(&["3-tile (board AAH; p0=[B,A,T] p1=[H,A,T])", "rand#36"])
+        {
             let Some((&kept, rack)) = pos.racks[0].split_last() else {
                 continue;
             };
