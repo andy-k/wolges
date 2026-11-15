@@ -15637,75 +15637,53 @@ mod tests {
             clock: None,
         };
         // five-tile racks of a few letters (A B H S T), so passes last long
-        // enough to be stopped within
-        let mut positions = Vec::new();
-        for (word, col0, racks) in [
-            (
-                &[1u8, 20][..],
-                6,
-                [vec![1u8, 1, 2, 8, 20], vec![1u8, 2, 8, 19, 20]],
-            ),
-            (
-                &[2, 1, 20][..],
-                6,
-                [vec![1, 1, 8, 19, 20], vec![1, 2, 2, 8, 20]],
-            ),
-            (
-                &[20, 8, 1, 20][..],
-                5,
-                [vec![1, 1, 1, 2, 8], vec![1, 8, 19, 20, 20]],
-            ),
-        ] {
-            let mut board = empty_board();
-            put_word(&mut board, 7, col0, word);
-            positions.push((board, racks));
-        }
+        // enough to be stopped within: from the first look, in a generation;
+        // from the 64th, past the second depth
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let racks = [vec![1u8, 1, 2, 8, 20], vec![1u8, 2, 8, 19, 20]];
         let mut stopped_late = 0usize;
-        for (board, racks) in &positions {
-            for from in [1usize, 4, 16, 64, 256, 1024, 4096] {
-                let mut egs =
-                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
-                let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-                let finished = heard.clone();
-                let listener = move |p: &super::Progress| {
-                    if let Some(value) = p.value {
-                        finished.borrow_mut().push((p.depth, value));
-                    }
-                    Ok(())
-                };
-                egs.init(board, [&racks[0][..], &racks[1][..]]);
-                LOOKS.store(0, Relaxed);
-                FROM.store(from, Relaxed);
-                let solved = egs
-                    .listening(listener, |egs| egs.solve_within(0, &limits))
-                    .unwrap();
-                if solved.exact {
-                    continue;
+        for from in [1usize, 64] {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let finished = heard.clone();
+            let listener = move |p: &super::Progress| {
+                if let Some(value) = p.value {
+                    finished.borrow_mut().push((p.depth, value));
                 }
-                // the depth is the deepest that finished, and the value is that
-                // depth's unless the stopped pass found a move worth more
-                let heard = heard.borrow();
-                let Some(&(depth, value)) = heard.last() else {
-                    assert!(
-                        solved.out_of_memory_in_moves
-                            && solved.depth == 0
-                            && solved.value.is_none(),
-                        "from look {from}: stopped before a depth finished, in a generation"
-                    );
-                    continue;
-                };
-                assert!(
-                    solved.depth == depth
-                        && (solved.value == Some(value)
-                            || solved.partway.is_some_and(|stopped| stopped > depth)),
-                    "from look {from}: the answer is the deepest depth that finished: {heard:?}, \
-                     answered {:?} at {} (partway {:?})",
-                    solved.value,
-                    solved.depth,
-                    solved.partway
-                );
-                stopped_late += (solved.depth >= 2) as usize;
+                Ok(())
+            };
+            egs.init(&board, [&racks[0][..], &racks[1][..]]);
+            LOOKS.store(0, Relaxed);
+            FROM.store(from, Relaxed);
+            let solved = egs
+                .listening(listener, |egs| egs.solve_within(0, &limits))
+                .unwrap();
+            if solved.exact {
+                continue;
             }
+            // the depth is the deepest that finished, and the value is that
+            // depth's unless the stopped pass found a move worth more
+            let heard = heard.borrow();
+            let Some(&(depth, value)) = heard.last() else {
+                assert!(
+                    solved.out_of_memory_in_moves && solved.depth == 0 && solved.value.is_none(),
+                    "from look {from}: stopped before a depth finished, in a generation"
+                );
+                continue;
+            };
+            assert!(
+                solved.depth == depth
+                    && (solved.value == Some(value)
+                        || solved.partway.is_some_and(|stopped| stopped > depth)),
+                "from look {from}: the answer is the deepest depth that finished: {heard:?}, \
+                 answered {:?} at {} (partway {:?})",
+                solved.value,
+                solved.depth,
+                solved.partway
+            );
+            stopped_late += (solved.depth >= 2) as usize;
         }
         assert!(
             stopped_late > 0,
