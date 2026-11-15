@@ -11265,7 +11265,9 @@ mod tests {
                 .unwrap()
                 .value
         };
-        for (name, pos) in all_positions() {
+        // and one where a root move beats the first tried by under a point
+        let close = random_positions(1100).pop();
+        for (name, pos) in all_positions().into_iter().chain(close) {
             for mover in 0..2u8 {
                 let want = solved(&pos, mover, 1);
                 for threads in 2..4 {
