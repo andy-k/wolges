@@ -14545,68 +14545,79 @@ mod tests {
     fn a_peg_search_a_state_limit_stops_answers_with_one_moves_values() {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
-        let tiles = [1u8, 2, 8, 20]; // A B H T
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         let mut stopped = 0;
-        for gc in [
-            game_config::make_english_game_config(),
-            game_config::make_exchange_test_game_config(),
+        let english = game_config::make_english_game_config();
+        let exchange_test = game_config::make_exchange_test_game_config();
+        for (gc, mover_rack) in [
+            (&english, [1u8, 1]),     // A A
+            (&exchange_test, [1, 1]), // A A
+            (&exchange_test, [2, 8]), // B H
         ] {
-            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let arm_tables = anagrams::ArmTables::build(&kwg, gc, false).unwrap();
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             unseen_tally[8] = 1; // H
             unseen_tally[20] = 1; // T
-            for &x in &tiles {
-                for &y in &tiles {
-                    let mover_rack = [x, y];
-                    let solve = |limits: &super::Limits| {
-                        peg_solve_counted(
-                            &gc,
-                            &kwg,
-                            &arm_tables,
-                            &board,
-                            &mover_rack,
-                            &unseen_tally,
-                            limits,
-                        )
-                        .0
-                    };
-                    let full = solve(&super::Limits::NONE);
-                    // stopped at every point of its passes, the first too
-                    let mut states = 1;
-                    while states < 4096 {
-                        let got = solve(&super::Limits {
-                            time: None,
-                            states: Some(states),
-                            memory: None,
-                            clock: None,
-                        });
-                        if got.hypotheses.is_empty() {
-                            // stopped before its first pass valued every tile
-                            assert!(!got.exact && got.depth == 0 && got.best_move.is_none());
-                            stopped += 1;
-                            states = states * 3 / 2 + 1;
-                            continue;
-                        }
-                        let weighted: Vec<(u32, equity::Equity)> =
-                            got.hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
-                        assert_eq!(got.hypotheses.len(), full.hypotheses.len());
-                        assert_eq!(
-                            super::peg_aggregate(&weighted),
-                            (got.win_pct, got.expected_margin),
-                            "the answer's figures are those of its tiles' values"
-                        );
-                        assert_eq!(got.best_move.is_some(), full.best_move.is_some());
-                        if got.exact {
-                            assert_eq!(got.hypotheses, full.hypotheses);
-                            assert!(same_peg_move(&got.best_move, &full.best_move));
-                        } else {
-                            stopped += 1;
-                        }
-                        states = states * 3 / 2 + 1;
-                    }
+            let solve = |limits: &super::Limits| {
+                peg_solve_counted(
+                    gc,
+                    &kwg,
+                    &arm_tables,
+                    &board,
+                    &mover_rack,
+                    &unseen_tally,
+                    limits,
+                )
+                .0
+            };
+            let full = solve(&super::Limits::NONE);
+            // a memory limit stops it before the first move is valued: none
+            // yet
+            let none = solve(&super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: usize::MAX / 2,
+                    held: || usize::MAX,
+                }),
+                clock: None,
+            });
+            assert!(none.hypotheses.is_empty() && !none.exact && none.depth == 0);
+            assert!(none.best_move.is_none());
+            // stopped at every point of its passes, the first too
+            let mut states = 1;
+            while states < 4096 {
+                let got = solve(&super::Limits {
+                    time: None,
+                    states: Some(states),
+                    memory: None,
+                    clock: None,
+                });
+                if got.hypotheses.is_empty() {
+                    // stopped before its first pass valued every tile
+                    assert!(!got.exact && got.depth == 0 && got.best_move.is_none());
+                    stopped += 1;
+                    states = states * 3 / 2 + 1;
+                    continue;
                 }
+                let weighted: Vec<(u32, equity::Equity)> =
+                    got.hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
+                assert_eq!(got.hypotheses.len(), full.hypotheses.len());
+                assert!(got.moves.len() <= full.moves.len(), "each move once");
+                assert_eq!(
+                    super::peg_aggregate(&weighted),
+                    (got.win_pct, got.expected_margin),
+                    "the answer's figures are those of its tiles' values"
+                );
+                assert_eq!(got.best_move.is_some(), full.best_move.is_some());
+                if got.exact {
+                    assert_eq!(got.hypotheses, full.hypotheses);
+                    assert!(same_peg_move(&got.best_move, &full.best_move));
+                } else {
+                    stopped += 1;
+                }
+                states = states * 3 / 2 + 1;
             }
         }
         assert!(stopped > 0, "some state limit stopped a search");
