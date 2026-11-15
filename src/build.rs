@@ -2379,7 +2379,7 @@ mod tests {
         words.dedup();
         let bytes = std::thread::scope(|s| {
             std::thread::Builder::new()
-                .stack_size(256 << 10)
+                .stack_size(64 << 10)
                 .spawn_scoped(s, || {
                     build(
                         BuildContent::Gaddawg,
