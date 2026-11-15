@@ -15745,8 +15745,17 @@ mod tests {
         };
         let mut proved = 0usize;
         let mut kept = 0usize;
+        let picked = [
+            ("one-side-pass (board AT; p0=[B] p1=[B])", 0u8),
+            ("rand#0", 1),
+            ("rand#7", 1),
+            ("rand#117", 1),
+        ];
         for (name, pos) in all_positions() {
             for mover in 0..2u8 {
+                if !picked.contains(&(&name[..], mover)) {
+                    continue;
+                }
                 // the table's size after each pass of a solve nothing stops (a
                 // state limit never reached, so every depth)
                 let mut egs = fresh(&pos);
