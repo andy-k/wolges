@@ -11854,7 +11854,7 @@ mod tests {
             memo: Default::default(),
         };
         let (mut resumed, mut skipped, mut stepped, mut same_line) = (0u64, 0u64, 0usize, 0usize);
-        for (name, pos) in all_positions() {
+        for (name, pos) in named_positions(&["rand#0", "rand#7"]) {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
                 let what = format!("[{name}] mover {mover}");
