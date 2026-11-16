@@ -271,13 +271,30 @@ pub fn paired_difference(
     lead_objectives: &[f64],
     lead_first_iter: u64,
 ) -> stats::Stats {
+    paired_difference_of(
+        (|i| objectives[i], objectives.len(), first_iter),
+        (
+            |i| lead_objectives[i],
+            lead_objectives.len(),
+            lead_first_iter,
+        ),
+    )
+}
+
+// the same of objectives read one at a time, each list as its objective at
+// each place, its length, and its first iteration, so that a caller whose
+// objectives are made of other lists need not list them
+#[inline]
+pub fn paired_difference_of(
+    (objective, len, first_iter): (impl Fn(usize) -> f64, usize, u64),
+    (lead_objective, lead_len, lead_first_iter): (impl Fn(usize) -> f64, usize, u64),
+) -> stats::Stats {
     let from = first_iter.max(lead_first_iter);
-    let to =
-        (first_iter + objectives.len() as u64).min(lead_first_iter + lead_objectives.len() as u64);
+    let to = (first_iter + len as u64).min(lead_first_iter + lead_len as u64);
     let mut diff = stats::Stats::new();
     for iter in from..to {
-        let mine = objectives[(iter - first_iter) as usize];
-        let leads = lead_objectives[(iter - lead_first_iter) as usize];
+        let mine = objective((iter - first_iter) as usize);
+        let leads = lead_objective((iter - lead_first_iter) as usize);
         if !mine.is_nan() && !leads.is_nan() {
             diff.update(mine - leads);
         }
