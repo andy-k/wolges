@@ -7525,25 +7525,30 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let mut rack = Vec::new();
     let mut tally = vec![0u8; num_letters];
+    // each rack's buffers, kept from the first: the pool it is taken from, its
+    // split, and its move as shown
+    let mut pool = Vec::with_capacity(num_letters);
+    let mut played = vec![0u8; num_letters];
+    let mut kept = vec![0u8; num_letters];
+    let mut shown = String::new();
+    // the empty rack, the first of the racks of no tiles
+    let empty_leave = leave[lat.size_start(0)];
     for rack_str in rack_strs {
         rack_reader.set_word(rack_str, &mut rack)?;
+        pool.clone_from(&unseen_tally);
         game_config
-            .take_rack(&mut unseen_tally.clone(), &rack)
+            .take_rack(&mut pool, &rack)
             .map_err(|e| format!("{rack_str}: {e}"))?;
         tally.iter_mut().for_each(|c| *c = 0);
         for &t in &rack {
             tally[t as usize] += 1;
         }
-        let mut played = vec![0u8; num_letters];
-        let mut kept = tally.clone();
+        played.iter_mut().for_each(|c| *c = 0);
+        kept.copy_from_slice(&tally);
         let mut best = i32::MIN;
         let empty_keep = match phase {
             BoardPhase::Endgame => play_out_bonus(&game_config, &unseen_tally, &rack),
-            BoardPhase::Opening | BoardPhase::Midgame => {
-                let empty = vec![0u8; num_letters];
-                let idx = lat.rank(&empty);
-                if idx == !0 { 0 } else { leave[idx as usize] }
-            }
+            BoardPhase::Opening | BoardPhase::Midgame => empty_leave,
         };
         best_split(
             &RackSplit {
@@ -7573,10 +7578,13 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
-        let (movegen_best, movegen_play) = move_generator.plays.first().map_or_else(
-            || (f64::NAN, "nothing".to_string()),
-            |m| {
-                let mut shown = String::new();
+        shown.clear();
+        let movegen_best = match move_generator.plays.first() {
+            None => {
+                shown.push_str("nothing");
+                f64::NAN
+            }
+            Some(m) => {
                 match &m.play {
                     movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                         shown.push_str("pass");
@@ -7608,9 +7616,10 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
                         }
                     }
                 }
-                (m.equity.as_f64(), shown)
-            },
-        );
+                m.equity.as_f64()
+            }
+        };
+        let movegen_play = &shown;
         let drawable = rack
             .iter()
             .all(|&t| tally[t as usize] <= unseen_tally[t as usize]);
