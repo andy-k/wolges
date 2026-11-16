@@ -5767,7 +5767,9 @@ impl<
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, 1);
         let scoreless = self.scoreless;
-        let at = |opp_rack: &[u8], bag: &[u8]| position.after_split(scoreless, opp_rack, bag);
+        let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
+            position.after_split(scoreless, opp_rack, bag, pos)
+        };
         let score_diff = position.score_diff.raw() as f64;
         let state = &progress.state;
         let searched = if state.answer.is_none() || state.done {
@@ -5864,7 +5866,9 @@ impl<
             nodes: _,
             lanes: _,
         } = progress;
-        let at = |opp_rack: &[u8], bag: &[u8]| position.after_split(scoreless, opp_rack, bag);
+        let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
+            position.after_split(scoreless, opp_rack, bag, pos)
+        };
         // a wasm build has no threads
         let threads = if cfg!(target_family = "wasm") {
             1
@@ -5876,13 +5880,15 @@ impl<
             // board, the mover's rack, and how many tiles the bag holds (so a
             // part's are made at the whole's first split)
             let (opp_rack, bag) = &*moves_at;
+            let mut pos = InBag::default();
+            at(opp_rack, bag, &mut pos);
             in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 gc,
                 kwg,
                 arm_tables,
                 klv,
                 &mut *mg,
-                &at(opp_rack, bag),
+                &pos,
                 &mut state.moves,
             );
             state.order = (0..state.moves.len()).collect();
@@ -6031,7 +6037,7 @@ impl<
     // stopped the pass; the moves it valued in every split then go first in the
     // order, so a solve resuming the pass goes on after them
     #[allow(clippy::too_many_arguments)]
-    fn value_on_threads<At: Fn(&[u8], &[u8]) -> InBag + Sync>(
+    fn value_on_threads<At: Fn(&[u8], &[u8], &mut InBag) + Sync>(
         sub: &mut Self,
         klv: &klv::Klv<L>,
         mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
@@ -7119,22 +7125,18 @@ pub enum PegModel {
 
 impl PegBagPosition {
     // the position after a split (the other's rack and the bag), after these
-    // scoreless turns, its mover to move
-    fn after_split(&self, scoreless: [u8; 2], opp_rack: &[u8], bag: &[u8]) -> InBag {
+    // scoreless turns, its mover to move, made in pos
+    fn after_split(&self, scoreless: [u8; 2], opp_rack: &[u8], bag: &[u8], pos: &mut InBag) {
         let mover = self.mover;
-        let mut racks = [Vec::new(), Vec::new()];
-        racks[mover as usize] = self.mover_rack.clone();
-        racks[(mover ^ 1) as usize] = opp_rack.to_vec();
-        InBag {
-            board: self.board.clone(),
-            racks,
-            bag: bag.to_vec(),
-            mover,
-            passes: scoreless[0],
-            zeros: scoreless[1],
-            answering: scoreless[0] > 0, // the game's last turn a pass
-            exchanges: self.exchanges,
-        }
+        let mut racks: [&[u8]; 2] = [&[], &[]];
+        racks[mover as usize] = &self.mover_rack;
+        racks[(mover ^ 1) as usize] = opp_rack;
+        pos.fill(&self.board, racks, bag);
+        pos.mover = mover;
+        pos.passes = scoreless[0];
+        pos.zeros = scoreless[1];
+        pos.answering = scoreless[0] > 0; // the game's last turn a pass
+        pos.exchanges = self.exchanges;
     }
 }
 
@@ -7304,7 +7306,7 @@ fn value_root_move<
 >(
     search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
     splits: &[(Vec<u8>, Vec<u8>, u64)],
-    at: &impl Fn(&[u8], &[u8]) -> InBag,
+    at: &impl Fn(&[u8], &[u8], &mut InBag),
     play: &movegen::Play,
     score_diff: f64,
 ) -> error::Returns<PegBagValue> {
@@ -7332,18 +7334,46 @@ fn value_root_split<
 >(
     search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
     (opp_rack, bag, _): &(Vec<u8>, Vec<u8>, u64),
-    at: &impl Fn(&[u8], &[u8]) -> InBag,
+    at: &impl Fn(&[u8], &[u8], &mut InBag),
     play: &movegen::Play,
     score_diff: f64,
 ) -> error::Returns<(f64, f64, Vec<PegBagDraw>)> {
-    let mut pos = at(opp_rack, bag);
+    // the split's position, and what the mover knows there, in the arena's
+    // room for the root
+    let mut pos = std::mem::take(&mut search.arena.root);
+    at(opp_rack, bag, &mut pos);
     if search.model == PegModel::InfoSets {
-        let info = InfoSet::of(&pos, score_diff as i32);
-        let (win, margin) = search.info_split(&info, play, opp_rack, bag)?;
+        let mut info = std::mem::take(&mut search.arena.root_info);
+        info.of(&pos, score_diff as i32);
+        search.arena.root = pos;
+        let found = search.info_split(&info, play, opp_rack, bag);
+        search.arena.root_info = info;
+        let (win, margin) = found?;
         return Ok((margin + score_diff, win, Vec::new()));
     }
+    let found = value_root_draws(search, &mut pos, play, score_diff);
+    search.arena.root = pos;
+    found
+}
+
+// value_root_split's value under RandomDraws at pos, with its chance to win
+// and each draw the move makes
+#[inline(always)]
+fn value_root_draws<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
+    pos: &mut InBag,
+    play: &movegen::Play,
+    score_diff: f64,
+) -> error::Returns<(f64, f64, Vec<PegBagDraw>)> {
     let mut draws = Vec::new();
-    let value = search.move_value_each(&mut pos, play, |drawn, ways, value| {
+    let value = search.move_value_each(pos, play, |drawn, ways, value| {
         draws.push(PegBagDraw {
             tiles: tiles_of(drawn),
             ways,
@@ -7352,7 +7382,7 @@ fn value_root_split<
         })
     })? + score_diff;
     let mut at_draw = 0;
-    let win = search.move_win_each(&mut pos, play, -score_diff, |_, _, win| {
+    let win = search.move_win_each(pos, play, -score_diff, |_, _, win| {
         draws[at_draw].win = win;
         at_draw += 1;
     })?;
@@ -7383,7 +7413,7 @@ fn peg_bag_value(win: f64, marg: f64, total: u64, exact: bool) -> PegBagValue {
 // what a pass values each move against: each split of the unseen tiles (the
 // other's rack, the bag, and the deals that give it), the position a split
 // makes (at), and the mover's lead
-struct PegBagRoot<'r, At: Fn(&[u8], &[u8]) -> InBag + Sync> {
+struct PegBagRoot<'r, At: Fn(&[u8], &[u8], &mut InBag) + Sync> {
     splits: &'r [(Vec<u8>, Vec<u8>, u64)],
     at: &'r At,
     score_diff: f64,
@@ -7715,7 +7745,7 @@ fn each_split(pool: &[u8], n: usize, f: &mut impl FnMut(&[u8], &[u8], u64)) {
 // the board, each rack (sorted), the bag's counts, the player to move, the
 // scoreless turns before it (the passes, the zeros, and whether the line's move
 // before was a pass), and each player's exchanges so far
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct InBag {
     board: Vec<u8>,
     racks: [Vec<u8>; 2],
@@ -7728,6 +7758,19 @@ struct InBag {
 }
 
 impl InBag {
+    // made over as this board, these racks, and this bag, keeping its buffers
+    #[inline(always)]
+    fn fill(&mut self, board: &[u8], racks: [&[u8]; 2], bag: &[u8]) {
+        self.board.clear();
+        self.board.extend_from_slice(board);
+        for (rack, from) in self.racks.iter_mut().zip(racks) {
+            rack.clear();
+            rack.extend_from_slice(from);
+        }
+        self.bag.clear();
+        self.bag.extend_from_slice(bag);
+    }
+
     // the position's key: its board's tiles, each rack's counts, the bag's
     // counts, the mover, the scoreless turns, and the exchanges made
     fn key(&self) -> u64 {
@@ -7964,7 +8007,7 @@ struct InBagTurn {
 // cannot see (a count per tile: the other's rack with the bag), how many of
 // those are in the bag, which player they are, the scoreless turns before it,
 // each player's exchanges so far, and their lead
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct InfoSet {
     board: Vec<u8>,
     rack: Vec<u8>,
@@ -7979,23 +8022,36 @@ struct InfoSet {
 }
 
 impl InfoSet {
-    // what the mover of pos knows, with this lead
-    fn of(pos: &InBag, lead: i32) -> Self {
-        let mut unseen = pos.bag.clone();
-        for &tile in &pos.racks[(pos.mover ^ 1) as usize] {
-            unseen[tile as usize] += 1;
-        }
-        Self {
-            board: pos.board.clone(),
-            rack: pos.racks[pos.mover as usize].clone(),
-            unseen,
-            bag_len: pos.bag_len(),
-            mover: pos.mover,
-            passes: pos.passes,
-            zeros: pos.zeros,
-            answering: pos.answering,
-            exchanges: pos.exchanges,
-            lead,
+    // made over as what the mover of pos knows, with this lead, keeping its
+    // buffers
+    fn of(&mut self, pos: &InBag, lead: i32) {
+        self.fill(
+            &pos.board,
+            &pos.racks[pos.mover as usize],
+            &pos.bag,
+            &pos.racks[(pos.mover ^ 1) as usize],
+        );
+        self.bag_len = pos.bag_len();
+        self.mover = pos.mover;
+        self.passes = pos.passes;
+        self.zeros = pos.zeros;
+        self.answering = pos.answering;
+        self.exchanges = pos.exchanges;
+        self.lead = lead;
+    }
+
+    // made over with this board and rack, what it cannot see the bag's counts
+    // with the tiles of unseen, keeping its buffers
+    #[inline(always)]
+    fn fill(&mut self, board: &[u8], rack: &[u8], bag: &[u8], unseen: &[u8]) {
+        self.board.clear();
+        self.board.extend_from_slice(board);
+        self.rack.clear();
+        self.rack.extend_from_slice(rack);
+        self.unseen.clear();
+        self.unseen.extend_from_slice(bag);
+        for &tile in unseen {
+            self.unseen[tile as usize] += 1;
         }
     }
 
@@ -8053,22 +8109,48 @@ impl InfoSet {
         splits
     }
 
-    // the position of one split, everything known
-    fn at(&self, other: &[u8], bag: &[u8]) -> InBag {
-        let mut racks = [Vec::new(), Vec::new()];
-        racks[self.mover as usize] = self.rack.clone();
-        racks[(self.mover ^ 1) as usize] = other.to_vec();
-        InBag {
-            board: self.board.clone(),
-            racks,
-            bag: bag.to_vec(),
-            mover: self.mover,
-            passes: self.passes,
-            zeros: self.zeros,
-            answering: self.answering,
-            exchanges: self.exchanges,
-        }
+    // the position of one split, everything known, made in pos
+    fn at(&self, other: &[u8], bag: &[u8], pos: &mut InBag) {
+        let mut racks: [&[u8]; 2] = [&[], &[]];
+        racks[self.mover as usize] = &self.rack;
+        racks[(self.mover ^ 1) as usize] = other;
+        pos.fill(&self.board, racks, bag);
+        pos.mover = self.mover;
+        pos.passes = self.passes;
+        pos.zeros = self.zeros;
+        pos.answering = self.answering;
+        pos.exchanges = self.exchanges;
     }
+
+    // what the other knows at one split (their rack other, the bag's counts)
+    // after the mover's turn: this board, the mover's tiles sees seen with the
+    // bag's, bag_len in the bag, these scoreless turns and exchanges, and this
+    // lead; made in next
+    #[inline(always)]
+    fn theirs(&self, next: &mut InfoSet, (board, other, bag, sees): Tiles4, turn: TheirTurn) {
+        next.fill(board, other, bag, sees);
+        next.bag_len = turn.bag_len;
+        next.mover = self.mover ^ 1;
+        next.passes = turn.passes;
+        next.zeros = turn.zeros;
+        next.answering = turn.answering;
+        next.exchanges = turn.exchanges;
+        next.lead = turn.lead;
+    }
+}
+
+// InfoSet::theirs's board, the other's rack, the bag's counts, and the tiles
+// the other sees
+type Tiles4<'t> = (&'t [u8], &'t [u8], &'t [u8], &'t [u8]);
+
+// InfoSet::theirs's bag length, scoreless turns, exchanges, and lead
+struct TheirTurn {
+    bag_len: usize,
+    passes: u8,
+    zeros: u8,
+    answering: bool,
+    exchanges: [i16; 2],
+    lead: i32,
 }
 
 // the moves at a position with tiles in the bag, in the order a tie between
@@ -8236,17 +8318,23 @@ fn draw_ways(pool: &[u8], drawn: &[u8]) -> u64 {
 struct BagArena {
     tiles: usize,
     plies: Vec<PlyRoom>,
+    root: InBag,        // a root split's position
+    root_info: InfoSet, // what the mover knows there
 }
 
 // a ply's room: a count per tile for each of the bag a draw is made from, the
 // draw, and one more tally (the tiles an exchange throws back, or the whole
-// bag a placement draws), each lent out on its own; and the moves of the
-// position valued there with the order they are asked in, lent out together
+// bag a placement draws), each lent out on its own; the moves of the position
+// valued there with the order they are asked in, lent out together; and a
+// split's position (InfoSet::at) and what the other then knows
+// (InfoSet::theirs), each lent out on its own
 #[derive(Default)]
 struct PlyRoom {
     tallies: [Vec<u8>; 3],
     moves: Vec<movegen::Play>,
     asked: Vec<usize>,
+    pos: InBag,
+    next: InfoSet,
 }
 
 // which of a ply's tallies (BagArena)
@@ -8259,6 +8347,8 @@ impl BagArena {
         Self {
             tiles,
             plies: (0..=bag_len).map(|_| Self::room(tiles)).collect(),
+            root: Default::default(),
+            root_info: Default::default(),
         }
     }
 
@@ -8303,6 +8393,28 @@ impl BagArena {
             std::mem::take(&mut room.moves),
             std::mem::take(&mut room.asked),
         )
+    }
+
+    // a ply's split position, lent out until given back
+    #[inline(always)]
+    fn take_pos(&mut self, ply: usize) -> InBag {
+        std::mem::take(&mut self.ply(ply).pos)
+    }
+
+    #[inline(always)]
+    fn give_pos(&mut self, ply: usize, pos: InBag) {
+        self.plies[ply].pos = pos;
+    }
+
+    // a ply's info set for the other, lent out until given back
+    #[inline(always)]
+    fn take_next(&mut self, ply: usize) -> InfoSet {
+        std::mem::take(&mut self.ply(ply).next)
+    }
+
+    #[inline(always)]
+    fn give_next(&mut self, ply: usize, next: InfoSet) {
+        self.plies[ply].next = next;
     }
 
     #[inline(always)]
@@ -9573,14 +9685,17 @@ impl<
         if let movegen::Play::Place { word, score, .. } = play
             && word.iter().filter(|&&tile| tile != 0).count() >= info.bag_len
         {
-            let mut next = info.at(other, bag);
+            let mut next = self.arena.take_pos(self.ply);
+            info.at(other, bag, &mut next);
             next.place(self.gc, play);
             next.draw(bag);
             next.next_turn();
             // a win or a tie leaves the next mover the lead with the score at
             // most, every endgame value a whole number of millipoints
             let most = info.lead as f64 + *score as f64;
-            return Ok(match self.endgame_below(&next, most + 1.0)? {
+            let below = self.endgame_below(&next, most + 1.0);
+            self.arena.give_pos(self.ply, next);
+            return Ok(match below? {
                 Some(theirs) => {
                     let margin = *score as f64 - theirs;
                     (beats(info.lead as f64 + margin, 0.0), Some(margin))
@@ -9609,54 +9724,41 @@ impl<
         // turns at the count, its draws averaged) visits no position at all
         self.stop_at_a_limit()?;
         let lead = info.lead as f64;
-        let theirs =
-            |board: Vec<u8>, sees: &[u8], bag_len, passes, zeros, answering, exchanges, lead| {
-                let mut unseen = bag.to_vec();
-                for &tile in sees {
-                    unseen[tile as usize] += 1;
-                }
-                InfoSet {
-                    board,
-                    rack: other.to_vec(),
-                    unseen,
-                    bag_len,
-                    mover: info.mover ^ 1,
-                    passes,
-                    zeros,
-                    answering,
-                    exchanges,
-                    lead,
-                }
-            };
         match play {
             movegen::Play::Place { word, score, .. } => {
                 let n = word.iter().filter(|&&tile| tile != 0).count();
-                let mut next = info.at(other, bag);
-                next.place(self.gc, play);
+                // the split's position after the move, in the ply's room
+                let mut pos = self.arena.take_pos(self.ply);
+                info.at(other, bag, &mut pos);
+                pos.place(self.gc, play);
                 if n >= info.bag_len {
-                    next.draw(bag);
-                    next.next_turn();
-                    let ev = self.endgame(&next)?;
-                    let margin = *score as f64 - ev;
+                    pos.draw(bag);
+                    pos.next_turn();
+                    let ev = self.endgame(&pos);
+                    self.arena.give_pos(self.ply, pos);
+                    let margin = *score as f64 - ev?;
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
                 if self.at_horizon() {
-                    let margin =
-                        self.estimate(*score as f64, &next.racks[info.mover as usize], &[]);
+                    let margin = self.estimate(*score as f64, &pos.racks[info.mover as usize], &[]);
+                    self.arena.give_pos(self.ply, pos);
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
-                let leave = std::mem::take(&mut next.racks[info.mover as usize]);
-                let next = theirs(
-                    next.board,
-                    &leave,
-                    info.bag_len - n,
-                    0,
-                    0,
-                    false,
-                    info.exchanges,
-                    -(info.lead + *score),
-                );
-                let (w, m) = self.deeper(|this| this.info_value(&next))?;
+                let mut next = self.arena.take_next(self.ply);
+                let leave = &pos.racks[info.mover as usize];
+                let turn = TheirTurn {
+                    bag_len: info.bag_len - n,
+                    passes: 0,
+                    zeros: 0,
+                    answering: false,
+                    exchanges: info.exchanges,
+                    lead: -(info.lead + *score),
+                };
+                info.theirs(&mut next, (&pos.board, other, bag, leave), turn);
+                self.arena.give_pos(self.ply, pos);
+                let found = self.deeper(|this| this.info_value(&next));
+                self.arena.give_next(self.ply, next);
+                let (w, m) = found?;
                 Ok((1.0 - w, *score as f64 - m))
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
@@ -9665,24 +9767,30 @@ impl<
                 let (passes, zeros) = (info.passes.saturating_add(1), info.zeros.saturating_add(1));
                 if info.answering || scoreless_turns_end(self.gc, Some(&info.board), passes, zeros)
                 {
-                    let lost = info.at(other, bag).racks_lost(self.gc);
+                    // each player loses their own rack (InBag::racks_lost)
+                    let alphabet = self.gc.alphabet();
+                    let lost = (alphabet.scaled_rack_score(other)
+                        - alphabet.scaled_rack_score(&info.rack))
+                        as f64;
                     return Ok((beats(lead + lost, 0.0), lost));
                 }
                 if self.at_horizon() {
                     let margin = self.estimate(0.0, &info.rack, &[]);
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
-                let next = theirs(
-                    info.board.clone(),
-                    &info.rack,
-                    info.bag_len,
+                let mut next = self.arena.take_next(self.ply);
+                let turn = TheirTurn {
+                    bag_len: info.bag_len,
                     passes,
                     zeros,
-                    true,
-                    info.exchanges,
-                    -info.lead,
-                );
-                let (w, m) = self.deeper(|this| this.info_value(&next))?;
+                    answering: true,
+                    exchanges: info.exchanges,
+                    lead: -info.lead,
+                };
+                info.theirs(&mut next, (&info.board, other, bag, &info.rack), turn);
+                let found = self.deeper(|this| this.info_value(&next));
+                self.arena.give_next(self.ply, next);
+                let (w, m) = found?;
                 Ok((1.0 - w, -m))
             }
             movegen::Play::Exchange { tiles } => {
@@ -9698,7 +9806,8 @@ impl<
                     // place of the tiles: the mean over the draws
                     let put = self.thrown(tiles);
                     let (mut win, mut margin, mut total) = (0.0, 0.0, 0u64);
-                    let mut pos = info.at(other, bag);
+                    let mut pos = self.arena.take_pos(self.ply);
+                    info.at(other, bag, &mut pos);
                     let walked = self.each_draw(&mut pos, tiles.len(), |this, pos, drawn, ways| {
                         pos.draw(drawn);
                         pos.put_back(&put);
@@ -9711,6 +9820,7 @@ impl<
                         Ok(true)
                     });
                     self.arena.give(self.ply, TALLY, put);
+                    self.arena.give_pos(self.ply, pos);
                     walked?;
                     return Ok((win / total as f64, margin / total as f64));
                 }
@@ -9718,17 +9828,19 @@ impl<
                     let margin = self.estimate(0.0, &info.rack, tiles);
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
-                let next = theirs(
-                    info.board.clone(),
-                    &info.rack,
-                    info.bag_len,
-                    0,
+                let mut next = self.arena.take_next(self.ply);
+                let turn = TheirTurn {
+                    bag_len: info.bag_len,
+                    passes: 0,
                     zeros,
-                    false,
+                    answering: false,
                     exchanges,
-                    -info.lead,
-                );
-                let (w, m) = self.deeper(|this| this.info_value(&next))?;
+                    lead: -info.lead,
+                };
+                info.theirs(&mut next, (&info.board, other, bag, &info.rack), turn);
+                let found = self.deeper(|this| this.info_value(&next));
+                self.arena.give_next(self.ply, next);
+                let (w, m) = found?;
                 Ok((1.0 - w, -m))
             }
         }
@@ -17593,7 +17705,8 @@ mod tests {
     ) -> (f64, f64) {
         let gc = r.gc;
         let lead = info.lead as f64;
-        let pos = info.at(other, bag);
+        let mut pos = super::InBag::default();
+        info.at(other, bag, &mut pos);
         // what the other sees: their rack, and the mover's given tiles with the
         // bag's
         let theirs =
@@ -17748,7 +17861,8 @@ mod tests {
                                 answering: false,
                                 exchanges: [0, 0],
                             };
-                            let info = super::InfoSet::of(&pos, lead.raw());
+                            let mut info = super::InfoSet::default();
+                            info.of(&pos, lead.raw());
                             let (w, m) =
                                 info_reference_split(&mut reference, &info, play, opp_rack, bag);
                             want_win += *ways as f64 * w;
