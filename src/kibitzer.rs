@@ -196,7 +196,38 @@ fn equity_as_printed<S: serde::Serializer>(equity: &f32, serializer: S) -> Resul
     } else if equity.fract() == 0.0 && equity.abs() < i64::MAX as f32 {
         serializer.serialize_i64(*equity as i64)
     } else {
-        serializer.serialize_f64(equity.to_string().parse().unwrap_or(*equity as f64))
+        let mut printed = PrintedF32 {
+            room: [0; PRINTED_F32_ROOM],
+            len: 0,
+        };
+        let parsed = match std::fmt::Write::write_fmt(&mut printed, format_args!("{equity}")) {
+            Ok(()) => (std::str::from_utf8(&printed.room[..printed.len]).ok())
+                .and_then(|text| text.parse().ok()),
+            Err(_) => equity.to_string().parse().ok(),
+        };
+        serializer.serialize_f64(parsed.unwrap_or(*equity as f64))
+    }
+}
+
+// room for a finite f32 as {} prints it, which is with no exponent: a sign,
+// "0.", the zeros down to the smallest normal power of ten, and no more digits
+// than its mantissa has bits. Past it (which no f32 reaches),
+// equity_as_printed prints to a string.
+const PRINTED_F32_ROOM: usize = 3 + (1 - f32::MIN_10_EXP) as usize + f32::MANTISSA_DIGITS as usize;
+
+// an f32 printed on the stack, so that writing an equity allocates nothing
+struct PrintedF32 {
+    room: [u8; PRINTED_F32_ROOM],
+    len: usize,
+}
+
+impl std::fmt::Write for PrintedF32 {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let end = self.len + text.len();
+        let room = self.room.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+        room.copy_from_slice(text.as_bytes());
+        self.len = end;
+        Ok(())
     }
 }
 
@@ -356,7 +387,8 @@ impl Default for Kibitzer {
 #[cfg(test)]
 mod tests {
     use super::{
-        JsonPlay, JsonPlayRef, JsonPlayRefWithEquity, JsonPlayWithEquity, equity, movegen,
+        JsonPlay, JsonPlayRef, JsonPlayRefWithEquity, JsonPlayWithEquity, PRINTED_F32_ROOM,
+        PrintedF32, equity, movegen,
     };
 
     #[test]
@@ -390,6 +422,32 @@ mod tests {
                     .equity,
                 equity
             );
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn an_f32_printed_on_the_stack_is_as_its_string() {
+        let extremes = [
+            f32::MAX,
+            f32::MIN,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+            f32::from_bits(f32::MIN_POSITIVE.to_bits() - 1),
+            -f32::from_bits(f32::MIN_POSITIVE.to_bits() - 1),
+            f32::EPSILON,
+        ];
+        // every 65537th bit pattern, which reaches every exponent
+        let every = (0..=u32::MAX).step_by(65537).map(f32::from_bits);
+        for x in extremes.into_iter().chain(every).filter(|x| x.is_finite()) {
+            let mut printed = PrintedF32 {
+                room: [0; PRINTED_F32_ROOM],
+                len: 0,
+            };
+            assert!(std::fmt::Write::write_fmt(&mut printed, format_args!("{x}")).is_ok());
+            assert_eq!(&printed.room[..printed.len], x.to_string().as_bytes());
         }
     }
 
