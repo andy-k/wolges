@@ -756,7 +756,9 @@ fn weights_by_leave(racks: &[(u32, i32, f64)], fuzz: f64, weighed: &mut Vec<(u32
 // by the next, the logs of the binomials up to the game's tiles, and the
 // scratch space an inference works in: the pool, the tiles the move placed,
 // the tiles left after them, the racks weighed, the leaves they kept with
-// their weights, a leave as a tally and as tiles, and weigh_racks's own
+// their weights, a leave as a tally and as tiles, weigh_racks's own, and the
+// ways to draw each letter (a reply's, reusing the others for its tallies,
+// what the mover holds, and the board after the move)
 pub struct InferTables {
     lat: census::MultisetLattice,
     leave: Vec<i32>,
@@ -772,6 +774,7 @@ pub struct InferTables {
     kept: Vec<u8>,
     tiles: Vec<u8>,
     weigh: WeighScratch,
+    ways: Vec<u64>,
 }
 
 impl InferTables {
@@ -801,6 +804,7 @@ impl InferTables {
             kept: Vec::new(),
             tiles: Vec::new(),
             weigh: WeighScratch::new(),
+            ways: Vec::new(),
         })
     }
 }
@@ -1151,6 +1155,7 @@ fn kept_leaves_packed_impl<
         kept,
         tiles: leave_tiles,
         weigh,
+        ..
     } = tables;
     game_config.tiles_off_board_into(board_tiles, pool)?;
     game_config.take_rack(pool, watcher_rack)?;
@@ -1323,6 +1328,7 @@ fn binom(n: usize, k: usize) -> u64 {
 // draws walked as weigh_racks walks them, on this many threads when they are
 // many
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn reply_sums(
     lat: &census::MultisetLattice,
     sheet: &[i32],
@@ -1330,6 +1336,8 @@ fn reply_sums(
     pool: &[u8],
     kept: &[u8],
     threads: usize,
+    scratch: &mut WeighScratch,
+    ways: &mut Vec<u64>,
 ) -> error::Returns<ReplySums> {
     // a wasm build has no threads
     let threads = if cfg!(target_family = "wasm") {
@@ -1338,25 +1346,29 @@ fn reply_sums(
         threads
     };
     let num_letters = lat.num_letters();
-    let avail = pool
-        .iter()
-        .zip(kept)
-        .map(|(&u, &k)| u - k)
-        .collect::<Vec<_>>();
-    let left = lat.rack_size() - kept.iter().map(|&c| c as usize).sum::<usize>();
-    let mut cap = vec![0usize; num_letters + 1];
-    for t in (0..num_letters).rev() {
-        cap[t] = cap[t + 1] + avail[t] as usize;
-    }
-    // the ways to draw so many of each letter from what is left of it
-    let ways = (avail.iter())
-        .map(|&u| (0..=left).map(|r| binom(u as usize, r)).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
+    // the tiles left to draw once the kept are held, as for a move that placed
+    // them, and how many to draw
+    let left = scratch.begin(pool, &MoveTiles::Placed(kept), lat.rack_size());
+    let WeighScratch {
+        avail,
+        cap,
+        cur,
+        rack,
+        ways: counts,
+        ..
+    } = scratch;
+    let (avail, cap) = (&avail[..], &cap[..]);
+    // the ways to draw so many of each letter from what is left of it: letter
+    // t's for r drawn at t * (left + 1) + r
+    let stride = left + 1;
+    ways.clear();
+    ways.extend((avail.iter()).flat_map(|&u| (0..=left).map(move |r| binom(u as usize, r))));
+    let ways = &ways[..];
     let add_rack = |drawn: &[u8], rack: &mut [u8], sums: &mut ReplySums| {
         for (r, (&d, &k)) in rack.iter_mut().zip(drawn.iter().zip(kept)) {
             *r = d + k;
         }
-        let deals = (drawn.iter().zip(&ways))
+        let deals = (drawn.iter().zip(ways.chunks_exact(stride)))
             .map(|(&d, ways)| ways[d as usize])
             .product::<u64>();
         let rank = lat.rank(rack) as usize;
@@ -1374,11 +1386,9 @@ fn reply_sums(
         }
     };
     let mut sums = ReplySums::default();
-    if threads <= 1 || count_tallies_of_size(&avail, left) < WEIGH_ACROSS_THREADS_FROM {
-        let mut cur = vec![0u8; num_letters];
-        let mut rack = vec![0u8; num_letters];
-        each_tally_of_size(&avail, &cap, 0, left, &mut cur, &mut |drawn| {
-            add_rack(drawn, &mut rack, &mut sums)
+    if threads <= 1 || count_tallies_of_size_in(avail, left, counts) < WEIGH_ACROSS_THREADS_FROM {
+        each_tally_of_size(avail, cap, 0, left, cur, &mut |drawn| {
+            add_rack(drawn, rack, &mut sums)
         });
         return Ok(sums);
     }
@@ -1390,7 +1400,7 @@ fn reply_sums(
     loop {
         prefixes.clear();
         let mut cur = vec![0u8; num_letters];
-        each_prefix_of_size(&avail, &cap, 0, k, left, &mut cur, &mut |prefix, left| {
+        each_prefix_of_size(avail, cap, 0, k, left, &mut cur, &mut |prefix, left| {
             prefixes.push((prefix.to_vec(), left));
         });
         if prefixes.len() >= threads * CHUNKS_A_THREAD || k >= num_letters {
@@ -1412,7 +1422,7 @@ fn reply_sums(
                             break;
                         };
                         cur[..k].copy_from_slice(prefix);
-                        each_tally_of_size(&avail, &cap, k, *left, &mut cur, &mut |drawn| {
+                        each_tally_of_size(avail, cap, k, *left, &mut cur, &mut |drawn| {
                             add_rack(drawn, &mut rack, &mut mine)
                         });
                     }
@@ -1458,19 +1468,37 @@ pub fn reply_to<
     let game_config = board_snapshot.game_config;
     let num_letters = game_config.alphabet().len() as usize;
     let rack_size = game_config.rack_size() as usize;
-    let mut pool = game_config.tiles_off_board(board_snapshot.board_tiles)?;
-    game_config.take_rack(&mut pool, mover_rack)?;
+    let InferTables {
+        lat,
+        leave,
+        sheet,
+        movegen_rack,
+        blank_deltas,
+        pool,
+        placed: used,
+        avail: held,
+        kept: tally,
+        tiles: board_tiles,
+        weigh,
+        ways,
+        ..
+    } = tables;
+    game_config.tiles_off_board_into(board_snapshot.board_tiles, pool)?;
+    game_config.take_rack(pool, mover_rack)?;
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     if pool_size <= rack_size {
         return Ok(None);
     }
     let bag = pool_size - rack_size;
-    let mut held = vec![0u8; num_letters];
+    held.clear();
+    held.resize(num_letters, 0);
     for &tile in mover_rack {
         held[tile as usize] += 1;
     }
-    let mut used = vec![0u8; num_letters];
-    let mut board_tiles = board_snapshot.board_tiles.to_vec();
+    used.clear();
+    used.resize(num_letters, 0);
+    board_tiles.clear();
+    board_tiles.extend_from_slice(board_snapshot.board_tiles);
     // the tiles the mover draws after it: as many as it places (an exchange
     // leaves the bag as it was)
     let drawn = match play {
@@ -1502,7 +1530,7 @@ pub fn reply_to<
             used.iter().map(|&c| c as usize).sum()
         }
     };
-    if used.iter().zip(&held).any(|(&u, &h)| u > h) {
+    if used.iter().zip(held.iter()).any(|(&u, &h)| u > h) {
         return_error!("the move uses tiles the mover does not hold".into());
     }
     if drawn >= bag {
@@ -1511,23 +1539,23 @@ pub fn reply_to<
     let can_exchange = bag - drawn >= game_config.exchange_tile_limit() as usize;
     infer_sheet_for(
         move_generator,
-        &board_tiles,
+        board_tiles,
         SpellTables {
             game_config,
             kwg: board_snapshot.kwg,
             klv: board_snapshot.klv,
-            lat: &tables.lat,
+            lat,
         },
-        &pool,
+        pool,
         can_exchange,
-        (&mut tables.movegen_rack, &mut tables.blank_deltas),
-        &mut tables.sheet,
+        (movegen_rack, blank_deltas),
+        sheet,
     );
-    let (lat, sheet, leave) = (&tables.lat, &tables.sheet[..], &tables.leave[..]);
+    let (lat, sheet, leave, pool) = (&*lat, &sheet[..], &leave[..], &pool[..]);
     // the reply over the full racks holding this tally, the rest drawn
-    let reply_holding = |tally: &[u8]| -> error::Returns<Reply> {
+    let mut reply_holding = |tally: &[u8]| -> error::Returns<Reply> {
         let n = tally.iter().map(|&c| c as usize).sum::<usize>();
-        let sums = reply_sums(lat, sheet, leave, &pool, tally, threads)?;
+        let sums = reply_sums(lat, sheet, leave, pool, tally, threads, weigh, ways)?;
         let deals = binom(pool_size - n, rack_size - n);
         if sums.deals != deals {
             return_error!(format!(
@@ -1537,10 +1565,11 @@ pub fn reply_to<
         }
         Ok(sums.reply(deals))
     };
+    tally.clear();
+    tally.resize(num_letters, 0);
     if kept.is_empty() {
-        return Ok(Some(reply_holding(&vec![0u8; num_letters])?));
+        return Ok(Some(reply_holding(tally)?));
     }
-    let mut tally = vec![0u8; num_letters];
     let (mut weight, mut mean, mut square, mut bingo) = (0.0, 0.0, 0.0, 0.0);
     for (tiles, w) in kept {
         if !w.is_finite() || *w < 0.0 {
@@ -1550,10 +1579,10 @@ pub fn reply_to<
         for &tile in tiles {
             *tally.get_mut(tile as usize).ok_or("no such tile")? += 1;
         }
-        if tiles.len() > rack_size || tally.iter().zip(&pool).any(|(&k, &u)| k > u) {
+        if tiles.len() > rack_size || tally.iter().zip(pool).any(|(&k, &u)| k > u) {
             return_error!("a kept leave is not in the pool".into());
         }
-        let reply = reply_holding(&tally)?;
+        let reply = reply_holding(tally)?;
         weight += w;
         mean += w * reply.mean;
         square += w * (reply.variance + reply.mean * reply.mean);
