@@ -232,6 +232,7 @@ enum Seat {
 struct Sim {
     move_generator: movegen::KurniaMoveGenerator,
     simmer: move_picker::Simmer<'static, kwg::Node24, kwg::Node24, true>,
+    made_for: [usize; 4], // the tables the simmer borrows, by address
     stream_of: Vec<u64>,
 }
 
@@ -240,6 +241,14 @@ struct Sim {
 // borrows them, can be kept between commands
 // an endgame solver the shell keeps for a lexicon, made at its first use
 type ShellSolver = endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>;
+
+// an ended sim's driver, kept for the next sim of the tables it borrows, which
+// it names by address: the rules, the lexicon, its anagram tables, and the
+// leaves
+type SimDriver = (
+    [usize; 4],
+    move_picker::Simmer<'static, kwg::Node24, kwg::Node24, true>,
+);
 
 pub struct Session {
     game_config: &'static game_config::GameConfig,
@@ -262,6 +271,7 @@ pub struct Session {
     play_scorer: play_scorer::PlayScorer,
     sim: Option<Sim>, // of the position shown; any change to the game ends it
     sim_generator: Option<movegen::KurniaMoveGenerator>, // an ended sim's, for the next
+    sim_driver: Option<SimDriver>, // an ended sim's, for the next
     seats: [Seat; 2],
     racks_given: [bool; 2], // by seat, whether its current rack is given
     names: [Option<(String, String)>; 2], // a seat's nickname and full name
@@ -469,6 +479,7 @@ impl Session {
             play_scorer: play_scorer::PlayScorer::new(),
             sim: None,
             sim_generator: None,
+            sim_driver: None,
             seats: [Seat::Human; 2],
             racks_given: [false; 2],
             names: Default::default(),
@@ -1438,6 +1449,7 @@ impl Session {
     fn end_sim(&mut self) {
         if let Some(sim) = self.sim.take() {
             self.sim_generator = Some(sim.move_generator);
+            self.sim_driver = Some((sim.made_for, sim.simmer));
         }
     }
 
@@ -1457,6 +1469,7 @@ impl Session {
         // a sim of the old rules ends, and its generator, theirs, goes
         self.sim = None;
         self.sim_generator = None;
+        self.sim_driver = None;
         self.arm_tables_built.clear();
         self.endgame_solvers.clear();
         self.infer_tables = None;
@@ -2363,25 +2376,35 @@ impl Session {
                 move_picker::SIMMER_FIELD,
                 &mut Vec::new(),
             );
-            let mut simmer = move_picker::Simmer::<_, _, true>::new(
-                self.game_config,
-                kwg,
-                arm_tables,
-                self.klv,
-                move_picker::SimmerParams {
-                    num_sim_iters: u64::MAX / 2,
-                    num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
-                    sim_threads: parallelism::available(),
-                    win_pct_table: None,
-                    quiet: true, // the shell prints its own lines
-                },
-            )?;
+            let made_for = [
+                std::ptr::from_ref(self.game_config).addr(),
+                std::ptr::from_ref(kwg).addr(),
+                std::ptr::from_ref(arm_tables).addr(),
+                std::ptr::from_ref(self.klv).addr(),
+            ];
+            let mut simmer = match self.sim_driver.take() {
+                Some((was_for, simmer)) if was_for == made_for => simmer,
+                _ => move_picker::Simmer::<_, _, true>::new(
+                    self.game_config,
+                    kwg,
+                    arm_tables,
+                    self.klv,
+                    move_picker::SimmerParams {
+                        num_sim_iters: u64::MAX / 2,
+                        num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
+                        sim_threads: parallelism::available(),
+                        win_pct_table: None,
+                        quiet: true, // the shell prints its own lines
+                    },
+                )?,
+            };
             simmer.reseed(self.position_seed());
             simmer.begin_decision(&move_generator, &self.filled_state(), 0, &leaves)?;
             let stream_of = (0..move_generator.plays.len() as u64).collect();
             self.sim = Some(Sim {
                 move_generator,
                 simmer,
+                made_for,
                 stream_of,
             });
         }
