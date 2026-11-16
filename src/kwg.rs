@@ -144,7 +144,7 @@ pub fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
         | ((bytes[p + 3] as u32) << 24)
 }
 
-pub struct Kwg<N: Node>(pub Box<[N]>);
+pub struct Kwg<N: Node>(pub Vec<N>);
 
 pub struct LetterBits {
     pub letter_bits: Box<[u64]>,
@@ -312,6 +312,15 @@ impl<N: Node> Kwg<N> {
             }
             at += piece.len();
         }
+        Self::finish_nodes(&mut elts)?;
+        Ok(Kwg(elts))
+    }
+
+    // the checks from_pieces makes of a graph's nodes once they are read, and
+    // the copy an empty lexicon's dawg node gets
+    #[inline(always)]
+    fn finish_nodes(elts: &mut Vec<N>) -> error::Returns<()> {
+        let kwg_len = elts.len();
         // the largest arc, found in one pass with no early exit
         let max_arc_index = elts.iter().fold(0, |m, node| m.max(node.arc_index()));
         if max_arc_index as usize >= kwg_len {
@@ -326,7 +335,36 @@ impl<N: Node> Kwg<N> {
         if kwg_len == 1 {
             elts.push(elts[0]);
         }
-        Ok(Kwg(elts.into_boxed_slice()))
+        Ok(())
+    }
+
+    // the graph made again in place from buf, in this layout, as
+    // from_bytes_alloc makes one: its nodes go where the graph's were, which
+    // allocates only when there are more of them than ever before. On an error
+    // it is the empty lexicon's graph instead
+    #[inline]
+    pub fn refill_from_bytes(&mut self, buf: &[u8]) -> error::Returns<()> {
+        let refilled = Self::refill_nodes::<N>(&mut self.0, buf);
+        if refilled.is_err() {
+            Self::refill_nodes::<Node22>(&mut self.0, EMPTY_KWG_BYTES)?;
+        }
+        refilled
+    }
+
+    // elts made again from buf, a graph's bytes in Old's layout
+    #[inline(always)]
+    fn refill_nodes<Old: Node>(elts: &mut Vec<N>, buf: &[u8]) -> error::Returns<()> {
+        elts.clear();
+        let len = buf.len();
+        if len == 0 || !len.is_multiple_of(4) {
+            return Err(format!("a word graph of {len} bytes is not whole nodes").into());
+        }
+        // as from_pieces, room for an empty lexicon's copied node
+        elts.reserve((len / 4).max(2));
+        for node in buf.as_chunks::<4>().0 {
+            elts.push(N::new(repack_node::<Old, N>(u32::from_le_bytes(*node))?));
+        }
+        Self::finish_nodes(elts)
     }
 
     #[inline(always)]
@@ -782,6 +820,32 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_refilled_graph_is_the_graph_its_bytes_load_to() {
+        let fields = |kwg: &Kwg<Node22>| {
+            (kwg.0.iter())
+                .map(|node| (node.tile(), node.accepts(), node.is_end(), node.arc_index()))
+                .collect::<Vec<_>>()
+        };
+        let gc = game_config::make_english_game_config();
+        let big = bytes_of(&gc, &["EAST", "EATS", "SEAT", "SETA", "TEAS"]);
+        let small = bytes_of(&gc, &["SEAT", "TEA"]);
+        let mut kwg = Kwg::<Node22>::from_bytes_alloc(&big).unwrap();
+        let nodes = kwg.0.as_ptr();
+        for bytes in [&small[..], &big, EMPTY_KWG_BYTES, &small] {
+            kwg.refill_from_bytes(bytes).unwrap();
+            assert!(fields(&kwg) == fields(&Kwg::from_bytes_alloc(bytes).unwrap()));
+            // as many nodes as before at most, in the same place
+            assert_eq!(kwg.0.as_ptr(), nodes);
+        }
+        // refused as from_bytes_alloc refuses them, leaving the empty graph
+        for bytes in [&[][..], &small[..3], &small[..small.len() - 1]] {
+            assert!(kwg.refill_from_bytes(bytes).is_err());
+            assert!(fields(&kwg) == fields(&Kwg::from_bytes_alloc(EMPTY_KWG_BYTES).unwrap()));
+        }
+    }
+
+    #[test]
+    #[inline]
     fn a_walk_off_the_words_or_round_a_loop_is_an_error() {
         let bytes = bytes_of(&game_config::make_english_game_config(), &["SEAT", "TEA"]);
         let kwg = Kwg::<Node22>::from_bytes_alloc(&bytes).unwrap();
@@ -908,7 +972,7 @@ mod tests {
             Node22::new(Node22::pack(b.tile(), b.accepts(), a.is_end(), b.arc_index()).unwrap());
         nodes[at + 1] =
             Node22::new(Node22::pack(a.tile(), a.accepts(), b.is_end(), a.arc_index()).unwrap());
-        assert!(!Kwg(nodes.into_boxed_slice()).runs_ascend());
+        assert!(!Kwg(nodes).runs_ascend());
     }
 
     // gaps between runs, nodes of no tile, flag, or arc that no arc enters, as
@@ -931,7 +995,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         nodes.splice(end + 1..end + 1, [Node22::new(0), Node22::new(0)]);
-        let gapped = Kwg(nodes.clone().into_boxed_slice());
+        let gapped = Kwg(nodes.clone());
         assert!(gapped.runs_ascend());
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut buf = Vec::new();
@@ -952,7 +1016,7 @@ mod tests {
             Node22::new(Node22::pack(b.tile(), b.accepts(), a.is_end(), b.arc_index()).unwrap());
         nodes[at + 1] =
             Node22::new(Node22::pack(a.tile(), a.accepts(), b.is_end(), a.arc_index()).unwrap());
-        assert!(!Kwg(nodes.into_boxed_slice()).runs_ascend());
+        assert!(!Kwg(nodes).runs_ascend());
     }
 
     #[test]
