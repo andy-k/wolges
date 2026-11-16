@@ -669,7 +669,7 @@ impl Anagrams {
 pub struct RackLengths {
     layout: alphagram::KeyLayout,
     present: std::collections::HashSet<u128, std::hash::BuildHasherDefault<KeyHasher>>,
-    run_letter_bits: Option<Box<[u64]>>, // Kwg::run_letter_bits, if kept
+    run_letters: kwg::RunLetters, // the graph's (Kwg::run_letters_if), if kept
 }
 
 impl RackLengths {
@@ -731,15 +731,11 @@ impl RackLengths {
         if !room {
             return Ok(None);
         }
-        let run_letter_bits = (g.runs_ascend()
-            && ledger
-                .take(g.0.len() * std::mem::size_of::<u64>())
-                .is_some())
-        .then(|| g.run_letter_bits());
+        let run_letters = g.run_letters_if(|bytes| ledger.take(bytes).is_some());
         Ok(Some(Self {
             layout,
             present,
-            run_letter_bits,
+            run_letters,
         }))
     }
 
@@ -758,17 +754,20 @@ impl RackLengths {
     // arm's walk then goes straight to a tile's node
     #[inline(always)]
     pub fn run_letter_bits(&self) -> Option<&[u64]> {
-        self.run_letter_bits.as_deref()
+        self.run_letters.bits()
+    }
+
+    // the graph's run letters, kept or not, for its solvers to share
+    #[inline(always)]
+    pub fn run_letters(&self) -> &kwg::RunLetters {
+        &self.run_letters
     }
 
     // the bytes it holds
     #[inline(always)]
     fn bytes(&self) -> usize {
         table_bytes::<u128>(self.present.capacity())
-            + self
-                .run_letter_bits
-                .as_ref()
-                .map_or(0, |bits| std::mem::size_of_val(&**bits))
+            + (self.run_letters.bits()).map_or(0, |bits| kwg::RunLetters::bytes_for(bits.len()))
     }
 }
 

@@ -2210,11 +2210,17 @@ impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, L
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
     ) -> error::Returns<Self> {
+        // the lean arm's tables hold the graph's run letters; else they are
+        // found here, as this is made once for its graph
+        let run_letters = match arm_tables.rack_lengths() {
+            Some(rack_lengths) => rack_lengths.run_letters().clone(),
+            None => kwg.run_letters(),
+        };
         Self::with_generator(
             game_config,
             kwg,
             arm_tables,
-            kwg.run_letters(),
+            run_letters,
             movegen::KurniaMoveGenerator::new(game_config),
         )
     }

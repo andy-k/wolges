@@ -162,6 +162,13 @@ pub struct RunLetters {
 }
 
 impl RunLetters {
+    // the bytes run letters of a graph of this many nodes hold: a word a node,
+    // and the shared count's two words before them
+    #[inline(always)]
+    pub fn bytes_for(nodes: usize) -> usize {
+        nodes * std::mem::size_of::<u64>() + 2 * std::mem::size_of::<usize>()
+    }
+
     // the run letters, if they are of this graph's nodes
     #[inline(always)]
     pub fn of<N: Node>(&self, kwg: &Kwg<N>) -> error::Returns<Option<&std::sync::Arc<[u64]>>> {
@@ -169,6 +176,12 @@ impl RunLetters {
             return Err("the run letters are of another graph".into());
         }
         Ok(self.bits.as_ref())
+    }
+
+    // the run letters, for what holds them beside their own graph
+    #[inline(always)]
+    pub fn bits(&self) -> Option<&[u64]> {
+        self.bits.as_deref()
     }
 }
 
@@ -362,6 +375,13 @@ impl<N: Node> Kwg<N> {
     #[inline(always)]
     pub fn run_letter_bits(&self) -> Box<[u64]> {
         let mut letter_bits = vec![0u64; self.0.len()].into_boxed_slice();
+        self.fill_run_letter_bits(&mut letter_bits);
+        letter_bits
+    }
+
+    // run_letter_bits, written into a slice of the graph's length
+    #[inline(always)]
+    fn fill_run_letter_bits(&self, letter_bits: &mut [u64]) {
         let mut all_acc = 0u64;
         for i in (0..self.0.len()).rev() {
             let node = self.0[i];
@@ -371,15 +391,31 @@ impl<N: Node> Kwg<N> {
             all_acc |= 1u64 << node.tile();
             letter_bits[i] = all_acc;
         }
-        letter_bits
     }
 
     // the graph's run letters, for a graph whose runs ascend, found once where
     // it loads for every solver of it (RunLetters)
     #[inline]
     pub fn run_letters(&self) -> RunLetters {
+        self.run_letters_if(|_| true)
+    }
+
+    // as run_letters, only if keep allows the bytes they would hold (asked
+    // only of a graph whose runs ascend), else none
+    #[inline]
+    pub fn run_letters_if(&self, keep: impl FnOnce(usize) -> bool) -> RunLetters {
         RunLetters {
-            bits: self.runs_ascend().then(|| self.run_letter_bits().into()),
+            bits: (self.runs_ascend() && keep(RunLetters::bytes_for(self.0.len()))).then(|| {
+                // made in place, so no copy is held beside it
+                let mut bits = (0..self.0.len())
+                    .map(|_| 0u64)
+                    .collect::<std::sync::Arc<[u64]>>();
+                let Some(letter_bits) = std::sync::Arc::get_mut(&mut bits) else {
+                    unreachable!("an Arc just made has no other holder");
+                };
+                self.fill_run_letter_bits(letter_bits);
+                bits
+            }),
             nodes: self.0.as_ptr().addr(),
         }
     }
