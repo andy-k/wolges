@@ -6694,7 +6694,9 @@ impl<
         if !deepens && sub.work_buffer.threads > 1 && state.next == 0 {
             ready = Self::peg_places_on_threads(sub, position, score_diff, limits, &state.moves);
         }
-
+        // the pass's two racks for each tile in the bag, one pair of buffers
+        // for them all
+        let mut r2: [Vec<u8>; 2] = Default::default();
         let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
             peg_value(
                 unseen,
@@ -6721,9 +6723,10 @@ impl<
                             // even players and shifts for odd ones, which on a
                             // reversed bag hands p1 the leftover instead of
                             // the next popped tile.
-                            let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
-                            r2[mover as usize] = mover_rack.to_vec();
-                            r2[opp as usize] = opp_rack.to_vec();
+                            r2[mover as usize].clear();
+                            r2[mover as usize].extend_from_slice(mover_rack);
+                            r2[opp as usize].clear();
+                            r2[opp as usize].extend_from_slice(opp_rack);
                             let mut search = OneInBag {
                                 gc,
                                 kwg,
