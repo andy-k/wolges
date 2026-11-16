@@ -549,6 +549,10 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
     }
 }
 
+// what a sim's caller does at a look (Simmer::resume_looking): given the
+// iterations done so far of those asked for and the candidates still in
+pub type Look<'l> = dyn FnMut(u64, usize) -> error::Returns<()> + 'l;
+
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
     pub num_sim_plies: usize,
@@ -1669,6 +1673,7 @@ impl<
         move_generator: &movegen::KurniaMoveGenerator,
         budget: u64,
         count: u64,
+        look: &mut Look<'_>,
     ) -> error::Returns<()> {
         if self.candidates.len() < 2 {
             return Ok(());
@@ -1676,7 +1681,7 @@ impl<
 
         #[cfg(not(target_family = "wasm"))]
         if self.sim_threads > 1 {
-            return self.run_iterations_parallel(move_generator, count);
+            return self.run_iterations_parallel(move_generator, count, look);
         }
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
@@ -1736,6 +1741,9 @@ impl<
                     Z,
                     1 + 2 * prune_periods_remaining as usize,
                 );
+            }
+            if sim_iter % PRUNE_CADENCE == 0 || sim_iter == start + count {
+                look(sim_iter - start, candidates.len())?;
                 if candidates.len() < 2 {
                     break;
                 }
@@ -1878,6 +1886,7 @@ impl<
         &mut self,
         move_generator: &movegen::KurniaMoveGenerator,
         count: u64,
+        look: &mut Look<'_>,
     ) -> error::Returns<()> {
         let num_threads = self.sim_threads;
         let mut kept = std::mem::take(&mut self.thread_kept);
@@ -1956,6 +1965,7 @@ impl<
                 }
                 self.absorb_block(&block, &rows)?;
                 drop(rows);
+                look(block.hi - start, self.candidates.len())?;
             }
             Ok(())
         });
@@ -2101,7 +2111,7 @@ impl<
         self.decision_t0 = (!self.quiet).then(std::time::Instant::now);
         self.ticked = 0;
         let budget = self.num_sim_iters;
-        self.run_iterations(move_generator, budget, iters)
+        self.run_iterations(move_generator, budget, iters, &mut |_, _| Ok(()))
     }
 
     #[inline]
@@ -2110,8 +2120,22 @@ impl<
         move_generator: &movegen::KurniaMoveGenerator,
         extra_iters: u64,
     ) -> error::Returns<()> {
+        self.resume_looking(move_generator, extra_iters, &mut |_, _| Ok(()))
+    }
+
+    // as resume, calling look at each look and at the end with the iterations
+    // done so far of these and the candidates still in, so that a caller
+    // watching the sim need not resume it a look at a time (a run on threads
+    // starts them once for all its looks)
+    #[inline]
+    pub fn resume_looking(
+        &mut self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        extra_iters: u64,
+        look: &mut Look<'_>,
+    ) -> error::Returns<()> {
         let budget = self.num_sim_iters;
-        self.run_iterations(move_generator, budget, extra_iters)
+        self.run_iterations(move_generator, budget, extra_iters, look)
     }
 }
 

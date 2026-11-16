@@ -2411,9 +2411,9 @@ impl Session {
         Ok(self.sim.as_mut().unwrap())
     }
 
-    // run the sim this many more iterations, or until one candidate is left, a
-    // step up to each look at a time (its rows are the same however the run is
-    // split), printing a line a second unless quiet
+    // run the sim this many more iterations, or until one candidate is left,
+    // in one run looked in on at each look (its rows are the same however the
+    // run is split), printing a line a second unless quiet
     fn sim_run(&mut self, iterations: u64) -> error::Returns<()> {
         let t0 = std::time::Instant::now();
         let quiet = self.quiet;
@@ -2422,22 +2422,18 @@ impl Session {
             simmer,
             ..
         } = self.sim_mut()?;
-        let mut done = 0;
         let mut ticked = 0;
-        while done < iterations && simmer.active_stream_ids().nth(1).is_some() {
-            let step = simmer.iters_to_next_look().min(iterations - done);
-            simmer.resume(move_generator, step)?;
-            done += step;
+        simmer.resume_looking(move_generator, iterations, &mut |done, left| {
             let secs = t0.elapsed().as_secs();
             if !quiet && secs > ticked {
                 ticked = secs;
                 writeln!(
                     std::io::stderr(),
-                    "sim: {done} of {iterations} more iterations, {} left in, {secs} s",
-                    simmer.active_stream_ids().count()
+                    "sim: {done} of {iterations} more iterations, {left} left in, {secs} s"
                 )?;
             }
-        }
+            Ok(())
+        })?;
         writeln!(
             std::io::stdout(),
             "sim: {iterations} more iterations, {:.0} ms",
