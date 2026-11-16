@@ -153,15 +153,35 @@ pub struct LetterBits {
 
 // a graph's run letters (Kwg::run_letter_bits), found once where the graph
 // loads (Kwg::run_letters) for every solver of it to share: none for a graph
-// whose runs do not ascend (Kwg::runs_ascend). It names its graph by the
-// address of the graph's nodes, which stay put however the graph moves
+// whose runs do not ascend (Kwg::runs_ascend). They borrow their graph, so it
+// cannot change while they live, and name it by the address of its nodes
 #[derive(Clone)]
-pub struct RunLetters {
+pub struct RunLetters<'g> {
+    bits: RunBits,
+    graph: std::marker::PhantomData<&'g ()>,
+}
+
+impl RunLetters<'_> {
+    // the run letters, if they are of this graph's nodes
+    #[inline(always)]
+    pub fn of<N: Node>(&self, kwg: &Kwg<N>) -> error::Returns<Option<&std::sync::Arc<[u64]>>> {
+        if self.bits.nodes != kwg.0.as_ptr().addr() {
+            return Err("the run letters are of another graph".into());
+        }
+        Ok(self.bits.bits.as_ref())
+    }
+}
+
+// run letters held apart from their graph, by what is built of it and lives as
+// long (anagrams::RackLengths, RunGraph): lent as RunLetters only to a borrow
+// of their own graph (RunBits::of)
+#[derive(Clone)]
+pub struct RunBits {
     bits: Option<std::sync::Arc<[u64]>>,
     nodes: usize,
 }
 
-impl RunLetters {
+impl RunBits {
     // the bytes run letters of a graph of this many nodes hold: a word a node,
     // and the shared count's two words before them
     #[inline(always)]
@@ -169,19 +189,57 @@ impl RunLetters {
         nodes * std::mem::size_of::<u64>() + 2 * std::mem::size_of::<usize>()
     }
 
-    // the run letters, if they are of this graph's nodes
-    #[inline(always)]
-    pub fn of<N: Node>(&self, kwg: &Kwg<N>) -> error::Returns<Option<&std::sync::Arc<[u64]>>> {
-        if self.nodes != kwg.0.as_ptr().addr() {
-            return Err("the run letters are of another graph".into());
-        }
-        Ok(self.bits.as_ref())
-    }
-
-    // the run letters, for what holds them beside their own graph
+    // the run letters themselves, for their holder
     #[inline(always)]
     pub fn bits(&self) -> Option<&[u64]> {
         self.bits.as_deref()
+    }
+
+    // the run letters lent to a borrow of their graph, refused for another
+    #[inline(always)]
+    pub fn of<'g, N: Node>(&self, kwg: &'g Kwg<N>) -> error::Returns<RunLetters<'g>> {
+        if self.nodes != kwg.0.as_ptr().addr() {
+            return Err("the run letters are of another graph".into());
+        }
+        Ok(RunLetters {
+            bits: self.clone(),
+            graph: std::marker::PhantomData,
+        })
+    }
+}
+
+// a graph held with its run letters, found once as it is made: read only
+// through this, so the letters it lends are always its own
+pub struct RunGraph<N: Node> {
+    kwg: Kwg<N>,
+    bits: RunBits,
+}
+
+impl<N: Node> RunGraph<N> {
+    #[inline]
+    pub fn new(kwg: Kwg<N>) -> Self {
+        let bits = kwg.run_bits_if(|_| true);
+        Self { kwg, bits }
+    }
+
+    #[inline(always)]
+    pub fn kwg(&self) -> &Kwg<N> {
+        &self.kwg
+    }
+
+    // the graph, its run letters let go, for a holder that makes another graph
+    // in its nodes
+    #[inline(always)]
+    pub fn into_kwg(self) -> Kwg<N> {
+        self.kwg
+    }
+
+    #[inline(always)]
+    pub fn run_letters(&self) -> RunLetters<'_> {
+        RunLetters {
+            bits: self.bits.clone(),
+            graph: std::marker::PhantomData,
+        }
     }
 }
 
@@ -396,16 +454,19 @@ impl<N: Node> Kwg<N> {
     // the graph's run letters, for a graph whose runs ascend, found once where
     // it loads for every solver of it (RunLetters)
     #[inline]
-    pub fn run_letters(&self) -> RunLetters {
-        self.run_letters_if(|_| true)
+    pub fn run_letters(&self) -> RunLetters<'_> {
+        RunLetters {
+            bits: self.run_bits_if(|_| true),
+            graph: std::marker::PhantomData,
+        }
     }
 
     // as run_letters, only if keep allows the bytes they would hold (asked
     // only of a graph whose runs ascend), else none
     #[inline]
-    pub fn run_letters_if(&self, keep: impl FnOnce(usize) -> bool) -> RunLetters {
-        RunLetters {
-            bits: (self.runs_ascend() && keep(RunLetters::bytes_for(self.0.len()))).then(|| {
+    pub fn run_bits_if(&self, keep: impl FnOnce(usize) -> bool) -> RunBits {
+        RunBits {
+            bits: (self.runs_ascend() && keep(RunBits::bytes_for(self.0.len()))).then(|| {
                 // made in place, so no copy is held beside it
                 let mut bits = (0..self.0.len())
                     .map(|_| 0u64)

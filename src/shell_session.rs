@@ -243,7 +243,7 @@ pub struct Session {
     kwg: Option<(String, &'static kwg::Kwg<kwg::Node24>)>,
     klv: &'static klv::Klv<kwg::Node24>,
     kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node24>>,
-    run_letters_found: std::collections::HashMap<usize, kwg::RunLetters>, // by graph's address
+    run_letters_found: std::collections::HashMap<usize, kwg::RunLetters<'static>>, // by graph's address
     klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node24>>,
     arm_tables_built: std::collections::HashMap<String, &'static anagrams::ArmTables>,
     rules_made: std::collections::HashMap<String, &'static game_config::GameConfig>,
@@ -1467,7 +1467,7 @@ impl Session {
     }
 
     // the word graph's run letters, found as it was first used
-    fn run_letters(&self) -> error::Returns<kwg::RunLetters> {
+    fn run_letters(&self) -> error::Returns<kwg::RunLetters<'static>> {
         let kwg = self.kwg()?;
         Ok(self.run_letters_found[&std::ptr::from_ref(kwg).addr()].clone())
     }
@@ -3135,7 +3135,7 @@ fn endgame_solver(
     game_config: &'static game_config::GameConfig,
     kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
-    run_letters: kwg::RunLetters,
+    run_letters: kwg::RunLetters<'static>,
     state: &game_state::GameState,
 ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
     if !state.bag.is_empty() {
@@ -3179,7 +3179,7 @@ fn solve_endgame(
     game_config: &'static game_config::GameConfig,
     kwg: &'static kwg::Kwg<kwg::Node24>,
     arm_tables: &'static anagrams::ArmTables,
-    run_letters: kwg::RunLetters,
+    run_letters: kwg::RunLetters<'static>,
     state: &game_state::GameState,
     limits: &endgame::Limits,
     quiet: bool,
