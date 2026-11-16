@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, error, fash, game_config, kwg};
+use super::{bites, error, game_config, kwg};
 
 // Unconfirmed entries.
 // Memory wastage notes:
@@ -41,7 +41,7 @@ impl TransitionStack<'_> {
 // Memory wastage notes:
 // - Each index would be 22 bits max.
 // - Could have used u64 or a 7-byte thing instead of this 12-byte struct.
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 struct State {
     tile: u8,
     accepts: bool,
@@ -49,35 +49,48 @@ struct State {
     next_index: u32, // Refers to states.
 }
 
-// a state and its index in states, or an empty slot (index !0)
+// what a Finder finds things by: a value and its hash
+trait FinderKey: Clone + Default + Eq {
+    fn hash_key(&self) -> u64;
+}
+
+impl FinderKey for State {
+    #[inline(always)]
+    fn hash_key(&self) -> u64 {
+        ((self.arc_index as u64) | ((self.next_index as u64) << 32))
+            ^ (((self.tile as u64) << 1) | self.accepts as u64).rotate_right(8)
+    }
+}
+
+impl FinderKey for u64 {
+    #[inline(always)]
+    fn hash_key(&self) -> u64 {
+        *self
+    }
+}
+
+// a key and its index, or an empty slot (index !0)
 #[derive(Clone)]
-struct StateSlot {
-    state: State,
+struct FinderSlot<K> {
+    key: K,
     index: u32,
 }
 
-const EMPTY_STATE_SLOT: StateSlot = StateSlot {
-    state: State {
-        tile: 0,
-        accepts: false,
-        arc_index: 0,
-        next_index: 0,
-    },
-    index: !0,
-};
-
-// the states made so far, by their content: an open-addressing table, probed
+// the keys found so far, each with its index: an open-addressing table, probed
 // linearly, of a power of two slots kept at most three quarters full, each
-// slot holding its state so that a probe reads no other memory
+// slot holding its key so that a probe reads no other memory
 #[derive(Default)]
-struct StatesFinder {
-    slots: Vec<StateSlot>,
-    spare: Vec<StateSlot>, // what a growth rehashes into
+struct Finder<K> {
+    slots: Vec<FinderSlot<K>>,
+    spare: Vec<FinderSlot<K>>, // what a growth rehashes into
     len: usize,
     shift: u32, // a hash's top bits pick its slot: 64 - log2(slots.len())
 }
 
-impl StatesFinder {
+// the states made so far, by their content
+type StatesFinder = Finder<State>;
+
+impl<K: FinderKey> Finder<K> {
     // Fibonacci hashing's multiplier, 2^64 divided by the golden ratio
     // (https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing)
     const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -85,7 +98,7 @@ impl StatesFinder {
     // slots, held in a cache line or two
     const LOAD: (usize, usize) = (3, 4);
 
-    // empty, with room for this many states before it grows (len, until then,
+    // empty, with room for this many keys before it grows (len, until then,
     // is the last fill's)
     #[inline(always)]
     fn clear(&mut self, expected_len: usize) {
@@ -93,35 +106,39 @@ impl StatesFinder {
             .div_ceil(Self::LOAD.0)
             .next_power_of_two();
         self.slots.clear();
-        self.slots.resize(num_slots, EMPTY_STATE_SLOT);
+        self.slots.resize(
+            num_slots,
+            FinderSlot {
+                key: K::default(),
+                index: !0,
+            },
+        );
         self.len = 0;
         self.shift = u64::BITS - num_slots.trailing_zeros();
     }
 
     #[inline(always)]
-    fn slot_of(shift: u32, state: &State) -> usize {
-        let key = ((state.arc_index as u64) | ((state.next_index as u64) << 32))
-            ^ (((state.tile as u64) << 1) | state.accepts as u64).rotate_right(8);
-        (key.wrapping_mul(Self::MULTIPLIER) >> shift) as usize
+    fn slot_of(shift: u32, key: &K) -> usize {
+        (key.hash_key().wrapping_mul(Self::MULTIPLIER) >> shift) as usize
     }
 
-    // the index of the state like this one, else new_index, now its index
+    // the index of the key like this one, else new_index, now its index
     #[inline(always)]
-    fn find_or_insert(&mut self, state: &State, new_index: u32) -> u32 {
+    fn find_or_insert(&mut self, key: &K, new_index: u32) -> u32 {
         let mask = self.slots.len() - 1;
-        let mut i = Self::slot_of(self.shift, state);
+        let mut i = Self::slot_of(self.shift, key);
         loop {
             let slot = &self.slots[i];
             if slot.index == !0 {
                 break;
             }
-            if slot.state == *state {
+            if slot.key == *key {
                 return slot.index;
             }
             i = (i + 1) & mask;
         }
-        self.slots[i] = StateSlot {
-            state: state.clone(),
+        self.slots[i] = FinderSlot {
+            key: key.clone(),
             index: new_index,
         };
         self.len += 1;
@@ -131,20 +148,26 @@ impl StatesFinder {
         new_index
     }
 
-    // twice the slots, every state rehashed into them
+    // twice the slots, every key rehashed into them
     #[cold]
     fn grow(&mut self) {
         let num_slots = self.slots.len() * 2;
         std::mem::swap(&mut self.slots, &mut self.spare);
         self.slots.clear();
-        self.slots.resize(num_slots, EMPTY_STATE_SLOT);
+        self.slots.resize(
+            num_slots,
+            FinderSlot {
+                key: K::default(),
+                index: !0,
+            },
+        );
         self.shift -= 1;
         let mask = num_slots - 1;
         for slot in self.spare.drain(..) {
             if slot.index == !0 {
                 continue;
             }
-            let mut i = Self::slot_of(self.shift, &slot.state);
+            let mut i = Self::slot_of(self.shift, &slot.key);
             while self.slots[i].index != !0 {
                 i = (i + 1) & mask;
             }
@@ -978,8 +1001,9 @@ struct ReorderBuffers {
     has_dawg: Vec<bool>,
     in_dawg: Vec<bool>,
     movable: Vec<u32>,
-    entry_indexes: fash::MyHashMap<u64, u32>,
+    entry_indexes: Finder<u64>,
     entry_counts: Vec<u32>,
+    element_entries: Vec<u32>, // each movable list's entries, in list order
     postings_starts: Vec<u32>,
     postings: Vec<u32>,
     postings_fill: Vec<u32>,
@@ -1019,6 +1043,7 @@ fn reorder_states(
         movable,
         entry_indexes,
         entry_counts,
+        element_entries,
         postings_starts,
         postings,
         postings_fill,
@@ -1069,19 +1094,21 @@ fn reorder_states(
         }
     }
 
-    entry_indexes.clear();
+    // room for an entry a list, or for as many as the last reorder found
+    entry_indexes.clear(movable.len().max(entry_indexes.len));
     entry_counts.clear();
+    element_entries.clear();
     for &head in movable.iter() {
         let mut p = head;
         while p != 0 {
             let num_entries = entry_counts.len() as u32;
-            let entry_index = *entry_indexes
-                .entry(entry_key(&states[p as usize]))
-                .or_insert(num_entries);
+            let entry_index =
+                entry_indexes.find_or_insert(&entry_key(&states[p as usize]), num_entries);
             if entry_index == num_entries {
                 entry_counts.push(0);
             }
             entry_counts[entry_index as usize] += 1;
+            element_entries.push(entry_index);
             p = states[p as usize].next_index;
         }
     }
@@ -1096,12 +1123,13 @@ fn reorder_states(
     postings.resize(num_postings as usize, 0);
     postings_fill.clone_from(postings_starts);
     rarest_entries.clear();
+    let mut element_entries = element_entries.iter();
     for (i, &head) in movable.iter().enumerate() {
         let mut rarest_entry = 0;
         let mut rarest_count = !0;
         let mut p = head;
         while p != 0 {
-            let entry_index = entry_indexes[&entry_key(&states[p as usize])];
+            let entry_index = *element_entries.next().unwrap();
             postings[postings_fill[entry_index as usize] as usize] = i as u32;
             postings_fill[entry_index as usize] += 1;
             let entry_count = entry_counts[entry_index as usize];
