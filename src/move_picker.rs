@@ -422,6 +422,7 @@ pub struct Simmer<
     decision_t0: Option<std::time::Instant>, // set only when not quiet
     ticked: u64,
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
+    inferred: std::sync::Arc<infer::PackedLeaves>, // the opponent's kept leaves, in place
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
     late_board: Box<[u8]>, // the board the late graph was pruned for
     late_prune: LatePrune, // what each late graph is pruned with
@@ -624,6 +625,7 @@ impl<
             decision_t0: None,
             ticked: 0,
             infer: None,
+            inferred: std::sync::Arc::default(),
             late_graph: None,
             late_board: Box::default(),
             late_prune: LatePrune {
@@ -1988,6 +1990,18 @@ impl<
         watcher_rack: &[u8],
         last: LastMove<'_>,
     ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+        self.infer_kept(watcher_rack, last)?;
+        let leaves = &self.inferred;
+        Ok((0..leaves.len())
+            .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
+            .collect())
+    }
+
+    // the same leaves, into the driver's packed list, in place: the simmer
+    // lets go of the last decision's first, so that the list is the driver's
+    // alone and its memory is kept
+    #[inline]
+    fn infer_kept(&mut self, watcher_rack: &[u8], last: LastMove<'_>) -> error::Returns<()> {
         #[cfg(not(target_family = "wasm"))]
         let threads = self.sim_threads;
         #[cfg(target_family = "wasm")]
@@ -2002,7 +2016,11 @@ impl<
                 ))
             }
         };
-        infer::kept_leaves(
+        self.simmer.release_kept();
+        if std::sync::Arc::get_mut(&mut self.inferred).is_none() {
+            self.inferred = std::sync::Arc::default();
+        }
+        infer::kept_leaves_packed_into(
             tables,
             infer_generator,
             &movegen::BoardSnapshot {
@@ -2017,6 +2035,7 @@ impl<
             last.play,
             infer::FUZZ,
             threads,
+            std::sync::Arc::make_mut(&mut self.inferred),
         )
     }
 
@@ -2028,10 +2047,27 @@ impl<
         iters: u64,
         kept_leaves: &[(Vec<u8>, f64)], // the leaves the opponent may have kept, with weights
     ) -> error::Returns<()> {
+        self.begin_decision_of(move_generator, game_state, iters, kept_leaves, &[])
+    }
+
+    // as begin_decision, a seat's leaves also given packed, each in place of
+    // any listed for its seat
+    #[inline]
+    fn begin_decision_of(
+        &mut self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        game_state: &game_state::GameState,
+        iters: u64,
+        kept_leaves: &[(Vec<u8>, f64)],
+        packed: &[simmer::KeptLeaves],
+    ) -> error::Returns<()> {
         self.simmer.prepare(
             self.game_config,
             game_state,
-            &simmer::SimChoices::new(self.num_sim_plies, OBSERVE, kept_leaves),
+            &simmer::SimChoices {
+                packed,
+                ..simmer::SimChoices::new(self.num_sim_plies, OBSERVE, kept_leaves)
+            },
         );
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
@@ -2219,14 +2255,26 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     &mut scratch,
                 );
                 simmer.candidate_scratch = scratch;
-                let leaves = match last {
+                // the leaves inferred from the last move, packed and shared
+                // with the simmer, not copied
+                let inferred = match last {
                     Some(last) if game_state.players.len() == 2 => {
-                        simmer.kept_leaves(rack, last)?
+                        simmer.infer_kept(rack, last)?;
+                        Some(simmer::KeptLeaves {
+                            seat: 1 - game_state.turn,
+                            leaves: simmer.inferred.clone(),
+                        })
                     }
-                    _ => Vec::new(),
+                    _ => None,
                 };
                 let budget = simmer.num_sim_iters;
-                simmer.begin_decision(move_generator, game_state, budget, &leaves)?;
+                simmer.begin_decision_of(
+                    move_generator,
+                    game_state,
+                    budget,
+                    &[],
+                    inferred.as_slice(),
+                )?;
                 if let Some(t0) = t0 {
                     const Z: f64 = 1.96; // 95% confidence interval
                     let top = simmer
