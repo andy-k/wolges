@@ -303,19 +303,27 @@ impl<
             R::seed_from_u64(0),
             movegen::KurniaMoveGenerator::new_in(game_config),
         );
-        clone.prepare(
+        clone.prepare_as(game_config, self);
+        clone
+    }
+
+    // as prepared_clone, in place: this simmer prepared as the other is, its
+    // generator and its buffers kept (reseed it before it draws)
+    #[inline]
+    pub fn prepare_as(&mut self, game_config: &game_config::GameConfig, other: &Self) {
+        self.rng = R::seed_from_u64(0);
+        self.prepare(
             game_config,
-            &self.initial_game_state,
+            &other.initial_game_state,
             &SimChoices {
-                packed: &self.kept,
-                opponents_pass: self.opponents_pass,
-                ..SimChoices::new(self.num_sim_plies, self.wants_win_prob, &[])
+                packed: &other.kept,
+                opponents_pass: other.opponents_pass,
+                ..SimChoices::new(other.num_sim_plies, other.wants_win_prob, &[])
             },
         );
         // one census a preparation, whichever of its clones takes it
-        clone.census = self.census.clone();
-        clone.census_taken.clone_from(&self.census_taken);
-        clone
+        self.census = other.census.clone();
+        self.census_taken.clone_from(&other.census_taken);
     }
 
     #[inline(always)]
