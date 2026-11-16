@@ -319,26 +319,31 @@ pub fn behind_paired(
 // objective.
 #[inline(always)]
 fn retire_paired(candidates: &mut Vec<Candidate>, retired: &mut Vec<Candidate>, z: f64) {
-    let lead = candidates
+    let mut lead = candidates
         .iter()
-        .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
-        .unwrap();
-    let below = candidates
-        .iter()
-        .map(|candidate| {
-            behind_paired(
-                &candidate.objectives,
-                candidate.first_iter,
-                &lead.objectives,
-                lead.first_iter,
-                z,
-            )
-        })
-        .collect::<Vec<_>>();
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
+        .unwrap()
+        .0;
+    // each candidate is judged where it stands before any swap reaches it, and
+    // the leader's place is followed through the swaps, so no list of verdicts
+    // is made
     let mut write = 0;
-    for (read, &is_below) in below.iter().enumerate() {
-        if !is_below {
+    for read in 0..candidates.len() {
+        let (candidate, leader) = (&candidates[read], &candidates[lead]);
+        if !behind_paired(
+            &candidate.objectives,
+            candidate.first_iter,
+            &leader.objectives,
+            leader.first_iter,
+            z,
+        ) {
             candidates.swap(write, read);
+            if lead == write {
+                lead = read;
+            } else if lead == read {
+                lead = write;
+            }
             write += 1;
         }
     }
