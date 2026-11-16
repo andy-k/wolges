@@ -448,13 +448,16 @@ pub struct Simmer<
 }
 
 // what a sim's late graph is pruned with, kept from one decision to the next:
-// the generator (made at its first use), the words, the builder, and the graph
-// of no late graph, whose nodes the next one is made in
+// the generator (made at its first use), the words, the builder, the graph of
+// no late graph, whose nodes the next one is made in, and the tables of no
+// late graph and the scratch, in whose memory the next one's are built
 struct LatePrune {
     generator: Option<movegen::KurniaMoveGenerator>,
     words: Vec<bites::Bites>,
     builder: build::Builder,
     spare: kwg::Kwg<kwg::Node24>,
+    spare_tables: anagrams::ArmTables,
+    arm_scratch: anagrams::ArmScratch,
 }
 
 // the opponent's last move and the board before it, from which a sim infers
@@ -652,6 +655,8 @@ impl<
                 words: Vec::new(),
                 builder: Default::default(),
                 spare: kwg::Kwg(Vec::new()),
+                spare_tables: anagrams::ArmTables::None,
+                arm_scratch: Default::default(),
             },
             thread_kept: Vec::new(),
         }
@@ -2329,6 +2334,8 @@ impl<
             words,
             builder,
             spare,
+            spare_tables,
+            arm_scratch,
         } = &mut self.late_prune;
         self.late_graph = if keep {
             self.late_graph.take()
@@ -2348,26 +2355,31 @@ impl<
                     |word: &[u8]| words.push(word.into()),
                 );
             // made in the nodes of the graph before, if any
-            let mut kwg = match self.late_graph.take() {
-                Some((kwg, _)) => kwg,
-                None => std::mem::replace(spare, kwg::Kwg(Vec::new())),
+            let (mut kwg, mut arm_tables) = match self.late_graph.take() {
+                Some(late) => late,
+                None => (
+                    std::mem::replace(spare, kwg::Kwg(Vec::new())),
+                    std::mem::replace(spare_tables, anagrams::ArmTables::None),
+                ),
             };
             kwg.refill_from_bytes(builder.build_for_game(self.game_config, words)?)?;
-            // tables of the arm the given ones are of
-            let arm_tables = match self.arm_tables {
+            // tables of the arm the given ones are of, in the memory of those
+            // before
+            match self.arm_tables {
                 anagrams::ArmTables::Anagrams(_) => {
-                    anagrams::ArmTables::build(&kwg, self.game_config, false)?
+                    arm_tables.rebuild(&kwg, self.game_config, false, arm_scratch)?
                 }
                 anagrams::ArmTables::RackLengths(_) => {
-                    anagrams::ArmTables::build(&kwg, self.game_config, true)?
+                    arm_tables.rebuild(&kwg, self.game_config, true, arm_scratch)?
                 }
-                anagrams::ArmTables::None => anagrams::ArmTables::None,
-            };
+                anagrams::ArmTables::None => arm_tables = anagrams::ArmTables::None,
+            }
             Some((kwg, arm_tables))
         } else {
             // its nodes kept for the next
-            if let Some((kwg, _)) = self.late_graph.take() {
+            if let Some((kwg, arm_tables)) = self.late_graph.take() {
                 *spare = kwg;
+                *spare_tables = arm_tables;
             }
             None
         };
