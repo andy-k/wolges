@@ -660,63 +660,66 @@ impl StatesDefragger<'_> {
         );
     }
 
-    // idxs and params are the builder's, emptied here
+    // into order, the builder's, emptied here: every state but the sink, those
+    // in_front says first, then those with more ways, then longer to the end
+    // of their list, then in index order. Each is a key of these as numbers
+    // that ascend in that order, the index its low bits, so that the sort
+    // compares keys and reads nothing else
+    #[inline(always)]
+    fn order_by_ways(
+        &self,
+        num_ways: &[u32],
+        in_front: impl Fn(usize) -> bool,
+        order: &mut Vec<u128>,
+    ) {
+        order.clear();
+        order.extend((1..self.states.len()).map(|p| {
+            let field = u32::BITS;
+            ((!in_front(p) as u128) << (field * 3))
+                | ((!num_ways[p] as u128) << (field * 2))
+                | ((!self.to_end_lens[p] as u128) << field)
+                | p as u128
+        }));
+        order.sort_unstable();
+    }
+
+    // order and params are the builder's, emptied here
     #[inline]
     fn build_experimental(
         &mut self,
         num_ways: &[u32],
         top_indexes: &[u32],
-        idxs: &mut Vec<u32>,
+        order: &mut Vec<u128>,
         params: &mut StateDefraggerExperimentalParams<'_>,
     ) {
-        idxs.clear();
-        idxs.extend(1..self.states.len() as u32);
-        idxs.sort_unstable_by(|&a, &b| {
-            num_ways[b as usize]
-                .cmp(&num_ways[a as usize])
-                .then_with(|| {
-                    self.to_end_lens[b as usize]
-                        .cmp(&self.to_end_lens[a as usize])
-                        .then_with(|| a.cmp(&b))
-                })
-        });
+        self.order_by_ways(num_ways, |_| false, order);
 
         params.clear();
         // num_written is either 1 or 2, both are < 16.
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
-        for &p in idxs.iter() {
-            self.defrag_cache_friendly(params, top_indexes[p as usize]);
+        for &key in order.iter() {
+            self.defrag_cache_friendly(params, top_indexes[key as u32 as usize]);
         }
         self.num_written =
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
     }
 
-    // idxs, used_in_dawg, and params are the builder's, emptied here
+    // order, used_in_dawg, and params are the builder's, emptied here
     #[inline]
     fn build_wolges(
         &mut self,
         num_ways: &[u32],
         build_content: &BuildContent,
         dawg_start_state: u32,
-        idxs: &mut Vec<u32>,
+        order: &mut Vec<u128>,
         used_in_dawg: &mut Vec<bool>,
         params: &mut StateDefraggerExperimentalParams<'_>,
     ) {
-        idxs.clear();
-        idxs.extend(1..self.states.len() as u32);
         match build_content {
             BuildContent::DawgOnly => {
                 // All nodes are dawg nodes.
-                idxs.sort_unstable_by(|&a, &b| {
-                    num_ways[b as usize]
-                        .cmp(&num_ways[a as usize])
-                        .then_with(|| {
-                            self.to_end_lens[b as usize]
-                                .cmp(&self.to_end_lens[a as usize])
-                                .then_with(|| a.cmp(&b))
-                        })
-                });
+                self.order_by_ways(num_ways, |_| false, order);
             }
             BuildContent::Gaddawg => {
                 // Check which nodes are used in dawg.
@@ -732,19 +735,7 @@ impl StatesDefragger<'_> {
                         used_in_dawg[p] = true
                     }
                 }
-                idxs.sort_unstable_by(|&a, &b| {
-                    used_in_dawg[b as usize]
-                        .cmp(&used_in_dawg[a as usize])
-                        .then_with(|| {
-                            num_ways[b as usize]
-                                .cmp(&num_ways[a as usize])
-                                .then_with(|| {
-                                    self.to_end_lens[b as usize]
-                                        .cmp(&self.to_end_lens[a as usize])
-                                        .then_with(|| a.cmp(&b))
-                                })
-                        })
-                });
+                self.order_by_ways(num_ways, |p| used_in_dawg[p], order);
             }
         }
 
@@ -752,8 +743,8 @@ impl StatesDefragger<'_> {
         // num_written is either 1 or 2, both are < 16.
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
-        for &p in idxs.iter() {
-            self.defrag_cache_friendly(params, p);
+        for &key in order.iter() {
+            self.defrag_cache_friendly(params, key as u32);
         }
         self.num_written =
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
@@ -1310,7 +1301,7 @@ pub struct Builder {
     num_ways: Vec<u32>,
     top_indexes: Vec<u32>,
     used_in_dawg: Vec<bool>,
-    idxs: Vec<u32>,
+    order: Vec<u128>, // the defrag's, as order_by_ways gives it
     stack: Vec<(u32, u32, u32)>,
     block_len: Vec<u8>,
     blocks_with_len: [Vec<u32>; 16],
@@ -1402,7 +1393,7 @@ impl Builder {
             num_ways,
             top_indexes,
             used_in_dawg,
-            idxs,
+            order,
             stack,
             block_len,
             blocks_with_len,
@@ -1509,7 +1500,7 @@ impl Builder {
                     num_ways,
                 );
                 gen_top_indexes(states, states_defragger.head_indexes, top_indexes);
-                states_defragger.build_experimental(num_ways, top_indexes, idxs, &mut params)
+                states_defragger.build_experimental(num_ways, top_indexes, order, &mut params)
             }
             BuildLayout::Wolges => {
                 gen_num_ways(
@@ -1523,7 +1514,7 @@ impl Builder {
                     num_ways,
                     &build_content,
                     dawg_start_state,
-                    idxs,
+                    order,
                     used_in_dawg,
                     &mut params,
                 )
