@@ -1872,21 +1872,20 @@ impl Session {
         // person, the tiles they have not seen
         let turn = self.state.turn as usize;
         for (i, player) in self.state.players.iter().enumerate() {
+            write!(out, "player {} (", i + 1)?;
+            match self.seats[i] {
+                Seat::Human => write!(out, "human")?,
+                Seat::Given => write!(out, "given")?,
+                Seat::Bot(None) => write!(out, "bot")?,
+                Seat::Bot(Some(ms)) => write!(out, "bot sim {ms}")?,
+            }
+            write!(out, "): {}", equity::descale_score(player.score))?;
+            if !player.rack.is_empty() {
+                write!(out, " {}", self.rack_shown(i, &player.rack))?;
+            }
             writeln!(
                 out,
-                "player {} ({}): {}{}{}",
-                i + 1,
-                match self.seats[i] {
-                    Seat::Human => "human".to_string(),
-                    Seat::Given => "given".to_string(),
-                    Seat::Bot(None) => "bot".to_string(),
-                    Seat::Bot(Some(ms)) => format!("bot sim {ms}"),
-                },
-                equity::descale_score(player.score),
-                match self.rack_text(i, &player.rack) {
-                    rack if rack.is_empty() => rack,
-                    rack => format!(" {rack}"),
-                },
+                "{}",
                 if i == turn && self.final_scores.is_none() {
                     " (to move)"
                 } else {
@@ -1916,14 +1915,26 @@ impl Session {
         // moves after those shown are marked ~
         if let Some((_, kwg)) = self.kwg {
             let (mut replay, mut rng) = self.dealt(game)?;
+            // each move written straight out: its rack and text on the board
+            // before it, then its total after it
             for (i, turn) in game.turns.iter().enumerate() {
                 let held = replay.ready_rack(self.game_config, turn)?;
                 let board = &mut replay.state;
                 let mover = board.turn as usize;
-                let rack = self.rack_text(mover, &board.players[mover].rack);
-                let text = self.exchange_shown(mover, turn).unwrap_or_else(|| {
-                    turn.play
-                        .fmt(&movegen::BoardSnapshot {
+                write!(
+                    out,
+                    "{}{:>3}. player {} {:<7} ",
+                    if i < game.at { " " } else { "~" },
+                    i + 1,
+                    mover + 1,
+                    self.rack_shown(mover, &board.players[mover].rack),
+                )?;
+                match self.exchange_shown(mover, turn) {
+                    Some(shown) => write!(out, "{shown}")?,
+                    None => write!(
+                        out,
+                        "{}",
+                        turn.play.fmt(&movegen::BoardSnapshot {
                             board_tiles: &board.board_tiles,
                             game_config: self.game_config,
                             kwg,
@@ -1931,30 +1942,29 @@ impl Session {
                             rack_lengths: None,
                             klv: self.klv,
                         })
-                        .to_string()
-                }) + if turn.withdrawn() { ", taken back" } else { "" };
-                let text = match turn.bonus() {
-                    Some(bonus) => format!("{text}, {bonus:+} after a challenge"),
-                    None => text,
-                };
+                    )?,
+                }
+                if turn.withdrawn() {
+                    write!(out, ", taken back")?;
+                }
+                if let Some(bonus) = turn.bonus() {
+                    write!(out, ", {bonus:+} after a challenge")?;
+                }
                 // a misscore: what it was scored as
-                let text = match &turn.play {
-                    movegen::Play::Place { score, .. } if turn.adjust() != 0 => format!(
-                        "{text}, scored as {}",
+                if let movegen::Play::Place { score, .. } = &turn.play
+                    && turn.adjust() != 0
+                {
+                    write!(
+                        out,
+                        ", scored as {}",
                         equity::descale_score(*score) + turn.adjust()
-                    ),
-                    _ => text,
-                };
+                    )?;
+                }
                 replay.play_turn(self.game_config, &mut rng, turn)?;
                 replay.end_of_turn(self.game_config, turn, held)?;
                 writeln!(
                     out,
-                    "{}{:>3}. player {} {:<7} {} (total {})",
-                    if i < game.at { " " } else { "~" },
-                    i + 1,
-                    mover + 1,
-                    rack,
-                    text,
+                    " (total {})",
                     equity::descale_score(replay.state.players[mover].score),
                 )?;
                 // its notes, under it
@@ -2003,10 +2013,15 @@ impl Session {
     // a seat's rack as show prints it: a person's as its tiles (? for a blank),
     // the computer's as an _ for each tile
     fn rack_text(&self, seat: usize, rack: &[u8]) -> String {
-        if self.tiles_hidden(seat) {
-            "_".repeat(rack.len())
-        } else {
-            self.game_config.alphabet().fmt_rack(rack).to_string()
+        self.rack_shown(seat, rack).to_string()
+    }
+
+    // rack_text, written where it goes
+    fn rack_shown<'a>(&'a self, seat: usize, rack: &'a [u8]) -> RackShown<'a> {
+        RackShown {
+            hidden: self.tiles_hidden(seat),
+            alphabet: self.game_config.alphabet(),
+            rack,
         }
     }
 
@@ -3742,6 +3757,40 @@ impl Replay {
         }
         self.state.bag.return_tiles(&drawn);
         self.state.players[seat].rack = known;
+    }
+}
+
+// a seat's rack as show prints it (Session::rack_text): its tiles, or an _ for
+// each when they are hidden; padded as a str is
+struct RackShown<'a> {
+    hidden: bool,
+    alphabet: &'a alphabet::Alphabet,
+    rack: &'a [u8],
+}
+
+impl std::fmt::Display for RackShown<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        if !self.hidden {
+            return self.alphabet.fmt_rack(self.rack).fmt(f);
+        }
+        let pad = f.width().unwrap_or(0).saturating_sub(self.rack.len());
+        let (before, after) = match f.align() {
+            Some(std::fmt::Alignment::Right) => (pad, 0),
+            Some(std::fmt::Alignment::Center) => (pad / 2, pad - pad / 2),
+            _ => (0, pad),
+        };
+        let fill = f.fill();
+        for _ in 0..before {
+            f.write_char(fill)?;
+        }
+        for _ in self.rack {
+            f.write_char('_')?;
+        }
+        for _ in 0..after {
+            f.write_char(fill)?;
+        }
+        Ok(())
     }
 }
 
