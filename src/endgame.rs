@@ -5147,7 +5147,7 @@ impl<
             klv: &self.klv,
             sub: &mut sub,
             mg: &mut mg,
-            memo: std::mem::take(memo),
+            memo,
             limits,
             exact: true,
             line: None,
@@ -5166,7 +5166,6 @@ impl<
         } else {
             Self::one_in_bag_minimax(&mut search, &self.board_tiles, &self.racks, turn)
         };
-        *memo = std::mem::take(&mut search.memo);
         *exact &= search.exact;
         self.swap_tables(&mut sub)?;
         if !LEAN {
@@ -6704,7 +6703,7 @@ impl<
                                 klv,
                                 sub: &mut *sub,
                                 mg: &mut *mg,
-                                memo: BagTable::default(),
+                                memo: &mut BagTable::default(),
                                 limits,
                                 exact: true,
                                 line: Some(&mut *line),
@@ -7575,7 +7574,7 @@ struct OneInBag<
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>,
     mg: &'s mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
-    memo: BagTable<f32>,
+    memo: &'s mut BagTable<f32>, // the caller's, kept from call to call
     limits: &'s BagLimits,
     exact: bool, // cleared by an endgame a limit cut short
     line: Option<&'s mut PassLine>,
@@ -13561,7 +13560,7 @@ mod tests {
                             klv: &klv,
                             sub: &mut egs,
                             mg: &mut mg,
-                            memo: Default::default(),
+                            memo: &mut Default::default(),
                             limits: &limits,
                             exact: true,
                             line,
@@ -16521,7 +16520,7 @@ mod tests {
                             klv: &klv,
                             sub: &mut sub,
                             mg: &mut mg,
-                            memo: Default::default(),
+                            memo: &mut Default::default(),
                             limits: &limits,
                             exact: true,
                             line: None,
