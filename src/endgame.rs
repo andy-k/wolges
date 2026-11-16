@@ -6114,6 +6114,8 @@ impl<
                     limits: &BagLimits|
          -> error::Returns<Share> {
             let mut mine = Vec::new();
+            // the margins of a move helped with, kept from one to the next
+            let mut margins = Vec::new();
             while !stop.load(Relaxed) {
                 let Some(&task) = taking.get(next.fetch_add(1, Relaxed)) else {
                     break;
@@ -6182,7 +6184,8 @@ impl<
                 let (info, work, splits) = &*work;
                 // the info set a root move handed over is a move below the root
                 search.ply = 1;
-                let helped = search.info_move(info, &work[j], splits, floor);
+                margins.clear();
+                let helped = search.info_move(info, &work[j], splits, floor, &mut margins);
                 search.ply = 0;
                 match helped {
                     Ok(_) => {}
@@ -8142,6 +8145,10 @@ impl InfoSet {
     }
 }
 
+// a split of what a player cannot see: the other's rack (sorted), the bag's
+// counts, and the deals that give it
+type Split = (Vec<u8>, Vec<u8>, u64);
+
 // InfoSet::theirs's board, the other's rack, the bag's counts, and the tiles
 // the other sees
 type Tiles4<'t> = (&'t [u8], &'t [u8], &'t [u8], &'t [u8]);
@@ -8346,8 +8353,9 @@ struct PlyRoom {
 }
 
 // the lists of a position valued at a ply, lent out together: its moves, the
-// order they are asked in, moves_of's scratch, and an info set's splits (the
-// first num_splits of them)
+// order they are asked in, moves_of's scratch, an info set's splits (the first
+// num_splits of them), and the moves info_best finds at the best chance with
+// each one's chance, their margins a split each in turn
 #[derive(Default)]
 struct PlyLists {
     moves: Vec<movegen::Play>,
@@ -8355,6 +8363,8 @@ struct PlyLists {
     scratch: Vec<u8>,
     splits: Vec<(Vec<u8>, Vec<u8>, u64)>,
     num_splits: usize,
+    valued: Vec<(usize, f64)>,
+    margins: Vec<Option<f64>>,
 }
 
 // which of a ply's tallies (BagArena)
@@ -9552,6 +9562,8 @@ impl<
             scratch,
             splits,
             num_splits,
+            valued,
+            margins,
         } = &mut lists;
         moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             self.mg,
@@ -9577,7 +9589,8 @@ impl<
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
             _ => (true, std::cmp::Reverse(i32::MIN), i),
         });
-        let found = (self.info_best(info, moves, asked, &splits[..*num_splits]))
+        let splits = &splits[..*num_splits];
+        let found = (self.info_best(info, (moves, asked, splits), valued, margins))
             .map(|(win, margin, i)| (win, margin, moves[i].clone()));
         self.arena.give_lists(self.ply, lists);
         let (win, margin, play) = found?;
@@ -9591,14 +9604,15 @@ impl<
         Ok((win, margin))
     }
 
-    // the best of the moves at info, asked in this order, as info_value finds
-    // it: its chance, its margin, and its place in moves
+    // the best of the moves at info, asked in this order, over these splits,
+    // as info_value finds it: its chance, its margin, and its place in moves;
+    // valued and margins the room it keeps the moves at the best chance in
     fn info_best(
         &mut self,
         info: &InfoSet,
-        moves: &[movegen::Play],
-        asked: &[usize],
-        splits: &[(Vec<u8>, Vec<u8>, u64)],
+        (moves, asked, splits): (&[movegen::Play], &[usize], &[Split]),
+        valued: &mut Vec<(usize, f64)>,
+        margins: &mut Vec<Option<f64>>,
     ) -> error::Returns<(f64, f64, usize)> {
         // a root task's hand-over opens these moves to the threads with none
         // left, who value them from the end into the shared table
@@ -9610,13 +9624,16 @@ impl<
             let work = asked.iter().map(|&i| moves[i].clone()).collect();
             help.put((info.clone(), work, splits.to_vec()));
         }
-        let mut valued = Vec::new();
+        valued.clear();
+        margins.clear();
         let mut floor = None;
         for (k, &i) in asked.iter().enumerate() {
             if let Some(help) = help {
                 help.forward.store(k, Relaxed);
             }
-            let Some((win, margins)) = self.info_move(info, &moves[i], splits, floor)? else {
+            // this move's margins follow those kept
+            let at = margins.len();
+            let Some(win) = self.info_move(info, &moves[i], splits, floor, margins)? else {
                 continue;
             };
             // only the moves at the best chance are read below: those the floor
@@ -9624,25 +9641,27 @@ impl<
             if floor.is_none_or(|floor| win > floor) {
                 floor = Some(win);
                 valued.clear();
+                margins.drain(..at);
                 if let Some(help) = help {
                     help.floor.store(win.to_bits(), Relaxed);
                 }
             } else if floor.is_some_and(|floor| win < floor) {
+                margins.truncate(at);
                 continue;
             }
-            valued.push((i, win, margins));
+            valued.push((i, win));
         }
         if let Some(help) = help {
             help.forward.store(num_asked, Relaxed);
         }
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
         let mut best = (f64::NEG_INFINITY, f64::NEG_INFINITY, usize::MAX);
-        for (i, win, margins) in valued {
+        for (&(i, win), margins) in valued.iter().zip(margins.chunks(splits.len().max(1))) {
             if Some(win) != floor {
                 continue;
             }
             let mut margin = 0.0;
-            for ((other, bag, ways), found) in splits.iter().zip(margins) {
+            for ((other, bag, ways), &found) in splits.iter().zip(margins) {
                 let m = match found {
                     Some(m) => m,
                     None => self.info_split(info, &moves[i], other, bag)?.1,
@@ -9658,26 +9677,29 @@ impl<
     }
 
     // a move's chance to win at info over the splits weighed by their deals,
-    // with each split's margin where its search found it; none once even a win
-    // in every split left would leave its chance below floor. While the floor
-    // is above 0 a split is asked its chance alone (info_split_chance); below
-    // that every move may tie at the best chance, its margins wanted
+    // with each split's margin where its search found it pushed on margins;
+    // none, margins as they were, once even a win in every split left would
+    // leave its chance below floor. While the floor is above 0 a split is
+    // asked its chance alone (info_split_chance); below that every move may
+    // tie at the best chance, its margins wanted
     fn info_move(
         &mut self,
         info: &InfoSet,
         play: &movegen::Play,
         splits: &[(Vec<u8>, Vec<u8>, u64)],
         floor: Option<f64>,
-    ) -> error::Returns<Option<(f64, Vec<Option<f64>>)>> {
+        margins: &mut Vec<Option<f64>>,
+    ) -> error::Returns<Option<f64>> {
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
         let (mut win, mut left) = (0.0, total);
         self.limits
             .refuse(splits.len() * std::mem::size_of::<Option<f64>>())?;
-        let mut margins = Vec::with_capacity(splits.len());
+        let at = margins.len();
         for (other, bag, ways) in splits {
             // a share a hair under the floor is not ruled out, lest a sum's
             // rounding rule out a tie
             if floor.is_some_and(|floor| (win + left) / total < floor - 1e-9) {
+                margins.truncate(at);
                 return Ok(None);
             }
             let (w, m) = if floor.is_some_and(|floor| floor > 0.0) {
@@ -9690,7 +9712,7 @@ impl<
             left -= *ways as f64;
             margins.push(m);
         }
-        Ok(Some((win / total, margins)))
+        Ok(Some(win / total))
     }
 
     // a move's chance to win at info in one split, as info_split finds it, with
