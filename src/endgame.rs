@@ -6697,17 +6697,16 @@ impl<
             state.depth = if deepens { 1 } else { COMPLETE };
         }
 
-        // the tile's opponent rack, made once and refilled for each tile
-        let mut opp_rack = Vec::new();
-
         // one pass: each move's value is exact, so the same on any thread
         let mut ready = Vec::new();
         if !deepens && sub.work_buffer.threads > 1 && state.next == 0 {
             ready = Self::peg_places_on_threads(sub, position, score_diff, limits, &state.moves);
         }
-        // the pass's two racks for each tile in the bag, one pair of buffers
-        // for them all
-        let mut r2: [Vec<u8>; 2] = Default::default();
+        // the tile's opponent rack, the pass's racks, and its memo, made once
+        // and refilled for each tile
+        let mut opp_rack = Vec::new();
+        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        let mut pass_memo = BagTable::default();
         let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
             peg_value(
                 unseen,
@@ -6738,6 +6737,7 @@ impl<
                             r2[mover as usize].extend_from_slice(mover_rack);
                             r2[opp as usize].clear();
                             r2[opp as usize].extend_from_slice(opp_rack);
+                            pass_memo.renew();
                             let mut search = OneInBag {
                                 gc,
                                 kwg,
@@ -6745,7 +6745,7 @@ impl<
                                 klv,
                                 sub: &mut *sub,
                                 mg: &mut *mg,
-                                memo: &mut BagTable::default(),
+                                memo: &mut pass_memo,
                                 limits,
                                 exact: true,
                                 line: Some(&mut *line),
@@ -8569,6 +8569,14 @@ impl<T> Default for BagTable<T> {
 }
 
 impl<T> BagTable<T> {
+    // the table as default makes it, four entries empty, in place
+    #[inline(always)]
+    fn renew(&mut self) {
+        self.entries.truncate(4);
+        self.entries.iter_mut().for_each(|entry| *entry = None);
+        self.held = 0;
+    }
+
     #[inline(always)]
     fn bytes(&self) -> usize {
         self.entries.len() * std::mem::size_of::<Option<(u64, T)>>()
