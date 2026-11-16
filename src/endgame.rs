@@ -215,6 +215,21 @@ impl Table {
         }
     }
 
+    // the table as new makes it, in place where it holds the one bucket new's
+    // does and is not growing
+    #[inline]
+    fn renew(&mut self) {
+        if self.buckets.len() != 1 || self.growing() {
+            *self = Self::new();
+            return;
+        }
+        self.buckets[0] = [0; 8];
+        self.held = 0;
+        self.generation = 0;
+        self.next.clear();
+        self.moved = 0;
+    }
+
     // a table with room for this many buckets from the start (at least one),
     // growing on from there as new's does
     #[inline(always)]
@@ -1422,6 +1437,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     #[cfg(test)]
     copied: usize, // the lanes copied from an earlier reply's list
     table: Table,
+    spare_table: Option<Box<Table>>, // the box the last table given back came in
     can_grow: bool, // the memory limit has not yet refused the table more room this solve
     max_depth: i8,  // this pass's depth, for progress
     finished: i8,   // the deepest pass this solve finished, for the principal variation
@@ -1491,6 +1507,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             #[cfg(test)]
             copied: 0,
             table: Table::new(),
+            spare_table: None,
             can_grow: true,
             max_depth: 0,
             finished: 0,
@@ -1558,6 +1575,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             lane_pool: _,
             pool_walker,
             table: _,
+            spare_table: _,
             can_grow,
             max_depth,
             finished,
@@ -5049,9 +5067,15 @@ impl<
     // a handle, as it can keep no solver)
     #[inline(always)]
     pub fn take_table(&mut self) -> KeptTable {
+        // the box the last table given back came in, holding the table it
+        // displaced, made as new makes one (in place when it can be)
+        let mut table =
+            (self.work_buffer.spare_table.take()).unwrap_or_else(|| Box::new(Table::new()));
+        table.renew();
+        std::mem::swap(&mut self.work_buffer.table, &mut *table);
         KeptTable {
             stopped: self.set_aside(),
-            table: Box::new(std::mem::replace(&mut self.work_buffer.table, Table::new())),
+            table,
             made_with: self.made_with(),
             line: self.work_buffer.line.take(),
             cadence: self.work_buffer.cadence,
@@ -5066,7 +5090,9 @@ impl<
         if kept.made_with != self.made_with() {
             return Err(kept);
         }
-        self.work_buffer.table = *kept.table;
+        let mut table = kept.table;
+        std::mem::swap(&mut self.work_buffer.table, &mut *table);
+        self.work_buffer.spare_table = Some(table);
         self.work_buffer.line = kept.line;
         self.work_buffer.cadence = kept.cadence;
         self.put_back(kept.stopped);
