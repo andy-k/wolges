@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, error, fash, game_config};
+use super::{bites, error, fash, game_config, kwg};
 
 // Unconfirmed entries.
 // Memory wastage notes:
@@ -1124,6 +1124,40 @@ pub fn build_for_game(
     }
 }
 
+// a graph build_for_game made, loaded: its runs ascend (kwg::Kwg::runs_ascend)
+// by how it is built, as make_dawg lays each state's arcs out in the order of
+// the sorted words, and the gaddag's are of words sorted too, so its run
+// letters are found with no scan to check that they do
+pub struct GameGraph {
+    graph: kwg::RunGraph<kwg::Node24>,
+}
+
+impl GameGraph {
+    #[inline(always)]
+    pub fn kwg(&self) -> &kwg::Kwg<kwg::Node24> {
+        self.graph.kwg()
+    }
+
+    // the graph's run letters (kwg::Kwg::run_letters), found as it was made
+    // with no scan, its runs ascending
+    #[inline(always)]
+    pub fn run_letters(&self) -> kwg::RunLetters<'_> {
+        self.graph.run_letters()
+    }
+}
+
+// build_for_game's graph, loaded
+#[inline]
+pub fn graph_for_game(
+    game_config: &game_config::GameConfig,
+    machine_words: &[bites::Bites],
+) -> error::Returns<GameGraph> {
+    let kwg = kwg::Kwg::from_bytes_alloc(&build_for_game(game_config, machine_words)?)?;
+    Ok(GameGraph {
+        graph: kwg::RunGraph::ascending(kwg),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1528,6 +1562,33 @@ mod tests {
         round_trip_ordered(BuildLayout::MagpieMerged, BuildOrder::Reordered, WORD_LIST);
         round_trip_ordered(BuildLayout::Wolges, BuildOrder::Reordered, &[]);
         round_trip_ordered(BuildLayout::Wolges, BuildOrder::Reordered, &["HELLO"]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_game_graph_runs_ascend_and_has_its_run_letters() {
+        for game_config in [
+            game_config::make_english_game_config(),
+            game_config::make_jumbled_english_game_config(),
+        ] {
+            let reader = alphabet::AlphabetReader::new_for_words(game_config.alphabet());
+            let mut buf = Vec::new();
+            let mut words = (LONGER_WORD_LIST.iter())
+                .map(|word| {
+                    reader.set_word(word, &mut buf).unwrap();
+                    bites::Bites::from(&buf[..])
+                })
+                .collect::<Vec<_>>();
+            words.sort_unstable();
+            words.dedup();
+            let graph = graph_for_game(&game_config, &words).unwrap();
+            assert!(graph.kwg().runs_ascend());
+            let found = graph.kwg().run_letters();
+            assert_eq!(
+                graph.run_letters().of(graph.kwg()).unwrap(),
+                found.of(graph.kwg()).unwrap()
+            );
+        }
     }
 
     #[test]

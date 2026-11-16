@@ -222,6 +222,14 @@ impl<N: Node> RunGraph<N> {
         Self { kwg, bits }
     }
 
+    // as new, for a graph whose runs ascend by how it was built
+    // (build::GameGraph), its run letters found with no scan
+    #[inline]
+    pub(crate) fn ascending(kwg: Kwg<N>) -> Self {
+        let bits = kwg.run_bits_ascending();
+        Self { kwg, bits }
+    }
+
     #[inline(always)]
     pub fn kwg(&self) -> &Kwg<N> {
         &self.kwg
@@ -466,19 +474,34 @@ impl<N: Node> Kwg<N> {
     #[inline]
     pub fn run_bits_if(&self, keep: impl FnOnce(usize) -> bool) -> RunBits {
         RunBits {
-            bits: (self.runs_ascend() && keep(RunBits::bytes_for(self.0.len()))).then(|| {
-                // made in place, so no copy is held beside it
-                let mut bits = (0..self.0.len())
-                    .map(|_| 0u64)
-                    .collect::<std::sync::Arc<[u64]>>();
-                let Some(letter_bits) = std::sync::Arc::get_mut(&mut bits) else {
-                    unreachable!("an Arc just made has no other holder");
-                };
-                self.fill_run_letter_bits(letter_bits);
-                bits
-            }),
+            bits: (self.runs_ascend() && keep(RunBits::bytes_for(self.0.len())))
+                .then(|| self.run_bits_made()),
             nodes: self.0.as_ptr().addr(),
         }
+    }
+
+    // the run letters of a graph whose runs ascend by how it was built
+    // (build::GameGraph), found with no runs_ascend scan to check that they do
+    #[inline]
+    pub(crate) fn run_bits_ascending(&self) -> RunBits {
+        RunBits {
+            bits: Some(self.run_bits_made()),
+            nodes: self.0.as_ptr().addr(),
+        }
+    }
+
+    // the run letters, made in place in their shared slice, so no copy is held
+    // beside it
+    #[inline]
+    fn run_bits_made(&self) -> std::sync::Arc<[u64]> {
+        let mut bits = (0..self.0.len())
+            .map(|_| 0u64)
+            .collect::<std::sync::Arc<[u64]>>();
+        let Some(letter_bits) = std::sync::Arc::get_mut(&mut bits) else {
+            unreachable!("an Arc just made has no other holder");
+        };
+        self.fill_run_letter_bits(letter_bits);
+        bits
     }
 
     #[inline(always)]
