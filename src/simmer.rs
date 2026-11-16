@@ -177,6 +177,8 @@ pub struct Simmer<
 
     census: std::sync::Arc<SharedCensus>, // the preparation's, its clones' too
     census_taken: Option<TakenCensus>,    // this simmer's, once taken
+    spare_census: Option<TakenCensus>,    // one no other holds, for the next
+    census_tiles: (Vec<u8>, Vec<u8>),     // the tiles off the board, and the pool
 
     rng: R,
 }
@@ -279,6 +281,8 @@ impl<
 
             census: Default::default(),
             census_taken: None,
+            spare_census: None,
+            census_tiles: (Vec::new(), Vec::new()),
 
             rng,
         }
@@ -386,8 +390,26 @@ impl<
             || (zeros_end
                 && (game_config.zeros_can_end_empty_board()
                     || game_state.board_tiles.iter().any(|&tile| tile != 0)));
-        self.census = Default::default();
+        // the last preparation's census, kept for the next once no clone holds
+        // it; a census held elsewhere is left to it
+        let shared_taken = match std::sync::Arc::get_mut(&mut self.census) {
+            Some(shared) => {
+                *shared.rollouts.get_mut() = 0;
+                (shared.taken.get_mut())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            }
+            None => {
+                self.census = Default::default();
+                None
+            }
+        };
         self.census_taken = None;
+        if let Some(mut taken) = shared_taken
+            && std::sync::Arc::get_mut(&mut taken).is_some()
+        {
+            self.spare_census = Some(taken);
+        }
     }
 
     // the start board's census over its tiles off it but the blanks, taken once
@@ -403,15 +425,40 @@ impl<
         kwg: &kwg::Kwg<N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
-    ) -> Option<movegen::LaneCensus> {
-        let anagrams = arm_tables.anagrams()?;
+    ) -> TakenCensus {
+        let mut taken = match self.spare_census.take() {
+            Some(taken) => taken,
+            None => std::sync::Arc::new(None),
+        };
+        // the spare is held here alone
+        if let Some(census) = std::sync::Arc::get_mut(&mut taken)
+            && !self.take_census_into(game_config, kwg, arm_tables, klv, census)
+        {
+            *census = None;
+        }
+        taken
+    }
+
+    // the census, taken into census (in the memory of the one it holds, if
+    // any); false where the start board has none
+    fn take_census_into<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        census: &mut Option<movegen::LaneCensus>,
+    ) -> bool {
+        let Some(anagrams) = arm_tables.anagrams() else {
+            return false;
+        };
         if !matches!(game_config.game_rules(), game_config::GameRules::Classic) {
-            return None;
+            return false;
         }
         let alphabet = game_config.alphabet();
-        let mut off_board = (0..alphabet.len())
-            .map(|tile| alphabet.freq(tile))
-            .collect::<Vec<_>>();
+        let (off_board, pool) = &mut self.census_tiles;
+        off_board.clear();
+        off_board.extend((0..alphabet.len()).map(|tile| alphabet.freq(tile)));
         for &tile in self.initial_game_state.board_tiles.iter() {
             if tile != 0 {
                 let tile = if tile & 0x80 != 0 { 0 } else { tile };
@@ -420,15 +467,14 @@ impl<
         }
         let num_off_board = off_board[1..].iter().map(|&n| n as usize).sum::<usize>();
         if num_off_board == 0 || num_off_board > CENSUS_MAX_POOL {
-            return None;
+            return false;
         }
         // no play places more of a tile than a rack holds
         let rack_size = game_config.rack_size();
-        let pool = (1..alphabet.len())
-            .flat_map(|tile| {
-                std::iter::repeat_n(tile, off_board[tile as usize].min(rack_size) as usize)
-            })
-            .collect::<Vec<_>>();
+        pool.clear();
+        pool.extend((1..alphabet.len()).flat_map(|tile| {
+            std::iter::repeat_n(tile, off_board[tile as usize].min(rack_size) as usize)
+        }));
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &self.initial_game_state.board_tiles,
             game_config,
@@ -437,10 +483,18 @@ impl<
             rack_lengths: arm_tables.rack_lengths(),
             klv,
         };
-        Some(
-            self.move_generator
-                .lane_census(&board_snapshot, anagrams, &pool),
-        )
+        match census {
+            Some(census) => {
+                (self.move_generator).lane_census_into(&board_snapshot, anagrams, pool, census)
+            }
+            None => {
+                *census = Some(
+                    self.move_generator
+                        .lane_census(&board_snapshot, anagrams, pool),
+                )
+            }
+        }
+        true
     }
 
     // the plies and the weight of the chance to win, which reads them
@@ -650,12 +704,7 @@ impl<
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if taken.is_none() {
-                *taken = Some(std::sync::Arc::new(self.take_census(
-                    game_config,
-                    kwg,
-                    arm_tables,
-                    klv,
-                )));
+                *taken = Some(self.take_census(game_config, kwg, arm_tables, klv));
             }
             self.census_taken.clone_from(&taken);
         }

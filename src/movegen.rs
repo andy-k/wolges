@@ -7762,6 +7762,8 @@ pub struct LaneCensus {
     keys: Vec<u128>, // a slot's, or 0 (a play places tiles, so no key is 0)
     best: Vec<i32>,  // a slot's lanes, lanes a slot
     used: usize,
+    grown_from: (Vec<u128>, Vec<i32>), // a growth's old slots, a play's blank deltas
+    deltas: Vec<(u8, i32)>,
 }
 
 // a lane's best score in a census where a multiset has no play there, low
@@ -7821,7 +7823,23 @@ impl LaneCensus {
             keys: vec![0; SLOTS],
             best: vec![NO_PLAY; SLOTS * lanes],
             used: 0,
+            grown_from: (Vec::new(), Vec::new()),
+            deltas: Vec::new(),
         }
+    }
+
+    // emptied, for a census of these keys and lanes, its slots' memory kept
+    // (as many slots as it had: a slot is found by its key, wherever it lies)
+    #[inline]
+    fn reset(&mut self, nibbles: bool, lanes: usize) {
+        let slots = self.keys.len();
+        self.nibbles = nibbles;
+        self.lanes = lanes;
+        self.shift = 64 - slots.trailing_zeros();
+        self.keys.fill(0);
+        self.best.clear();
+        self.best.resize(slots * lanes, NO_PLAY);
+        self.used = 0;
     }
 
     // the slot holding key, or the empty one it would go in
@@ -7860,8 +7878,13 @@ impl LaneCensus {
     #[inline(never)]
     fn grow(&mut self) {
         let slots = self.keys.len() * 2;
-        let keys = std::mem::replace(&mut self.keys, vec![0; slots]);
-        let best = std::mem::replace(&mut self.best, vec![NO_PLAY; slots * self.lanes]);
+        let (mut keys, mut best) = std::mem::take(&mut self.grown_from);
+        std::mem::swap(&mut keys, &mut self.keys);
+        std::mem::swap(&mut best, &mut self.best);
+        self.keys.clear();
+        self.keys.resize(slots, 0);
+        self.best.clear();
+        self.best.resize(slots * self.lanes, NO_PLAY);
         self.shift -= 1;
         for (from, &key) in keys.iter().enumerate() {
             if key != 0 {
@@ -7871,6 +7894,7 @@ impl LaneCensus {
                     .copy_from_slice(&best[from * self.lanes..(from + 1) * self.lanes]);
             }
         }
+        self.grown_from = (keys, best);
     }
 }
 
@@ -8878,13 +8902,31 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         anagrams: &anagrams::Anagrams,
         pool: &[u8],
     ) -> LaneCensus {
+        let dim = board_snapshot.game_config.board_layout().dim();
+        let mut census = LaneCensus::new(
+            anagrams.nibble_side().is_some(),
+            dim.rows as usize + dim.cols as usize,
+        );
+        self.lane_census_into(board_snapshot, anagrams, pool, &mut census);
+        census
+    }
+
+    // the same, taken in census in place of the one it held, its memory kept
+    #[inline]
+    pub fn lane_census_into<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+        anagrams: &anagrams::Anagrams,
+        pool: &[u8],
+        census: &mut LaneCensus,
+    ) {
         let nibbles = anagrams.nibble_side().is_some();
         let layout = anagrams.layout();
         let dim = board_snapshot.game_config.board_layout().dim();
         let rows = dim.rows as u8;
         let rack_size = board_snapshot.game_config.rack_size() as usize;
-        let mut deltas = Vec::new();
-        let mut census = LaneCensus::new(nibbles, dim.rows as usize + dim.cols as usize);
+        census.reset(nibbles, dim.rows as usize + dim.cols as usize);
+        let mut deltas = std::mem::take(&mut census.deltas);
         let snapshot = BoardSnapshot {
             board_tiles: board_snapshot.board_tiles,
             game_config: board_snapshot.game_config,
@@ -8932,7 +8974,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             klv::AdjustLeave::Identity,
             EquityPredicate::RejectAll,
         );
-        census
+        census.deltas = deltas;
     }
 
     #[inline(always)]
