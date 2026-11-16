@@ -192,6 +192,26 @@ struct Table {
     moved: usize,        // the old buckets below this one are moved
 }
 
+// the error a search a limit stopped returns: a unit, so it is made with no
+// allocation however often a search stops; it reads as the text it stands for
+struct LimitStopped;
+
+const LIMIT_STOPPED: &str = "a limit stopped the search";
+
+impl std::fmt::Display for LimitStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(LIMIT_STOPPED)
+    }
+}
+
+impl std::fmt::Debug for LimitStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{LIMIT_STOPPED:?}")
+    }
+}
+
+impl std::error::Error for LimitStopped {}
+
 // the buckets (1 MiB) a table grows to at once; a bigger one grows a piece at
 // each store, so no store takes the time of a whole move, and a solve stops
 // within its time limit
@@ -4118,7 +4138,7 @@ impl<
             {
                 work_buffer.cut_short = true;
                 work_buffer.pending = Some((node, root));
-                return Err("a limit stopped the search".into());
+                return Err(Box::new(LimitStopped));
             }
         }
 
@@ -4155,7 +4175,7 @@ impl<
             let work_buffer = &mut self.work_buffer;
             work_buffer.cut_short = true;
             work_buffer.pending = Some((node, root));
-            return Err("a limit stopped the search".into());
+            return Err(Box::new(LimitStopped));
         }
         let table_first =
             table_play < PASS_PLAY && (table_play as usize) < self.work_buffer.orders[ply].len();
@@ -4991,7 +5011,7 @@ impl<
         let may_stop = limits.may_stop.get();
         if may_stop && limits.passed(&self.work_buffer.table) {
             limits.stopped.set(true);
-            return Err("a limit stopped the search".into());
+            return Err(Box::new(LimitStopped));
         }
         let work_buffer = &mut self.work_buffer;
         work_buffer.t0 = Some(limits.t0);
@@ -5027,14 +5047,14 @@ impl<
             .set(limits.memory_stopped.get() | memory);
         if may_stop && !solved.exact && solved.depth < limits.depth.get() {
             limits.stopped.set(true);
-            return Err("a limit stopped the search".into());
+            return Err(Box::new(LimitStopped));
         }
         *exact &= solved.exact;
         match solved.value {
             Some(value) => Ok(value.raw() as f32),
             None => {
                 limits.stopped.set(true);
-                Err("a limit stopped the search".into())
+                Err(Box::new(LimitStopped))
             }
         }
     }
@@ -5396,7 +5416,7 @@ impl<
         // is read, so the limits are read at each position, valued or not
         if search.limits.may_stop.get() && search.limits.passed(&search.sub.work_buffer.table) {
             search.limits.stopped.set(true);
-            return Err("a limit stopped the search".into());
+            return Err(Box::new(LimitStopped));
         }
         let OneInBagTurn {
             mover,
@@ -8922,7 +8942,7 @@ impl<
     fn stop_at_a_limit(&self) -> error::Returns<()> {
         if self.limits.may_stop.get() && self.limits.passed(&self.sub.work_buffer.table) {
             self.limits.stopped.set(true);
-            return Err("a limit stopped the search".into());
+            return Err(Box::new(LimitStopped));
         }
         Ok(())
     }
