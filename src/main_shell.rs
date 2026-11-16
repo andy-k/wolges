@@ -38,6 +38,8 @@ fn main() -> error::Returns<()> {
     )?;
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
+    // the lines of commands run, emptied, for the next ones typed
+    let mut spare_lines = Vec::<String>::new();
     loop {
         if let Some((line, source)) = cmd_stack.pop() {
             if let Some((filename, line_num)) = &source {
@@ -100,6 +102,7 @@ fn main() -> error::Returns<()> {
                     writeln!(std::io::stdout(), "Bad quoting: {err:?}")?;
                 }
             }
+            spare_lines.push(line);
         } else {
             match rl.readline(">> ") {
                 Ok(text) => {
@@ -108,8 +111,12 @@ fn main() -> error::Returns<()> {
                     let v = cmd_stack.len();
                     for line in text::lines(&text) {
                         rl.add_history_entry(line)?;
-                        cmd_stack.push((line.to_string(), None));
+                        let mut kept = spare_lines.pop().unwrap_or_default();
+                        kept.clear();
+                        kept.push_str(line);
+                        cmd_stack.push((kept, None));
                     }
+
                     cmd_stack[v..].reverse();
                 }
                 Err(rustyline::error::ReadlineError::Interrupted) => {
