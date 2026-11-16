@@ -231,7 +231,14 @@ pub struct RunGraph<N: Node> {
 impl<N: Node> RunGraph<N> {
     #[inline]
     pub fn new(kwg: Kwg<N>) -> Self {
-        let bits = kwg.run_bits_if(|_| true);
+        Self::new_if(kwg, |_| true)
+    }
+
+    // as new, its run letters found only if keep allows the bytes they would
+    // hold (as a graph pruned under a memory limit may not), else it has none
+    #[inline]
+    pub fn new_if(kwg: Kwg<N>, keep: impl FnOnce(usize) -> bool) -> Self {
+        let bits = kwg.run_bits_if(keep);
         Self { kwg, bits }
     }
 
