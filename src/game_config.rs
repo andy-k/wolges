@@ -1026,10 +1026,21 @@ impl GameConfig {
     // has is refused
     #[inline]
     pub fn tiles_off_board(&self, board_tiles: &[u8]) -> error::Returns<Vec<u8>> {
+        let mut off_board = Vec::new();
+        self.tiles_off_board_into(board_tiles, &mut off_board)?;
+        Ok(off_board)
+    }
+
+    // the same, into off_board, whose memory is kept
+    #[inline]
+    pub fn tiles_off_board_into(
+        &self,
+        board_tiles: &[u8],
+        off_board: &mut Vec<u8>,
+    ) -> error::Returns<()> {
         let alphabet = self.alphabet();
-        let mut off_board = (0..alphabet.len())
-            .map(|tile| alphabet.freq(tile))
-            .collect::<Vec<_>>();
+        off_board.clear();
+        off_board.extend((0..alphabet.len()).map(|tile| alphabet.freq(tile)));
         for &tile in board_tiles {
             if tile != 0 {
                 let tile = if tile & 0x80 != 0 { 0 } else { tile };
@@ -1039,7 +1050,7 @@ impl GameConfig {
                 }
             }
         }
-        Ok(off_board)
+        Ok(())
     }
 
     // takes a rack out of the tiles it is drawn from: no more tiles than a rack
