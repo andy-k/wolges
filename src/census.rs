@@ -704,10 +704,14 @@ pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], 
 // what a letter's count adds to a multiset's rank (MultisetLattice::rank),
 // given the letter, the tiles left from it on, and how many of those are it: a
 // walk adding a letter at a time ranks as it goes, with no table of ranks to
-// read. The last letter adds nothing, its count implied
+// read. The last letter adds nothing, its count implied. Also, made with them,
+// each letter's step for one of it with one tile left, and for one and two of
+// it with two left (scatter_words reads them for every board)
 struct RankSteps {
     span: usize, // rack_size + 1, the tiles left or counted
     steps: Vec<usize>,
+    k_one: Vec<usize>,
+    k_two: Vec<(usize, usize)>,
 }
 
 impl RankSteps {
@@ -724,7 +728,21 @@ impl RankSteps {
                 }
             }
         }
-        Self { span, steps }
+        let mut made = Self {
+            span,
+            steps,
+            k_one: Vec::new(),
+            k_two: Vec::new(),
+        };
+        // only where a rack holds two tiles, as scatter_words reads them only
+        // then
+        if span > 2 {
+            made.k_one = (0..n).map(|u| made.of(u, 1, 1)).collect();
+            made.k_two = (0..n)
+                .map(|u| (made.of(u, 2, 1), made.of(u, 2, 2)))
+                .collect();
+        }
+        made
     }
 
     // the rank letter t adds with rem tiles left for it on, ct of them t
@@ -844,10 +862,7 @@ fn scatter_words(
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];
     let mut p_rest = [0usize; MAX_LETTERS + 1];
     let mut p_tail = [0usize; MAX_LETTERS + 1];
-    let k_one = (0..n).map(|u| steps.of(u, 1, 1)).collect::<Vec<_>>();
-    let k_two = (0..n)
-        .map(|u| (steps.of(u, 2, 1), steps.of(u, 2, 2)))
-        .collect::<Vec<_>>();
+    let (k_one, k_two) = (&steps.k_one, &steps.k_two);
     let mut two = [(0usize, 0usize); MAX_LETTERS];
     let mut c0_two = [0usize; MAX_LETTERS + 1];
     let mut one = [0usize; MAX_LETTERS];
@@ -927,12 +942,12 @@ fn scatter_words(
             leave,
             avail: &avail,
             suffix_cap: &suffix_cap,
-            k_one: &k_one,
+            k_one,
             one: &one,
             c0: &c0,
             letters: &letters[..held],
             from: &from,
-            k_two: &k_two,
+            k_two,
             two: &two,
             c0_two: &c0_two,
             best: &mut *best,
