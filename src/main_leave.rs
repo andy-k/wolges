@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::glance::{Glance, board_after, glance_at};
 use wolges::infer::{
-    BoardPhase, InferSheet, LnBinom, MoveTiles, SpellPool, SpellTables, bag_size,
+    BoardPhase, InferSheet, LnBinom, MoveTiles, SpellPool, SpellTables, WeighScratch, bag_size,
     build_sheet_spell_once, each_tally_of_size, equity_fuzz, fuzz_ln_weight, infer_sheet_for,
     move_tiles_and_value, weigh_by_fuzz, weigh_racks,
 };
@@ -7917,6 +7917,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         tiles,
         move_value,
         threads,
+        &mut WeighScratch::new(),
         &mut |rank, ln_prior, gap, _| racks.push((rank, ln_prior, gap)),
     );
     if racks.is_empty() {
@@ -8175,6 +8176,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut true_tally = vec![0u8; num_letters];
                 let mut racks = Vec::new();
                 let mut out = Vec::new();
+                let mut weigh = WeighScratch::new();
                 loop {
                     let game_idx = claimed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if game_idx >= num_games {
@@ -8288,6 +8290,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 },
                                 move_value,
                                 1,
+                                &mut weigh,
                                 &mut |rank, ln_prior, gap, _| {
                                     let prior = ln_prior.exp();
                                     if rank == true_rank {
@@ -10693,6 +10696,7 @@ WCMP_P1_SCORE 402.000000
             tiles,
             move_value,
             1,
+            &mut WeighScratch::new(),
             &mut |rank, ln_prior, gap, _| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
         );
         got.sort_unstable_by(|a, b| a.0.cmp(&b.0));
