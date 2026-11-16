@@ -94,23 +94,76 @@ fn table_bytes<T>(capacity: usize) -> usize {
 }
 
 // what a build holds at once, refused before the allocation that would take it
-// past max
+// past max, and the scratch it works in
 struct Ledger {
+    budget: Budget,
+    scratch: ArmScratch,
+}
+
+struct Budget {
     live: usize,
     max: usize,
     refused: bool,
+}
+
+// what an anagram tables' build keeps for the next one: the words keyed, the
+// keys and pairs of each length, where each word's letters go, a length's
+// pairs, a walk's word, a dawg's word counts and the marks of its walk, tables
+// emptied, and the lists of the tables built before, with their layout (lent
+// to the next build, which takes their memory)
+#[derive(Default)]
+pub struct ArmScratch {
+    keyed: Vec<(u8, KeyBytes, u32)>,
+    keys_of: Vec<usize>,
+    pairs_of: Vec<usize>,
+    at: Vec<u32>,
+    pairs: Vec<(KeyBytes, u32, u8)>,
+    word: Vec<u8>,
+    counts: Vec<u32>,
+    marks: Vec<u8>,
+    tables: Vec<Table<u32>>,
+    outs: AnagramsLists,
+    layout: Option<alphagram::KeyLayout>,
+    keep: bool, // the build's buffers kept for a rebuild, else freed as counted
+}
+
+// the lists of an Anagrams, kept between builds
+#[derive(Default)]
+struct AnagramsLists {
+    arena: Vec<u8>,
+    groups: Vec<Table<u32>>,
+    blanked: Vec<Table<u32>>,
+    answer_ats: Vec<u32>,
+    answer_tiles: Vec<u8>,
+    filter: Vec<u64>,
+    blank_filter: Vec<u64>,
 }
 
 impl Ledger {
     #[inline(always)]
     fn up_to(max: usize) -> Self {
         Self {
-            live: 0,
-            max,
-            refused: false,
+            budget: Budget {
+                live: 0,
+                max,
+                refused: false,
+            },
+            scratch: ArmScratch::default(),
         }
     }
 
+    #[inline(always)]
+    fn take(&mut self, bytes: usize) -> Option<()> {
+        self.budget.take(bytes)
+    }
+
+    #[inline(always)]
+    fn give(&mut self, bytes: usize) {
+        self.budget.give(bytes)
+    }
+}
+
+impl Budget {
     #[inline(always)]
     fn take(&mut self, bytes: usize) -> Option<()> {
         match self.live.checked_add(bytes) {
@@ -140,7 +193,14 @@ fn layout_for_config(
     let tiles = game_config.alphabet().len() as usize;
     ledger.take(3 * tiles)?;
     let dim = game_config.board_layout().dim();
-    let layout = alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8);
+    let side = dim.rows.max(dim.cols) as u8;
+    // the tables before's layout, where it is this one
+    let layout = match (ledger.scratch.layout.take())
+        .filter(|layout| layout.is_of(game_config.alphabet(), side))
+    {
+        Some(layout) => Some(layout),
+        None => alphagram::KeyLayout::of(game_config.alphabet(), side),
+    };
     ledger.give(tiles);
     layout
 }
@@ -213,14 +273,14 @@ pub struct Anagrams {
     layout: alphagram::KeyLayout,
     max_word_len: u8,
     nibble_side: u8, // the board side of nibble keys, else 0
-    arena: Box<[u8]>,
-    groups: Box<[Table<u32>]>,
-    blanked: Box<[Table<u32>]>,
-    answer_ats: Box<[u32]>,
-    answer_tiles: Box<[u8]>,
-    filter: Box<[u64]>,
+    arena: Vec<u8>,
+    groups: Vec<Table<u32>>,
+    blanked: Vec<Table<u32>>,
+    answer_ats: Vec<u32>,
+    answer_tiles: Vec<u8>,
+    filter: Vec<u64>,
     filter_block_count: usize,
-    blank_filter: Box<[u64]>,
+    blank_filter: Vec<u64>,
     blank_filter_block_count: usize,
 }
 
@@ -330,7 +390,9 @@ impl Anagrams {
         })
     }
 
-    // g's dawg holds this many words and no loop
+    // g's dawg holds this many words and no loop; built in the ledger's
+    // scratch (the lists and tables of the tables built before, if any, their
+    // memory reused)
     fn build_counted<N: kwg::Node, K: KeyBuild>(
         g: &kwg::Kwg<N>,
         layout: K,
@@ -338,27 +400,49 @@ impl Anagrams {
         words: usize,
         ledger: &mut Ledger,
     ) -> Option<Self> {
+        let Ledger { budget, scratch } = ledger;
+        let ArmScratch {
+            keyed,
+            keys_of,
+            pairs_of,
+            at,
+            pairs,
+            word,
+            tables,
+            outs,
+            keep,
+            ..
+        } = scratch;
+        let keep = *keep;
         // each word the layout keys, by length, key, then its place among the
         // words walked, none longer than longest
-        ledger.take(words * std::mem::size_of::<(u8, KeyBytes, u32)>())?;
-        let mut keyed = Vec::<(u8, KeyBytes, u32)>::with_capacity(words);
+        budget.take(words * std::mem::size_of::<(u8, KeyBytes, u32)>())?;
+        keyed.clear();
+        keyed.reserve_exact(words);
         let mut index = 0u32;
-        ledger.take(longest as usize)?;
-        for_each_word(g, longest as usize, &mut |w| {
+        budget.take(longest as usize)?;
+        for_each_word(g, longest as usize, word, &mut |w| {
             if let Some(key) = layout.key_of(w) {
                 keyed.push((w.len() as u8, KeyBytes::of(key), index));
             }
             index += 1;
         });
-        ledger.give(longest as usize);
+        if !keep {
+            *word = Vec::new();
+        }
+        budget.give(longest as usize);
         keyed.sort_unstable();
 
         // every table and buffer below is made at its size: the keys of each
         // length, and the pairs a blank makes of them, one per tile of a key
         let lengths = keyed.last().map_or(0, |k| k.0 as usize) + 1;
-        ledger.take(2 * lengths * std::mem::size_of::<usize>())?;
-        let mut keys_of = vec![0usize; lengths];
-        let mut pairs_of = vec![0usize; lengths];
+        budget.take(2 * lengths * std::mem::size_of::<usize>())?;
+        keys_of.clear();
+        keys_of.reserve_exact(lengths);
+        keys_of.resize(lengths, 0);
+        pairs_of.clear();
+        pairs_of.reserve_exact(lengths);
+        pairs_of.resize(lengths, 0);
         for group in keyed.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
             keys_of[group[0].0 as usize] += 1;
             pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1.key()).count();
@@ -366,23 +450,43 @@ impl Anagrams {
 
         // where each word's letters go in the arena, by index; u32::MAX for a
         // word left out
-        ledger.take(index as usize * std::mem::size_of::<u32>())?;
-        let mut at = vec![u32::MAX; index as usize];
+        budget.take(index as usize * std::mem::size_of::<u32>())?;
+        at.clear();
+        at.reserve_exact(index as usize);
+        at.resize(index as usize, u32::MAX);
         let mut letters = 0usize;
-        ledger.take(2 * lengths * std::mem::size_of::<Table<u32>>())?;
-        let mut groups = Vec::<Table<u32>>::with_capacity(lengths);
-        let mut blanked = Vec::<Table<u32>>::with_capacity(lengths);
+        budget.take(2 * lengths * std::mem::size_of::<Table<u32>>())?;
+        // the tables before, emptied, for these to take their memory from
+        tables.append(&mut outs.groups);
+        tables.append(&mut outs.blanked);
+        let mut groups = std::mem::take(&mut outs.groups);
+        let mut blanked = std::mem::take(&mut outs.blanked);
+        groups.reserve_exact(lengths);
+        blanked.reserve_exact(lengths);
+        let mut table_of = |capacity: usize| match tables.pop() {
+            Some(mut table) => {
+                table.clear();
+                table.reserve(capacity);
+                table
+            }
+            None => Table::with_capacity_and_hasher(capacity, Default::default()),
+        };
         let all_pairs = pairs_of.iter().sum::<usize>();
-        ledger.take(all_pairs * (std::mem::size_of::<u32>() + std::mem::size_of::<u8>()))?;
-        let mut answer_ats = Vec::<u32>::with_capacity(all_pairs);
-        let mut answer_tiles = Vec::<u8>::with_capacity(all_pairs);
+        budget.take(all_pairs * (std::mem::size_of::<u32>() + std::mem::size_of::<u8>()))?;
+        let mut answer_ats = std::mem::take(&mut outs.answer_ats);
+        let mut answer_tiles = std::mem::take(&mut outs.answer_tiles);
+        answer_ats.clear();
+        answer_ats.reserve_exact(all_pairs);
+        answer_tiles.clear();
+        answer_tiles.reserve_exact(all_pairs);
         let mut runs = keyed.chunk_by(|a, b| a.0 == b.0).peekable();
         for len in 0..lengths {
-            ledger.take(table_bytes::<(KeyBytes, u32)>(keys_of[len]))?;
-            let mut table = Table::with_capacity_and_hasher(keys_of[len], Default::default());
+            budget.take(table_bytes::<(KeyBytes, u32)>(keys_of[len]))?;
+            let mut table = table_of(keys_of[len]);
             let pair_bytes = pairs_of[len] * std::mem::size_of::<(KeyBytes, u32, u8)>();
-            ledger.take(pair_bytes)?;
-            let mut pairs = Vec::<(KeyBytes, u32, u8)>::with_capacity(pairs_of[len]);
+            budget.take(pair_bytes)?;
+            pairs.clear();
+            pairs.reserve_exact(pairs_of[len]);
             if let Some(run) = runs.next_if(|run| run[0].0 as usize == len) {
                 for group in run.chunk_by(|a, b| a.1 == b.1) {
                     let key = group[0].1.key();
@@ -401,11 +505,11 @@ impl Anagrams {
             }
             groups.push(table);
 
-            // a length's pairs, gone before the next length's are made
+            // a length's pairs, emptied before the next length's are made
             pairs.sort_unstable_by_key(|&(key, at, tile)| (key, at, tile));
             let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
-            ledger.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
-            let mut table = Table::with_capacity_and_hasher(blank_keys, Default::default());
+            budget.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
+            let mut table = table_of(blank_keys);
             for group in pairs.chunk_by(|a, b| a.0 == b.0) {
                 table.insert(group[0].0, u32::try_from(answer_ats.len()).ok()?);
                 answer_ats.extend(group.iter().map(|&(_, at, _)| at));
@@ -415,38 +519,59 @@ impl Anagrams {
                 }
             }
             blanked.push(table);
-            drop(pairs);
-            ledger.give(pair_bytes);
+            pairs.clear();
+            if !keep {
+                *pairs = Vec::new();
+            }
+            budget.give(pair_bytes);
         }
-        drop(keyed);
-        ledger.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
+        keyed.clear();
+        if !keep {
+            *keyed = Vec::new();
+        }
+        budget.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
 
         // every offset into the arena, a group's above all, below u32::MAX
         // (movegen marks a group not looked up yet by it)
         if u32::try_from(letters).is_err() {
             return None;
         }
-        ledger.take(letters)?;
-        let mut arena = vec![alphagram::END; letters].into_boxed_slice();
+        budget.take(letters)?;
+        let mut arena = std::mem::take(&mut outs.arena);
+        arena.clear();
+        arena.reserve_exact(letters);
+        arena.resize(letters, alphagram::END);
         let mut index = 0usize;
-        ledger.take(longest as usize)?;
-        for_each_word(g, longest as usize, &mut |w| {
+        budget.take(longest as usize)?;
+        for_each_word(g, longest as usize, word, &mut |w| {
             if at[index] != u32::MAX {
                 arena[at[index] as usize..][..w.len()].copy_from_slice(w);
             }
             index += 1;
         });
-        ledger.give(longest as usize);
-        drop(at);
-        ledger.give(index * std::mem::size_of::<u32>());
+        if !keep {
+            *word = Vec::new();
+        }
+        budget.give(longest as usize);
+        at.clear();
+        if !keep {
+            *at = Vec::new();
+        }
+        budget.give(index * std::mem::size_of::<u32>());
 
         let key_count = groups.iter().map(|t| t.len()).sum::<usize>();
-        ledger.take(filter_bytes(key_count, KEY_FILTER_BITS))?;
-        let (filter, filter_block_count) = Self::filter_of(&groups, key_count, KEY_FILTER_BITS);
+        budget.take(filter_bytes(key_count, KEY_FILTER_BITS))?;
+        let mut filter = std::mem::take(&mut outs.filter);
+        let filter_block_count = Self::filter_of(&groups, key_count, KEY_FILTER_BITS, &mut filter);
         let blank_key_count = blanked.iter().map(|t| t.len()).sum::<usize>();
-        ledger.take(filter_bytes(blank_key_count, BLANK_FILTER_BITS))?;
-        let (blank_filter, blank_filter_block_count) =
-            Self::filter_of(&blanked, blank_key_count, BLANK_FILTER_BITS);
+        budget.take(filter_bytes(blank_key_count, BLANK_FILTER_BITS))?;
+        let mut blank_filter = std::mem::take(&mut outs.blank_filter);
+        let blank_filter_block_count = Self::filter_of(
+            &blanked,
+            blank_key_count,
+            BLANK_FILTER_BITS,
+            &mut blank_filter,
+        );
         let (layout, nibble_side) = layout.kept();
         Some(Anagrams {
             layout,
@@ -457,10 +582,10 @@ impl Anagrams {
             blank_filter,
             blank_filter_block_count,
             arena,
-            groups: groups.into_boxed_slice(),
-            blanked: blanked.into_boxed_slice(),
-            answer_ats: answer_ats.into_boxed_slice(),
-            answer_tiles: answer_tiles.into_boxed_slice(),
+            groups,
+            blanked,
+            answer_ats,
+            answer_tiles,
         })
     }
 
@@ -492,13 +617,17 @@ impl Anagrams {
         true
     }
 
+    // the filter of the groups' keys, into filter (its memory kept), and its
+    // blocks
     #[inline(always)]
-    fn filter_of<V>(groups: &[Table<V>], keys: usize, bits: usize) -> (Box<[u64]>, usize) {
+    fn filter_of<V>(groups: &[Table<V>], keys: usize, bits: usize, filter: &mut Vec<u64>) -> usize {
+        filter.clear();
         if keys == 0 {
-            return (Box::new([]), 0);
+            return 0;
         }
         let blocks = filter_blocks(keys, bits);
-        let mut filter = vec![0u64; blocks * FILTER_BLOCK_WORDS].into_boxed_slice();
+        filter.reserve_exact(blocks * FILTER_BLOCK_WORDS);
+        filter.resize(blocks * FILTER_BLOCK_WORDS, 0);
         for table in groups {
             for &key in table.keys() {
                 let h = filter_hash(key_part(key.key()));
@@ -511,7 +640,7 @@ impl Anagrams {
                 }
             }
         }
-        (filter, blocks)
+        blocks
     }
 
     #[inline(always)]
@@ -707,7 +836,8 @@ impl RackLengths {
         let mut present =
             std::collections::HashSet::<u128, std::hash::BuildHasherDefault<KeyHasher>>::default();
         let mut room = true;
-        for_each_word(g, max_tiles, &mut |w| {
+        let mut word = std::mem::take(&mut ledger.scratch.word);
+        for_each_word(g, max_tiles, &mut word, &mut |w| {
             let Some(key) = layout.key_of(w) else {
                 return;
             };
@@ -727,6 +857,11 @@ impl RackLengths {
                 }
             }
         });
+        if ledger.scratch.keep {
+            ledger.scratch.word = word;
+        } else {
+            drop(word);
+        }
         ledger.give(max_tiles);
         if !room {
             return Ok(None);
@@ -800,6 +935,36 @@ impl ArmTables {
         Self::build_in(kwg, game_config, lean, &mut Ledger::up_to(usize::MAX))
     }
 
+    // the same tables, built in place of these, in their memory and the
+    // scratch's (kept by the caller from one build to the next)
+    #[inline]
+    pub fn rebuild<N: kwg::Node>(
+        &mut self,
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        lean: bool,
+        scratch: &mut ArmScratch,
+    ) -> error::Returns<()> {
+        if let Self::Anagrams(old) = std::mem::replace(self, Self::None) {
+            let outs = &mut scratch.outs;
+            scratch.layout = Some(old.layout);
+            outs.arena = old.arena;
+            outs.groups = old.groups;
+            outs.blanked = old.blanked;
+            outs.answer_ats = old.answer_ats;
+            outs.answer_tiles = old.answer_tiles;
+            outs.filter = old.filter;
+            outs.blank_filter = old.blank_filter;
+        }
+        let mut ledger = Ledger::up_to(usize::MAX);
+        ledger.scratch = std::mem::take(scratch);
+        ledger.scratch.keep = true;
+        let built = Self::build_in(kwg, game_config, lean, &mut ledger);
+        *scratch = ledger.scratch;
+        *self = built?;
+        Ok(())
+    }
+
     // the tables, or none if building them would hold more than max_bytes at
     // once; a build is stopped before the allocation that would pass it
     #[inline]
@@ -811,7 +976,7 @@ impl ArmTables {
     ) -> error::Returns<Option<Self>> {
         let mut ledger = Ledger::up_to(max_bytes);
         let tables = Self::build_in(kwg, game_config, lean, &mut ledger)?;
-        Ok((!ledger.refused).then_some(tables))
+        Ok((!ledger.budget.refused).then_some(tables))
     }
 
     #[inline]
@@ -927,12 +1092,20 @@ fn dawg_words<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::Retu
     if ledger.take(held).is_none() {
         return Ok(None);
     }
-    let counts = g.count_dawg_words_alloc()?;
+    let ArmScratch {
+        counts,
+        marks,
+        keep,
+        ..
+    } = &mut ledger.scratch;
+    g.count_dawg_words_into(marks, counts)?;
     let words = match g[0].arc_index() {
         root if root > 0 => counts[root as usize] as usize,
         _ => 0,
     };
-    drop(counts);
+    if !*keep {
+        (*counts, *marks) = (Vec::new(), Vec::new());
+    }
     ledger.give(held);
     Ok(Some(words))
 }
@@ -972,7 +1145,12 @@ fn refuse_a_loop<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::R
 
 // each word of g's dawg of at most max_len tiles, in the graph's order; g was
 // counted first, so it does not loop
-fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(g: &kwg::Kwg<N>, max_len: usize, f: &mut F) {
+fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(
+    g: &kwg::Kwg<N>,
+    max_len: usize,
+    w: &mut Vec<u8>,
+    f: &mut F,
+) {
     fn walk<N: kwg::Node, F: FnMut(&[u8])>(
         g: &kwg::Kwg<N>,
         mut p: i32,
@@ -998,7 +1176,8 @@ fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(g: &kwg::Kwg<N>, max_len: usize,
     }
     let root = g[0].arc_index();
     if root > 0 && max_len > 0 {
-        walk(g, root, max_len, &mut Vec::new(), f);
+        w.clear();
+        walk(g, root, max_len, w, f);
     }
 }
 
@@ -1012,7 +1191,7 @@ mod tests {
         let g = graph_of(&words);
         for max_len in [3, usize::MAX] {
             let mut found = 0;
-            for_each_word(&g, max_len, &mut |_| found += 1);
+            for_each_word(&g, max_len, &mut Vec::new(), &mut |_| found += 1);
             assert!(found >= words.len(), "{max_len}");
         }
     }
