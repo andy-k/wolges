@@ -8072,15 +8072,19 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
 
 // one move the fit saw (game and turn): the racks the pool could have dealt the
 // mover, summed by the equity each gives up (gap ascending, each with its
-// racks' chance to be dealt), and the true rack's chance and gap
+// racks' chance to be dealt; where they begin and end in the buckets' one
+// list), and the true rack's chance and gap
 struct FitMove {
     at: (u64, u32),
-    buckets: Vec<(i32, f64)>,
+    buckets: (usize, usize),
     true_prior: f64,
     true_gap: i32,
     num_short: usize,
     kind: MoveKind,
 }
+
+// the moves a fit saw, and the one list of their buckets
+type FitMoves = (Vec<FitMove>, Vec<(i32, f64)>);
 
 #[derive(PartialEq)]
 enum MoveKind {
@@ -8094,14 +8098,14 @@ enum MoveKind {
 // rack the pool could have dealt. At fuzz 0 it is minus infinity once a true
 // rack gave up more than the smallest gap.
 #[inline]
-fn fit_log_likelihood(moves: &[FitMove], fuzz: f64) -> f64 {
+fn fit_log_likelihood(moves: &[FitMove], buckets: &[(i32, f64)], fuzz: f64) -> f64 {
     let fuzz = fuzz * equity::SCALE as f64;
     moves
         .iter()
         .map(|m| {
-            let g0 = m.buckets[0].0.max(0);
-            let z: f64 = m
-                .buckets
+            let buckets = &buckets[m.buckets.0..m.buckets.1];
+            let g0 = buckets[0].0.max(0);
+            let z: f64 = buckets
                 .iter()
                 .map(|&(g, s)| s * fuzz_ln_weight(g, g0, fuzz).exp())
                 .sum();
@@ -8180,7 +8184,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let finished_games = std::sync::atomic::AtomicU64::new(0);
     let tick = std::sync::atomic::AtomicU64::new(0);
     let weighed = std::sync::atomic::AtomicU64::new(0);
-    let mut moves = std::thread::scope(|s| -> error::Returns<Vec<FitMove>> {
+    let (mut moves, buckets) = std::thread::scope(|s| -> error::Returns<FitMoves> {
         let mut thread_handles = Vec::new();
         for _ in 0..threads {
             let game_config = &game_config;
@@ -8196,7 +8200,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 leave: &leave,
                 ln_binom: &ln_binom,
             };
-            thread_handles.push(s.spawn(move || -> error::Returns<Vec<FitMove>> {
+            thread_handles.push(s.spawn(move || -> error::Returns<FitMoves> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
                 let mut driver = seat_picker(
@@ -8225,7 +8229,10 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut true_tally = vec![0u8; num_letters];
                 let mut racks = Vec::new();
                 let mut out = Vec::new();
+                let mut buckets: Vec<(i32, f64)> = Vec::new();
                 let mut weigh = WeighScratch::new();
+                let mut pool = Vec::new();
+                let mut play = None::<movegen::Play>;
                 loop {
                     let game_idx = claimed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if game_idx >= num_games {
@@ -8280,11 +8287,17 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 &game_state.current_player().rack,
                             )?;
                         }
-                        let play = move_generator.plays[0].play.clone();
+                        let play = match &mut play {
+                            Some(play) => {
+                                play.clone_from(&move_generator.plays[0].play);
+                                &*play
+                            }
+                            None => &*play.insert(move_generator.plays[0].play.clone()),
+                        };
                         // the moves an inference serves: tiles are left in the
                         // bag after the move's own draw (an exchange leaves the
                         // bag as it was)
-                        let num_placed = match &play {
+                        let num_placed = match play {
                             movegen::Play::Place { word, .. } => {
                                 word.iter().filter(|&&tile| tile != 0).count()
                             }
@@ -8292,10 +8305,10 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         };
                         if is_mover && num_placed < game_state.bag.len() {
                             // what the watcher cannot see: the bag and the mover's rack
-                            let mut pool = game_config.tiles_off_board(&game_state.board_tiles)?;
+                            game_config.tiles_off_board_into(&game_state.board_tiles, &mut pool)?;
                             game_config.take_rack(&mut pool, &game_state.players[1].rack)?;
                             let (exchanged, move_value) =
-                                move_tiles_and_value(&board_snapshot, &play, &mut placed);
+                                move_tiles_and_value(&board_snapshot, play, &mut placed);
                             let can_exchange = game_state.bag.len()
                                 >= game_config.exchange_tile_limit() as usize;
                             infer_sheet_for(
@@ -8355,16 +8368,16 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 )
                             })?;
                             racks.sort_unstable_by_key(|&(gap, _)| gap);
-                            let mut buckets: Vec<(i32, f64)> = Vec::new();
+                            let start = buckets.len();
                             for &(gap, prior) in &racks {
-                                match buckets.last_mut() {
+                                match buckets[start..].last_mut() {
                                     Some(last) if last.0 == gap => last.1 += prior,
                                     _ => buckets.push((gap, prior)),
                                 }
                             }
                             out.push(FitMove {
                                 at: (game_idx, num_turns),
-                                buckets,
+                                buckets: (start, buckets.len()),
                                 true_prior,
                                 true_gap,
                                 num_short,
@@ -8372,7 +8385,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             });
                             weighed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
-                        game_state.play(game_config, &mut rng, &play)?;
+                        game_state.play(game_config, &mut rng, play)?;
                         num_turns += 1;
                         let secs = t0.elapsed().as_secs();
                         // a line a second, from the first thread to end a turn in it
@@ -8394,14 +8407,23 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     }
                     finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                Ok(out)
+                Ok((out, buckets))
             }));
         }
+        // each thread's moves and buckets after the others', the moves' places
+        // moved with them
         let mut moves = Vec::new();
+        let mut all_buckets = Vec::new();
         for handle in thread_handles {
-            moves.extend(handle.join().map_err(|_| "a fit thread panicked")??);
+            let (theirs, buckets) = handle.join().map_err(|_| "a fit thread panicked")??;
+            let base = all_buckets.len();
+            moves.extend(theirs.into_iter().map(|m| FitMove {
+                buckets: (base + m.buckets.0, base + m.buckets.1),
+                ..m
+            }));
+            all_buckets.extend(buckets);
         }
-        Ok(moves)
+        Ok((moves, all_buckets))
     })?;
     // in game and turn order, whichever thread played them, so the sums are the
     // same at any thread count
@@ -8440,7 +8462,10 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     )?;
     let prior_only: f64 = moves
         .iter()
-        .map(|m| (m.true_prior / m.buckets.iter().map(|&(_, s)| s).sum::<f64>()).ln())
+        .map(|m| {
+            let buckets = &buckets[m.buckets.0..m.buckets.1];
+            (m.true_prior / buckets.iter().map(|&(_, s)| s).sum::<f64>()).ln()
+        })
         .sum();
     // fuzz is in points; the likelihood is read on a grid of 0.01 to 1000, then
     // narrowed by golden sections around the grid's best
@@ -8449,7 +8474,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         .collect();
     let lls: Vec<f64> = grid
         .iter()
-        .map(|&fuzz| fit_log_likelihood(&moves, fuzz))
+        .map(|&fuzz| fit_log_likelihood(&moves, &buckets, fuzz))
         .collect();
     let best_i = (1..grid.len()).fold(0, |best, i| if lls[i] > lls[best] { i } else { best });
     let (mut lo, mut hi) = (
@@ -8460,19 +8485,21 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     for _ in 0..60 {
         let a = hi - golden * (hi - lo);
         let b = lo + golden * (hi - lo);
-        if fit_log_likelihood(&moves, a.exp()) < fit_log_likelihood(&moves, b.exp()) {
+        if fit_log_likelihood(&moves, &buckets, a.exp())
+            < fit_log_likelihood(&moves, &buckets, b.exp())
+        {
             lo = a;
         } else {
             hi = b;
         }
     }
     let fuzz = ((lo + hi) / 2.0).exp();
-    let ll = fit_log_likelihood(&moves, fuzz);
+    let ll = fit_log_likelihood(&moves, &buckets, fuzz);
     // the likelihood's curvature in ln fuzz at its top gives one standard
     // error; at the grid's edge there is no top to read it from
     let h = 0.01f64;
-    let curvature = (fit_log_likelihood(&moves, fuzz * h.exp()) - 2.0 * ll
-        + fit_log_likelihood(&moves, fuzz / h.exp()))
+    let curvature = (fit_log_likelihood(&moves, &buckets, fuzz * h.exp()) - 2.0 * ll
+        + fit_log_likelihood(&moves, &buckets, fuzz / h.exp()))
         / (h * h);
     let within = if curvature < 0.0 {
         let se = (-1.0 / curvature).sqrt();
@@ -10942,16 +10969,17 @@ WCMP_P1_SCORE 402.000000
     #[test]
     #[inline]
     fn fit_log_likelihood_reads_the_true_rack_against_the_rest() {
+        let buckets = [(0, 0.5), (1_000, 0.5)];
         let moves = [FitMove {
             at: (0, 0),
-            buckets: vec![(0, 0.5), (1_000, 0.5)],
+            buckets: (0, 2),
             true_prior: 0.5,
             true_gap: 0,
             num_short: 0,
             kind: MoveKind::Placed,
         }];
         let want = -(1.0 + (-1.0f64).exp()).ln();
-        assert!((fit_log_likelihood(&moves, 1.0) - want).abs() < 1e-12);
+        assert!((fit_log_likelihood(&moves, &buckets, 1.0) - want).abs() < 1e-12);
     }
 
     #[test]
@@ -11027,24 +11055,25 @@ WCMP_P1_SCORE 402.000000
     #[test]
     #[inline]
     fn fit_log_likelihood_at_0_is_minus_infinity_past_the_smallest_gap() {
+        let buckets = [(-300, 0.25), (0, 0.25), (1_000, 0.5)];
         let fit_move = |true_gap| FitMove {
             at: (0, 0),
-            buckets: vec![(-300, 0.25), (0, 0.25), (1_000, 0.5)],
+            buckets: (0, 3),
             true_prior: 0.25,
             true_gap,
             num_short: 1,
             kind: MoveKind::Placed,
         };
         assert_eq!(
-            fit_log_likelihood(&[fit_move(1_000)], 0.0),
+            fit_log_likelihood(&[fit_move(1_000)], &buckets, 0.0),
             f64::NEG_INFINITY
         );
         assert_eq!(
-            fit_log_likelihood(&[fit_move(0), fit_move(1_000)], 0.0),
+            fit_log_likelihood(&[fit_move(0), fit_move(1_000)], &buckets, 0.0),
             f64::NEG_INFINITY
         );
         // at the smallest gap, the true rack's share of the racks there
-        assert!((fit_log_likelihood(&[fit_move(0)], 0.0) - 0.5f64.ln()).abs() < 1e-12);
+        assert!((fit_log_likelihood(&[fit_move(0)], &buckets, 0.0) - 0.5f64.ln()).abs() < 1e-12);
     }
 
     #[test]
