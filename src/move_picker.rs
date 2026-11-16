@@ -911,23 +911,24 @@ fn rack_less(rack: &[u8], used: &[u8], out: &mut Vec<u8>) {
 }
 
 // of plays, best first, the first DEFT_FIELD within window of the best: the one
-// leaving the board the fewest bingo lanes, the earlier on a tie
+// leaving the board the fewest bingo lanes, the earlier on a tie; each board
+// after one made in after
 #[inline]
 fn lane_pick(
     game_config: &game_config::GameConfig,
     board_tiles: &[u8],
     plays: &[movegen::ValuedMove],
     window: i32,
+    after: &mut Vec<u8>,
 ) -> usize {
     let best = plays[0].equity.raw();
-    let mut after = Vec::new();
     let mut pick = (0, u32::MAX);
     for (i, m) in plays.iter().enumerate().take(DEFT_FIELD) {
         if best - m.equity.raw() > window {
             break;
         }
-        glance::board_after(game_config, board_tiles, &m.play, &mut after);
-        let lanes = glance::glance_at(game_config, &after).bingo_lanes;
+        glance::board_after(game_config, board_tiles, &m.play, after);
+        let lanes = glance::glance_at(game_config, after).bingo_lanes;
         if lanes < pick.1 {
             pick = (i, lanes);
         }
@@ -2520,7 +2521,13 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     None,
                 );
                 let plays = &move_generator.plays;
-                let fewest = lane_pick(game_config, &game_state.board_tiles, plays, window);
+                let fewest = lane_pick(
+                    game_config,
+                    &game_state.board_tiles,
+                    plays,
+                    window,
+                    &mut scratch.after,
+                );
                 let pick = winning_out(game_config, game_state, plays)
                     .or_else(|| one_in_the_bag(game_config, game_state, plays, fewest));
                 let found = match pick {
@@ -3586,7 +3593,7 @@ mod tests {
         let (board_tiles, plays) = lanes_field(&game_config);
         for (window, want) in [(0, 0), (equity::SCALE, 1), (2 * equity::SCALE, 1)] {
             assert_eq!(
-                lane_pick(&game_config, &board_tiles, &plays, window),
+                lane_pick(&game_config, &board_tiles, &plays, window, &mut Vec::new()),
                 want,
                 "window {window}",
             );
@@ -3595,12 +3602,24 @@ mod tests {
         let mut field = vec![plays[0].clone(); DEFT_FIELD];
         field.push(plays[1].clone());
         assert_eq!(
-            lane_pick(&game_config, &board_tiles, &field, equity::SCALE),
+            lane_pick(
+                &game_config,
+                &board_tiles,
+                &field,
+                equity::SCALE,
+                &mut Vec::new()
+            ),
             0
         );
         field.swap(DEFT_FIELD - 1, DEFT_FIELD);
         assert_eq!(
-            lane_pick(&game_config, &board_tiles, &field, equity::SCALE),
+            lane_pick(
+                &game_config,
+                &board_tiles,
+                &field,
+                equity::SCALE,
+                &mut Vec::new()
+            ),
             DEFT_FIELD - 1
         );
     }
@@ -4346,7 +4365,13 @@ mod tests {
             None,
         );
         let plays = &move_generator.plays;
-        let fewest = lane_pick(&game_config, &board_tiles, plays, DEFAULT_DEFT_WINDOW);
+        let fewest = lane_pick(
+            &game_config,
+            &board_tiles,
+            plays,
+            DEFAULT_DEFT_WINDOW,
+            &mut Vec::new(),
+        );
         assert_eq!(
             plays[fewest].play.fmt(&board_snapshot).to_string(),
             "F6 CASTE 28"
@@ -4411,7 +4436,13 @@ mod tests {
             None,
         );
         let plays = &move_generator.plays;
-        let fewest = lane_pick(&game_config, &board_tiles, plays, DEFAULT_DEFT_WINDOW);
+        let fewest = lane_pick(
+            &game_config,
+            &board_tiles,
+            plays,
+            DEFAULT_DEFT_WINDOW,
+            &mut Vec::new(),
+        );
         assert_eq!(
             plays[fewest].play.fmt(&board_snapshot).to_string(),
             "F10 ES 13"
