@@ -34,7 +34,7 @@ fn main() -> error::Returns<()> {
     let mut session = shell_session::Session::new(
         cli.quiet,
         endgame_watch::memory_limit(cli.max_memory)?,
-        Box::leak(Box::new(cli.game.make_game_config()?)),
+        Box::leak(Box::new(std::sync::Arc::new(cli.game.make_game_config()?))),
     )?;
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();

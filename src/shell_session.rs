@@ -251,16 +251,17 @@ type SimDriver = (
 );
 
 pub struct Session {
-    game_config: &'static game_config::GameConfig,
+    game_config: &'static std::sync::Arc<game_config::GameConfig>,
     spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
-    kwg: Option<(String, &'static kwg::Kwg<kwg::Node24>)>,
-    klv: &'static klv::Klv<kwg::Node24>,
-    kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node24>>,
+    kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
+    klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
+    kwgs_read: std::collections::HashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
     run_letters_found: std::collections::HashMap<usize, kwg::RunLetters<'static>>, // by graph's address
-    klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node24>>,
-    arm_tables_built: std::collections::HashMap<String, &'static anagrams::ArmTables>,
+    klvs_read: std::collections::HashMap<String, &'static std::sync::Arc<klv::Klv<kwg::Node24>>>,
+    arm_tables_built:
+        std::collections::HashMap<String, &'static std::sync::Arc<anagrams::ArmTables>>,
     endgame_solvers: std::collections::HashMap<String, ShellSolver>, // by lexicon path
-    rules_made: std::collections::HashMap<String, &'static game_config::GameConfig>,
+    rules_made: std::collections::HashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
     infer_tables: Option<infer::InferTables>, // for klv, built at its first use
     game: Option<Game>,
     state: game_state::GameState,
@@ -454,11 +455,13 @@ impl Session {
     pub fn new(
         quiet: bool,
         memory: Option<endgame::MemoryLimit>,
-        game_config: &'static game_config::GameConfig,
+        game_config: &'static std::sync::Arc<game_config::GameConfig>,
     ) -> error::Returns<Self> {
         // no leave values, made once: "leaves -" and rules they do not fit both
         // come back to this one
-        let none: &'static _ = Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?));
+        let none: &'static _ = Box::leak(Box::new(std::sync::Arc::new(
+            klv::Klv::<kwg::Node24>::empty()?,
+        )));
         Ok(Self {
             game_config,
             spare_state: Default::default(),
@@ -571,10 +574,11 @@ impl Session {
                     None => {
                         // a .kbwg is in the layout the engine works in; a kwg
                         // is repacked into it as it loads
-                        let kwg: &'static _ = Box::leak(Box::new(kwg::kbwg_from_bytes_alloc(
-                            std::fs::read(path)?,
-                            path.ends_with(".kbwg"),
-                        )?));
+                        let kwg: &'static _ =
+                            Box::leak(Box::new(std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
+                                std::fs::read(path)?,
+                                path.ends_with(".kbwg"),
+                            )?)));
                         self.kwgs_read.insert(path.clone(), kwg);
                         kwg
                     }
@@ -599,7 +603,7 @@ impl Session {
                             klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
                         };
                         self.game_config.check_klv(&klv)?;
-                        let klv: &'static _ = Box::leak(Box::new(klv));
+                        let klv: &'static _ = Box::leak(Box::new(std::sync::Arc::new(klv)));
                         self.klvs_read.insert(path.clone(), klv);
                         klv
                     }
@@ -631,7 +635,8 @@ impl Session {
                             exchanges: None,
                         }
                         .make_game_config(&|path| Ok(std::fs::read_to_string(path)?))?;
-                        let game_config: &'static _ = Box::leak(Box::new(game_config));
+                        let game_config: &'static _ =
+                            Box::leak(Box::new(std::sync::Arc::new(game_config)));
                         self.rules_made.insert(name.clone(), game_config);
                         game_config
                     }
@@ -1433,7 +1438,7 @@ impl Session {
         Ok(())
     }
 
-    fn use_kwg(&mut self, path: &str, kwg: &'static kwg::Kwg<kwg::Node24>) {
+    fn use_kwg(&mut self, path: &str, kwg: &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>) {
         self.kwg = Some((path.to_string(), kwg));
         (self.run_letters_found)
             .entry(std::ptr::from_ref(kwg).addr())
@@ -1459,7 +1464,10 @@ impl Session {
     // rules'), the tables built for the old rules go (the lexicon stays, read
     // again by the next lexicon command if it is another alphabet's), and a
     // lexicon or leaves with tiles or values the new rules cannot hold go too
-    fn use_rules(&mut self, game_config: &'static game_config::GameConfig) -> error::Returns<()> {
+    fn use_rules(
+        &mut self,
+        game_config: &'static std::sync::Arc<game_config::GameConfig>,
+    ) -> error::Returns<()> {
         self.game_config = game_config;
         self.spare_state.take();
         self.change(|game| {
@@ -1500,7 +1508,7 @@ impl Session {
     }
 
     // the word graph, or an error saying to read one
-    fn kwg(&self) -> error::Returns<&'static kwg::Kwg<kwg::Node24>> {
+    fn kwg(&self) -> error::Returns<&'static std::sync::Arc<kwg::Kwg<kwg::Node24>>> {
         Ok(self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.1)
     }
 
@@ -1560,16 +1568,14 @@ impl Session {
     }
 
     // the word graph's anagram tables, built at their first use
-    fn arm_tables(&mut self) -> error::Returns<&'static anagrams::ArmTables> {
+    fn arm_tables(&mut self) -> error::Returns<&'static std::sync::Arc<anagrams::ArmTables>> {
         let (path, kwg) = self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?;
         Ok(match self.arm_tables_built.get(path) {
             Some(&arm_tables) => arm_tables,
             None => {
-                let arm_tables: &'static _ = Box::leak(Box::new(anagrams::ArmTables::build(
-                    *kwg,
-                    self.game_config,
-                    false,
-                )?));
+                let arm_tables: &'static _ = Box::leak(Box::new(std::sync::Arc::new(
+                    anagrams::ArmTables::build(*kwg, self.game_config, false)?,
+                )));
                 self.arm_tables_built.insert(path.clone(), arm_tables);
                 arm_tables
             }
@@ -3880,10 +3886,15 @@ mod tests {
         let mut session = Session::new(
             true,
             None,
-            Box::leak(Box::new(game_config::make_english_game_config())),
+            Box::leak(Box::new(std::sync::Arc::new(
+                game_config::make_english_game_config(),
+            ))),
         )
         .unwrap();
-        session.use_kwg("tiny", Box::leak(Box::new(tiny_lexicon())));
+        session.use_kwg(
+            "tiny",
+            Box::leak(Box::new(std::sync::Arc::new(tiny_lexicon()))),
+        );
         session
     }
 
@@ -4498,16 +4509,16 @@ mod tests {
         let wide =
             kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&graph(build::BuildContent::Gaddawg, &words))
                 .unwrap();
-        session.use_kwg("wide", Box::leak(Box::new(wide)));
+        session.use_kwg("wide", Box::leak(Box::new(std::sync::Arc::new(wide))));
         let leaves = graph(build::BuildContent::DawgOnly, &[[30u8][..].into()]);
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&((leaves.len() / 4) as u32).to_le_bytes());
         bytes.extend_from_slice(&leaves);
         bytes.extend_from_slice(&1u32.to_le_bytes());
         bytes.extend_from_slice(&1.5f32.to_le_bytes());
-        session.klv = Box::leak(Box::new(
+        session.klv = Box::leak(Box::new(std::sync::Arc::new(
             klv::Klv::<kwg::Node24>::from_bytes_alloc(&bytes).unwrap(),
-        ));
+        )));
         assert_eq!(session.klv.leave_range(), (0, 1500));
         run(&mut session, "rules english").unwrap();
         assert!(session.kwg.is_none());
@@ -4675,8 +4686,12 @@ mod tests {
             num_zeros_to_end: 0,
             ..english
         });
-        let mut session = Session::new(true, None, Box::leak(Box::new(rules))).unwrap();
-        session.use_kwg("tiny", Box::leak(Box::new(tiny_lexicon())));
+        let mut session =
+            Session::new(true, None, Box::leak(Box::new(std::sync::Arc::new(rules)))).unwrap();
+        session.use_kwg(
+            "tiny",
+            Box::leak(Box::new(std::sync::Arc::new(tiny_lexicon()))),
+        );
         session
     }
 
@@ -5566,7 +5581,9 @@ mod tests {
         let mut second = Session::new(
             true,
             None,
-            Box::leak(Box::new(game_config::make_english_game_config())),
+            Box::leak(Box::new(std::sync::Arc::new(
+                game_config::make_english_game_config(),
+            ))),
         )
         .unwrap();
         second.use_kwg("tiny", session.kwg().unwrap());
@@ -5581,7 +5598,9 @@ mod tests {
         let mut third = Session::new(
             true,
             None,
-            Box::leak(Box::new(game_config::make_english_game_config())),
+            Box::leak(Box::new(std::sync::Arc::new(
+                game_config::make_english_game_config(),
+            ))),
         )
         .unwrap();
         third.use_kwg("tiny", session.kwg().unwrap());

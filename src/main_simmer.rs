@@ -101,13 +101,13 @@ struct Cli {
 
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
-    let game_config = cli.game.make_game_config()?;
+    let game_config = std::sync::Arc::new(cli.game.make_game_config()?);
     // of course this should be cached
-    let klv = if cli.klv == "-" {
+    let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
         klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
-    };
+    });
     game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
@@ -139,8 +139,8 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 #[inline(always)]
 fn simulate(
     kwg: &kwg::Kwg<kwg::Node24>,
-    klv: &klv::Klv<kwg::Node24>,
-    game_config: &game_config::GameConfig,
+    klv: &std::sync::Arc<klv::Klv<kwg::Node24>>,
+    game_config: &std::sync::Arc<game_config::GameConfig>,
     seed: Option<u64>,
     lean: bool,
     memory: Option<wolges::endgame::MemoryLimit>,
@@ -293,8 +293,12 @@ fn simulate(
         "word_prune: {} bytes kwg",
         smaller_kwg_bytes.len()
     )?;
-    let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
-    let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
+    let smaller_kwg = std::sync::Arc::new(kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+        &smaller_kwg_bytes,
+    )?);
+    let arm_tables =
+        std::sync::Arc::new(anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?);
+
     move_generator.reset_for_another_kwg();
 
     // ok, let's sim...

@@ -1243,9 +1243,11 @@ fn run(
             Ok(())
         }
         Task::SimStudyCheck(a) => {
-            let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
-            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
+            let kwg = std::sync::Arc::new(read_kwg(&game_config, &a.kwg, kbwg)?);
+            let arm_tables =
+                std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, a.lean)?);
+            let game_config = std::sync::Arc::new(game_config);
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -1412,15 +1414,20 @@ fn run(
             sim_chunk_check(game_config, kwg, klv, &a)
         }
         Task::SimRecall(a) => {
-            let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
+            let kwg = std::sync::Arc::new(read_kwg(&game_config, &a.kwg, kbwg)?);
+            let game_config = std::sync::Arc::new(game_config);
+
             let tally = sim_recall(&game_config, &kwg, &klv, &a, threads)?;
             print_sim_recall(&tally, &a)
         }
         Task::SimMutateCheck(a) => {
-            let klv = read_klv(&game_config, &a.klv)?;
-            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
-            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
+            let kwg = std::sync::Arc::new(read_kwg(&game_config, &a.kwg, kbwg)?);
+            let arm_tables =
+                std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, a.lean)?);
+            let game_config = std::sync::Arc::new(game_config);
+
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -7158,7 +7165,7 @@ fn count_nonplacing_plays(plays: &[movegen::ValuedMove]) -> usize {
 }
 
 #[inline]
-fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
+fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
@@ -7175,7 +7182,12 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
     }
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, lean)?);
+    let (game_config, kwg, klv) = (
+        std::sync::Arc::new(game_config),
+        std::sync::Arc::new(kwg),
+        std::sync::Arc::new(klv),
+    );
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -7275,7 +7287,7 @@ struct RecallOne {
 // driver kept for the run, reseeded
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn sim_decide<N: kwg::Node + Sync, L: kwg::Node + Sync>(
+fn sim_decide<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
     game_config: &game_config::GameConfig,
     kwg: &kwg::Kwg<N>,
     arm_tables: &anagrams::ArmTables,
@@ -7314,14 +7326,14 @@ fn sim_decide<N: kwg::Node + Sync, L: kwg::Node + Sync>(
 }
 
 #[inline]
-fn sim_recall<N: kwg::Node + Sync, L: kwg::Node + Sync>(
-    game_config: &game_config::GameConfig,
-    kwg: &kwg::Kwg<N>,
-    klv: &klv::Klv<L>,
+fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
+    game_config: &std::sync::Arc<game_config::GameConfig>,
+    kwg: &std::sync::Arc<kwg::Kwg<N>>,
+    klv: &std::sync::Arc<klv::Klv<L>>,
     a: &SimRecall,
     sim_threads: usize,
 ) -> error::Returns<Vec<RecallOne>> {
-    let arm_tables = anagrams::ArmTables::build(kwg, game_config, a.lean)?;
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(kwg, game_config, a.lean)?);
     let mut rng = GameRng::seed_from_u64(a.seed);
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     let mut game_state = game_state::GameState::new(game_config);
@@ -8136,7 +8148,7 @@ struct InferFitParams {
 // whatever they kept) weigh every rack the watcher cannot rule out, as infer
 // does; then the fuzz under which the true racks were likeliest
 #[inline]
-fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 'static>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
@@ -8159,7 +8171,13 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, lean)?);
+    let (game_config, kwg, klv) = (
+        std::sync::Arc::new(game_config),
+        std::sync::Arc::new(kwg),
+        std::sync::Arc::new(klv),
+    );
+
     let dyn_ctx = if matches!(mover, SeatPicker::Dynamic) {
         Some((
             census::AddTable::new_with_threads(&lat, threads),
@@ -9890,12 +9908,12 @@ struct SeatParams<'a> {
 }
 
 #[inline]
-fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
+fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
     picker: SeatPicker,
-    game_config: &'a game_config::GameConfig,
-    kwg: &'a kwg::Kwg<N>,
-    arm_tables: &'a anagrams::ArmTables,
-    klv: &'a klv::Klv<L>,
+    game_config: &'a std::sync::Arc<game_config::GameConfig>,
+    kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
+    arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
+    klv: &'a std::sync::Arc<klv::Klv<L>>,
     SeatParams {
         dynamic_leaves,
         simmer_params,
@@ -9923,8 +9941,8 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
 
 #[inline]
 fn compare_seats<
-    N: kwg::Node + Sync + Send,
-    L: kwg::Node + Sync + Send,
+    N: kwg::Node + Sync + Send + 'static,
+    L: kwg::Node + Sync + Send + 'static,
     const LEAN: bool,
     const HASTY_ONLY: bool,
 >(
@@ -9962,14 +9980,18 @@ fn compare_seats<
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN)?;
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, LEAN)?);
 
     let winpct_p0 = match &p0_win_pct {
-        Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
+        Some(path) => Some(std::sync::Arc::new(win_pct::WinPctTable::from_csv(
+            make_reader(path)?,
+        )?)),
         None => None,
     };
     let winpct_p1 = match &p1_win_pct {
-        Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
+        Some(path) => Some(std::sync::Arc::new(win_pct::WinPctTable::from_csv(
+            make_reader(path)?,
+        )?)),
         None => None,
     };
     let winpct_p0 = winpct_p0.as_ref();
@@ -10869,7 +10891,13 @@ WCMP_P1_SCORE 402.000000
             reference_field: field,
             lean: false,
         };
+        let (game_config, kwg, klv) = (
+            std::sync::Arc::new(game_config),
+            std::sync::Arc::new(kwg),
+            std::sync::Arc::new(klv),
+        );
         let tally = sim_recall(&game_config, &kwg, &klv, &a, 1).unwrap();
+
         assert_eq!(tally.len(), 6);
         assert!(tally.iter().all(|one| one.in_field));
         assert_eq!(tally, sim_recall(&game_config, &kwg, &klv, &a, 1).unwrap());
