@@ -401,6 +401,8 @@ fn run_batch<N: kwg::Node>(
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     let mut rack0 = Vec::new();
     let mut rack1 = Vec::new();
+    // each line's words, kept for the next
+    let mut vec_of_words = Vec::<bites::Bites>::new();
     let file_contents = std::fs::read_to_string(path)?;
     for (line_index, line) in text::lines(&file_contents).enumerate() {
         let t0 = std::time::Instant::now();
@@ -454,7 +456,7 @@ fn run_batch<N: kwg::Node>(
                 .map_err(|e| error::new(format!("line {line_index}: {e}")))?;
         }
 
-        let mut vec_of_words = Vec::<bites::Bites>::new();
+        vec_of_words.clear();
         move_generator.gen_remaining_words(
             &movegen::BoardSnapshot {
                 board_tiles: &board_tiles,
