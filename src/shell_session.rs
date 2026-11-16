@@ -298,14 +298,32 @@ impl Log {
     }
 }
 
+// the readers of a play's tiles and an exchange's, of the rules' alphabet
+struct Readers {
+    plays: alphabet::AlphabetReader,
+    racks: alphabet::AlphabetReader,
+}
+
+impl Readers {
+    #[inline(always)]
+    fn new(game_config: &game_config::GameConfig) -> Self {
+        Self {
+            plays: alphabet::AlphabetReader::new_for_plays(game_config.alphabet()),
+            racks: alphabet::AlphabetReader::new_for_racks(game_config.alphabet()),
+        }
+    }
+}
+
 pub struct Session {
     game_config: &'static std::sync::Arc<game_config::GameConfig>,
     spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
     played_line: String, // a computer's play as the command run and logged, kept
     played_words: Vec<String>, // that command's words, kept from play to play
     spare_unseen: std::cell::Cell<Vec<u8>>, // the tiles show last counted unseen
-    game_before: Option<Game>,              // the game before the last change, its memory kept
-    spare_board: Vec<u8>,                   // a board before a last turn, for the next rebuild
+    game_before: Option<Game>, // the game before the last change, its memory kept
+    spare_board: Vec<u8>, // a board before a last turn, for the next rebuild
+    readers: Readers,    // the rules' alphabet's, made when the rules are
+    play_tiles: Vec<u8>, // a play's tiles as read, for the next
     kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
     klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
     kwgs_read: std::collections::HashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
@@ -522,6 +540,8 @@ impl Session {
             played_words: Vec::new(),
             spare_unseen: Default::default(),
             game_before: None,
+            readers: Readers::new(game_config),
+            play_tiles: Vec::new(),
             spare_board: Vec::new(),
             kwg: None,
             klv: none,
@@ -1557,6 +1577,7 @@ impl Session {
         game_config: &'static std::sync::Arc<game_config::GameConfig>,
     ) -> error::Returns<()> {
         self.game_config = game_config;
+        self.readers = Readers::new(game_config);
         self.spare_state.take();
         self.change(|game| {
             *game = None;
@@ -1897,9 +1918,8 @@ impl Session {
                 tiles: [][..].into(),
             },
             [exch, tiles] if exch == "exch" => {
-                let mut v = Vec::new();
-                alphabet::AlphabetReader::new_for_racks(self.game_config.alphabet())
-                    .set_word(tiles, &mut v)?;
+                let (readers, v) = (&self.readers, &mut self.play_tiles);
+                readers.racks.set_word(tiles, v)?;
                 movegen::Play::Exchange {
                     tiles: v[..].into(),
                 }
@@ -1907,14 +1927,14 @@ impl Session {
             [coord, word] => {
                 let dim = self.game_config.board_layout().dim();
                 let coord = notation::parse_coord(coord, dim).ok_or("no such coordinate")?;
-                let mut v = Vec::new();
+                let v = &mut self.play_tiles;
                 notation::read_place_word(
-                    &alphabet::AlphabetReader::new_for_plays(self.game_config.alphabet()),
+                    &self.readers.plays,
                     &self.state.board_tiles,
                     dim,
                     &coord,
                     word,
-                    &mut v,
+                    v,
                 )?;
                 movegen::Play::Place {
                     down: coord.down,
