@@ -44,8 +44,54 @@ fn snapshot<'a>(
     }
 }
 
+// a candidate's records, one a rollout with a reply: its objective, its spread
+// (points), its win, and its reply's equity (points)
+type Records = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
+// the buffers every position is worked in, kept from the first: the game, its
+// final scores, the move played, the sim's view of the game and its state once
+// prepared, the unseen tiles, the mover's rack, the candidates, their exact
+// replies, each one's records, its count of rollouts with no reply, and the
+// differences of records against the best (equity, objective, spread, and win)
+struct Kept {
+    gs: game_state::GameState,
+    final_scores: Vec<i32>,
+    play: movegen::Play,
+    sgs: game_state::GameState,
+    pristine: game_state::GameState,
+    unseen: Vec<u8>,
+    rack: Vec<u8>,
+    candidates: Vec<movegen::ValuedMove>,
+    exact: Vec<(Option<infer::Reply>, f64)>,
+    rec: Vec<Records>,
+    no_reply: Vec<u64>,
+    diffs: [Vec<f64>; 4],
+}
+
+impl Kept {
+    fn new(gc: &game_config::GameConfig) -> Self {
+        Self {
+            gs: game_state::GameState::new(gc),
+            final_scores: vec![0; gc.num_players() as usize],
+            play: movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+            sgs: game_state::GameState::new(gc),
+            pristine: game_state::GameState::new(gc),
+            unseen: Vec::new(),
+            rack: Vec::new(),
+            candidates: Vec::new(),
+            exact: Vec::new(),
+            rec: Vec::new(),
+            no_reply: Vec::new(),
+            diffs: Default::default(),
+        }
+    }
+}
+
 // a game played greedily (the generator's best by static equity) for so many
-// turns from the deal this seed makes, on the caller's generator
+// turns from the deal this seed makes, on the caller's generator, into gs
+#[allow(clippy::too_many_arguments)]
 fn position(
     mg: &mut movegen::KurniaMoveGenerator,
     gc: &game_config::GameConfig,
@@ -53,11 +99,12 @@ fn position(
     klv: &Klv,
     seed: u64,
     turns: usize,
-) -> error::Returns<game_state::GameState> {
+    gs: &mut game_state::GameState,
+    final_scores: &mut [i32],
+    play: &mut movegen::Play,
+) -> error::Returns<()> {
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
-    let mut gs = game_state::GameState::new(gc);
     gs.reset_and_draw_tiles(gc, &mut rng);
-    let mut final_scores = vec![0; gc.num_players() as usize];
     for _ in 0..turns {
         mg.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
             board_snapshot: &snapshot(gc, kwg, klv, &gs.board_tiles),
@@ -67,25 +114,30 @@ fn position(
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
-        let play = mg.plays[0].play.clone();
-        gs.play(gc, &mut rng, &play)?;
+        play.clone_from(&mg.plays[0].play);
+        gs.play(gc, &mut rng, play)?;
         if !matches!(
-            gs.check_game_ended(gc, &mut final_scores)?,
+            gs.check_game_ended(gc, final_scores)?,
             game_state::CheckGameEnded::NotEnded
         ) {
             return Err("the game ended".into());
         }
         gs.next_turn();
     }
-    Ok(gs)
+    Ok(())
 }
 
-// the position as a sim sees it (as wolges-wasm's sim_new makes it): the
-// mover's rack, the bag in tile order holding every tile the mover cannot see,
-// the other seats dealt from it
-fn sim_state(gc: &game_config::GameConfig, real: &game_state::GameState) -> game_state::GameState {
+// the position as a sim sees it (as wolges-wasm's sim_new makes it), into gs:
+// the mover's rack, the bag in tile order holding every tile the mover cannot
+// see, the other seats dealt from it
+fn sim_state(
+    gc: &game_config::GameConfig,
+    real: &game_state::GameState,
+    gs: &mut game_state::GameState,
+    unseen: &mut Vec<u8>,
+) {
     let turn = real.turn as usize;
-    let mut gs = game_state::GameState::new(gc);
+    gs.reset();
     gs.turn = real.turn;
     gs.zero_turns = real.zero_turns;
     gs.pass_turns = real.pass_turns;
@@ -93,7 +145,8 @@ fn sim_state(gc: &game_config::GameConfig, real: &game_state::GameState) -> game
     gs.players[turn]
         .rack
         .extend_from_slice(&real.players[turn].rack);
-    let mut unseen = vec![0u8; gc.alphabet().len() as usize];
+    unseen.clear();
+    unseen.resize(gc.alphabet().len() as usize, 0);
     let others = (real.players.iter().enumerate())
         .filter(|&(i, _)| i != turn)
         .flat_map(|(_, player)| player.rack.iter());
@@ -112,7 +165,6 @@ fn sim_state(gc: &game_config::GameConfig, real: &game_state::GameState) -> game
             gs.bag.replenish(&mut gs.players[i].rack, n, i);
         }
     }
-    gs
 }
 
 struct Moments {
@@ -192,6 +244,7 @@ fn main() -> error::Returns<()> {
     let no_tables = &anagrams::ArmTables::None;
     // one simmer for every position, prepared for each
     let mut sim = simmer::Simmer::new(&gc)?;
+    let mut kept = Kept::new(&gc);
     println!(
         "kwg {} klv {} candidates {num_candidates} iterations {iterations} plies {}",
         args[1], args[2], args[5]
@@ -199,9 +252,34 @@ fn main() -> error::Returns<()> {
     for spec in &args[6..] {
         let (seed, turns) = spec.split_once(':').ok_or("seed:turns")?;
         let (seed, turns) = (seed.parse::<u64>()?, turns.parse::<usize>()?);
-        let real = position(&mut mg, &gc, &kwg, &klv, seed, turns)?;
+        let Kept {
+            gs: real,
+            final_scores,
+            play,
+            sgs,
+            pristine,
+            unseen,
+            rack,
+            candidates,
+            exact,
+            rec,
+            no_reply,
+            diffs,
+        } = &mut kept;
+        position(
+            &mut mg,
+            &gc,
+            &kwg,
+            &klv,
+            seed,
+            turns,
+            real,
+            final_scores,
+            play,
+        )?;
+        let real = &*real;
         let turn = real.turn as usize;
-        let rack = real.players[turn].rack.clone();
+        rack.clone_from(&real.players[turn].rack);
         println!();
         println!(
             "position {spec}: bag {} rack {:?} scores {:?}",
@@ -214,38 +292,45 @@ fn main() -> error::Returns<()> {
         );
         mg.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
             board_snapshot: &snapshot(&gc, &kwg, &klv, &real.board_tiles),
-            rack: &rack,
+            rack,
             max_gen: num_candidates,
             num_exchanges_by_this_player: real.players[turn].num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
-        let mut candidates = mg.plays.clone();
+        candidates.clone_from(&mg.plays);
         candidates.sort_by_key(|m| std::cmp::Reverse(m.equity));
         // each candidate's exact mean reply, in points, and its time
-        let mut exact = Vec::with_capacity(candidates.len());
-        for candidate in &candidates {
+        exact.clear();
+        for candidate in candidates.iter() {
             let start = Instant::now();
             let reply = infer::reply_to(
                 &mut tables,
                 &mut mg,
                 &snapshot(&gc, &kwg, &klv, &real.board_tiles),
-                &rack,
+                rack,
                 &[],
                 &candidate.play,
                 1,
             )?;
             exact.push((reply, start.elapsed().as_secs_f64()));
         }
-        let sgs = sim_state(&gc, &real);
-        sim.prepare(&gc, &sgs, &simmer::SimChoices::new(plies, true, &[]));
-        let pristine = sim.prepared_state().clone();
+        sim_state(&gc, real, sgs, unseen);
+        sim.prepare(&gc, sgs, &simmer::SimChoices::new(plies, true, &[]));
+        pristine.clone_from(sim.prepared_state());
         // per candidate: objective, spread (points), win, reply equity (points)
-        let mut rec = vec![(Vec::new(), Vec::new(), Vec::new(), Vec::new()); candidates.len()];
-        let mut no_reply = vec![0u64; candidates.len()];
+        rec.resize_with(candidates.len(), Default::default);
+        for (objective, spread, win, equity) in rec.iter_mut() {
+            objective.clear();
+            spread.clear();
+            win.clear();
+            equity.clear();
+        }
+        no_reply.clear();
+        no_reply.resize(candidates.len(), 0);
         let start = Instant::now();
         for iteration in 1..=iterations {
-            sim.restore_prepared(&pristine);
+            sim.restore_prepared(pristine);
             sim.reseed(iteration_seed(seed, iteration));
             sim.prepare_iteration();
             for (c, candidate) in candidates.iter().enumerate() {
@@ -315,17 +400,22 @@ fn main() -> error::Returns<()> {
             println!(
                 "  against candidate {best}: diff, diff_cv, worth_diff, net_diff, worth_diff_spread, worth_diff_win"
             );
-            let diff = |xs: &[f64], ys: &[f64]| {
-                (xs.iter().zip(ys)).map(|(a, b)| a - b).collect::<Vec<_>>()
+            let diff = |xs: &[f64], ys: &[f64], out: &mut Vec<f64>| {
+                out.clear();
+                out.extend((xs.iter().zip(ys)).map(|(a, b)| a - b));
             };
+            let [e, d_obj, d_spread, d_win] = diffs;
             for c in 0..candidates.len() {
                 if c == best || exact[c].0.is_none() || rec[c].0.len() != rec[best].0.len() {
                     continue;
                 }
-                let e = diff(&rec[c].3, &rec[best].3);
-                let m = moments(&diff(&rec[c].0, &rec[best].0), &e);
-                let m_spread = moments(&diff(&rec[c].1, &rec[best].1), &e);
-                let m_win = moments(&diff(&rec[c].2, &rec[best].2), &e);
+                diff(&rec[c].3, &rec[best].3, e);
+                diff(&rec[c].0, &rec[best].0, d_obj);
+                diff(&rec[c].1, &rec[best].1, d_spread);
+                diff(&rec[c].2, &rec[best].2, d_win);
+                let m = moments(d_obj, e);
+                let m_spread = moments(d_spread, e);
+                let m_win = moments(d_win, e);
                 let exact_e = exact[c].0.unwrap().mean - exact[best].0.unwrap().mean;
                 println!(
                     "{c:3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3}",
