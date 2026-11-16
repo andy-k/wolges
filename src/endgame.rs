@@ -5134,9 +5134,6 @@ impl<
 
         let mut mg = self.take_mg();
 
-        let board = self.board_tiles.clone();
-        let racks = [self.racks[0].clone(), self.racks[1].clone()];
-
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -5165,9 +5162,9 @@ impl<
             answering: passes > 0,
         };
         let value = if one_in_bag_exchange_solvable(gc) {
-            Self::one_in_bag_minimax_ex(&mut search, &board, &racks, turn)
+            Self::one_in_bag_minimax_ex(&mut search, &self.board_tiles, &self.racks, turn)
         } else {
-            Self::one_in_bag_minimax(&mut search, &board, &racks, turn)
+            Self::one_in_bag_minimax(&mut search, &self.board_tiles, &self.racks, turn)
         };
         *memo = std::mem::take(&mut search.memo);
         *exact &= search.exact;
