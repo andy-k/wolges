@@ -255,6 +255,7 @@ pub struct Session {
     spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
     played_line: String, // a computer's play as the command run and logged, kept
     played_words: Vec<String>, // that command's words, kept from play to play
+    spare_unseen: std::cell::Cell<Vec<u8>>, // the tiles show last counted unseen
     kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
     klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
     kwgs_read: std::collections::HashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
@@ -469,6 +470,7 @@ impl Session {
             spare_state: Default::default(),
             played_line: String::new(),
             played_words: Vec::new(),
+            spare_unseen: Default::default(),
             kwg: None,
             klv: none,
             kwgs_read: Default::default(),
@@ -1937,7 +1939,9 @@ impl Session {
             )?;
         }
         if !matches!(self.seats[turn], Seat::Bot(_)) {
-            let mut unseen = self.state.bag.as_slice().to_vec();
+            let mut unseen = self.spare_unseen.take();
+            unseen.clear();
+            unseen.extend_from_slice(self.state.bag.as_slice());
             for (i, player) in self.state.players.iter().enumerate() {
                 if i != turn {
                     unseen.extend_from_slice(&player.rack);
@@ -1945,13 +1949,15 @@ impl Session {
             }
             unseen.sort_unstable();
             let (vowels, consonants, blanks) = vowels_consonants_blanks(alphabet, &unseen);
-            writeln!(
+            let written = writeln!(
                 out,
                 "unseen by player {}: {} {} (vowels {vowels}, consonants {consonants}, blanks {blanks})",
                 turn + 1,
                 unseen.len(),
                 alphabet.fmt_rack(&unseen),
-            )?;
+            );
+            self.spare_unseen.set(unseen);
+            written?;
         }
         // each move with the board before it, so that a tile played through
         // shows, and what a challenge did to it (taken back, or a bonus); the
