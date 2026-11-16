@@ -5807,8 +5807,9 @@ impl<
             };
             let mut found = PegBagRows::default();
             for split in splits {
-                let (value, win, draws) =
-                    value_root_split(&mut search, split, &at, play, score_diff)?;
+                let mut draws = Vec::new();
+                let (value, win) =
+                    value_root_split(&mut search, split, &at, play, score_diff, Some(&mut draws))?;
                 let (_, bag, ways) = split;
                 (found.hypotheses).push((
                     tiles_of(bag),
@@ -6141,13 +6142,13 @@ impl<
                     handing.fetch_add(1, Relaxed);
                     search.hand_over = Some(task);
                 }
-                let valued = value_root_split(search, &splits[s], at, play, score_diff);
+                let valued = value_root_split(search, &splits[s], at, play, score_diff, None);
                 if hands_over {
                     search.hand_over = None;
                     handing.fetch_sub(1, Relaxed);
                 }
                 match valued {
-                    Ok((value, win, _)) => {
+                    Ok((value, win)) => {
                         let took = limits.t0.elapsed().saturating_sub(began);
                         mine.push((task, value, win, search.exact, took));
                         if unvalued[m].fetch_sub(1, Relaxed) == 1 {
@@ -7326,7 +7327,7 @@ fn value_root_move<
 ) -> error::Returns<PegBagValue> {
     let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
     for split in splits {
-        let (value, chance, _) = value_root_split(search, split, at, play, score_diff)?;
+        let (value, chance) = value_root_split(search, split, at, play, score_diff, None)?;
         let ways = split.2;
         win += ways as f64 * chance;
         marg += ways as f64 * value;
@@ -7351,7 +7352,8 @@ fn value_root_split<
     at: &impl Fn(&[u8], &[u8], &mut InBag),
     play: &movegen::Play,
     score_diff: f64,
-) -> error::Returns<(f64, f64, Vec<PegBagDraw>)> {
+    draws: Option<&mut Vec<PegBagDraw>>,
+) -> error::Returns<(f64, f64)> {
     // the split's position, and what the mover knows there, in the arena's
     // room for the root
     let mut pos = std::mem::take(&mut search.arena.root);
@@ -7363,15 +7365,15 @@ fn value_root_split<
         let found = search.info_split(&info, play, opp_rack, bag);
         search.arena.root_info = info;
         let (win, margin) = found?;
-        return Ok((margin + score_diff, win, Vec::new()));
+        return Ok((margin + score_diff, win));
     }
-    let found = value_root_draws(search, &mut pos, play, score_diff);
+    let found = value_root_draws(search, &mut pos, play, score_diff, draws);
     search.arena.root = pos;
     found
 }
 
-// value_root_split's value under RandomDraws at pos, with its chance to win
-// and each draw the move makes
+// value_root_split's value under RandomDraws at pos, with its chance to win,
+// each draw the move makes listed on draws where it is given
 #[inline(always)]
 fn value_root_draws<
     const LEAN: bool,
@@ -7385,23 +7387,27 @@ fn value_root_draws<
     pos: &mut InBag,
     play: &movegen::Play,
     score_diff: f64,
-) -> error::Returns<(f64, f64, Vec<PegBagDraw>)> {
-    let mut draws = Vec::new();
+    mut draws: Option<&mut Vec<PegBagDraw>>,
+) -> error::Returns<(f64, f64)> {
     let value = search.move_value_each(pos, play, |drawn, ways, value| {
-        draws.push(PegBagDraw {
-            tiles: tiles_of(drawn),
-            ways,
-            margin: equity::Equity::new((value + score_diff).round() as i32),
-            win: 0.0,
-        })
+        if let Some(draws) = draws.as_deref_mut() {
+            draws.push(PegBagDraw {
+                tiles: tiles_of(drawn),
+                ways,
+                margin: equity::Equity::new((value + score_diff).round() as i32),
+                win: 0.0,
+            })
+        }
     })? + score_diff;
     let mut at_draw = 0;
     let win = search.move_win_each(pos, play, -score_diff, |_, _, win| {
-        draws[at_draw].win = win;
+        if let Some(draws) = draws.as_deref_mut() {
+            draws[at_draw].win = win;
+        }
         at_draw += 1;
     })?;
-    debug_assert_eq!(at_draw, draws.len());
-    Ok((value, win, draws))
+    debug_assert!(draws.is_none_or(|draws| at_draw == draws.len()));
+    Ok((value, win))
 }
 
 // a tally's tiles, each as many times as it counts
