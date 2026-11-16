@@ -5876,13 +5876,14 @@ impl<
             // board, the mover's rack, and how many tiles the bag holds (so a
             // part's are made at the whole's first split)
             let (opp_rack, bag) = &*moves_at;
-            state.moves = in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+            in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 gc,
                 kwg,
                 arm_tables,
                 klv,
                 &mut *mg,
                 &at(opp_rack, bag),
+                &mut state.moves,
             );
             state.order = (0..state.moves.len()).collect();
             if deepens {
@@ -8087,7 +8088,8 @@ fn in_bag_moves<
     klv: &klv::Klv<L>,
     mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     pos: &InBag,
-) -> Vec<movegen::Play> {
+    moves: &mut Vec<movegen::Play>,
+) {
     let mover = pos.mover as usize;
     let (rack, made) = (&pos.racks[mover], pos.exchanges[mover]);
     moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
@@ -8103,11 +8105,12 @@ fn in_bag_moves<
         rack,
         made,
         pos.bag_len(),
-    )
+        moves,
+    );
 }
 
 // in_bag_moves's moves on the snapshot's board for this rack, the mover having
-// exchanged made times, with bag_len tiles in the bag
+// exchanged made times, with bag_len tiles in the bag, into moves (cleared)
 fn moves_of<
     const LEAN: bool,
     N: kwg::Node,
@@ -8121,11 +8124,13 @@ fn moves_of<
     rack: &[u8],
     made: i16,
     bag_len: usize,
-) -> Vec<movegen::Play> {
+    moves: &mut Vec<movegen::Play>,
+) {
     let gc = snapshot.game_config;
-    let mut moves = vec![movegen::Play::Exchange {
+    moves.clear();
+    moves.push(movegen::Play::Exchange {
         tiles: [][..].into(),
-    }];
+    });
     gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
         mg,
         snapshot,
@@ -8160,7 +8165,6 @@ fn moves_of<
             });
         }
     }
-    moves
 }
 
 // whether a player who has exchanged this many times may exchange with this
@@ -8224,16 +8228,25 @@ fn draw_ways(pool: &[u8], drawn: &[u8]) -> u64 {
     (pool.iter().zip(drawn)).fold(1u64, |ways, (&p, &d)| ways * binom(p as usize, d as usize))
 }
 
-// the room the search with tiles in the bag draws in, made once for a search
-// and kept across its root moves: for each ply, a count per tile for each of
-// the bag a draw is made from, the draw, and one more tally (the tiles an
-// exchange throws back, or the whole bag a placement draws), each lent out on
-// its own. Sized at setup for as many plies as the bag has tiles and one more,
-// each placement drawing at least one; a line of scoreless turns past that
-// adds a ply's room once, kept from then on
+// the room the search with tiles in the bag works in, made once for a search
+// and kept across its root moves, a ply's room for each ply (PlyRoom). Sized
+// at setup for as many plies as the bag has tiles and one more, each placement
+// drawing at least one; a line of scoreless turns past that adds a ply's room
+// once, kept from then on
 struct BagArena {
     tiles: usize,
-    plies: Vec<[Vec<u8>; 3]>,
+    plies: Vec<PlyRoom>,
+}
+
+// a ply's room: a count per tile for each of the bag a draw is made from, the
+// draw, and one more tally (the tiles an exchange throws back, or the whole
+// bag a placement draws), each lent out on its own; and the moves of the
+// position valued there with the order they are asked in, lent out together
+#[derive(Default)]
+struct PlyRoom {
+    tallies: [Vec<u8>; 3],
+    moves: Vec<movegen::Play>,
+    asked: Vec<usize>,
 }
 
 // which of a ply's tallies (BagArena)
@@ -8250,26 +8263,52 @@ impl BagArena {
     }
 
     #[inline(always)]
-    fn room(tiles: usize) -> [Vec<u8>; 3] {
-        [vec![0u8; tiles], vec![0u8; tiles], vec![0u8; tiles]]
+    fn room(tiles: usize) -> PlyRoom {
+        PlyRoom {
+            tallies: [vec![0u8; tiles], vec![0u8; tiles], vec![0u8; tiles]],
+            ..Default::default()
+        }
+    }
+
+    // a ply's room, made the first time the ply is reached
+    #[inline(always)]
+    fn ply(&mut self, ply: usize) -> &mut PlyRoom {
+        if ply >= self.plies.len() {
+            let tiles = self.tiles;
+            self.plies.resize_with(ply + 1, || Self::room(tiles));
+        }
+        &mut self.plies[ply]
     }
 
     // one of a ply's tallies, lent out until given back (one an error kept is
     // made again)
     #[inline(always)]
     fn take(&mut self, ply: usize, which: usize) -> Vec<u8> {
-        if ply >= self.plies.len() {
-            let tiles = self.tiles;
-            self.plies.resize_with(ply + 1, || Self::room(tiles));
-        }
-        let mut tally = std::mem::take(&mut self.plies[ply][which]);
-        tally.resize(self.tiles, 0);
+        let tiles = self.tiles;
+        let mut tally = std::mem::take(&mut self.ply(ply).tallies[which]);
+        tally.resize(tiles, 0);
         tally
     }
 
     #[inline(always)]
     fn give(&mut self, ply: usize, which: usize, tally: Vec<u8>) {
-        self.plies[ply][which] = tally;
+        self.plies[ply].tallies[which] = tally;
+    }
+
+    // a ply's moves and the order they are asked in, lent out until given back
+    #[inline(always)]
+    fn take_moves(&mut self, ply: usize) -> (Vec<movegen::Play>, Vec<usize>) {
+        let room = self.ply(ply);
+        (
+            std::mem::take(&mut room.moves),
+            std::mem::take(&mut room.asked),
+        )
+    }
+
+    #[inline(always)]
+    fn give_moves(&mut self, ply: usize, moves: Vec<movegen::Play>, asked: Vec<usize>) {
+        let room = &mut self.plies[ply];
+        (room.moves, room.asked) = (moves, asked);
     }
 }
 
@@ -8850,23 +8889,49 @@ impl<
     ) -> error::Returns<(f64, movegen::Play)> {
         self.stop_at_a_limit()?;
         let was_exact = std::mem::replace(&mut self.exact, true);
-        let mut moves = in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+        // the moves, and the order they are asked in, in the ply's room
+        let (mut moves, mut asked) = self.arena.take_moves(self.ply);
+        in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             self.gc,
             self.kwg,
             self.arm_tables,
             self.klv,
             self.mg,
             pos,
+            &mut moves,
         );
-        let bag_len = pos.bag_len();
-        let mut asked = (0..moves.len()).collect::<Vec<_>>();
-        asked.sort_by_key(|&i| match &moves[i] {
+        asked.clear();
+        asked.extend(0..moves.len());
+        asked.sort_unstable_by_key(|&i| match &moves[i] {
             play if first.as_ref() == Some(play) => (false, std::cmp::Reverse(i32::MAX), i),
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
             _ => (true, std::cmp::Reverse(i32::MIN), i),
         });
+        let found =
+            (self.node_best(pos, &moves, &asked)).map(|(value, i)| (value, moves[i].clone()));
+        self.arena.give_moves(self.ply, moves, asked);
+        let (value, play) = found?;
+        let exact = self.exact;
+        self.exact = was_exact && exact;
+        let entry = BagEntry::Valued(value, play.clone(), exact);
+        let memory = self.limits.memory;
+        (self.valued).write(key, |shard| {
+            shard.nodes.keep(key, entry, memory, BagEntry::worth)
+        });
+        Ok((value, play))
+    }
+
+    // the best of the moves at pos, asked in this order, as node_searched
+    // finds it: its value and its place in moves
+    fn node_best(
+        &mut self,
+        pos: &mut InBag,
+        moves: &[movegen::Play],
+        asked: &[usize],
+    ) -> error::Returns<(f64, usize)> {
+        let bag_len = pos.bag_len();
         let mut best = (f64::NEG_INFINITY, usize::MAX);
-        for i in asked {
+        for &i in asked {
             let value = match &moves[i] {
                 movegen::Play::Place { word, score, .. }
                     if best.1 != usize::MAX
@@ -8894,15 +8959,7 @@ impl<
                 best = (value, i);
             }
         }
-        let exact = self.exact;
-        self.exact = was_exact && exact;
-        let play = moves.swap_remove(best.1);
-        let entry = BagEntry::Valued(best.0, play.clone(), exact);
-        let memory = self.limits.memory;
-        (self.valued).write(key, |shard| {
-            shard.nodes.keep(key, entry, memory, BagEntry::worth)
-        });
-        Ok((best.0, play))
+        Ok(best)
     }
 
     // whether a pass or a placement that leaves tiles in the bag cannot be the
@@ -8992,23 +9049,32 @@ impl<
         let play = match first {
             Some(play) if empties(&play) => play,
             _ => {
-                let moves = in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-                    self.gc,
-                    self.kwg,
-                    self.arm_tables,
-                    self.klv,
+                // in_bag_moves's placements, read from the generator
+                let mover = pos.mover as usize;
+                gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                     self.mg,
-                    pos,
+                    &movegen::BoardSnapshot {
+                        board_tiles: &pos.board,
+                        game_config: self.gc,
+                        kwg: self.kwg,
+                        anagrams: self.arm_tables.anagrams(),
+                        rack_lengths: self.arm_tables.rack_lengths(),
+                        klv: self.klv,
+                    },
+                    &pos.racks[mover],
+                    pos.exchanges[mover],
+                    movegen::PassPolicy::OnlyWhenForced,
                 );
+                let plays = self.mg.plays.iter().map(|vm| &vm.play);
                 let Some(play) =
-                    (moves.into_iter().filter(empties)).max_by_key(|play| match play {
+                    (plays.filter(|play| empties(play))).max_by_key(|play| match play {
                         movegen::Play::Place { score, .. } => *score,
                         movegen::Play::Exchange { .. } => i32::MIN,
                     })
                 else {
                     return Ok(None);
                 };
-                play
+                play.clone()
             }
         };
         let movegen::Play::Place { score, .. } = play else {
@@ -9351,7 +9417,9 @@ impl<
         let was_exact = std::mem::replace(&mut self.exact, true);
         let made = info.exchanges[info.mover as usize];
         let (gc, kwg, arm_tables, klv) = (self.gc, self.kwg, self.arm_tables, self.klv);
-        let mut moves = moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+        // the moves, and the order they are asked in, in the ply's room
+        let (mut moves, mut asked) = self.arena.take_moves(self.ply);
+        moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             self.mg,
             &movegen::BoardSnapshot {
                 board_tiles: &info.board,
@@ -9364,14 +9432,38 @@ impl<
             &info.rack,
             made,
             info.bag_len,
+            &mut moves,
         );
-        let splits = info.splits();
-        let mut asked = (0..moves.len()).collect::<Vec<_>>();
-        asked.sort_by_key(|&i| match &moves[i] {
+        asked.clear();
+        asked.extend(0..moves.len());
+        asked.sort_unstable_by_key(|&i| match &moves[i] {
             play if first.as_ref() == Some(play) => (false, std::cmp::Reverse(i32::MAX), i),
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
             _ => (true, std::cmp::Reverse(i32::MIN), i),
         });
+        let found = (self.info_best(info, &moves, &asked))
+            .map(|(win, margin, i)| (win, margin, moves[i].clone()));
+        self.arena.give_moves(self.ply, moves, asked);
+        let (win, margin, play) = found?;
+        let exact = self.exact;
+        self.exact = was_exact && exact;
+        let entry = BagEntry::Valued((win, margin), play, exact);
+        let memory = self.limits.memory;
+        (self.valued).write(key, |shard| {
+            shard.infos.keep(key, entry, memory, BagEntry::worth)
+        });
+        Ok((win, margin))
+    }
+
+    // the best of the moves at info, asked in this order, as info_value finds
+    // it: its chance, its margin, and its place in moves
+    fn info_best(
+        &mut self,
+        info: &InfoSet,
+        moves: &[movegen::Play],
+        asked: &[usize],
+    ) -> error::Returns<(f64, f64, usize)> {
+        let splits = info.splits();
         // a root task's hand-over opens these moves to the threads with none
         // left, who value them from the end into the shared table
         use std::sync::atomic::Ordering::Relaxed;
@@ -9384,7 +9476,7 @@ impl<
         }
         let mut valued = Vec::new();
         let mut floor = None;
-        for (k, i) in asked.into_iter().enumerate() {
+        for (k, &i) in asked.iter().enumerate() {
             if let Some(help) = help {
                 help.forward.store(k, Relaxed);
             }
@@ -9426,14 +9518,7 @@ impl<
                 best = (win, margin, i);
             }
         }
-        let exact = self.exact;
-        self.exact = was_exact && exact;
-        let entry = BagEntry::Valued((best.0, best.1), moves.swap_remove(best.2), exact);
-        let memory = self.limits.memory;
-        (self.valued).write(key, |shard| {
-            shard.infos.keep(key, entry, memory, BagEntry::worth)
-        });
-        Ok((best.0, best.1))
+        Ok(best)
     }
 
     // a move's chance to win at info over the splits weighed by their deals,
@@ -17253,14 +17338,17 @@ mod tests {
             return value;
         }
         let mut value = f64::NEG_INFINITY;
-        for play in super::in_bag_moves::<false, _, _, _, true, true>(
+        let mut moves = Vec::new();
+        super::in_bag_moves::<false, _, _, _, true, true>(
             r.gc,
             r.kwg,
             r.arm_tables,
             r.klv,
             r.mg,
             pos,
-        ) {
+            &mut moves,
+        );
+        for play in moves {
             value = value.max(bag_reference_move(r, pos, &play));
         }
         r.known.insert(key, value);
@@ -17458,7 +17546,8 @@ mod tests {
             return value;
         }
         let made = info.exchanges[info.mover as usize];
-        let moves = super::moves_of::<false, _, _, _, true, true>(
+        let mut moves = Vec::new();
+        super::moves_of::<false, _, _, _, true, true>(
             r.mg,
             &movegen::BoardSnapshot {
                 board_tiles: &info.board,
@@ -17471,6 +17560,7 @@ mod tests {
             &info.rack,
             made,
             info.bag_len,
+            &mut moves,
         );
         let splits = info.splits();
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
