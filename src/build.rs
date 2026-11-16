@@ -1008,7 +1008,7 @@ struct ReorderBuffers {
     postings: Vec<u32>,
     postings_fill: Vec<u32>,
     rarest_entries: Vec<u32>,
-    by_len: Vec<u32>,
+    by_len: Vec<u64>, // each a movable list's key: see reorder_states
     tails: Vec<u32>,
     tried: Vec<u32>,
     path: Vec<(u32, u32, u32)>,
@@ -1142,12 +1142,17 @@ fn reorder_states(
         rarest_entries.push(rarest_entry);
     }
 
+    // the movable lists, longest first, then by head: as movable ascends by
+    // head, each is a key of its length's complement and its index, which the
+    // sort compares alone
     by_len.clear();
-    by_len.extend(0..movable.len() as u32);
-    by_len.sort_unstable_by_key(|&i| {
-        let head = movable[i as usize];
-        (!to_end_lens[head as usize], head)
-    });
+    by_len.extend(
+        movable
+            .iter()
+            .enumerate()
+            .map(|(i, &head)| ((!to_end_lens[head as usize] as u64) << u32::BITS) | i as u64),
+    );
+    by_len.sort_unstable();
 
     struct Absorber<'a> {
         states: &'a [State],
@@ -1226,7 +1231,8 @@ fn reorder_states(
         stamp: 0,
         path,
     };
-    for &i in by_len.iter() {
+    for &key in by_len.iter() {
+        let i = key as u32;
         absorber.stamp = i;
         absorber.absorb(tails, i);
     }
@@ -1235,7 +1241,8 @@ fn reorder_states(
     order_starts.resize(states_len, 0); // 0 = keep the order it has.
     order_cells.clear();
     order_cells.push(0); // index 0 stands for "no order of its own".
-    for &i in by_len.iter().rev() {
+    for &key in by_len.iter().rev() {
+        let i = key as u32;
         let tail = tails[i as usize];
         if tail == !0 {
             continue;
