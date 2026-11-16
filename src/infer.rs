@@ -118,12 +118,6 @@ pub fn build_sheet_spell_once<
         rack_size,
         phase,
     } = pool;
-    movegen_rack.clear();
-    for (t, &c) in unseen_tally.iter().enumerate() {
-        for _ in 0..(c as usize).min(rack_size) {
-            movegen_rack.push(t as u8);
-        }
-    }
     let mut n_cand = 0u64;
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles,
@@ -133,6 +127,45 @@ pub fn build_sheet_spell_once<
         rack_lengths: None,
         klv,
     };
+    // jumbled, a multiset's arrangements on a span differ only in score and in
+    // the opening's adjustment, which the walk weighs too, so each span offers
+    // each multiset (and blank designation) once, at its best
+    if let game_config::GameRules::Jumbled = game_config.game_rules() {
+        movegen_rack.clear();
+        for (t, &c) in unseen_tally.iter().enumerate() {
+            for _ in 0..c {
+                movegen_rack.push(t as u8);
+            }
+        }
+        let mut tally = [0u8; census::MAX_LETTERS];
+        let tally = &mut tally[..unseen_tally.len()];
+        move_generator.pool_plays_best_window(
+            board_snapshot,
+            movegen_rack,
+            (u128::MAX, u128::MAX),
+            0..u64::MAX,
+            &mut movegen::PoolLists::default(),
+            |down, _, idx, word: &[u8], score: i32| {
+                n_cand += 1;
+                let score = score + opening_adjustment(phase, game_config, down, idx, word);
+                tally.fill(0);
+                for &tile in word {
+                    if tile != 0 {
+                        tally[if tile & 0x80 != 0 { 0 } else { tile as usize }] += 1;
+                    }
+                }
+                let slot = &mut sheet[lat.rank(tally) as usize];
+                *slot = (*slot).max(score);
+            },
+        );
+        return n_cand;
+    }
+    movegen_rack.clear();
+    for (t, &c) in unseen_tally.iter().enumerate() {
+        for _ in 0..(c as usize).min(rack_size) {
+            movegen_rack.push(t as u8);
+        }
+    }
     let params = movegen::GenMovesParams {
         board_snapshot,
         rack: &movegen_rack[..],
@@ -1746,6 +1779,58 @@ mod tests {
             assert_eq!(
                 leaves_under(&jumbled, &alphagrams, on_board, play, fuzz),
                 want
+            );
+        }
+    }
+
+    // so too the sheet, which jumbled rules build each span's multisets once
+    #[test]
+    #[inline]
+    fn jumbled_rules_build_the_classic_sheet_on_words_whose_anagrams_are_words() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let bytes = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &build::make_alphagrams(&tiny_words()),
+        )
+        .unwrap();
+        let alphagrams = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
+        let classic = tiny_kwg();
+        let mut board_tiles = vec![0u8; 15 * 15];
+        // the empty board, then a midgame one
+        for step in 0..2 {
+            if step > 0 {
+                board_tiles[7 * 15 + 7..7 * 15 + 10].copy_from_slice(&[1, 20, 5]);
+                board_tiles[8 * 15 + 9] = 0x81;
+            }
+            let sheet_under = |game_config: &game_config::GameConfig, kwg| {
+                let lat = census::MultisetLattice::new(27, 7).unwrap();
+                let pool = game_config.tiles_off_board(&board_tiles).unwrap();
+                let mut sheet = Vec::new();
+                infer_sheet_for(
+                    &mut movegen::KurniaMoveGenerator::new(game_config),
+                    &board_tiles,
+                    SpellTables {
+                        game_config,
+                        kwg,
+                        klv: &klv,
+                        lat: &lat,
+                    },
+                    &pool,
+                    true,
+                    (&mut Vec::new(), &mut Vec::new()),
+                    &mut sheet,
+                );
+                sheet
+            };
+            let want = sheet_under(&game_config::make_english_game_config(), &classic);
+            assert!(want.iter().any(|&v| v > 0));
+            assert!(
+                sheet_under(
+                    &game_config::make_jumbled_english_game_config(),
+                    &alphagrams
+                ) == want
             );
         }
     }
