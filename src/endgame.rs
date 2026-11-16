@@ -212,6 +212,25 @@ impl std::fmt::Debug for LimitStopped {
 
 impl std::error::Error for LimitStopped {}
 
+// the same for a search the memory limit stopped before it took what passes it
+struct MemoryRefused;
+
+const MEMORY_REFUSED: &str = "the memory limit stopped the search";
+
+impl std::fmt::Display for MemoryRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(MEMORY_REFUSED)
+    }
+}
+
+impl std::fmt::Debug for MemoryRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{MEMORY_REFUSED:?}")
+    }
+}
+
+impl std::error::Error for MemoryRefused {}
+
 // the buckets (1 MiB) a table grows to at once; a bigger one grows a piece at
 // each store, so no store takes the time of a whole move, and a solve stops
 // within its time limit
@@ -1989,7 +2008,7 @@ impl BagLimits {
     fn stop_refused(&self) -> error::BoxAnyError {
         self.stopped.set(true);
         self.refused.set(true);
-        "the memory limit stopped the search".into()
+        Box::new(MemoryRefused)
     }
 
     // whether the memory limit cut the search short
