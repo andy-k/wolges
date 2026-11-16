@@ -5764,6 +5764,8 @@ impl<
         self.swap_tables(&mut sub)?;
         std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
         let position = &progress.position;
+        let arenas = &mut progress.arenas;
+        BagArena::at_least(arenas, 1, gc.alphabet().len() as usize, position.bag_size);
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, 1);
         let scoreless = self.scoreless;
@@ -5801,7 +5803,7 @@ impl<
                 hand_overs: &[],
                 hand_over: None,
                 ply: 0,
-                arena: &mut BagArena::new(gc.alphabet().len() as usize, position.bag_size),
+                arena: &mut arenas[0],
             };
             let mut found = PegBagRows::default();
             for split in splits {
@@ -5865,7 +5867,9 @@ impl<
             endgames: _,
             nodes: _,
             lanes: _,
+            arenas,
         } = progress;
+        BagArena::at_least(arenas, 1, gc.alphabet().len() as usize, position.bag_size);
         let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
             position.after_split(scoreless, opp_rack, bag, pos)
         };
@@ -5926,6 +5930,7 @@ impl<
                         splits,
                         at: &at,
                         score_diff,
+                        arenas: &mut *arenas,
                     },
                     limits,
                     threads,
@@ -5933,7 +5938,7 @@ impl<
                 )?
             } else {
                 let mut stopped = false;
-                let arena = &mut BagArena::new(gc.alphabet().len() as usize, position.bag_size);
+                let arena = &mut arenas[0];
                 while let Some(&i) = state.order.get(state.next) {
                     limits.moves.set(Some((state.next, state.order.len())));
                     limits.may_stop.set(deepens);
@@ -6051,6 +6056,7 @@ impl<
             splits,
             at,
             score_diff,
+            arenas,
         } = root;
         let gc = sub.game_config;
         let kwg = sub.kwg;
@@ -6060,12 +6066,14 @@ impl<
         let base = state.next;
         let rest = state.order.len() - base;
         let num_splits = splits.len();
-        // each thread's room to draw in (BagArena): the tiles of the game and
-        // of the bag
+        // each thread's room to work in (BagArena), this one's first, sized
+        // for the tiles of the game and of the bag
         let tiles = gc.alphabet().len() as usize;
         let bag_len = (splits.first()).map_or(0, |(_, bag, _)| {
             bag.iter().map(|&count| count as usize).sum()
         });
+        BagArena::at_least(arenas, threads, tiles, bag_len);
+        let (mine, theirs) = arenas.split_at_mut(1);
         let tasks = rest * num_splits;
         // the tasks' order, what each found, and their hand-overs; the moves'
         // splits not yet valued
@@ -6216,50 +6224,52 @@ impl<
         let mut helpers = std::mem::take(&mut sub.helpers);
         helpers.resize_with(threads - 1, || None);
         let (shares, kept, pools, helpers) = std::thread::scope(|s| {
-            let handles = (kept.into_iter().zip(pools).zip(helpers))
-                .map(|((table, lanes), helper)| {
-                    let work = &work;
-                    s.spawn(move || {
-                        let mut own =
-                            match Self::of_helper(gc, kwg, arm_tables, run_letters, helper) {
-                                Ok(own) => own,
-                                Err(e) => return (Err(e), table, lanes, None),
-                            };
-                        if let Some(table) = table {
-                            // made by a solver of this game and lexicon, so
-                            // taken
-                            let _ = own.give_table(table);
-                        }
-                        own.work_buffer.lane_pool = lanes;
-                        if !LEAN {
-                            own.pool_lanes_as(deal);
-                        }
-                        let mut mg = own.take_mg();
-                        let limits = BagLimits::on_the_clock(on_one_clock);
-                        let mut search = BagSearch {
-                            gc,
-                            kwg,
-                            arm_tables,
-                            klv,
-                            sub: &mut own,
-                            mg: &mut mg,
-                            valued,
-                            limits: &limits,
-                            model,
-                            exact: true,
-                            hand_overs,
-                            hand_over: None,
-                            ply: 0,
-                            arena: &mut BagArena::new(tiles, bag_len),
-                        };
-                        let share = work(&mut search, &limits);
-                        own.kept_mg = Some(mg);
-                        let lanes = std::mem::take(&mut own.work_buffer.lane_pool);
-                        let table = own.take_table();
-                        (share, Some(table), lanes, Some(own.into_helper()))
-                    })
+            let handles = (kept
+                .into_iter()
+                .zip(pools)
+                .zip(helpers)
+                .zip(theirs.iter_mut()))
+            .map(|(((table, lanes), helper), arena)| {
+                let work = &work;
+                s.spawn(move || {
+                    let mut own = match Self::of_helper(gc, kwg, arm_tables, run_letters, helper) {
+                        Ok(own) => own,
+                        Err(e) => return (Err(e), table, lanes, None),
+                    };
+                    if let Some(table) = table {
+                        // made by a solver of this game and lexicon, so taken
+                        let _ = own.give_table(table);
+                    }
+                    own.work_buffer.lane_pool = lanes;
+                    if !LEAN {
+                        own.pool_lanes_as(deal);
+                    }
+                    let mut mg = own.take_mg();
+                    let limits = BagLimits::on_the_clock(on_one_clock);
+                    let mut search = BagSearch {
+                        gc,
+                        kwg,
+                        arm_tables,
+                        klv,
+                        sub: &mut own,
+                        mg: &mut mg,
+                        valued,
+                        limits: &limits,
+                        model,
+                        exact: true,
+                        hand_overs,
+                        hand_over: None,
+                        ply: 0,
+                        arena,
+                    };
+                    let share = work(&mut search, &limits);
+                    own.kept_mg = Some(mg);
+                    let lanes = std::mem::take(&mut own.work_buffer.lane_pool);
+                    let table = own.take_table();
+                    (share, Some(table), lanes, Some(own.into_helper()))
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
             let mut search = BagSearch {
                 gc,
                 kwg,
@@ -6274,7 +6284,7 @@ impl<
                 hand_overs,
                 hand_over: None,
                 ply: 0,
-                arena: &mut BagArena::new(tiles, bag_len),
+                arena: &mut mine[0],
             };
             let mine = work(&mut search, limits);
             let (mut shares, mut kept, mut pools, mut helpers) =
@@ -7172,7 +7182,8 @@ pub struct PegBagProgress {
     state: PegBagState,
     endgames: u64,
     nodes: u64,
-    lanes: LanePool, // the lane pool of its endgames on the thread solving it
+    lanes: LanePool,       // the lane pool of its endgames on the thread solving it
+    arenas: Vec<BagArena>, // each thread's search's room, this one's first, kept
 }
 
 impl PegBagProgress {
@@ -7225,6 +7236,7 @@ impl PegBagProgress {
             endgames: 0,
             nodes: 0,
             lanes: LanePool::new(),
+            arenas: Vec::new(),
         })
     }
 
@@ -7414,11 +7426,12 @@ fn peg_bag_value(win: f64, marg: f64, total: u64, exact: bool) -> PegBagValue {
 
 // what a pass values each move against: each split of the unseen tiles (the
 // other's rack, the bag, and the deals that give it), the position a split
-// makes (at), and the mover's lead
+// makes (at), the mover's lead, and the threads' arenas
 struct PegBagRoot<'r, At: Fn(&[u8], &[u8], &mut InBag) + Sync> {
     splits: &'r [(Vec<u8>, Vec<u8>, u64)],
     at: &'r At,
     score_diff: f64,
+    arenas: &'r mut Vec<BagArena>, // each thread's, as PegBagProgress keeps them
 }
 
 // the search so far: the moves; the order its pass values them in, the next to
@@ -8376,6 +8389,13 @@ const DRAW: usize = 1;
 const TALLY: usize = 2;
 
 impl BagArena {
+    // arenas at least this many, those made sized as new sizes them
+    fn at_least(arenas: &mut Vec<Self>, n: usize, tiles: usize, bag_len: usize) {
+        if arenas.len() < n {
+            arenas.resize_with(n, || Self::new(tiles, bag_len));
+        }
+    }
+
     fn new(tiles: usize, bag_len: usize) -> Self {
         Self {
             tiles,
