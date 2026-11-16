@@ -46,6 +46,33 @@ pub struct Klv<L: kwg::Node> {
     racks: Option<Box<racks::RackTable>>, // every full rack's setup from these leaves, if given
 }
 
+// an empty klv of each node layout, each made at its first use and kept (a
+// census that reads no leaves walks one), or made again at the next use where
+// it could not be made
+#[derive(Default)]
+pub struct EmptyKlvs {
+    node22: Option<Klv<kwg::Node22>>,
+    node24: Option<Klv<kwg::Node24>>,
+}
+
+impl EmptyKlvs {
+    #[inline(always)]
+    pub(crate) fn node22(&mut self) -> Option<&Klv<kwg::Node22>> {
+        if self.node22.is_none() {
+            self.node22 = Klv::try_empty();
+        }
+        self.node22.as_ref()
+    }
+
+    #[inline(always)]
+    pub(crate) fn node24(&mut self) -> Option<&Klv<kwg::Node24>> {
+        if self.node24.is_none() {
+            self.node24 = Klv::try_empty();
+        }
+        self.node24.as_ref()
+    }
+}
+
 // kwg::Node22
 pub static EMPTY_KLV_BYTES: &[u8] = b"\x01\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00";
 

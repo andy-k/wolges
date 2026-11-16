@@ -7905,6 +7905,7 @@ pub struct KurniaMoveGenerator<
 > {
     working_buffer: WorkingBuffer<G, BAG_TERM, S>,
     pub plays: Vec<ValuedMove>,
+    empty_klvs: klv::EmptyKlvs, // a census's, made at its first use
 }
 
 impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool, S: BoardStore>
@@ -7915,6 +7916,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         Self {
             working_buffer: self.working_buffer.clone(),
             plays: self.plays.clone(),
+            empty_klvs: klv::EmptyKlvs::default(),
         }
     }
 
@@ -8036,6 +8038,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         Self {
             working_buffer: WorkingBuffer::new(game_config),
             plays: Vec::new(),
+            empty_klvs: klv::EmptyKlvs::default(),
         }
     }
 
@@ -8058,6 +8061,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         Self {
             working_buffer,
             plays: Vec::new(),
+            empty_klvs: klv::EmptyKlvs::default(),
         }
     }
 
@@ -9476,13 +9480,14 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) {
         // a census whose equity predicate rejects every play keeps none, and
         // its predicates take scores alone, so it reads no leave: its walk
-        // reads the empty klv and keeps no leaves' table, however many tiles it
+        // reads the empty klv (the generator's own, taken out for the walk and
+        // put back) and keeps no leaves' table, however many tiles it
         // walks
         let no_leaves = matches!(equity_predicate, EquityPredicate::RejectAll);
-        // a snapshot whose klv already has no leaves is read as it is, so a
-        // caller that keeps one makes none per walk
+        let mut empty_klvs = std::mem::take(&mut self.empty_klvs);
+        // a snapshot whose klv already has no leaves is read as it is
         let empty = (no_leaves && !params.board_snapshot.klv.is_empty())
-            .then(klv::Klv::<L>::try_empty)
+            .then(|| L::kept_empty_klv(&mut empty_klvs))
             .flatten();
         let snapshot;
         let without_leaves;
@@ -9522,6 +9527,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
         self.working_buffer.is_census = false;
         self.working_buffer.multi_leaves.set_dense_most(dense_most);
+        self.empty_klvs = empty_klvs;
     }
 
     #[inline(always)]

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::error;
+use super::{error, klv};
 
 pub trait Node: Copy + Send + Sync {
     fn new(v: u32) -> Self;
@@ -11,6 +11,9 @@ pub trait Node: Copy + Send + Sync {
     // the word a node with these fields is in this layout, or None where one of
     // them does not fit it
     fn pack(tile: u8, accepts: bool, is_end: bool, arc_index: i32) -> Option<u32>;
+    // the empty klv of this layout kept in empties, made there at its first
+    // use; None where none could be made
+    fn kept_empty_klv(empties: &mut klv::EmptyKlvs) -> Option<&klv::Klv<Self>>;
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +51,11 @@ impl Node for Node22 {
             (tile as u32) << 24 | (accepts as u32) << 23 | (is_end as u32) << 22 | arc_index as u32,
         )
     }
+
+    #[inline(always)]
+    fn kept_empty_klv(empties: &mut klv::EmptyKlvs) -> Option<&klv::Klv<Self>> {
+        empties.node22()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +92,11 @@ impl Node for Node24 {
         (tile < 0x40 && (0..=0xffffff).contains(&arc_index)).then_some(
             (arc_index as u32) << 8 | (accepts as u32) << 7 | (is_end as u32) << 6 | tile as u32,
         )
+    }
+
+    #[inline(always)]
+    fn kept_empty_klv(empties: &mut klv::EmptyKlvs) -> Option<&klv::Klv<Self>> {
+        empties.node24()
     }
 }
 
