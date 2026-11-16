@@ -272,27 +272,27 @@ impl MachineWords for [bites::Bites] {
     }
 }
 
-// a drowword: where its tiles start in the drowwords' tiles, how many there
+// a packed word: where its tiles start in the words' tiles, how many there
 // are, and its first tiles as a number that orders as they do
 #[derive(Clone, Copy)]
-struct Drowword {
+struct PackedWord {
     key: u64, // the first 8 tiles, big-endian, 0 past the last
     start: u32,
     len: u32,
     turnaround_target: u32, // for one that ends at a turnaround
 }
 
-// the drowwords of a word list, their tiles one after another, so that none is
-// a value of its own
+// words, as the drowwords or the alphagrams of a word list, their tiles one
+// after another, so that none is a value of its own
 #[derive(Default)]
-struct Drowwords {
+struct PackedWords {
     tiles: Vec<u8>,
-    words: Vec<Drowword>,
+    words: Vec<PackedWord>,
     path: Vec<u32>, // the dawg's nodes along path_tiles: the start, then each one's
     path_tiles: Vec<u8>,
 }
 
-impl MachineWords for Drowwords {
+impl MachineWords for PackedWords {
     #[inline(always)]
     fn num_words(&self) -> usize {
         self.words.len()
@@ -310,15 +310,15 @@ impl MachineWords for Drowwords {
     }
 }
 
-impl Drowwords {
-    // the drowword of the tiles just pushed, from start on
+impl PackedWords {
+    // the word of the tiles just pushed, from start on
     #[inline(always)]
     fn end_word(&mut self, start: usize, turnaround_target: u32) {
         let tiles = &self.tiles[start..];
         let mut key = [0u8; 8];
         let num_key_tiles = tiles.len().min(key.len());
         key[..num_key_tiles].copy_from_slice(&tiles[..num_key_tiles]);
-        self.words.push(Drowword {
+        self.words.push(PackedWord {
             key: u64::from_be_bytes(key),
             start: start as u32,
             len: tiles.len() as u32,
@@ -338,29 +338,40 @@ impl Drowwords {
             })
         });
     }
+
+    // each word once, once they are sorted
+    #[inline(always)]
+    fn dedup(&mut self) {
+        let tiles = &self.tiles[..];
+        self.words.dedup_by(|a, b| {
+            a.key == b.key
+                && tiles[a.start as usize..(a.start + a.len) as usize]
+                    == tiles[b.start as usize..(b.start + b.len) as usize]
+        });
+    }
 }
 
 // machine_drowwords, the builder's, emptied here; each turnaround's target in
 // the dawg made of machine_words (states, from dawg_start_state) is found from
 // the nodes of the prefix this word shares with the last one walked
 #[inline]
-fn gen_machine_drowwords(
-    machine_words: &[bites::Bites],
+fn gen_machine_drowwords<W: MachineWords + ?Sized>(
+    machine_words: &W,
     states: &[State],
     dawg_start_state: u32,
-    machine_drowwords: &mut Drowwords,
+    machine_drowwords: &mut PackedWords,
 ) {
     machine_drowwords.tiles.clear();
     machine_drowwords.words.clear();
     machine_drowwords.path.clear();
     machine_drowwords.path.push(dawg_start_state);
     machine_drowwords.path_tiles.clear();
-    for machine_word_index in 0..machine_words.len() {
-        let this_word = &machine_words[machine_word_index];
+    for machine_word_index in 0..machine_words.num_words() {
+        let this_word = machine_words.word(machine_word_index);
         let this_word_len = this_word.len();
         let mut prefix_len = 0;
         if machine_word_index > 0 {
-            let prev_word = &machine_words[machine_word_index - 1];
+            let prev_word = machine_words.word(machine_word_index - 1);
             let prev_word_len = prev_word.len();
             // - 1 because CAR -> CARE means we still need to emit RAC@.
             let max_prefix_len = this_word_len.min(prev_word_len - 1);
@@ -378,7 +389,7 @@ fn gen_machine_drowwords(
         if num_prefixes >= 2 {
             // the walk keeps the prefix it shares with this word, and goes on
             // to the prefix one tile short of it
-            let Drowwords {
+            let PackedWords {
                 path, path_tiles, ..
             } = machine_drowwords;
             let mut num_kept = 0;
@@ -432,6 +443,21 @@ fn fill_alphagrams(
         machine_dorws.push(rearrange_buffer[..].into());
     }
     machine_dorws.sort_unstable();
+    machine_dorws.dedup();
+}
+
+// make_alphagrams packed into machine_dorws, the builder's, emptied here
+#[inline]
+fn fill_packed_alphagrams(machine_words: &[bites::Bites], machine_dorws: &mut PackedWords) {
+    machine_dorws.tiles.clear();
+    machine_dorws.words.clear();
+    for this_word in machine_words {
+        let start = machine_dorws.tiles.len();
+        machine_dorws.tiles.extend_from_slice(this_word);
+        machine_dorws.tiles[start..].sort_unstable();
+        machine_dorws.end_word(start, 0);
+    }
+    machine_dorws.sort();
     machine_dorws.dedup();
 }
 
@@ -1291,9 +1317,8 @@ pub struct Builder {
     states_finder: StatesFinder,
     transitions: Vec<Transition>,
     indexes: Vec<usize>,
-    machine_drowwords: Drowwords,
-    alphagrams: Vec<bites::Bites>,
-    word_buffer: Vec<u8>, // a word rearranged
+    machine_drowwords: PackedWords,
+    alphagrams: PackedWords,
     reorder: ReorderBuffers,
     head_indexes: Vec<u32>,
     to_end_lens: Vec<u32>,
@@ -1317,7 +1342,7 @@ impl Builder {
         build_order: BuildOrder,
         machine_words: &[bites::Bites],
     ) -> error::Returns<&[u8]> {
-        self.do_build::<1>(build_content, build_layout, build_order, machine_words)?;
+        self.do_build::<1, _>(build_content, build_layout, build_order, machine_words)?;
         Ok(&self.out)
     }
 
@@ -1329,7 +1354,7 @@ impl Builder {
         build_order: BuildOrder,
         machine_words: &[bites::Bites],
     ) -> error::Returns<&[u8]> {
-        self.do_build::<2>(build_content, build_layout, build_order, machine_words)?;
+        self.do_build::<2, _>(build_content, build_layout, build_order, machine_words)?;
         Ok(&self.out)
     }
 
@@ -1341,7 +1366,7 @@ impl Builder {
         machine_words: &[bites::Bites],
     ) -> error::Returns<&[u8]> {
         match game_config.game_rules() {
-            game_config::GameRules::Classic => self.do_build::<2>(
+            game_config::GameRules::Classic => self.do_build::<2, _>(
                 BuildContent::Gaddawg,
                 BuildLayout::Wolges,
                 BuildOrder::Sorted,
@@ -1350,8 +1375,8 @@ impl Builder {
             game_config::GameRules::Jumbled => {
                 // lent to the build, then put back for the next
                 let mut alphagrams = std::mem::take(&mut self.alphagrams);
-                fill_alphagrams(machine_words, &mut alphagrams, &mut self.word_buffer);
-                let built = self.do_build::<2>(
+                fill_packed_alphagrams(machine_words, &mut alphagrams);
+                let built = self.do_build::<2, _>(
                     BuildContent::DawgOnly,
                     BuildLayout::Wolges,
                     BuildOrder::Sorted,
@@ -1366,16 +1391,16 @@ impl Builder {
 
     // machine_words must be sorted and unique.
     #[inline]
-    fn do_build<const VARIANT: u8>(
+    fn do_build<const VARIANT: u8, W: MachineWords + ?Sized>(
         &mut self,
         build_content: BuildContent,
         build_layout: BuildLayout,
         build_order: BuildOrder,
-        machine_words: &[bites::Bites],
+        machine_words: &W,
     ) -> error::Returns<()> {
         // a word ends on an accepting arc, so an empty word has nowhere to
         // end; sorted, it can only come first
-        if machine_words.first().is_some_and(|word| word.is_empty()) {
+        if machine_words.num_words() > 0 && machine_words.word(0).is_empty() {
             return_error!("a word graph cannot hold an empty word".into());
         }
         let Self {
@@ -1385,7 +1410,6 @@ impl Builder {
             indexes,
             machine_drowwords,
             alphagrams: _,
-            word_buffer: _,
             reorder,
             head_indexes,
             to_end_lens,
@@ -1410,7 +1434,7 @@ impl Builder {
         });
 
         // room for a state a word, or for as many as the last build made
-        states_finder.clear(machine_words.len().max(states_finder.len));
+        states_finder.clear(machine_words.num_words().max(states_finder.len));
         states_finder.find_or_insert(&states[0], 0);
 
         let mut state_maker = StateMaker {
