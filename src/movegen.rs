@@ -5561,12 +5561,8 @@ struct JumbledMultisets {
     multisets: Vec<u8>,
     by_size: Vec<u32>,
     size_ends: Vec<u32>,
-    found: Vec<u8>,      // the sizes of the multisets a set's walk found
-    found_from: usize,   // where in multisets the first of them is
-    found_bound: usize,  // the room stage reserves in found, for this rack
-    staged_bytes: usize, // and in multisets
-    bounded: bool,       // stage has worked them out for this generation's rack
-    bounded_size: usize, // up to this size
+    found: Vec<u8>,    // the sizes of the multisets a set's walk found
+    found_from: usize, // where in multisets the first of them is
     kept: Vec<([u8; MAX_ALPHABET_LEN], u32)>,
     current: Vec<u8>,
     walk: u8,
@@ -5843,10 +5839,6 @@ impl JumbledMultisets {
             size_ends: Vec::new(),
             found: Vec::new(),
             found_from: 0,
-            found_bound: 0,
-            staged_bytes: 0,
-            bounded: false,
-            bounded_size: 0,
             kept: Vec::new(),
             current: Vec::new(),
             walk: JUMBLED_EVERY_ARRANGEMENT,
@@ -5902,7 +5894,6 @@ impl JumbledMultisets {
         self.through = None;
         self.seen = 0;
         self.held = false;
-        self.bounded = false;
         self.floor = i32::MIN;
         self.part = (0, 0);
         self.budget = u64::MAX;
@@ -5919,52 +5910,6 @@ impl JumbledMultisets {
         self.multisets.clear();
         self.kept.clear();
         self.splits.out_of_memory = false;
-        self.bounded = false;
-    }
-
-    // found and multisets reserved for the most multisets a walk of the rack
-    // (rack_tally, its blanks first) can find of each size up to max_size,
-    // worked out once a generation: those its letters make, each with any
-    // letters its blanks stand for. False, with out_of_memory set, where that
-    // room is refused
-    #[inline(never)]
-    fn stage(&mut self, rack_tally: &[u8], alphabet_len: u8, max_size: usize) -> bool {
-        if !self.bounded || self.bounded_size < max_size {
-            // by size: the multisets of the rack's letters, then those with as
-            // many letters as each count of blanks stands for
-            let mut letters = [0usize; MAX_ALPHABET_LEN + 1];
-            letters[0] = 1;
-            let mut most = 0;
-            for &count in &rack_tally[1..alphabet_len as usize] {
-                most = (most + count as usize).min(max_size);
-                for size in (1..=most).rev() {
-                    let mut ways = 0usize;
-                    for taken in 1..=(count as usize).min(size) {
-                        ways = ways.saturating_add(letters[size - taken]);
-                    }
-                    letters[size] = letters[size].saturating_add(ways);
-                }
-            }
-            let letter_kinds = alphabet_len as usize - 1;
-            (self.found_bound, self.staged_bytes) = (0, 0);
-            for size in 0..=max_size {
-                // blanks standing for `blanks` letters: a multiset of that
-                // many of the alphabet's letters, kinds + blanks - 1 choose
-                // blanks
-                let mut bound = letters[size];
-                let mut stood = 1usize;
-                for blanks in 1..=(rack_tally[0] as usize).min(size) {
-                    stood = stood.saturating_mul(letter_kinds + blanks - 1) / blanks;
-                    bound = bound.saturating_add(letters[size - blanks].saturating_mul(stood));
-                }
-                self.found_bound = self.found_bound.saturating_add(bound);
-                self.staged_bytes = (self.staged_bytes).saturating_add(bound.saturating_mul(size));
-            }
-            (self.bounded, self.bounded_size) = (true, max_size);
-        }
-        (self.found.try_reserve(self.found_bound).is_ok()
-            && self.multisets.try_reserve(self.staged_bytes).is_ok())
-            || self.refuse()
     }
 
     #[inline(never)]
@@ -6141,10 +6086,19 @@ fn gen_jumbled_place_moves_walk<
     ) {
         if letter >= c.alphabet_len {
             if size != 0 && c.kwg[p].accepts() {
-                // reserved by stage
-                debug_assert!(c.out.found.len() < c.out.found.capacity());
-                c.out.found.push(size);
-                c.out.multisets.extend_from_slice(&c.out.current);
+                // the lists grow as the walk fills them, each growth reserved
+                // (kept from walk to walk, so they grow once); refused, the
+                // walk is out of memory
+                let out = &mut *c.out;
+                if (out.found.len() == out.found.capacity() && out.found.try_reserve(1).is_err())
+                    || (out.multisets.capacity() - out.multisets.len() < out.current.len()
+                        && out.multisets.try_reserve(out.current.len()).is_err())
+                {
+                    out.refuse();
+                    return;
+                }
+                out.found.push(size);
+                out.multisets.extend_from_slice(&out.current);
             }
             return;
         }
@@ -6904,13 +6858,7 @@ fn gen_jumbled_place_moves_walk<
                     if collected_epoch != forced_epoch {
                         let (start, kept) =
                             env.params.jumbled.find(&forced, num_max_played as usize);
-                        if !kept
-                            && env.params.jumbled.stage(
-                                env.params.rack_tally,
-                                alphabet_len,
-                                num_max_played as usize,
-                            )
-                        {
+                        if !kept {
                             collect_multisets(
                                 &mut Collect {
                                     kwg: env.params.board_snapshot.kwg,
