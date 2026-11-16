@@ -1,8 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{
-    alphabet, alphagram, anagrams, bites, display, equity, error, game_config, klv, kwg, matrix,
-    play_scorer,
+    alphabet, alphagram, anagrams, bites, display, endgame, equity, error, game_config, klv, kwg,
+    matrix, play_scorer,
 };
 use alphagram::KeyPlaces as _;
 
@@ -10448,7 +10448,30 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         found_word: FoundWord,
     ) {
+        // with no limit, nothing is refused
+        let _ = self.gen_remaining_words_within(board_snapshot, None, found_word);
+    }
+
+    // gen_remaining_words, every growth of the prune's own taken only within
+    // memory, if given: refused, found_word is never called. Under a limit the
+    // prune keeps nothing past itself, so what earlier prunes kept goes first,
+    // and what this one held goes once it ends
+    #[inline(always)]
+    pub fn gen_remaining_words_within<
+        'a,
+        FoundWord: 'a + FnMut(&[u8]),
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        memory: Option<&endgame::MemoryLimit>,
+        found_word: FoundWord,
+    ) -> Result<(), endgame::Refused> {
         let working_buffer = &mut self.working_buffer;
+        if memory.is_some() {
+            working_buffer.prune = PruneBuffers::default();
+        }
         working_buffer.init::<0, true, ByLayout, _, _>(
             board_snapshot,
             &[],
@@ -10456,7 +10479,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             None,
         );
         working_buffer.prev_board_tiles.fill(0xff);
-        gen_remaining_words(board_snapshot, working_buffer, found_word)
+        let pruned = gen_remaining_words(board_snapshot, working_buffer, memory, found_word);
+        if memory.is_some() {
+            working_buffer.prune = PruneBuffers::default();
+        }
+        pruned
     }
 
     // the letters each square of the board takes, the cross sets a generation
@@ -13137,6 +13164,7 @@ struct PruneLine<'a, N: kwg::Node> {
     seen: &'a mut [u64],     // by square, the letters of the words found on it
     found: &'a mut FoundWords,
     bits: &'a mut Vec<u64>, // by word of found, whether this walk found it
+    memory: Option<&'a endgame::MemoryLimit>, // found's and bits' limit
 }
 
 // every word the line can take that holds one of its tiles at least, its empty
@@ -13162,8 +13190,9 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
     fn record<N: kwg::Node>(env: &mut Env<'_, '_, N>, idx_left: i8, idx_right: i8) {
         let line = &mut *env.line;
         let span = idx_left as usize..idx_right as usize;
-        let index = line.found.insert(&line.letters[span.clone()]);
-        mark(line.bits, index);
+        if let Some(index) = line.found.insert(&line.letters[span.clone()], line.memory) {
+            line.found.mark(line.bits, index, line.memory);
+        }
         for idx in span {
             if line.tiles[idx] == 0 {
                 line.seen[idx] |= 1 << line.letters[idx];
@@ -13381,6 +13410,7 @@ struct LoneWalk<'a, N: kwg::Node> {
     word: &'a mut Vec<u8>,
     found: &'a mut FoundWords,
     bits: &'a mut Vec<u64>, // by word of found, whether it is a lone word
+    memory: Option<&'a endgame::MemoryLimit>, // found's and bits' limit
 }
 
 fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: usize) {
@@ -13401,9 +13431,11 @@ fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: 
             if any != 0 {
                 walk.available[from] -= 1;
                 walk.word.push(tile as u8);
-                if depth > 0 && node.accepts() {
-                    let index = walk.found.insert(walk.word);
-                    mark(walk.bits, index);
+                if depth > 0
+                    && node.accepts()
+                    && let Some(index) = walk.found.insert(walk.word, walk.memory)
+                {
+                    walk.found.mark(walk.bits, index, walk.memory);
                 }
                 let next_p = node.arc_index();
                 if next_p != 0 && depth + 1 < walk.longest {
@@ -13424,7 +13456,8 @@ fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: 
 // blank as any letter, that fit a shape from its first square on: a shape is a
 // run of squares of takes, (first, len), and the longest comes first. Each word
 // is added to found and marked in bits. The walk's tables are kept in buffers
-// from one prune to the next
+// from one prune to the next; each growth is taken within memory, if given
+#[allow(clippy::too_many_arguments)]
 fn lone_words<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     available: &mut [u8],
@@ -13433,18 +13466,20 @@ fn lone_words<N: kwg::Node>(
     found: &mut FoundWords,
     bits: &mut Vec<u64>,
     buffers: &mut LoneBuffers,
-) {
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     let root = kwg[0].arc_index();
     let Some(&(_, longest)) = shapes.first() else {
-        return;
+        return Ok(());
     };
     if root == 0 {
-        return;
+        return Ok(());
     }
     let LoneBuffers { fits, active, word } = buffers;
     let alphabet_len = available.len();
     let chunks = shapes.len().div_ceil(64);
     fits.clear();
+    endgame::room_in(memory, fits, longest * alphabet_len * chunks)?;
     fits.resize(longest * alphabet_len * chunks, 0);
     for (index, &(first, len)) in shapes.iter().enumerate() {
         for (depth, &letters) in takes[first..first + len].iter().enumerate() {
@@ -13456,12 +13491,13 @@ fn lone_words<N: kwg::Node>(
         }
     }
     active.clear();
+    endgame::room_in(memory, active, (longest + 1) * chunks)?;
     active.resize((longest + 1) * chunks, 0);
     for index in 0..shapes.len() {
         active[index / 64] |= 1 << (index % 64);
     }
     word.clear();
-    word.reserve(longest);
+    endgame::room_in(memory, word, longest)?;
     walk_lone_words(
         &mut LoneWalk {
             kwg,
@@ -13474,10 +13510,12 @@ fn lone_words<N: kwg::Node>(
             word,
             found,
             bits,
+            memory,
         },
         root,
         0,
     );
+    found.refused()
 }
 
 // lone_words' tables: by depth and letter the shapes that take it, by depth
@@ -13509,27 +13547,20 @@ struct PruneBuffers {
     lone: LoneBuffers,
 }
 
-// bit index of bits set, bits grown to hold it
-#[inline(always)]
-fn mark(bits: &mut Vec<u64>, index: usize) {
-    if index / 64 >= bits.len() {
-        bits.resize(index / 64 + 1, 0);
-    }
-    bits[index / 64] |= 1 << (index % 64);
-}
-
 // the words a prune finds, each kept once however often it is found: their
 // tiles one after another, each word its length then its letters; by word,
 // where it starts; and an open-addressing table, probed linearly, of a power
 // of two slots kept at most three quarters full, each a word's index plus one
 // with its hash's top half above it (0 for an empty slot), so that a probe
-// compares a word's tiles only when their halves match
+// compares a word's tiles only when their halves match. Once a memory limit
+// refuses it a growth it takes no more words, nor marks
 #[derive(Clone, Default)]
 struct FoundWords {
     tiles: Vec<u8>,
     starts: Vec<u32>,
     slots: Vec<u64>,
     shift: u32, // a hash's top bits pick its slot: 64 - log2(slots.len())
+    refused: bool,
 }
 
 impl FoundWords {
@@ -13546,6 +13577,17 @@ impl FoundWords {
         self.tiles.clear();
         self.starts.clear();
         self.slots.fill(0);
+        self.refused = false;
+    }
+
+    // whether a memory limit has refused it a growth
+    #[inline(always)]
+    fn refused(&self) -> Result<(), endgame::Refused> {
+        if self.refused {
+            Err(endgame::Refused)
+        } else {
+            Ok(())
+        }
     }
 
     #[inline(always)]
@@ -13572,11 +13614,18 @@ impl FoundWords {
         })
     }
 
-    // the index of the word found, added if it is new
+    // the index of the word found, added if it is new, each growth taken
+    // within memory, if given; none once refused
     #[inline(always)]
-    fn insert(&mut self, word: &[u8]) -> usize {
-        if self.slots.is_empty() {
-            self.grow();
+    fn insert(&mut self, word: &[u8], memory: Option<&endgame::MemoryLimit>) -> Option<usize> {
+        // a table that a new word would fill past three quarters grows first,
+        // so a refused growth leaves every slot as it was
+        if self.refused
+            || ((self.starts.len() + 1) * Self::LOAD.1 > self.slots.len() * Self::LOAD.0
+                && self.grow(memory).is_err())
+        {
+            self.refused = true;
+            return None;
         }
         let hash = Self::hash(word);
         let tag = hash >> u32::BITS << u32::BITS;
@@ -13590,27 +13639,50 @@ impl FoundWords {
             if slot & !(u32::MAX as u64) == tag {
                 let index = (slot as u32 - 1) as usize;
                 if self.word(index) == word {
-                    return index;
+                    return Some(index);
                 }
             }
             i = (i + 1) & mask;
+        }
+        if endgame::room_in(memory, &mut self.starts, 1).is_err()
+            || endgame::room_in(memory, &mut self.tiles, 1 + word.len()).is_err()
+        {
+            self.refused = true;
+            return None;
         }
         let index = self.starts.len();
         self.starts.push(self.tiles.len() as u32);
         self.tiles.push(word.len() as u8);
         self.tiles.extend_from_slice(word);
         self.slots[i] = tag | (index as u64 + 1);
-        if self.starts.len() * Self::LOAD.1 > self.slots.len() * Self::LOAD.0 {
-            self.grow();
+        Some(index)
+    }
+
+    // bit index of bits set, bits grown to hold it within memory, if given;
+    // none once refused
+    #[inline(always)]
+    fn mark(&mut self, bits: &mut Vec<u64>, index: usize, memory: Option<&endgame::MemoryLimit>) {
+        if index / 64 >= bits.len() {
+            if endgame::room_in(memory, bits, index / 64 + 1 - bits.len()).is_err() {
+                self.refused = true;
+                return;
+            }
+            bits.resize(index / 64 + 1, 0);
         }
-        index
+        bits[index / 64] |= 1 << (index % 64);
     }
 
     // twice the slots (or four, the first time), every word's put in them
-    // again
+    // again, the growth taken within memory, if given
     #[cold]
-    fn grow(&mut self) {
+    fn grow(&mut self, memory: Option<&endgame::MemoryLimit>) -> Result<(), endgame::Refused> {
         let num_slots = (self.slots.len() * 2).max(Self::LOAD.1);
+        if self.slots.capacity() < num_slots {
+            // the old slots are let go first, so they and the new are never
+            // held at once
+            self.slots = Vec::new();
+            endgame::room_in(memory, &mut self.slots, num_slots)?;
+        }
         self.slots.clear();
         self.slots.resize(num_slots, 0);
         self.shift = u64::BITS - num_slots.trailing_zeros();
@@ -13623,18 +13695,21 @@ impl FoundWords {
             }
             self.slots[i] = hash >> u32::BITS << u32::BITS | (index as u64 + 1);
         }
+        Ok(())
     }
 
     // the words keep says, by index, to found_word, in ascending order; order
-    // is kept from one prune to the next
+    // is kept from one prune to the next, grown within memory, if given
     #[inline(always)]
     fn each_kept(
         &self,
         keep: impl Fn(usize) -> bool,
         order: &mut Vec<u32>,
         found_word: impl FnMut(&[u8]),
-    ) {
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> Result<(), endgame::Refused> {
         order.clear();
+        endgame::room_in(memory, order, self.len())?;
         order.extend(
             (0..self.len())
                 .filter(|&index| keep(index))
@@ -13645,6 +13720,7 @@ impl FoundWords {
             .iter()
             .map(|&index| self.word(index as usize))
             .for_each(found_word);
+        Ok(())
     }
 }
 
@@ -13655,7 +13731,7 @@ impl FoundWords {
 // least one, come from those not on the board. So, for each such run, each
 // alphagram as long as the run that holds its board tiles; and the words of the
 // tiles not on the board alone. Each is added to found (the prune's), once
-// however many runs take it
+// however many runs take it, every growth taken within memory, if given
 fn gen_remaining_jumbled_words<
     'a,
     N: kwg::Node,
@@ -13666,13 +13742,15 @@ fn gen_remaining_jumbled_words<
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
-) {
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     struct Env<'a, N: kwg::Node> {
         kwg: &'a kwg::Kwg<N>,
         available: &'a mut [u8], // the tiles not on the board, a blank at 0
         required: &'a mut [u8],  // the run's tiles still to place
         word: &'a mut Vec<u8>,
         found: &'a mut FoundWords,
+        memory: Option<&'a endgame::MemoryLimit>,
     }
 
     // the alphagrams of left more tiles from the node list at p that place
@@ -13711,7 +13789,7 @@ fn gen_remaining_jumbled_words<
                 let owed = owed - required as usize;
                 if left == 1 {
                     if owed == 0 && node.accepts() {
-                        env.found.insert(env.word);
+                        env.found.insert(env.word, env.memory);
                     }
                 } else if owed < left {
                     let next = node.arc_index();
@@ -13744,10 +13822,13 @@ fn gen_remaining_jumbled_words<
         lone,
         ..
     } = &mut working_buffer.prune;
+    let longest = dim.rows.max(dim.cols) as usize;
     required.clear();
+    endgame::room_in(memory, required, game_config.alphabet().len() as usize)?;
     required.resize(game_config.alphabet().len() as usize, 0);
     let root = board_snapshot.kwg[0].arc_index();
     working_buffer.exchange_buffer.clear();
+    endgame::room_in(memory, &mut working_buffer.exchange_buffer, longest)?;
     for (tiles, len) in [
         (board_snapshot.board_tiles, dim.cols as usize),
         (
@@ -13779,6 +13860,7 @@ fn gen_remaining_jumbled_words<
                                 required,
                                 word: &mut working_buffer.exchange_buffer,
                                 found,
+                                memory,
                             },
                             root,
                             run,
@@ -13789,8 +13871,9 @@ fn gen_remaining_jumbled_words<
             }
         }
     }
-    let longest = dim.rows.max(dim.cols) as usize;
+    found.refused()?;
     lone_takes.clear();
+    endgame::room_in(memory, lone_takes, longest)?;
     lone_takes.resize(longest, !1);
     kept.clear();
     lone_words(
@@ -13801,7 +13884,8 @@ fn gen_remaining_jumbled_words<
         found,
         kept,
         lone,
-    );
+        memory,
+    )
 }
 
 // each word the board can still take: the tiles on it stay, and those not on
@@ -13825,8 +13909,9 @@ fn gen_remaining_words<
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
+    memory: Option<&endgame::MemoryLimit>,
     found_word: FoundWord,
-) {
+) -> Result<(), endgame::Refused> {
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
@@ -13834,7 +13919,7 @@ fn gen_remaining_words<
 
     let available_tally = &mut working_buffer.used_letters_tally;
     available_tally.clear();
-    available_tally.reserve(alphabet.len() as usize);
+    endgame::room_in(memory, available_tally, alphabet.len() as usize)?;
     for i in 0..alphabet.len() {
         available_tally.push(alphabet.freq(i));
     }
@@ -13850,10 +13935,9 @@ fn gen_remaining_words<
     }
     working_buffer.prune.found.clear();
     if let game_config::GameRules::Jumbled = game_config.game_rules() {
-        gen_remaining_jumbled_words(board_snapshot, working_buffer);
+        gen_remaining_jumbled_words(board_snapshot, working_buffer, memory)?;
         let PruneBuffers { found, order, .. } = &mut working_buffer.prune;
-        found.each_kept(|_| true, order, found_word);
-        return;
+        return found.each_kept(|_| true, order, found_word, memory);
     }
     let rows = dim.rows as usize;
     let cols = dim.cols as usize;
@@ -13897,23 +13981,30 @@ fn gen_remaining_words<
     // by square, the letters a word across may put there, then those of a word
     // down, a bit (1 << letter) each
     takes.clear();
+    endgame::room_in(memory, takes, 2 * area)?;
     takes.resize(2 * area, !1);
     has_tiles.clear();
+    endgame::room_in(memory, has_tiles, lines)?;
     has_tiles.extend((0..lines).map(|line| {
         let (start, len) = line_at(line);
         tiles_at(start, len).iter().any(|&tile| tile != 0)
     }));
+    to_walk.clear();
+    endgame::room_in(memory, to_walk, lines)?;
     to_walk.clone_from(has_tiles);
     // by line, the words of found its last walk found; each line's is emptied
     // as the line is walked, a line never walked has none, and lines past
     // these are never read
     if words.len() < lines {
+        endgame::room_in(memory, words, lines - words.len())?;
         words.resize_with(lines, Vec::new);
     }
     words[..lines].iter_mut().for_each(Vec::clear);
     letters.clear();
+    endgame::room_in(memory, letters, rows.max(cols))?;
     letters.resize(rows.max(cols), 0);
     seen.clear();
+    endgame::room_in(memory, seen, rows.max(cols))?;
     seen.resize(rows.max(cols), 0);
     // whether a square of a line is empty and beside one of its tiles
     let beside = |tiles: &[u8], idx: usize| {
@@ -13974,7 +14065,9 @@ fn gen_remaining_words<
                 seen: &mut seen[..len],
                 found,
                 bits,
+                memory,
             });
+            found.refused()?;
             for (idx, &letters_seen) in seen[..len].iter().enumerate() {
                 if !beside(tiles, idx) {
                     continue;
@@ -14009,6 +14102,7 @@ fn gen_remaining_words<
         while idx < len {
             let run = (idx..len).take_while(|&at| free(at)).count();
             for first in idx..(idx + run).saturating_sub(1) {
+                endgame::room_in(memory, shapes, 1)?;
                 shapes.push((start + first, idx + run - first));
             }
             idx += run + 1;
@@ -14021,6 +14115,7 @@ fn gen_remaining_words<
         if !kept_shapes.iter().any(|&(other, _)| {
             (shape.iter().zip(&takes[other..])).all(|(&letters, &others)| letters & !others == 0)
         }) {
+            endgame::room_in(memory, kept_shapes, 1)?;
             kept_shapes.push((first, len));
         }
     }
@@ -14034,8 +14129,11 @@ fn gen_remaining_words<
         found,
         kept,
         lone,
-    );
-    kept.resize(found.len().div_ceil(64), 0);
+        memory,
+    )?;
+    let num_chunks = found.len().div_ceil(64);
+    endgame::room_in(memory, kept, num_chunks.saturating_sub(kept.len()))?;
+    kept.resize(num_chunks, 0);
     for bits in &words[..lines] {
         kept.iter_mut()
             .zip(bits)
@@ -14045,7 +14143,8 @@ fn gen_remaining_words<
         |index| kept[index / 64] & (1 << (index % 64)) != 0,
         order,
         found_word,
-    );
+        memory,
+    )
 }
 
 // a frozen corpus of every arm's generations, asked every way
@@ -16724,6 +16823,76 @@ mod tests {
         assert_eq!(plays(&mut move_generator), fresh);
         move_generator.gen_remaining_words(&empty_snapshot, |_| {});
         assert_eq!(plays(&mut move_generator), fresh);
+    }
+
+    // a word prune under a memory limit, classic and jumbled, either gives
+    // every word the prune with none gives, or is refused and gives none; a
+    // limit of a byte refuses it, one of every byte never does
+    #[inline]
+    #[test]
+    fn a_word_prune_under_a_limit_gives_every_word_or_none() {
+        let held = || 0;
+        let classic = game_config::make_english_game_config();
+        let jumbled = game_config::make_jumbled_english_game_config();
+        let alphagrams = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &build::make_alphagrams(
+                    &SWEEP_WORDS
+                        .iter()
+                        .map(|word| {
+                            let mut buf = Vec::new();
+                            alphabet::AlphabetReader::new_for_words(jumbled.alphabet())
+                                .set_word(word, &mut buf)
+                                .unwrap();
+                            buf[..].into()
+                        })
+                        .collect::<Vec<bites::Bites>>(),
+                ),
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        for (gc, kwg) in [(&classic, sweep_kwg(&classic)), (&jumbled, alphagrams)] {
+            let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+            let board = fen_parser
+                .parse("15/15/15/15/15/15/15/6SEAT5/7A7/7T7/15/15/15/15/15")
+                .unwrap()
+                .to_vec();
+            let snapshot = BoardSnapshot {
+                board_tiles: &board,
+                game_config: gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let mut move_generator = KurniaMoveGenerator::new(gc);
+            let mut every = Vec::new();
+            move_generator.gen_remaining_words(&snapshot, |word| every.push(word.to_vec()));
+            assert!(!every.is_empty());
+            let mut refusals = Vec::new();
+            for bytes in [1, 64, 256, 1024, 4096, 16384, usize::MAX] {
+                let memory = endgame::MemoryLimit { bytes, held };
+                let mut words = Vec::new();
+                let pruned =
+                    move_generator.gen_remaining_words_within(&snapshot, Some(&memory), |word| {
+                        words.push(word.to_vec())
+                    });
+                if pruned.is_ok() {
+                    assert_eq!(words, every, "{bytes}");
+                } else {
+                    assert!(words.is_empty(), "{bytes}");
+                }
+                refusals.push(pruned.is_err());
+            }
+            assert!(refusals[0] && !refusals[refusals.len() - 1], "{refusals:?}");
+        }
     }
 
     #[test]
