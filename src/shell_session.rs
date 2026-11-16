@@ -2026,24 +2026,20 @@ impl Session {
                 .at
                 .checked_sub(1)
                 .map_or([0; 2], |at| game.turns[at].time());
-            writeln!(
-                out,
-                "game over, {}{}{}",
-                final_scores
-                    .iter()
-                    .map(|&s| equity::descale_score(s).to_string())
-                    .collect::<Vec<_>>()
-                    .join(" to "),
-                match self.loser {
-                    Some(seat) => format!(", and player {} lost on a challenge", seat + 1),
-                    None => String::new(),
-                },
-                time.iter()
-                    .enumerate()
-                    .filter(|&(_, &lost)| lost != 0)
-                    .map(|(seat, lost)| format!(", player {} -{lost} for time", seat + 1))
-                    .collect::<String>()
-            )?;
+            write!(out, "game over, ")?;
+            for (seat, &score) in final_scores.iter().enumerate() {
+                let to = if seat == 0 { "" } else { " to " };
+                write!(out, "{to}{}", equity::descale_score(score))?;
+            }
+            if let Some(seat) = self.loser {
+                write!(out, ", and player {} lost on a challenge", seat + 1)?;
+            }
+            for (seat, &lost) in time.iter().enumerate() {
+                if lost != 0 {
+                    write!(out, ", player {} -{lost} for time", seat + 1)?;
+                }
+            }
+            writeln!(out)?;
         }
         Ok(())
     }
