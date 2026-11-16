@@ -842,6 +842,20 @@ impl PackedLeaves {
         }
     }
 
+    // room for this many more leaves of these many more tiles in all, or the
+    // allocator's refusal
+    #[inline]
+    pub fn try_reserve(
+        &mut self,
+        leaves: usize,
+        tiles: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.tiles.try_reserve_exact(tiles)?;
+        self.ends.try_reserve_exact(leaves)?;
+        self.weights.try_reserve_exact(leaves)?;
+        self.sums.try_reserve_exact(leaves)
+    }
+
     // no leaves, the memory kept
     #[inline]
     pub fn clear(&mut self) {
@@ -2160,6 +2174,21 @@ mod tests {
         assert!(packed.total().is_finite());
         // a list of none picks no tiles
         assert!(PackedLeaves::default().pick(0.0).is_empty());
+    }
+
+    // packed leaves reserve room the allocator can give, and are refused room
+    // past what any can, the leaves as they were
+    #[test]
+    #[inline]
+    fn packed_leaves_reserve_room_or_are_refused() {
+        let mut packed = PackedLeaves::new();
+        packed.push(&[1, 2], 1.0).unwrap();
+        packed.try_reserve(3, 12).unwrap();
+        assert!(packed.try_reserve(usize::MAX, 0).is_err());
+        assert!(packed.try_reserve(0, usize::MAX).is_err());
+        assert_eq!(packed.len(), 1);
+        assert_eq!(packed.leave(0), [1, 2]);
+        assert_eq!(packed.total(), 1.0);
     }
 
     #[test]
