@@ -2,7 +2,7 @@
 
 use super::zone::{Footprint, SQUARE_WORDS, Squares, footprint, zone_lanes};
 use super::{
-    anagrams, bites, build, equity, error, fash, game_config, game_state, glance, infer, klv, kwg,
+    anagrams, bites, build, equity, error, game_config, game_state, glance, infer, klv, kwg,
     move_filter, movegen, simmer, stats, win_pct,
 };
 use rand::SeedableRng;
@@ -1013,13 +1013,15 @@ fn after_play(
 }
 
 // a set of the other side's moves by their index, as bits
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PlaySet(Vec<u64>);
 
 impl PlaySet {
+    // emptied, for n moves, its memory kept
     #[inline(always)]
-    fn new(n: usize) -> Self {
-        Self(vec![0; n.div_ceil(64)])
+    fn reset(&mut self, n: usize) {
+        self.0.clear();
+        self.0.resize(n.div_ceil(64), 0);
     }
 
     #[inline(always)]
@@ -1075,12 +1077,16 @@ fn gen_plays<N: kwg::Node, L: kwg::Node>(
     );
 }
 
-// the generator out in two runs, and the buffers it fills
-struct Scratch {
+// the generator out in two runs, the buffers it fills, the first pass's lists
+// (lent to each OutInTwo and given back), and the sets and lists its
+// valuations work in, all kept from one decision to the next
+pub struct Scratch {
     generator: movegen::KurniaMoveGenerator,
     after: Vec<u8>,
     kept: Vec<u8>,
     used: Vec<u8>,
+    lists: Lists,
+    temps: Temps,
 }
 
 impl Scratch {
@@ -1091,26 +1097,80 @@ impl Scratch {
             after: Vec::new(),
             kept: Vec::new(),
             used: Vec::new(),
+            lists: Lists::default(),
+            temps: Temps::default(),
         }
     }
 }
 
-// one of the other side's moves on the board as it is: its weight (its score
-// and twice the tiles it plays), its score, whether it goes out, and its
-// footprint
+// an OutInTwo's lists while none holds them, and the sorted rack its choices
+// are taken from
+#[derive(Default)]
+struct Lists {
+    replies: Vec<Reply>,
+    by_score: Vec<usize>,
+    fills_at: Vec<u64>,
+    zone_at: Vec<u64>,
+    going_out: PlaySet,
+    not_out: PlaySet,
+    choices: Vec<Choice>,
+    tiles: Vec<u8>,
+    outs: Vec<usize>,
+    sorted_rack: Vec<u8>,
+}
+
+// the sets and lists a valuation works in: the replies a move changes, two
+// sets of replies it walks, the sets of replies that block an out (num_sets of
+// them, one after another as a set's words), each choice's own in sets once
+// made, a choice's outs standing, the outs with their blocking sets, the
+// values and hopes, the choices hoping, an order, the real outs of an opener,
+// and the outs after a choice by score and zone
+#[derive(Default)]
+struct Temps {
+    changed: PlaySet,
+    acc: PlaySet,
+    t: PlaySet,
+    sets: Vec<u64>,
+    num_sets: usize,
+    blocker_at: Vec<Option<usize>>,
+    standing: Vec<usize>,
+    outs: Vec<(i64, usize)>,
+    values: Vec<i64>,
+    hopes: Vec<i64>,
+    hoping: Vec<usize>,
+    order: Vec<usize>,
+    real: Vec<(i64, usize)>,
+    after_outs: Vec<(i64, Squares)>,
+}
+
+// a new set after the others in sets, empty, of so many words, and its place
+// there
+#[inline(always)]
+fn next_set(sets: &mut Vec<u64>, num_sets: &mut usize, words: usize) -> usize {
+    sets.resize(sets.len() + words, 0);
+    *num_sets += 1;
+    *num_sets - 1
+}
+
+// one of the other side's moves on the board as it is: its place among them as
+// generated, its weight (its score and twice the tiles it plays), its score,
+// whether it goes out, and its footprint
 struct Reply {
+    at: usize,
     weight: i64,
     score: i64,
     out: bool,
     footprint: Footprint,
 }
 
-// one of the mover's moves on the board as it is: the play, its score, the rack
-// it keeps (sorted), and its footprint
+// one of the mover's moves on the board as it is: the play, its score, the
+// tiles it takes from the rack and the rack it keeps (each sorted, where each
+// begins and ends in the OutInTwo's tiles), and its footprint
 struct Choice {
     play: movegen::Play,
     score: i64,
-    left: Vec<u8>,
+    used: (usize, usize),
+    left: (usize, usize),
     footprint: Footprint,
 }
 
@@ -1121,14 +1181,16 @@ struct OutInTwo<'a, N: kwg::Node, L: kwg::Node> {
     game_state: &'a game_state::GameState,
     lead: i64,
     other_twice: i64,
-    replies: Vec<Reply>,    // by weight
-    by_score: Vec<usize>,   // the replies by score
-    fills_at: Vec<PlaySet>, // a square's: the replies that fill it
-    zone_at: Vec<PlaySet>,  // a square's: the replies whose zones hold it
+    replies: Vec<Reply>,  // by weight
+    by_score: Vec<usize>, // the replies by score
+    words: usize,         // a square's replies' words, square by square
+    fills_at: Vec<u64>,
+    zone_at: Vec<u64>,
     going_out: PlaySet,
     not_out: PlaySet,
     choices: Vec<Choice>,
-    outs_of: fash::MyHashMap<Vec<u8>, Vec<usize>>, // by the tiles taken, best first
+    tiles: Vec<u8>,   // the choices' tiles taken and kept
+    outs: Vec<usize>, // the choices by the tiles taken, then best first
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
@@ -1151,46 +1213,59 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         let rack = &game_state.players[mover].rack;
         let other_rack = &game_state.players[1 - mover].rack;
         let board_tiles = &game_state.board_tiles[..];
+        let Scratch {
+            generator,
+            used,
+            kept,
+            lists,
+            ..
+        } = scratch;
 
-        gen_plays(
-            &mut scratch.generator,
-            board_snapshot,
-            board_tiles,
-            other_rack,
-            !0,
-            !0,
-        );
-        let mut replies = Vec::new();
-        for m in scratch.generator.plays.iter() {
+        gen_plays(generator, board_snapshot, board_tiles, other_rack, !0, !0);
+        let mut replies = std::mem::take(&mut lists.replies);
+        replies.clear();
+        for m in generator.plays.iter() {
             if !matches!(m.play, movegen::Play::Place { .. }) {
                 continue;
             }
-            used_tiles(&m.play, &mut scratch.used);
+            used_tiles(&m.play, used);
             let score = play_score(&m.play);
             replies.push(Reply {
-                weight: score + twice(game_config, &scratch.used),
+                at: replies.len(),
+                weight: score + twice(game_config, used),
                 score,
-                out: scratch.used.len() == other_rack.len(),
+                out: used.len() == other_rack.len(),
                 footprint: footprint(dim, board_tiles, &m.play),
             });
         }
         // by weight, highest first, ties as generated
-        let mut replies = replies.into_iter().enumerate().collect::<Vec<_>>();
-        replies.sort_unstable_by_key(|(i, reply)| (std::cmp::Reverse(reply.weight), *i));
-        let replies = replies
-            .into_iter()
-            .map(|(_, reply)| reply)
-            .collect::<Vec<_>>();
+        replies.sort_unstable_by_key(|reply| (std::cmp::Reverse(reply.weight), reply.at));
         let n = replies.len();
-        let mut by_score = (0..n).collect::<Vec<_>>();
+        let mut by_score = std::mem::take(&mut lists.by_score);
+        by_score.clear();
+        by_score.extend(0..n);
         by_score.sort_unstable_by(|&a, &b| replies[b].score.cmp(&replies[a].score).then(a.cmp(&b)));
-        let mut fills_at = vec![PlaySet::new(n); area];
-        let mut zone_at = vec![PlaySet::new(n); area];
-        let mut going_out = PlaySet::new(n);
-        let mut not_out = PlaySet::new(n);
+        let words = n.div_ceil(64);
+        let mut fills_at = std::mem::take(&mut lists.fills_at);
+        let mut zone_at = std::mem::take(&mut lists.zone_at);
+        for sets in [&mut fills_at, &mut zone_at] {
+            sets.clear();
+            sets.resize(area * words, 0);
+        }
+        let mut going_out = std::mem::take(&mut lists.going_out);
+        let mut not_out = std::mem::take(&mut lists.not_out);
+        going_out.reset(n);
+        not_out.reset(n);
         for (i, reply) in replies.iter().enumerate() {
-            reply.footprint.fills.each(|square| fills_at[square].set(i));
-            reply.footprint.zone.each(|square| zone_at[square].set(i));
+            let (word, bit) = (i >> 6, 1 << (i & 63));
+            reply
+                .footprint
+                .fills
+                .each(|square| fills_at[square * words + word] |= bit);
+            reply
+                .footprint
+                .zone
+                .each(|square| zone_at[square * words + word] |= bit);
             if reply.out {
                 going_out.set(i);
             } else {
@@ -1198,37 +1273,43 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             }
         }
 
-        let mut sorted_rack = rack.clone();
+        let sorted_rack = &mut lists.sorted_rack;
+        sorted_rack.clone_from(rack);
         sorted_rack.sort_unstable();
-        gen_plays(
-            &mut scratch.generator,
-            board_snapshot,
-            board_tiles,
-            rack,
-            !0,
-            !0,
-        );
-        let mut choices = Vec::new();
-        let mut outs_of = fash::MyHashMap::<Vec<u8>, Vec<usize>>::default();
-        for m in scratch.generator.plays.iter() {
+        gen_plays(generator, board_snapshot, board_tiles, rack, !0, !0);
+        let mut choices = std::mem::take(&mut lists.choices);
+        let mut tiles = std::mem::take(&mut lists.tiles);
+        choices.clear();
+        tiles.clear();
+        for m in generator.plays.iter() {
             if !matches!(m.play, movegen::Play::Place { .. }) {
                 continue;
             }
-            let mut used = Vec::new();
-            used_tiles(&m.play, &mut used);
-            let mut left = Vec::new();
-            rack_less(&sorted_rack, &used, &mut left);
-            outs_of.entry(used).or_default().push(choices.len());
+            used_tiles(&m.play, used);
+            rack_less(sorted_rack, used, kept);
+            let start = tiles.len();
+            tiles.extend_from_slice(used);
+            let mid = tiles.len();
+            tiles.extend_from_slice(kept);
             choices.push(Choice {
                 play: m.play.clone(),
                 score: play_score(&m.play),
-                left,
+                used: (start, mid),
+                left: (mid, tiles.len()),
                 footprint: footprint(dim, board_tiles, &m.play),
             });
         }
-        for list in outs_of.values_mut() {
-            list.sort_unstable_by(|&a, &b| choices[b].score.cmp(&choices[a].score).then(a.cmp(&b)));
-        }
+        // each choice by the tiles it takes, and those taking the same best
+        // first (on a tie, as generated): a rack's outs are a run of them
+        let mut outs = std::mem::take(&mut lists.outs);
+        outs.clear();
+        outs.extend(0..choices.len());
+        let used_of = |c: &Choice| &tiles[c.used.0..c.used.1];
+        outs.sort_unstable_by(|&a, &b| {
+            (used_of(&choices[a]).cmp(used_of(&choices[b])))
+                .then(choices[b].score.cmp(&choices[a].score))
+                .then(a.cmp(&b))
+        });
         Some(Self {
             board_snapshot,
             game_state,
@@ -1237,26 +1318,68 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             other_twice: twice(game_config, other_rack),
             replies,
             by_score,
+            words,
             fills_at,
             zone_at,
             going_out,
             not_out,
             choices,
-            outs_of,
+            tiles,
+            outs,
         })
     }
 
-    // the other side's moves that fill a square of zone: those that block a
-    // play with that zone
+    // the tiles a choice takes from the rack, sorted
+    #[inline(always)]
+    fn used(&self, choice: &Choice) -> &[u8] {
+        &self.tiles[choice.used.0..choice.used.1]
+    }
+
+    // the rack a choice keeps, sorted
+    #[inline(always)]
+    fn left(&self, choice: &Choice) -> &[u8] {
+        &self.tiles[choice.left.0..choice.left.1]
+    }
+
+    // the lists given back to the scratch they were taken from
     #[inline]
-    fn blocking(&self, zone: &Squares) -> PlaySet {
-        let mut blocks = PlaySet::new(self.replies.len());
+    fn release(self, scratch: &mut Scratch) {
+        let lists = &mut scratch.lists;
+        lists.replies = self.replies;
+        lists.by_score = self.by_score;
+        lists.fills_at = self.fills_at;
+        lists.zone_at = self.zone_at;
+        lists.going_out = self.going_out;
+        lists.not_out = self.not_out;
+        lists.choices = self.choices;
+        lists.tiles = self.tiles;
+        lists.outs = self.outs;
+    }
+
+    // the choices that take these tiles (sorted) from the rack, best first:
+    // the outs of a rack that keeps them
+    #[inline]
+    fn outs_of(&self, tiles: &[u8]) -> &[usize] {
+        let outs = &self.outs;
+        let lo = outs.partition_point(|&u| self.used(&self.choices[u]) < tiles);
+        let len = outs[lo..].partition_point(|&u| self.used(&self.choices[u]) == tiles);
+        &outs[lo..lo + len]
+    }
+
+    // into blocks, the other side's moves that fill a square of zone: those
+    // that block a play with that zone
+    #[inline]
+    fn blocking(&self, zone: &Squares, blocks: &mut [u64]) {
+        blocks.fill(0);
         zone.each(|square| {
-            for (x, y) in blocks.0.iter_mut().zip(&self.fills_at[square].0) {
+            let w = self.words;
+            for (x, y) in blocks
+                .iter_mut()
+                .zip(&self.fills_at[square * w..(square + 1) * w])
+            {
                 *x |= y;
             }
         });
-        blocks
     }
 
     // into changed, the other side's moves whose zones a move filling fills
@@ -1265,7 +1388,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
     fn changed_by(&self, fills: &Squares, changed: &mut PlaySet) {
         changed.0.fill(0);
         fills.each(|square| {
-            for (x, y) in changed.0.iter_mut().zip(&self.zone_at[square].0) {
+            let w = self.words;
+            for (x, y) in changed
+                .0
+                .iter_mut()
+                .zip(&self.zone_at[square * w..(square + 1) * w])
+            {
                 *x |= y;
             }
         });
@@ -1281,10 +1409,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         rows: u128,
         cols: u128,
     ) -> impl Iterator<Item = (i64, &'s Footprint)> + 's {
-        self.outs_of
-            .get(&choice.left)
-            .into_iter()
-            .flatten()
+        (self.outs_of(self.left(choice)).iter())
             .map(|&u| &self.choices[u])
             .filter(move |out| {
                 !choice.footprint.fills.meets(&out.footprint.zone) && !out.footprint.on(rows, cols)
@@ -1296,15 +1421,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
     // going out; passing; or a move that blocks the mover's best outs, weighed
     // by its score and the tiles it plays. changed holds the replies the move
     // changes, and outs the mover's outs next turn, best first, each by its
-    // score and the replies that block it. Also whether those outs hold the
-    // value down: none stands, or one reply blocks them all
+    // score and the replies that block it (their set's place in sets). Also
+    // whether those outs hold the value down: none stands, or one reply blocks
+    // them all
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn value_on_footprints(
         &self,
         changed: &PlaySet,
         score: i64,
         left_twice: i64,
-        outs: &[(i64, &PlaySet)],
+        outs: &[(i64, usize)],
+        sets: &[u64],
         acc: &mut PlaySet,
         t: &mut PlaySet,
     ) -> (i64, bool) {
@@ -1330,7 +1458,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         }
         v = v.min(c + outs[0].0);
         for &(s_u, blocks) in outs {
-            for ((x, a), &b) in t.0.iter_mut().zip(acc.0.iter_mut()).zip(&blocks.0) {
+            let w = self.words;
+            let blocks = &sets[blocks * w..(blocks + 1) * w];
+            for ((x, a), &b) in t.0.iter_mut().zip(acc.0.iter_mut()).zip(blocks) {
                 *x = *a & !b;
                 *a &= b;
             }
@@ -1363,49 +1493,44 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         let mover = self.game_state.turn as usize;
         let rack = &self.game_state.players[mover].rack;
         let other_rack = &self.game_state.players[1 - mover].rack;
+        let Scratch {
+            generator,
+            after,
+            kept,
+            used,
+            temps,
+            ..
+        } = scratch;
         if !after_play(
             game_config,
             &self.game_state.board_tiles,
             rack,
             &choice.play,
-            &mut scratch.after,
-            &mut scratch.kept,
+            after,
+            kept,
         ) {
             return None;
         }
         let s_m = choice.score;
         let c = s_m + self.other_twice;
-        if scratch.kept.is_empty() {
+        if kept.is_empty() {
             return Some(c);
         }
-        let kept_twice = twice(game_config, &scratch.kept);
+        let kept_twice = twice(game_config, kept);
         let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - kept_twice;
         let (rows, cols) = zone_lanes(dim, &choice.footprint.zone);
         // the mover's outs after it, best first, by score and zone
-        let mut outs = self
-            .standing_outs(choice, rows, cols)
-            .map(|(s, fp)| (s, fp.zone))
-            .collect::<Vec<_>>();
-        gen_plays(
-            &mut scratch.generator,
-            self.board_snapshot,
-            &scratch.after,
-            &scratch.kept,
-            rows,
-            cols,
-        );
+        let outs = &mut temps.after_outs;
+        outs.clear();
         outs.extend(
-            scratch
-                .generator
-                .plays
-                .iter()
-                .filter(|m| tiles_placed(&m.play) == scratch.kept.len())
-                .map(|m| {
-                    (
-                        play_score(&m.play),
-                        footprint(dim, &scratch.after, &m.play).zone,
-                    )
-                }),
+            self.standing_outs(choice, rows, cols)
+                .map(|(s, fp)| (s, fp.zone)),
+        );
+        gen_plays(generator, self.board_snapshot, after, kept, rows, cols);
+        outs.extend(
+            (generator.plays.iter())
+                .filter(|m| tiles_placed(&m.play) == kept.len())
+                .map(|m| (play_score(&m.play), footprint(dim, after, &m.play).zone)),
         );
         // ties in any order: of an out, only the score is read
         outs.sort_unstable_by_key(|&(s, _)| std::cmp::Reverse(s));
@@ -1429,24 +1554,24 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             }
         }
         gen_plays(
-            &mut scratch.generator,
+            generator,
             self.board_snapshot,
-            &scratch.after,
+            after,
             other_rack,
             rows,
             cols,
         );
-        for m in scratch.generator.plays.iter() {
+        for m in generator.plays.iter() {
             if !matches!(m.play, movegen::Play::Place { .. }) {
                 continue;
             }
-            used_tiles(&m.play, &mut scratch.used);
+            used_tiles(&m.play, used);
             let s_x = play_score(&m.play);
             reply(
                 s_x,
-                s_x + twice(game_config, &scratch.used),
-                scratch.used.len() == other_rack.len(),
-                &footprint(dim, &scratch.after, &m.play).fills,
+                s_x + twice(game_config, used),
+                used.len() == other_rack.len(),
+                &footprint(dim, after, &m.play).fills,
             );
         }
         Some(v)
@@ -1466,12 +1591,17 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         if self.lead + fewest_value > 0 {
             return None;
         }
-        let (mut values, hopes) = self.values_and_hopes();
+        self.values_and_hopes_in(&mut scratch.temps);
+        // taken out of the scratch while it is lent on, and put back
+        let mut values = std::mem::take(&mut scratch.temps.values);
+        let hopes = std::mem::take(&mut scratch.temps.hopes);
         self.raise_openers(scratch, &mut values, &hopes);
         // the best few by value (a move that wins, if any does), valued again
         // on the board after each; the best of those, if it beats the play at
         // fewest
-        let mut order = (0..self.choices.len()).collect::<Vec<_>>();
+        let mut order = std::mem::take(&mut scratch.temps.order);
+        order.clear();
+        order.extend(0..self.choices.len());
         order.sort_unstable_by_key(|&i| (std::cmp::Reverse(values[i]), i));
         let mut best: Option<(i64, usize)> = None;
         for &i in order.iter().take(OUT_IN_TWO_CHECKED) {
@@ -1485,6 +1615,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 best = Some((v, i));
             }
         }
+        scratch.temps.values = values;
+        scratch.temps.hopes = hopes;
+        scratch.temps.order = order;
         best.filter(|&(v, _)| v > fewest_value)
             .map(|(_, i)| self.choices[i].play.clone())
     }
@@ -1493,74 +1626,83 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
     // and, for a choice whose value the lack of a standing unblockable out
     // holds down, its hope, its value with one more such out, worth its
     // leftover's best out anywhere on the board now (the others' hope is
-    // i64::MIN): the choices that may open a second place
+    // i64::MIN): the choices that may open a second place. Into temps's values
+    // and hopes, worked out in temps
     #[inline]
-    fn values_and_hopes(&self) -> (Vec<i64>, Vec<i64>) {
+    fn values_and_hopes_in(&self, temps: &mut Temps) {
         let game_config = self.board_snapshot.game_config;
         let n = self.replies.len();
-        let (mut changed, mut acc, mut t) = (PlaySet::new(n), PlaySet::new(n), PlaySet::new(n));
-        let unblockable = PlaySet::new(n);
-        let mut blockers = fash::MyHashMap::<usize, PlaySet>::default();
-        let mut values = Vec::with_capacity(self.choices.len());
-        let mut hopes = Vec::with_capacity(self.choices.len());
+        let Temps {
+            changed,
+            acc,
+            t,
+            sets,
+            num_sets,
+            blocker_at,
+            standing,
+            outs,
+            values,
+            hopes,
+            ..
+        } = temps;
+        changed.reset(n);
+        acc.reset(n);
+        t.reset(n);
+        let w = self.words;
+        sets.clear();
+        *num_sets = 0;
+        let unblockable = next_set(sets, num_sets, w);
+        blocker_at.clear();
+        blocker_at.resize(self.choices.len(), None);
+        values.clear();
+        hopes.clear();
         for choice in &self.choices {
-            if choice.left.is_empty() {
+            let left = self.left(choice);
+            if left.is_empty() {
                 values.push(choice.score + self.other_twice);
                 hopes.push(i64::MIN);
                 continue;
             }
-            self.changed_by(&choice.footprint.fills, &mut changed);
-            let list = self.outs_of.get(&choice.left);
-            let standing = list
-                .map(|list| {
-                    list.iter()
-                        .copied()
-                        .filter(|&u| {
-                            !choice
-                                .footprint
-                                .fills
-                                .meets(&self.choices[u].footprint.zone)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            for &u in &standing {
-                blockers
-                    .entry(u)
-                    .or_insert_with(|| self.blocking(&self.choices[u].footprint.zone));
+            self.changed_by(&choice.footprint.fills, changed);
+            let list = self.outs_of(left);
+            standing.clear();
+            standing.extend(list.iter().copied().filter(|&u| {
+                !choice
+                    .footprint
+                    .fills
+                    .meets(&self.choices[u].footprint.zone)
+            }));
+            outs.clear();
+            for &u in standing.iter() {
+                let blocks = match blocker_at[u] {
+                    Some(at) => at,
+                    None => {
+                        let at = next_set(sets, num_sets, w);
+                        self.blocking(
+                            &self.choices[u].footprint.zone,
+                            &mut sets[at * w..(at + 1) * w],
+                        );
+                        blocker_at[u] = Some(at);
+                        at
+                    }
+                };
+                outs.push((self.choices[u].score, blocks));
             }
-            let mut outs = standing
-                .iter()
-                .map(|&u| (self.choices[u].score, &blockers[&u]))
-                .collect::<Vec<_>>();
-            let left_twice = twice(game_config, &choice.left);
-            let (value, held) = self.value_on_footprints(
-                &changed,
-                choice.score,
-                left_twice,
-                &outs,
-                &mut acc,
-                &mut t,
-            );
+            let left_twice = twice(game_config, left);
+            let (value, held) =
+                self.value_on_footprints(changed, choice.score, left_twice, outs, sets, acc, t);
             values.push(value);
             if held {
-                let phantom = list.map_or(0, |list| self.choices[list[0]].score);
+                let phantom = list.first().map_or(0, |&u| self.choices[u].score);
                 let at = outs.partition_point(|&(s, _)| s >= phantom);
-                outs.insert(at, (phantom, &unblockable));
-                let (hope, _) = self.value_on_footprints(
-                    &changed,
-                    choice.score,
-                    left_twice,
-                    &outs,
-                    &mut acc,
-                    &mut t,
-                );
+                outs.insert(at, (phantom, unblockable));
+                let (hope, _) =
+                    self.value_on_footprints(changed, choice.score, left_twice, outs, sets, acc, t);
                 hopes.push(hope);
             } else {
                 hopes.push(i64::MIN);
             }
         }
-        (values, hopes)
     }
 
     // the choices with the best hopes above their values, their values raised
@@ -1571,60 +1713,74 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         let game_config = self.board_snapshot.game_config;
         let dim = game_config.board_layout().dim();
         let n = self.replies.len();
-        let (mut changed, mut acc, mut t) = (PlaySet::new(n), PlaySet::new(n), PlaySet::new(n));
-        let mut hoping = (0..self.choices.len())
-            .filter(|&i| hopes[i] > values[i])
-            .collect::<Vec<_>>();
+        let Scratch {
+            generator,
+            after,
+            temps,
+            ..
+        } = scratch;
+        let Temps {
+            changed,
+            acc,
+            t,
+            sets,
+            num_sets,
+            outs,
+            hoping,
+            order,
+            real,
+            ..
+        } = temps;
+        changed.reset(n);
+        acc.reset(n);
+        t.reset(n);
+        hoping.clear();
+        hoping.extend((0..self.choices.len()).filter(|&i| hopes[i] > values[i]));
         hoping.sort_unstable_by(|&a, &b| hopes[b].cmp(&hopes[a]).then(a.cmp(&b)));
         for &i in hoping.iter().take(OUT_IN_TWO_OPENERS) {
             let choice = &self.choices[i];
+            let left = self.left(choice);
             glance::board_after(
                 game_config,
                 &self.game_state.board_tiles,
                 &choice.play,
-                &mut scratch.after,
+                after,
             );
             let (rows, cols) = zone_lanes(dim, &choice.footprint.zone);
-            let mut real = self
-                .standing_outs(choice, rows, cols)
-                .map(|(s, fp)| (s, self.blocking(&fp.zone)))
-                .collect::<Vec<_>>();
-            gen_plays(
-                &mut scratch.generator,
-                self.board_snapshot,
-                &scratch.after,
-                &choice.left,
-                rows,
-                cols,
-            );
-            real.extend(
-                scratch
-                    .generator
-                    .plays
-                    .iter()
-                    .filter(|p| tiles_placed(&p.play) == choice.left.len())
-                    .map(|p| {
-                        (
-                            play_score(&p.play),
-                            self.blocking(&footprint(dim, &scratch.after, &p.play).zone),
-                        )
-                    }),
-            );
+            // each real out's blocking set, from the first of sets on
+            let w = self.words;
+            sets.clear();
+            *num_sets = 0;
+            real.clear();
+            for (s, fp) in self.standing_outs(choice, rows, cols) {
+                let at = next_set(sets, num_sets, w);
+                self.blocking(&fp.zone, &mut sets[at * w..(at + 1) * w]);
+                real.push((s, at));
+            }
+            gen_plays(generator, self.board_snapshot, after, left, rows, cols);
+            for p in (generator.plays.iter()).filter(|p| tiles_placed(&p.play) == left.len()) {
+                let at = next_set(sets, num_sets, w);
+                self.blocking(
+                    &footprint(dim, after, &p.play).zone,
+                    &mut sets[at * w..(at + 1) * w],
+                );
+                real.push((play_score(&p.play), at));
+            }
             // by score, highest first, ties as found
-            let mut order = (0..real.len()).collect::<Vec<_>>();
+            order.clear();
+            order.extend(0..real.len());
             order.sort_unstable_by_key(|&k| (std::cmp::Reverse(real[k].0), k));
-            let outs = order
-                .iter()
-                .map(|&k| (real[k].0, &real[k].1))
-                .collect::<Vec<_>>();
-            self.changed_by(&choice.footprint.fills, &mut changed);
+            outs.clear();
+            outs.extend(order.iter().map(|&k| real[k]));
+            self.changed_by(&choice.footprint.fills, changed);
             let (value, _) = self.value_on_footprints(
-                &changed,
+                changed,
                 choice.score,
-                twice(game_config, &choice.left),
-                &outs,
-                &mut acc,
-                &mut t,
+                twice(game_config, left),
+                outs,
+                sets,
+                acc,
+                t,
             );
             values[i] = values[i].max(value);
         }
@@ -1643,9 +1799,53 @@ fn out_in_two<N: kwg::Node, L: kwg::Node>(
     game_state: &game_state::GameState,
     plays: &[movegen::ValuedMove],
     fewest: usize,
+    scratch: &mut Scratch,
 ) -> Option<movegen::Play> {
-    let mut scratch = Scratch::new(board_snapshot.game_config);
-    OutInTwo::new(board_snapshot, game_state, &mut scratch)?.pick(&mut scratch, plays, fewest)
+    let first = OutInTwo::new(board_snapshot, game_state, scratch)?;
+    let found = first.pick(scratch, plays, fewest);
+    first.release(scratch);
+    found
+}
+
+// the deft picker: its window, and out in two's scratch, made at its first use
+// (and made again for a board or an alphabet of another size), with the
+// board's rows and columns and the alphabet's size it was made for
+pub struct Deft {
+    window: i32,
+    scratch: Option<((i8, i8, u8), Box<Scratch>)>,
+}
+
+impl Deft {
+    #[inline(always)]
+    pub fn new(window: i32) -> Self {
+        Self {
+            window,
+            scratch: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn window(&self) -> i32 {
+        self.window
+    }
+
+    // the scratch, for this game
+    #[inline]
+    fn scratch(&mut self, game_config: &game_config::GameConfig) -> &mut Scratch {
+        let dim = game_config.board_layout().dim();
+        let made_for = (dim.rows, dim.cols, game_config.alphabet().len());
+        if self
+            .scratch
+            .as_ref()
+            .is_some_and(|(was, _)| *was != made_for)
+        {
+            self.scratch = None;
+        }
+        let (_, scratch) = self
+            .scratch
+            .get_or_insert_with(|| (made_for, Box::new(Scratch::new(game_config))));
+        scratch
+    }
 }
 
 pub struct Periods(pub u64);
@@ -1671,7 +1871,7 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     // goes out and wins, else out in two's move when it finds one; and with two
     // to a rack's worth of tiles in the bag, when that one does not leave
     // exactly one there, the first within DEFT_ONE_WINDOW of its best that does
-    Deft(i32),
+    Deft(Deft),
 }
 
 impl<
@@ -2306,8 +2506,10 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 move_generator.plays.swap(0, winner_play_index);
                 move_generator.plays.truncate(1);
             }
-            MovePicker::Deft(window) => {
+            MovePicker::Deft(deft) => {
                 let game_config = board_snapshot.game_config;
+                let window = deft.window;
+                let scratch = deft.scratch(game_config);
                 let late = game_state.bag.len() <= game_config.rack_size() as usize;
                 filtered_movegen.gen_moves(
                     move_generator,
@@ -2318,12 +2520,12 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     None,
                 );
                 let plays = &move_generator.plays;
-                let fewest = lane_pick(game_config, &game_state.board_tiles, plays, *window);
+                let fewest = lane_pick(game_config, &game_state.board_tiles, plays, window);
                 let pick = winning_out(game_config, game_state, plays)
                     .or_else(|| one_in_the_bag(game_config, game_state, plays, fewest));
                 let found = match pick {
                     Some(_) => None,
-                    None => out_in_two(board_snapshot, game_state, plays, fewest),
+                    None => out_in_two(board_snapshot, game_state, plays, fewest, scratch),
                 };
                 match found {
                     // out in two's move need not be among those generated; its
@@ -2350,6 +2552,16 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
 mod tests {
     use super::*;
     use crate::{alphabet, bites, build, display};
+
+    impl<N: kwg::Node, L: kwg::Node> OutInTwo<'_, N, L> {
+        // values_and_hopes_in's values and hopes, worked out in temps of their
+        // own
+        fn values_and_hopes(&self) -> (Vec<i64>, Vec<i64>) {
+            let mut temps = Temps::default();
+            self.values_and_hopes_in(&mut temps);
+            (temps.values, temps.hopes)
+        }
+    }
 
     #[test]
     #[inline]
@@ -3598,10 +3810,10 @@ mod tests {
         let choice = &first.choices[i];
         let s_m = choice.score;
         let c = s_m + first.other_twice;
-        if choice.left.is_empty() {
+        if first.left(choice).is_empty() {
             return c;
         }
-        let left_twice = twice(first.board_snapshot.game_config, &choice.left);
+        let left_twice = twice(first.board_snapshot.game_config, first.left(choice));
         let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - left_twice;
         let outs = first
             .standing_outs(choice, 0, 0)
@@ -3698,7 +3910,13 @@ mod tests {
         // ATT and ATTT next beat ATTT at once unless that already wins
         for (lead, wins) in [(-15, false), (-14, false), (-13, true)] {
             let game_state = at_endgame_on(&game_config, 14, lead);
-            let found = out_in_two(&board_snapshot, &game_state, std::slice::from_ref(&attt), 0);
+            let found = out_in_two(
+                &board_snapshot,
+                &game_state,
+                std::slice::from_ref(&attt),
+                0,
+                &mut Scratch::new(&game_config),
+            );
             assert_eq!(found.is_none(), wins, "{lead} ahead");
             assert!(found.is_none_or(|play| play == att.play), "{lead} ahead");
         }
@@ -3831,6 +4049,7 @@ mod tests {
                 &game_state,
                 std::slice::from_ref(&at_down),
                 0,
+                &mut Scratch::new(&game_config),
             );
             assert_eq!(found.is_some(), blocks, "{lead} ahead");
             assert!(
@@ -3891,6 +4110,7 @@ mod tests {
             &game_state,
             std::slice::from_ref(&along),
             0,
+            &mut Scratch::new(&game_config),
         );
         assert!(
             found.is_none(),
@@ -3934,7 +4154,13 @@ mod tests {
             value_of(&attt_along, &mut scratch),
             Some(10 * equity::SCALE as i64)
         );
-        let found = out_in_two(&board_snapshot, &game_state, &[at_down], 0);
+        let found = out_in_two(
+            &board_snapshot,
+            &game_state,
+            &[at_down],
+            0,
+            &mut Scratch::new(&game_config),
+        );
         assert!(found.is_some_and(|play| play == att_along));
     }
 
@@ -3962,7 +4188,8 @@ mod tests {
             let game_state = at_endgame(&game_config, lead);
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(DEFAULT_DEFT_WINDOW);
+            let mut deft =
+                MovePicker::<kwg::Node24, kwg::Node24>::Deft(Deft::new(DEFAULT_DEFT_WINDOW));
             deft.pick_a_move(
                 &mut filtered_movegen,
                 &mut move_generator,
@@ -4000,7 +4227,7 @@ mod tests {
             game_state.bag.set_from_iter(std::iter::repeat_n(5u8, bag));
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(0);
+            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(Deft::new(0));
             deft.pick_a_move(
                 &mut filtered_movegen,
                 &mut move_generator,
@@ -4058,7 +4285,7 @@ mod tests {
     ) -> String {
         let mut move_generator = movegen::KurniaMoveGenerator::new(board_snapshot.game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-        let mut deft = MovePicker::<N, L>::Deft(DEFAULT_DEFT_WINDOW);
+        let mut deft = MovePicker::<N, L>::Deft(Deft::new(DEFAULT_DEFT_WINDOW));
         deft.pick_a_move(
             &mut filtered_movegen,
             &mut move_generator,
@@ -4124,7 +4351,16 @@ mod tests {
             plays[fewest].play.fmt(&board_snapshot).to_string(),
             "F6 CASTE 28"
         );
-        assert!(out_in_two(&board_snapshot, &game_state, plays, fewest).is_none());
+        assert!(
+            out_in_two(
+                &board_snapshot,
+                &game_state,
+                plays,
+                fewest,
+                &mut Scratch::new(&game_config),
+            )
+            .is_none()
+        );
     }
 
     // with the bag empty and no out that wins, deft plays out in two's move:
