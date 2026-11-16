@@ -10069,8 +10069,10 @@ impl<
     ) -> error::Returns<Option<f64>> {
         let total = splits.iter().map(|&(_, _, ways)| ways).sum::<u64>() as f64;
         let (mut win, mut left) = (0.0, total);
-        self.limits
-            .refuse(splits.len() * std::mem::size_of::<Option<f64>>())?;
+        // the margins' room for every split, its growth (the old list held
+        // beside the new) taken only within the memory limit
+        room_in(self.limits.memory.as_ref(), margins, splits.len())
+            .map_err(|_| self.limits.stop_refused())?;
         let at = margins.len();
         for (other, bag, ways) in splits {
             // a share a hair under the floor is not ruled out, lest a sum's
