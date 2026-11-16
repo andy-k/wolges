@@ -888,12 +888,14 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             }
             let mut csv_out = csv::Writer::from_writer(make_writer(&args.out)?);
             let mut s = String::new();
+            let mut value_text = String::new();
             for (k, v) in leaves {
                 s.clear();
                 for &tile in &k[..] {
                     s.push_str(alphabet.of_rack(tile).unwrap());
                 }
-                csv_out.serialize((&s, klv::value_text(v)))?;
+                klv::value_text_into(v, &mut value_text);
+                csv_out.serialize((&s, &value_text))?;
             }
             Ok(())
         }
