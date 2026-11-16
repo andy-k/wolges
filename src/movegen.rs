@@ -5627,6 +5627,11 @@ impl PoolLists {
     pub fn clear(&mut self) {
         self.0.clear();
     }
+
+    // as clear makes them, every list's room let go
+    pub fn shrink(&mut self) {
+        self.0.shrink();
+    }
 }
 
 const JUMBLED_EVERY_ARRANGEMENT: u8 = 0;
@@ -5855,6 +5860,28 @@ impl JumbledMultisets {
             budget: u64::MAX,
             designation: 0,
             stopped: None,
+        }
+    }
+
+    // as clear makes it, the room of each list that grows with the multisets
+    // walked (its splits' too) let go
+    fn shrink(&mut self) {
+        self.clear();
+        self.by_size.shrink_to_fit();
+        self.size_ends.shrink_to_fit();
+        self.found.shrink_to_fit();
+        self.multisets.shrink_to_fit();
+        self.kept.shrink_to_fit();
+        let s = &mut self.splits;
+        s.members.clear();
+        s.members.shrink_to_fit();
+        for list in [&mut s.order, &mut s.group, &mut s.starts] {
+            list.clear();
+            list.shrink_to_fit();
+        }
+        for list in [&mut s.member_data, &mut s.matrix] {
+            list.clear();
+            list.shrink_to_fit();
         }
     }
 
@@ -8362,6 +8389,54 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     #[inline(always)]
     pub fn reset_for_another_kwg(&mut self) {
         self.working_buffer.reset_for_another_kwg();
+    }
+
+    // the buffers that grow with what is walked, not with the board or rack
+    // (the plays, subracks, leaves, placements, spans, memos, and the jumbled
+    // and pool lists), emptied and their room let go, so that a generator kept
+    // idle holds what the board and rack size alone; the key check memo, made
+    // at first use, is let go to be made again
+    pub fn shrink_walk_buffers(&mut self) {
+        let w = &mut self.working_buffer;
+        self.plays.clear();
+        self.plays.shrink_to_fit();
+        w.subracks.clear();
+        w.subracks.shrink_to_fit();
+        w.subracks_spare.clear();
+        w.subracks_spare.shrink_to_fit();
+        w.subracks_by_played.clear();
+        w.subracks_by_played.shrink_to_fit();
+        w.subrack_order.clear();
+        w.subrack_order.shrink_to_fit();
+        w.span_out.clear();
+        w.span_out.shrink_to_fit();
+        w.found_placements.clear();
+        w.found_placements.shrink_to_fit();
+        w.raw_anchors.clear();
+        w.raw_anchors.shrink_to_fit();
+        w.sure_plays.clear();
+        w.sure_plays.shrink_to_fit();
+        w.placement_order.clear();
+        w.placement_order.shrink_to_fit();
+        w.placement_scratch.clear();
+        w.placement_scratch.shrink_to_fit();
+        w.anchor_left_bounds.clear();
+        w.anchor_left_bounds.shrink_to_fit();
+        // the span memo's slots stay a power of two of them, as its lookups
+        // mask by their count; each turn grows them to its placements'
+        w.span_memo.slots.truncate(1);
+        w.span_memo.slots.shrink_to_fit();
+        w.span_memo.visits.clear();
+        w.span_memo.visits.shrink_to_fit();
+        w.exist_memo = Box::default();
+        w.multi_leaves.shrink();
+        w.jumbled.shrink();
+        for list in [&mut w.pool.walked, &mut w.pool.letters, &mut w.pool.word] {
+            list.clear();
+            list.shrink_to_fit();
+        }
+        w.pool.deltas.clear();
+        w.pool.deltas.shrink_to_fit();
     }
 
     // as gen_moves_raw_all_unsorted, the place moves on the rows and columns in

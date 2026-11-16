@@ -591,6 +591,20 @@ impl Clone for MultiLeaves {
 }
 
 impl MultiLeaves {
+    // emptied, each list's room let go, as a rack's init fills them again
+    pub(crate) fn shrink(&mut self) {
+        self.unique_tiles.clear();
+        self.unique_tiles.shrink_to_fit();
+        self.digits.clear();
+        self.digits.shrink_to_fit();
+        self.num_playeds.clear();
+        self.num_playeds.shrink_to_fit();
+        for list in [&mut self.leave_values, &mut self.bag_terms] {
+            list.clear();
+            list.shrink_to_fit();
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_dense_most(DENSE_LEAVES_MOST)
     }
