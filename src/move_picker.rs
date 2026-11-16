@@ -2,8 +2,8 @@
 
 use super::zone::{Footprint, SQUARE_WORDS, Squares, footprint, zone_lanes};
 use super::{
-    anagrams, bites, build, equity, error, game_config, game_state, glance, infer, klv, kwg,
-    move_filter, movegen, simmer, stats, win_pct,
+    anagrams, bites, build, endgame, equity, error, game_config, game_state, glance, infer, klv,
+    kwg, move_filter, movegen, simmer, stats, win_pct,
 };
 use rand::SeedableRng;
 use std::io::Write;
@@ -444,6 +444,7 @@ pub struct Simmer<
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
     late_board: Box<[u8]>, // the board the late graph was pruned for
     late_prune: LatePrune, // what each late graph is pruned with
+    memory: Option<endgame::MemoryLimit>, // what the program stays within
     thread_kept: Vec<(simmer::Simmer<R>, SimRows)>, // each thread's, kept run to run
 }
 
@@ -585,7 +586,8 @@ pub struct SimmerParams<'a> {
     pub num_sim_plies: usize,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
-    pub quiet: bool, // no progress lines
+    pub quiet: bool,                          // no progress lines
+    pub memory: Option<endgame::MemoryLimit>, // what the program stays within
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
@@ -650,6 +652,7 @@ impl<
             inferred: std::sync::Arc::default(),
             late_graph: None,
             late_board: Box::default(),
+            memory: params.memory,
             late_prune: LatePrune {
                 generator: None,
                 words: Vec::new(),
@@ -2312,12 +2315,19 @@ impl<
         let blanks_on_board = (game_state.board_tiles.iter())
             .filter(|&&tile| tile & 0x80 != 0)
             .count();
+        // a decision with no room left under the memory limit is refused
+        if self.memory.is_some_and(|memory| !memory.has_room(1)) {
+            return Err(error::new("out_of_memory".into()).into());
+        }
+        // under a memory limit the late graph is pruned within it, and only
+        // for a sim of no arm tables (whose memory the limit cannot foresee)
         let late = late_graph_pays(
             game_state.bag.len(),
             blanks_on_board < self.game_config.alphabet().freq(0) as usize,
             self.num_sim_iters,
             threads,
-        );
+        ) && (self.memory.is_none()
+            || matches!(self.arm_tables, anagrams::ArmTables::None));
         // only the very board the graph was pruned for keeps it: tiles added
         // since may be a phoney left standing, beside which a valid move makes
         // a word that prune dropped
@@ -2340,10 +2350,15 @@ impl<
         self.late_graph = if keep {
             self.late_graph.take()
         } else if late {
-            self.late_board.clone_from(&game_state.board_tiles);
-            words.clear();
-            (generator.get_or_insert_with(|| movegen::KurniaMoveGenerator::new(self.game_config)))
-                .gen_remaining_words(
+            'late: {
+                self.late_board.clone_from(&game_state.board_tiles);
+                words.clear();
+                let memory = self.memory.as_ref();
+                // a word too long to be held in its Bites takes its tiles' bytes
+                let mut refused = false;
+                let pruned = (generator
+                    .get_or_insert_with(|| movegen::KurniaMoveGenerator::new(self.game_config)))
+                .gen_remaining_words_within(
                     &movegen::BoardSnapshot {
                         board_tiles: &game_state.board_tiles,
                         game_config: self.game_config,
@@ -2352,29 +2367,58 @@ impl<
                         rack_lengths: None,
                         klv: self.klv,
                     },
-                    |word: &[u8]| words.push(word.into()),
+                    memory,
+                    |word: &[u8]| {
+                        refused = refused
+                            || endgame::room_in(memory, words, 1).is_err()
+                            || (word.len() >= std::mem::size_of::<bites::Bites>()
+                                && memory.is_some_and(|memory| !memory.has_room(word.len())));
+                        if !refused {
+                            words.push(word.into());
+                        }
+                    },
                 );
-            // made in the nodes of the graph before, if any
-            let (mut kwg, mut arm_tables) = match self.late_graph.take() {
-                Some(late) => late,
-                None => (
-                    std::mem::replace(spare, kwg::Kwg(Vec::new())),
-                    std::mem::replace(spare_tables, anagrams::ArmTables::None),
-                ),
-            };
-            kwg.refill_from_bytes(builder.build_for_game(self.game_config, words)?)?;
-            // tables of the arm the given ones are of, in the memory of those
-            // before
-            match self.arm_tables {
-                anagrams::ArmTables::Anagrams(_) => {
-                    arm_tables.rebuild(&kwg, self.game_config, false, arm_scratch)?
+                // made in the nodes of the graph before, if any
+                let (mut kwg, mut arm_tables) = match self.late_graph.take() {
+                    Some(late) => late,
+                    None => (
+                        std::mem::replace(spare, kwg::Kwg(Vec::new())),
+                        std::mem::replace(spare_tables, anagrams::ArmTables::None),
+                    ),
+                };
+                // where the limit has no room for the prune or the graph, the sim
+                // goes on with the lexicon's own graph: the late one is for speed
+                // alone
+                let built = if pruned.is_err() || refused {
+                    None
+                } else {
+                    match builder.build_for_game_within(self.game_config, words, memory) {
+                        Ok(bytes) => Some(bytes),
+                        Err(e) if e.is::<endgame::Refused>() => None,
+                        Err(e) => return Err(e),
+                    }
+                };
+                let Some(bytes) = built.filter(|bytes| {
+                    endgame::room_in(memory, &mut kwg.0, (bytes.len() / 4).max(2)).is_ok()
+                }) else {
+                    *spare = kwg;
+                    *spare_tables = arm_tables;
+                    break 'late None;
+                };
+                kwg.refill_from_bytes(bytes)?;
+                // tables of the arm the given ones are of, in the memory of those
+                // before
+                match self.arm_tables {
+                    anagrams::ArmTables::Anagrams(_) => {
+                        arm_tables.rebuild(&kwg, self.game_config, false, arm_scratch)?
+                    }
+                    anagrams::ArmTables::RackLengths(_) => {
+                        arm_tables.rebuild(&kwg, self.game_config, true, arm_scratch)?
+                    }
+                    anagrams::ArmTables::None => arm_tables = anagrams::ArmTables::None,
                 }
-                anagrams::ArmTables::RackLengths(_) => {
-                    arm_tables.rebuild(&kwg, self.game_config, true, arm_scratch)?
-                }
-                anagrams::ArmTables::None => arm_tables = anagrams::ArmTables::None,
+                Some((kwg, arm_tables))
             }
-            Some((kwg, arm_tables))
         } else {
             // its nodes kept for the next
             if let Some((kwg, arm_tables)) = self.late_graph.take() {
@@ -3111,6 +3155,7 @@ mod tests {
                     sim_threads,
                     win_pct_table: None,
                     quiet: true,
+                    memory: None,
                 },
             )
             .unwrap();
@@ -3259,6 +3304,7 @@ mod tests {
                     sim_threads,
                     win_pct_table: None,
                     quiet: true,
+                    memory: None,
                 },
             )
             .unwrap();
@@ -3278,6 +3324,77 @@ mod tests {
             alone.leaderboard(usize::MAX),
             shared.leaderboard(usize::MAX)
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_decision_whose_late_prune_has_no_room_rolls_out_on_the_whole_alike() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let arm_tables = anagrams::ArmTables::None;
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
+        // twelve tiles in the bag: past a rack's worth, at a bag where a
+        // decision of 1000 iterations builds its graph on one thread, not on
+        // eight (a blank is off the board)
+        let bag = game_state.bag.as_slice()[..12].to_vec();
+        game_state.bag.set_from_iter(bag);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        gen_simmer_candidates(
+            &mut move_filter::GenMoves::Unfiltered,
+            &mut move_generator,
+            &board_snapshot,
+            &game_state.current_player().rack,
+            0,
+            SIMMER_FIELD,
+            &mut Vec::new(),
+        );
+        assert!(move_generator.plays.len() > 2);
+        // a sim under a limit with no room for the late graph walks the whole
+        // one, one with room the late one, and both decide as with none; a
+        // limit with no room left at all refuses the decision
+        let decide = |memory: Option<endgame::MemoryLimit>| {
+            let mut simmer = Simmer::<_, _, true>::new(
+                &game_config,
+                &kwg,
+                &arm_tables,
+                &klv,
+                SimmerParams {
+                    num_sim_iters: 1000,
+                    num_sim_plies: 2,
+                    sim_threads: 1,
+                    win_pct_table: None,
+                    quiet: true,
+                    memory,
+                },
+            )
+            .unwrap();
+            simmer.reseed(11);
+            let decided = simmer.begin_decision(&move_generator, &game_state, 32, &[]);
+            (simmer, decided.is_ok())
+        };
+        let limit = |bytes| Some(endgame::MemoryLimit { bytes, held: || 0 });
+        let (free, _) = decide(None);
+        let (roomy, roomy_ok) = decide(limit(usize::MAX));
+        let (tight, tight_ok) = decide(limit(64));
+        let (_, none_ok) = decide(limit(0));
+        assert!(free.late_graph.is_some() && roomy.late_graph.is_some());
+        assert!(tight.late_graph.is_none());
+        assert!(roomy_ok && tight_ok && !none_ok);
+        let board = |simmer: &Simmer<'_, _, _, true>| simmer.leaderboard(usize::MAX);
+        assert_eq!(board(&roomy), board(&free));
+        assert_eq!(board(&tight), board(&free));
     }
 
     #[test]
@@ -3325,6 +3442,7 @@ mod tests {
                     sim_threads: 1,
                     win_pct_table: None,
                     quiet: true,
+                    memory: None,
                 },
             )
             .unwrap();
@@ -3398,6 +3516,7 @@ mod tests {
                 sim_threads: 1,
                 win_pct_table: None,
                 quiet: true,
+                memory: None,
             },
         )
         .unwrap();
@@ -3532,6 +3651,7 @@ mod tests {
             sim_threads: 1,
             win_pct_table: None,
             quiet: true,
+            memory: None,
         };
 
         // the leaves are the inference's own, as the shell asks for them

@@ -1277,6 +1277,7 @@ fn run(
                     sim_threads: 1,
                     win_pct_table: None,
                     quiet: a.quiet,
+                    memory: None,
                 },
             )?;
             driver.reseed(seed);
@@ -1451,6 +1452,7 @@ fn run(
                     sim_threads: 1,
                     win_pct_table: None,
                     quiet: a.quiet,
+                    memory: None,
                 },
             )?;
             driver.reseed(seed);
@@ -7204,6 +7206,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
             quiet,
+            memory: None,
         },
     )?;
     driver.reseed(seed);
@@ -7338,6 +7341,7 @@ fn sim_recall<N: kwg::Node + Sync, L: kwg::Node + Sync>(
                 sim_threads,
                 win_pct_table: None,
                 quiet: true,
+                memory: None,
             },
         )
     };
@@ -8219,6 +8223,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             sim_threads: 1,
                             win_pct_table: None,
                             quiet: true,
+                            memory: None,
                         },
                         deft_window: move_picker::DEFAULT_DEFT_WINDOW,
                     },
@@ -10080,6 +10085,7 @@ fn compare_seats<
                             sim_threads,
                             win_pct_table: winpct_p0,
                             quiet: true,
+                            memory: None,
                         },
                         deft_window: p0_window,
                     },
@@ -10098,6 +10104,7 @@ fn compare_seats<
                             sim_threads,
                             win_pct_table: winpct_p1,
                             quiet: true,
+                            memory: None,
                         },
                         deft_window: p1_window,
                     },

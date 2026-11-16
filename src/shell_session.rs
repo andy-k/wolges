@@ -2248,6 +2248,7 @@ impl Session {
                 sim_threads: parallelism::available(),
                 win_pct_table: None,
                 quiet: true, // the shell prints its own lines
+                memory: None,
             },
         )?;
         simmer.reseed(self.position_seed());
@@ -2420,6 +2421,7 @@ impl Session {
                         sim_threads: parallelism::available(),
                         win_pct_table: None,
                         quiet: true, // the shell prints its own lines
+                        memory: None,
                     },
                 )?,
             };

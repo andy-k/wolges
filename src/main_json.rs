@@ -248,6 +248,7 @@ fn answer<N: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
             quiet: false,
+            memory: None,
         },
     )?));
     game_state

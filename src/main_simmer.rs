@@ -6,6 +6,9 @@ use wolges::{
     move_picker, movegen,
 };
 
+// its counting allocator and --max-memory; its endgame watching goes unused
+#[allow(dead_code)]
+mod endgame_watch;
 mod game_args;
 
 // most of this is copied from main_endgame.
@@ -71,6 +74,16 @@ impl Question {
     version = wolges::VERSION
 )]
 struct Cli {
+    #[arg(
+        long,
+        value_name = "GB",
+        default_value_t = 0.0,
+        help = "keep the program within GB gigabytes (of 10^9 bytes), its word graph \
+                included (0: no limit): the late graph is pruned only where it fits, else \
+                the sim walks the whole lexicon, and a decision is refused where no room is \
+                left"
+    )]
+    max_memory: f64,
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,
     #[arg(long, help = "generate with the lean arm")]
@@ -98,7 +111,14 @@ fn main() -> error::Returns<()> {
     game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-    simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
+    simulate(
+        &kwg,
+        &klv,
+        &game_config,
+        cli.seed,
+        cli.lean,
+        endgame_watch::memory_limit(cli.max_memory)?,
+    )
 }
 
 #[inline]
@@ -123,6 +143,7 @@ fn simulate(
     game_config: &game_config::GameConfig,
     seed: Option<u64>,
     lean: bool,
+    memory: Option<wolges::endgame::MemoryLimit>,
 ) -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/43
     let scores = [336000, 298000];
@@ -307,6 +328,7 @@ fn simulate(
             sim_threads: 1,
             win_pct_table: None,
             quiet: true,
+            memory,
         },
     )?;
     if let Some(seed) = seed {
