@@ -5721,22 +5721,49 @@ impl<
         )
     }
 
+    // the search as resume_peg_one_in_bag, its places valued on this many
+    // threads where it values them in one pass
     pub fn resume_peg_one_in_bag_on_threads(
         &mut self,
         progress: &mut PegProgress,
         limits: &Limits,
         threads: usize,
     ) -> error::Returns<Result<PegResult, PegUnsupported>> {
-        self.work_buffer.threads = threads;
-        let result = self.resume_peg_one_in_bag(progress, limits);
-        self.work_buffer.threads = 1;
-        result
+        let mut result = self.resume_peg_one_in_bag_best(progress, limits, threads)?;
+        if let Ok(result) = &mut result {
+            result.moves = progress.answer_moves(0..usize::MAX);
+        }
+        Ok(result)
     }
 
     // the search with a tile in the bag that progress holds, going on from
     // where the last solve given it stopped
     #[inline]
     pub fn resume_peg_one_in_bag(
+        &mut self,
+        progress: &mut PegProgress,
+        limits: &Limits,
+    ) -> error::Returns<Result<PegResult, PegUnsupported>> {
+        self.resume_peg_one_in_bag_on_threads(progress, limits, 1)
+    }
+
+    // the search as resume_peg_one_in_bag_on_threads, its answer without the
+    // moves (moves empty), which progress.answer_moves then lists as far as
+    // asked
+    pub fn resume_peg_one_in_bag_best(
+        &mut self,
+        progress: &mut PegProgress,
+        limits: &Limits,
+        threads: usize,
+    ) -> error::Returns<Result<PegResult, PegUnsupported>> {
+        self.work_buffer.threads = threads;
+        let result = self.peg_one_in_bag_by(progress, limits);
+        self.work_buffer.threads = 1;
+        result
+    }
+
+    #[inline]
+    fn peg_one_in_bag_by(
         &mut self,
         progress: &mut PegProgress,
         limits: &Limits,
@@ -7044,51 +7071,43 @@ impl<
                 if state.answer.is_none() {
                     // no pass valued every move: the best of those valued
                     let best = peg_best(&mut state.reached, &state.valued);
+                    state.rank_answer();
                     let value = state.valued[best].as_ref().unwrap();
-                    let answered = (state.reached.iter())
-                        .map(|&i| (i, state.valued[i].clone().unwrap()))
-                        .collect::<Vec<_>>();
-                    return Ok(peg_result(&state.moves, best, value, &answered, 0, false));
+                    return Ok(peg_result(&state.moves, best, value, 0, false));
                 }
                 break;
             }
             let best = peg_best(&mut state.reached, &state.valued);
-            state.answer = Some((best, state.valued[best].clone().unwrap(), state.depth));
-            state.answered.clear();
-            (state.answered)
-                .extend((state.reached.iter()).map(|&i| (i, state.valued[i].clone().unwrap())));
-            if state.pass_exact || state.depth == COMPLETE {
+            state.answer = Some((best, state.depth));
+            let done = state.pass_exact || state.depth == COMPLETE;
+            if !done {
+                // the next pass values the moves best first by this one,
+                // afresh; each list keeps its room
+                std::mem::swap(&mut state.order, &mut state.reached);
+                state.reached.clear();
+                let valued = &state.valued;
+                (state.order).sort_unstable_by(|&a, &b| peg_ranks(valued, a, b));
+            }
+            // the pass's values become the answer's, swapped in, not cloned
+            std::mem::swap(&mut state.answered, &mut state.valued);
+            state.valued.clear();
+            state.valued.resize_with(state.answered.len(), || None);
+            state.rank_answer();
+            if done {
                 state.done = true;
                 break;
             }
-            // the next pass values the moves best first by this one; the
-            // order's list goes on as the moves reached, so neither grows
-            std::mem::swap(&mut state.order, &mut state.reached);
-            state.reached.clear();
-            let valued = &state.valued;
-            state.order.sort_unstable_by(|&a, &b| {
-                let (x, y) = (valued[a].as_ref().unwrap(), valued[b].as_ref().unwrap());
-                (y.win.total_cmp(&x.win))
-                    .then(y.marg.total_cmp(&x.marg))
-                    .then(a.cmp(&b))
-            });
             state.next = 0;
             state.pass_exact = true;
             state.passing = Default::default();
             state.depth += 1;
         }
-        let Some((best, value, depth)) = &state.answer else {
+        let Some((best, depth)) = state.answer else {
             unreachable!("the first move of the first pass is always valued");
         };
         let exact = state.done && state.pass_exact;
-        Ok(peg_result(
-            &state.moves,
-            *best,
-            value,
-            &state.answered,
-            *depth,
-            exact,
-        ))
+        let value = state.answered[best].as_ref().unwrap();
+        Ok(peg_result(&state.moves, best, value, depth, exact))
     }
 }
 
@@ -7152,37 +7171,30 @@ fn peg_best(reached: &mut [usize], valued: &[Option<PegValue>]) -> usize {
     best
 }
 
-// the committed model's answer: a move, its value, every move the pass valued
-// with its own (best first, as peg_best ranks them, then as generated), and the
-// depth it is of
+// the first ranks before the second, best first as peg_best ranks them, then
+// as generated
+fn peg_ranks(valued: &[Option<PegValue>], a: usize, b: usize) -> std::cmp::Ordering {
+    let (x, y) = (valued[a].as_ref().unwrap(), valued[b].as_ref().unwrap());
+    (y.win.total_cmp(&x.win))
+        .then(y.marg.total_cmp(&x.marg))
+        .then(a.cmp(&b))
+}
+
+// the committed model's answer: a move, its value, and the depth it is of,
+// without the moves (PegProgress::answer_moves lists them)
 fn peg_result(
     moves: &[PegMove],
     best: usize,
     value: &PegValue,
-    answered: &[(usize, PegValue)],
     depth: i8,
     exact: bool,
 ) -> PegResult {
-    let mut listed = answered.iter().collect::<Vec<_>>();
-    listed.sort_by(|(a, x), (b, y)| {
-        (y.win.total_cmp(&x.win))
-            .then(y.marg.total_cmp(&x.marg))
-            .then(a.cmp(b))
-    });
     PegResult {
         win_pct: value.win,
         expected_margin: to_equity(value.marg),
         hypotheses: value.hyps.clone(),
         best_move: Some(moves[best].clone()),
-        moves: (listed.into_iter())
-            .map(|(i, value)| PegMoveValue {
-                play: moves[*i].clone(),
-                win_pct: value.win,
-                expected_margin: to_equity(value.marg),
-                hypotheses: value.hyps.clone(),
-                exact: value.exact,
-            })
-            .collect(),
+        moves: Vec::new(),
         committed: true,
         exact,
         depth,
@@ -7250,14 +7262,54 @@ impl PegProgress {
         let committed = &self.committed;
         (!committed.order.is_empty()).then_some((committed.next, committed.order.len()))
     }
+
+    // the moves the last solve's answer valued (PegResult::moves); none in the
+    // clairvoyant model
+    #[inline(always)]
+    pub fn answer_total(&self) -> usize {
+        self.committed.ranked.len()
+    }
+
+    // those of the last solve's answer's moves, best first, at the places in
+    // range (clamped to the moves valued): the same as that slice of
+    // PegResult::moves, a slice of the ranking kept with the answer
+    pub fn answer_moves(&self, range: std::ops::Range<usize>) -> Vec<PegMoveValue> {
+        let committed = &self.committed;
+        let valued = committed.answer_values();
+        let to = range.end.min(committed.ranked.len());
+        let from = range.start.min(to);
+        (committed.ranked[from..to].iter())
+            .map(|&i| {
+                let value = valued[i].as_ref().unwrap();
+                PegMoveValue {
+                    play: committed.moves[i].clone(),
+                    win_pct: value.win,
+                    expected_margin: to_equity(value.marg),
+                    hypotheses: value.hyps.clone(),
+                    exact: value.exact,
+                }
+            })
+            .collect()
+    }
+
+    // where the last solve's answer lists this move, best first (the place
+    // answer_moves gives it); none if the answer did not value it
+    pub fn answer_place(&self, play: &PegMove) -> Option<usize> {
+        let committed = &self.committed;
+        let valued = committed.answer_values();
+        let at = (0..committed.moves.len())
+            .find(|&i| valued[i].is_some() && committed.moves[i] == *play)?;
+        Some(committed.places[at])
+    }
 }
 
 // the committed model's search so far: the moves; the order its pass values
-// them in, the next to value, each one's latest value, and those the pass has
-// valued; whether all the pass's endgames were exact, and its depth; the pass
-// move's own search in it, so far; the best move of the deepest pass that
-// valued every move, with its value and that depth; and whether that answer is
-// final
+// them in, the next to value, each one's value in the pass, and those the pass
+// has valued; whether all the pass's endgames were exact, and its depth; the
+// pass move's own search in it, so far; the best move of the deepest pass that
+// valued every move, with that depth and that pass's values; whether that
+// answer is final; and the answer's valued moves best first, with each move's
+// place among them
 #[derive(Default)]
 struct PegCommitted {
     moves: Vec<PegMove>,
@@ -7268,12 +7320,46 @@ struct PegCommitted {
     pass_exact: bool,
     depth: i8,
     passing: PassLine,
-    answer: Option<(usize, PegValue, i8)>,
-    answered: Vec<(usize, PegValue)>, // every move the answer's pass valued
+    answer: Option<(usize, i8)>,
+    answered: Vec<Option<PegValue>>,
     done: bool,
+    ranked: Vec<usize>,
+    places: Vec<usize>,
 }
 
-#[derive(Clone)]
+impl PegCommitted {
+    // the values the answer is of: the deepest pass's that valued every move,
+    // or, before one did, the pass's under way
+    #[inline(always)]
+    fn answer_values(&self) -> &[Option<PegValue>] {
+        if self.answer.is_some() {
+            &self.answered
+        } else {
+            &self.valued
+        }
+    }
+
+    // rank the answer's valued moves, best first, and note each one's place:
+    // made when an answer is swapped in, and when a limit stops the first pass
+    #[inline]
+    fn rank_answer(&mut self) {
+        let valued = if self.answer.is_some() {
+            &self.answered
+        } else {
+            &self.valued
+        };
+        self.ranked.clear();
+        (self.ranked).extend((0..valued.len()).filter(|&i| valued[i].is_some()));
+        (self.ranked).sort_unstable_by(|&a, &b| peg_ranks(valued, a, b));
+        self.places.clear();
+        self.places.resize(valued.len(), 0);
+        for (place, &i) in self.ranked.iter().enumerate() {
+            self.places[i] = place;
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub enum PegMove {
     Pass,
     Place(movegen::Play),
@@ -18604,6 +18690,73 @@ mod tests {
                         x.play == y.play
                             && x.win_pct == y.win_pct
                             && x.expected_margin == y.expected_margin
+                            && x.exact == y.exact
+                    }));
+                    ranged += (to - from > 1 && to - from < all.len()) as usize;
+                }
+            }
+            for (place, listed) in all.iter().enumerate() {
+                assert_eq!(progress.answer_place(&listed.play), Some(place));
+            }
+        }
+        assert!(cut > 0 && later > 0 && ranged > 0, "{cut} {later} {ranged}");
+    }
+
+    #[test]
+    #[inline]
+    fn a_one_in_bag_answers_moves_in_a_range_are_that_slice_of_them_all() {
+        // stopped at each table size, and not stopped: each range of the
+        // answer's moves is that slice of them all, best first
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [1u8, 8, 20] {
+            unseen_tally[tile as usize] += 1;
+        }
+        // stopped with three moves valued or more, and past the first pass
+        let (mut cut, mut later, mut ranged) = (0, 0, 0);
+        for states in (1..4000).step_by(7).map(Some).chain([None]) {
+            let limits = super::Limits {
+                time: Some(std::time::Duration::from_secs(3600)),
+                states,
+                memory: None,
+                clock: None,
+            };
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut progress =
+                super::PegProgress::new(0, &board, &[1, 2], &unseen_tally, equity::Equity::ZERO);
+            let best = egs.resume_peg_one_in_bag_best(&mut progress, &limits, 1);
+            let best = best.unwrap().unwrap();
+            assert!(best.moves.is_empty());
+            let all = progress.answer_moves(0..usize::MAX);
+            assert_eq!(all.len(), progress.answer_total());
+            assert!(best.best_move == all.first().map(|first| first.play.clone()));
+            assert!(
+                all.first()
+                    .is_none_or(|first| first.hypotheses == best.hypotheses)
+            );
+            assert!(all.windows(2).all(|pair| {
+                let (x, y) = (&pair[0], &pair[1]);
+                x.win_pct > y.win_pct
+                    || (x.win_pct == y.win_pct && x.expected_margin >= y.expected_margin)
+            }));
+            assert!(states.is_some() || best.exact);
+            cut += (!best.exact && all.len() > 2) as usize;
+            later += (!best.exact && best.depth > 0) as usize;
+            for from in 0..=all.len() + 1 {
+                for to in from..=all.len() + 1 {
+                    let some = progress.answer_moves(from..to);
+                    let (from, to) = (from.min(all.len()), to.min(all.len()));
+                    assert_eq!(some.len(), to - from);
+                    assert!(some.iter().zip(&all[from..to]).all(|(x, y)| {
+                        x.play == y.play
+                            && x.win_pct == y.win_pct
+                            && x.expected_margin == y.expected_margin
+                            && x.hypotheses == y.hypotheses
                             && x.exact == y.exact
                     }));
                     ranged += (to - from > 1 && to - from < all.len()) as usize;
