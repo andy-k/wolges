@@ -2284,6 +2284,17 @@ impl<
         self.work_buffer.renew();
     }
 
+    // the solver as with_generator made it, for a caller that keeps it from
+    // one solve to the next (a shell's, a batch's), with what it holds of its
+    // generators, its lists, its bag searches' solver, and its threads' kept,
+    // and its table as reserve_table makes one of this many bytes in a new
+    // solver, emptied in place where it has that many buckets
+    #[inline]
+    pub fn renew_for_another_solve(&mut self, table_bytes: usize) {
+        self.renew();
+        (self.work_buffer.table).empty_to(table_bytes / std::mem::size_of::<[u64; 8]>());
+    }
+
     // the solver a helper thread keeps between its searches, taken apart
     #[inline(always)]
     fn into_helper(self) -> Helper<L, G, JUMPS, ANY_SIDE> {

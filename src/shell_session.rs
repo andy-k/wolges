@@ -238,6 +238,9 @@ struct Sim {
 // the tables a session plays with stay for its whole life (a file is read once,
 // by its path, and its anagram tables are built once), so that a sim, which
 // borrows them, can be kept between commands
+// an endgame solver the shell keeps for a lexicon, made at its first use
+type ShellSolver = endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>;
+
 pub struct Session {
     game_config: &'static game_config::GameConfig,
     kwg: Option<(String, &'static kwg::Kwg<kwg::Node24>)>,
@@ -246,6 +249,7 @@ pub struct Session {
     run_letters_found: std::collections::HashMap<usize, kwg::RunLetters<'static>>, // by graph's address
     klvs_read: std::collections::HashMap<String, &'static klv::Klv<kwg::Node24>>,
     arm_tables_built: std::collections::HashMap<String, &'static anagrams::ArmTables>,
+    endgame_solvers: std::collections::HashMap<String, ShellSolver>, // by lexicon path
     rules_made: std::collections::HashMap<String, &'static game_config::GameConfig>,
     infer_tables: Option<infer::InferTables>, // for klv, built at its first use
     game: Option<Game>,
@@ -451,6 +455,7 @@ impl Session {
             run_letters_found: Default::default(),
             klvs_read: [("-".to_string(), none)].into_iter().collect(),
             arm_tables_built: Default::default(),
+            endgame_solvers: Default::default(),
             rules_made: Default::default(),
             infer_tables: None,
             game: None,
@@ -1279,14 +1284,10 @@ impl Session {
                 if self.final_scores.is_some() {
                     return Err("the game is over".into());
                 }
-                let kwg = self.kwg()?;
-                let arm_tables = self.arm_tables()?;
                 let state = self.endgame_state();
-                let (mut solver, solved) = solve_endgame(
-                    self.game_config,
-                    kwg,
-                    arm_tables,
-                    self.run_letters()?,
+                let mut solver = self.take_endgame_solver(&state)?;
+                let solved = solve_endgame(
+                    &mut solver,
                     &state,
                     &endgame::Limits {
                         time: Some(std::time::Duration::from_secs_f64(seconds)),
@@ -1295,7 +1296,10 @@ impl Session {
                         clock: None,
                     },
                     self.quiet,
-                )?;
+                )
+                .and_then(|solved| Ok((solved, self.endgame_line(&mut solver, &state)?)));
+                self.keep_endgame_solver(solver)?;
+                let (solved, line) = solved?;
                 writeln!(
                     std::io::stdout(),
                     "the side to move gains {} on the spread from here, {}",
@@ -1314,7 +1318,7 @@ impl Session {
                         format!("as {} moves deep saw it, cut short", solved.depth)
                     }
                 )?;
-                for line in self.endgame_line(&mut solver, &state)? {
+                for line in line {
                     writeln!(std::io::stdout(), "{line}")?;
                 }
                 return Ok(());
@@ -1437,6 +1441,7 @@ impl Session {
         self.move_generator = movegen::KurniaMoveGenerator::new(game_config);
         self.infer_generator = movegen::KurniaMoveGenerator::new(game_config);
         self.arm_tables_built.clear();
+        self.endgame_solvers.clear();
         self.infer_tables = None;
         self.board_before_last = None;
         self.final_scores = None;
@@ -1470,6 +1475,55 @@ impl Session {
     fn run_letters(&self) -> error::Returns<kwg::RunLetters<'static>> {
         let kwg = self.kwg()?;
         Ok(self.run_letters_found[&std::ptr::from_ref(kwg).addr()].clone())
+    }
+
+    // the lexicon's endgame solver under these rules (endgame_solvers), made
+    // at its first use, when the rules are checked for an endgame, taken out
+    // to solve the side to move's endgame from this state, once the bag is
+    // empty and both racks are known; keep_endgame_solver gives it back
+    fn take_endgame_solver(
+        &mut self,
+        state: &game_state::GameState,
+    ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
+        let kwg = self.kwg()?;
+        let arm_tables = self.arm_tables()?;
+        if !state.bag.is_empty() {
+            return Err("the bag is not empty, and an endgame needs it to be".into());
+        }
+        let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
+        let mut solver = match self.endgame_solvers.remove(path) {
+            Some(mut solver) => {
+                solver.renew_for_another_solve(0);
+                solver
+            }
+            None => {
+                self.game_config.supports(game_config::Op::Endgame)?;
+                endgame::EndgameSolver::with_generator(
+                    self.game_config,
+                    kwg,
+                    arm_tables,
+                    self.run_letters()?,
+                    movegen::KurniaMoveGenerator::new(self.game_config),
+                )?
+            }
+        };
+        solver.init_after_scoreless_turns(
+            &state.board_tiles,
+            [&state.players[0].rack, &state.players[1].rack],
+            state.pass_turns,
+            state.zero_turns,
+        );
+        Ok(solver)
+    }
+
+    // a solver take_endgame_solver took out, kept for the lexicon's next
+    fn keep_endgame_solver(
+        &mut self,
+        solver: endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
+    ) -> error::Returns<()> {
+        let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
+        self.endgame_solvers.insert(path.clone(), solver);
+        Ok(())
     }
 
     // the word graph's anagram tables, built at their first use
@@ -2078,13 +2132,7 @@ impl Session {
                 let mover = endgame_state.turn as usize;
                 let lead =
                     endgame_state.players[mover].score - endgame_state.players[mover ^ 1].score;
-                let mut solver = endgame_solver(
-                    self.game_config,
-                    kwg,
-                    arm_tables,
-                    self.run_letters()?,
-                    &endgame_state,
-                )?;
+                let mut solver = self.take_endgame_solver(&endgame_state)?;
                 let limits = endgame::Limits {
                     time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
                     states: None,
@@ -2093,8 +2141,9 @@ impl Session {
                 };
                 let play = listened(&mut solver, self.quiet, |solver| {
                     solver.best_move_to_win(endgame_state.turn, equity::Equity::new(lead), &limits)
-                })?;
-                return Ok(play.ok_or("the solve found no move")?);
+                });
+                self.keep_endgame_solver(solver)?;
+                return Ok(play?.ok_or("the solve found no move")?);
             }
         }
         let leaves = match sim_ms {
@@ -3129,35 +3178,6 @@ fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usi
     (vowels, tiles.len() - vowels - blanks, blanks)
 }
 
-// a solver of the side to move's endgame, once the bag is empty and both racks
-// are known
-fn endgame_solver(
-    game_config: &'static game_config::GameConfig,
-    kwg: &'static kwg::Kwg<kwg::Node24>,
-    arm_tables: &'static anagrams::ArmTables,
-    run_letters: kwg::RunLetters<'static>,
-    state: &game_state::GameState,
-) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
-    if !state.bag.is_empty() {
-        return Err("the bag is not empty, and an endgame needs it to be".into());
-    }
-    game_config.supports(game_config::Op::Endgame)?;
-    let mut solver = endgame::EndgameSolver::with_generator(
-        game_config,
-        kwg,
-        arm_tables,
-        run_letters,
-        movegen::KurniaMoveGenerator::new(game_config),
-    )?;
-    solver.init_after_scoreless_turns(
-        &state.board_tiles,
-        [&state.players[0].rack, &state.players[1].rack],
-        state.pass_turns,
-        state.zero_turns,
-    );
-    Ok(solver)
-}
-
 fn listened<T>(
     solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
     quiet: bool,
@@ -3173,25 +3193,18 @@ fn listened<T>(
     solver.listening(watch, f)
 }
 
-// solve the side to move's endgame, as endgame_solver makes it, within the
-// limits: returns the solver, whose best line can be read, and what it found
+// solve the side to move's endgame, on a solver take_endgame_solver gave for
+// this state, within the limits: returns what it found, and the solver's best
+// line can be read
 fn solve_endgame(
-    game_config: &'static game_config::GameConfig,
-    kwg: &'static kwg::Kwg<kwg::Node24>,
-    arm_tables: &'static anagrams::ArmTables,
-    run_letters: kwg::RunLetters<'static>,
+    solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
     state: &game_state::GameState,
     limits: &endgame::Limits,
     quiet: bool,
-) -> error::Returns<(
-    endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
-    endgame::Solved,
-)> {
-    let mut solver = endgame_solver(game_config, kwg, arm_tables, run_letters, state)?;
-    let solved = listened(&mut solver, quiet, |solver| {
+) -> error::Returns<endgame::Solved> {
+    listened(solver, quiet, |solver| {
         solver.solve_within(state.turn, limits)
-    })?;
-    Ok((solver, solved))
+    })
 }
 
 // what a line of a GCG file does: a move, as play takes it; the move before
@@ -5209,12 +5222,11 @@ mod tests {
         state.players[1].rack = vec![5];
         session.state = state;
         run(&mut session, "endgame 5").unwrap();
-        let (mut solver, solved) = solve_endgame(
-            session.game_config,
-            session.kwg().unwrap(),
-            session.arm_tables().unwrap(),
-            session.run_letters().unwrap(),
-            &session.state,
+        let state = session.state.clone();
+        let mut solver = session.take_endgame_solver(&state).unwrap();
+        let solved = solve_endgame(
+            &mut solver,
+            &state,
             &endgame::Limits {
                 time: Some(std::time::Duration::from_secs(5)),
                 states: None,
