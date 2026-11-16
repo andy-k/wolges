@@ -5,6 +5,7 @@
 // makes win%(0) exactly 0.5, then reverse-cumulates for an O(1) read.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write as _;
 
 pub type Key = (u16, u8, u8);
 
@@ -62,21 +63,24 @@ impl WinPctAccumulator {
     pub fn to_csv<W: std::io::Write>(&self, w: W) -> crate::error::Returns<()> {
         // a row has a pair for each delta, so rows differ in length.
         let mut out = csv::WriterBuilder::new().flexible(true).from_writer(w);
-        let mut record = Vec::new();
+        // each field written into the one buffer, and then out
+        let mut field = Vec::new();
         for (&(bag, my, opp), hist) in &self.rows {
             if hist.is_empty() {
                 continue;
             }
             let total: u64 = hist.values().sum();
-            record.clear();
-            record.push(bag.to_string());
-            record.push(my.to_string());
-            record.push(opp.to_string());
-            record.push(total.to_string());
-            for (&delta, &count) in hist {
-                record.push(format!("{delta}:{count}"));
+            for value in [bag as u64, my as u64, opp as u64, total] {
+                field.clear();
+                write!(field, "{value}")?;
+                out.write_field(&field)?;
             }
-            out.write_record(&record)?;
+            for (&delta, &count) in hist {
+                field.clear();
+                write!(field, "{delta}:{count}")?;
+                out.write_field(&field)?;
+            }
+            out.write_record(None::<&[u8]>)?;
         }
         out.flush()?;
         Ok(())
@@ -89,8 +93,9 @@ impl WinPctAccumulator {
             .has_headers(false)
             .flexible(true)
             .from_reader(r);
-        for record in reader.records() {
-            let record = record?;
+        // each line read into the one record
+        let mut record = csv::StringRecord::new();
+        while reader.read_record(&mut record)? {
             let mut field = record.iter();
             let bag: u16 = field.next().unwrap_or("").parse()?;
             let my: u8 = field.next().unwrap_or("").parse()?;
