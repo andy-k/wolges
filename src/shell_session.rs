@@ -2320,14 +2320,14 @@ impl Session {
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
         };
-        let rack = self.state.current_player().rack.clone();
+        let rack = &self.state.current_player().rack;
         let Some(ms) = sim_ms else {
             move_picker::MovePicker::<kwg::Node24, kwg::Node24>::Hasty.pick_a_move(
                 &mut move_filter::GenMoves::Unfiltered,
                 &mut self.move_generator,
                 board_snapshot,
                 &self.state,
-                &rack,
+                rack,
             )?;
             return Ok(self.move_generator.plays[0].play.clone());
         };
@@ -2336,7 +2336,7 @@ impl Session {
             &mut move_filter::GenMoves::Unfiltered,
             &mut self.move_generator,
             board_snapshot,
-            &rack,
+            rack,
             self.state.current_player().num_exchanges,
             move_picker::SIMMER_FIELD,
             &mut Vec::new(),
