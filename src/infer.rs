@@ -728,25 +728,29 @@ pub fn weigh_by_fuzz(racks: &[(u32, f64, i32)], fuzz: f64) -> Vec<(f64, f64, u32
 // to be dealt) kept, in the lattice's order, with the sum of their weights as
 // weigh_by_fuzz gives them, added in the order the racks come; a rack of weight
 // 0 (fuzz 0 keeps only the racks closest to their best) adds nothing. The racks'
-// own list holds the work: each weighed in place, sorted by leave (stably, so a
-// leave's racks keep their order), and each leave's run summed into its first
+// own list holds the work: each weighed in place with its place among them,
+// sorted by leave and then by that place (so a leave's racks keep their order,
+// with no buffer a stable sort would make), and each leave's run summed into
+// its first: (leave, place, weight)
 #[inline]
-fn weights_by_leave(racks: &[(u32, i32, f64)], fuzz: f64, weighed: &mut Vec<(u32, f64)>) {
+fn weights_by_leave(racks: &[(u32, i32, f64)], fuzz: f64, weighed: &mut Vec<(u32, usize, f64)>) {
     let g0 = racks
         .iter()
         .map(|&(_, gap, _)| gap.max(0))
         .min()
         .unwrap_or(0);
     weighed.clear();
-    weighed.extend(racks.iter().filter_map(|&(kept, gap, ln_prior)| {
-        let weight = ln_prior.exp() * fuzz_ln_weight(gap, g0, fuzz).exp();
-        (weight > 0.0).then_some((kept, weight))
-    }));
-    weighed.sort_by_key(|&(kept, _)| kept);
+    weighed.extend(
+        (racks.iter().enumerate()).filter_map(|(at, &(kept, gap, ln_prior))| {
+            let weight = ln_prior.exp() * fuzz_ln_weight(gap, g0, fuzz).exp();
+            (weight > 0.0).then_some((kept, at, weight))
+        }),
+    );
+    weighed.sort_unstable_by_key(|&(kept, at, _)| (kept, at));
     weighed.dedup_by(|later, first| {
         let same = later.0 == first.0;
         if same {
-            first.1 += later.1;
+            first.2 += later.2;
         }
         same
     });
@@ -770,7 +774,7 @@ pub struct InferTables {
     placed: Vec<u8>,
     avail: Vec<u8>,
     racks: Vec<(u32, i32, f64)>,
-    weighed: Vec<(u32, f64)>,
+    weighed: Vec<(u32, usize, f64)>,
     kept: Vec<u8>,
     tiles: Vec<u8>,
     weigh: WeighScratch,
@@ -1254,7 +1258,7 @@ fn kept_leaves_packed_impl<
     weights_by_leave(racks, fuzz, weighed);
     kept.clear();
     kept.resize(num_letters, 0);
-    for &(rank, weight) in weighed.iter() {
+    for &(rank, _, weight) in weighed.iter() {
         lat.unrank_into(rank as usize, kept);
         leave_tiles.clear();
         leave_tiles.extend(
@@ -2047,6 +2051,9 @@ mod tests {
         assert_ne!(want, ((s + s) + s) + 1.0);
         let mut got = Vec::new();
         weights_by_leave(&racks, 0.0, &mut got);
+        let got = (got.into_iter())
+            .map(|(leave, _, weight)| (leave, weight))
+            .collect::<Vec<_>>();
         let mut expected = (0..32u32).map(|leave| (leave, want)).collect::<Vec<_>>();
         expected.push((50, 1.0));
         assert_eq!(got, expected);
