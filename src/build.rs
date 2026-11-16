@@ -422,28 +422,11 @@ fn gen_machine_drowwords<W: MachineWords + ?Sized>(
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
 #[inline]
 pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
-    let mut machine_dorws = Vec::with_capacity(machine_words.len());
-    fill_alphagrams(machine_words, &mut machine_dorws, &mut Vec::new());
-    machine_dorws.into_boxed_slice()
-}
-
-// make_alphagrams into machine_dorws and with rearrange_buffer, the builder's,
-// emptied here
-#[inline]
-fn fill_alphagrams(
-    machine_words: &[bites::Bites],
-    machine_dorws: &mut Vec<bites::Bites>,
-    rearrange_buffer: &mut Vec<u8>,
-) {
-    machine_dorws.clear();
-    for this_word in machine_words {
-        rearrange_buffer.clear();
-        rearrange_buffer.extend_from_slice(this_word);
-        rearrange_buffer.sort_unstable();
-        machine_dorws.push(rearrange_buffer[..].into());
-    }
-    machine_dorws.sort_unstable();
-    machine_dorws.dedup();
+    let mut machine_dorws = PackedWords::default();
+    fill_packed_alphagrams(machine_words, &mut machine_dorws);
+    (0..machine_dorws.num_words())
+        .map(|index| machine_dorws.word(index).into())
+        .collect()
 }
 
 // make_alphagrams packed into machine_dorws, the builder's, emptied here
