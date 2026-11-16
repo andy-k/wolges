@@ -182,21 +182,21 @@ impl StateMaker<'_> {
 
     // transition_stack is the builder's, emptied here
     #[inline(always)]
-    fn make_dawg(
+    fn make_dawg<W: MachineWords + ?Sized>(
         &mut self,
         transition_stack: &mut TransitionStack<'_>,
-        sorted_machine_words: &[bites::Bites],
+        sorted_machine_words: &W,
         dawg_start_state: u32,
         is_gaddag_phase: bool,
     ) -> u32 {
         transition_stack.transitions.clear();
         transition_stack.indexes.clear();
-        for machine_word_index in 0..sorted_machine_words.len() {
-            let this_word = &sorted_machine_words[machine_word_index];
+        for machine_word_index in 0..sorted_machine_words.num_words() {
+            let this_word = sorted_machine_words.word(machine_word_index);
             let this_word_len = this_word.len();
             let mut prefix_len = 0;
             if machine_word_index > 0 {
-                let prev_word = &sorted_machine_words[machine_word_index - 1];
+                let prev_word = sorted_machine_words.word(machine_word_index - 1);
                 let prev_word_len = transition_stack.indexes.len(); // this can be one less than prev_word.len() for gaddag
                 let min_word_len = this_word_len.min(prev_word_len);
                 while prefix_len < min_word_len && prev_word[prefix_len] == this_word[prefix_len] {
@@ -235,14 +235,88 @@ impl StateMaker<'_> {
     }
 }
 
-// machine_drowwords and reverse_buffer are the builder's, emptied here
+// words in ascending order, as make_dawg reads them
+trait MachineWords {
+    fn num_words(&self) -> usize;
+    fn word(&self, index: usize) -> &[u8];
+}
+
+impl MachineWords for [bites::Bites] {
+    #[inline(always)]
+    fn num_words(&self) -> usize {
+        self.len()
+    }
+
+    #[inline(always)]
+    fn word(&self, index: usize) -> &[u8] {
+        &self[index]
+    }
+}
+
+// a drowword: where its tiles start in the drowwords' tiles, how many there
+// are, and its first tiles as a number that orders as they do
+#[derive(Clone, Copy)]
+struct Drowword {
+    key: u64, // the first 8 tiles, big-endian, 0 past the last
+    start: u32,
+    len: u32,
+}
+
+// the drowwords of a word list, their tiles one after another, so that none is
+// a value of its own
+#[derive(Default)]
+struct Drowwords {
+    tiles: Vec<u8>,
+    words: Vec<Drowword>,
+}
+
+impl MachineWords for Drowwords {
+    #[inline(always)]
+    fn num_words(&self) -> usize {
+        self.words.len()
+    }
+
+    #[inline(always)]
+    fn word(&self, index: usize) -> &[u8] {
+        let word = self.words[index];
+        &self.tiles[word.start as usize..(word.start + word.len) as usize]
+    }
+}
+
+impl Drowwords {
+    // the drowword of the tiles just pushed, from start on
+    #[inline(always)]
+    fn end_word(&mut self, start: usize) {
+        let tiles = &self.tiles[start..];
+        let mut key = [0u8; 8];
+        let num_key_tiles = tiles.len().min(key.len());
+        key[..num_key_tiles].copy_from_slice(&tiles[..num_key_tiles]);
+        self.words.push(Drowword {
+            key: u64::from_be_bytes(key),
+            start: start as u32,
+            len: tiles.len() as u32,
+        });
+    }
+
+    // in ascending order of their tiles: by key, and by the tiles past it when
+    // two keys tie (as when one word is the other and a 0 past it)
+    #[inline(always)]
+    fn sort(&mut self) {
+        let tiles = &self.tiles[..];
+        self.words.sort_unstable_by(|a, b| {
+            a.key.cmp(&b.key).then_with(|| {
+                tiles[a.start as usize..(a.start + a.len) as usize]
+                    .cmp(&tiles[b.start as usize..(b.start + b.len) as usize])
+            })
+        });
+    }
+}
+
+// machine_drowwords, the builder's, emptied here
 #[inline]
-fn gen_machine_drowwords(
-    machine_words: &[bites::Bites],
-    machine_drowwords: &mut Vec<bites::Bites>,
-    reverse_buffer: &mut Vec<u8>,
-) {
-    machine_drowwords.clear();
+fn gen_machine_drowwords(machine_words: &[bites::Bites], machine_drowwords: &mut Drowwords) {
+    machine_drowwords.tiles.clear();
+    machine_drowwords.words.clear();
     for machine_word_index in 0..machine_words.len() {
         let this_word = &machine_words[machine_word_index];
         let this_word_len = this_word.len();
@@ -257,19 +331,25 @@ fn gen_machine_drowwords(
             }
         }
         // CARE = ERAC, RAC@, AC@, C@
-        reverse_buffer.clear();
-        reverse_buffer.extend_from_slice(this_word);
-        reverse_buffer.reverse();
-        machine_drowwords.push(reverse_buffer[..].into());
+        let start = machine_drowwords.tiles.len();
+        machine_drowwords
+            .tiles
+            .extend(this_word.iter().rev().copied());
+        machine_drowwords.end_word(start);
         let num_prefixes = this_word_len - prefix_len;
-        if num_prefixes >= 2 {
-            reverse_buffer.push(0); // the '@'
-            for drow_prefix_len in 1..num_prefixes {
-                machine_drowwords.push(reverse_buffer[drow_prefix_len..].into());
-            }
+        for drow_prefix_len in 1..num_prefixes {
+            let start = machine_drowwords.tiles.len();
+            machine_drowwords.tiles.extend(
+                this_word[..this_word_len - drow_prefix_len]
+                    .iter()
+                    .rev()
+                    .copied(),
+            );
+            machine_drowwords.tiles.push(0); // the '@'
+            machine_drowwords.end_word(start);
         }
     }
-    machine_drowwords.sort_unstable();
+    machine_drowwords.sort();
 }
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
@@ -1164,9 +1244,9 @@ pub struct Builder {
     states_finder: StatesFinder,
     transitions: Vec<Transition>,
     indexes: Vec<usize>,
-    machine_drowwords: Vec<bites::Bites>,
+    machine_drowwords: Drowwords,
     alphagrams: Vec<bites::Bites>,
-    word_buffer: Vec<u8>, // a word reversed or rearranged
+    word_buffer: Vec<u8>, // a word rearranged
     reorder: ReorderBuffers,
     head_indexes: Vec<u32>,
     to_end_lens: Vec<u32>,
@@ -1258,7 +1338,7 @@ impl Builder {
             indexes,
             machine_drowwords,
             alphagrams: _,
-            word_buffer,
+            word_buffer: _,
             reorder,
             head_indexes,
             to_end_lens,
@@ -1299,7 +1379,7 @@ impl Builder {
         let gaddag_start_state = match build_content {
             BuildContent::DawgOnly => 0,
             BuildContent::Gaddawg => {
-                gen_machine_drowwords(machine_words, machine_drowwords, word_buffer);
+                gen_machine_drowwords(machine_words, machine_drowwords);
                 state_maker.make_dawg(
                     &mut transition_stack,
                     machine_drowwords,
