@@ -1726,15 +1726,18 @@ impl Session {
         };
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut final_scores = None;
-        let mut board_before_last = None;
+        // the board before the last turn, in one buffer, and that turn
+        let mut board_before = Vec::new();
+        let mut last_turn = None;
         let mut loser = None;
         for turn in game.turns[..game.at].iter() {
             if final_scores.is_some() {
                 return Err("the game is over".into());
             }
             let held = replay.ready_rack(self.game_config, turn)?;
-            let board_tiles = replay.state.board_tiles.to_vec();
-            board_before_last = Some((board_tiles, turn.played().into_owned()));
+            board_before.clear();
+            board_before.extend_from_slice(&replay.state.board_tiles);
+            last_turn = Some(turn);
             replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
             loser = turn.loser();
@@ -1742,6 +1745,7 @@ impl Session {
                 replay.state.next_turn();
             }
         }
+        let board_before_last = last_turn.map(|turn| (board_before, turn.played().into_owned()));
         if final_scores.is_none() {
             let to_move = replay.state.turn as usize;
             let given = self.seats[to_move] == Seat::Given;
