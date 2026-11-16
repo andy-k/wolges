@@ -212,18 +212,8 @@ impl StateMaker<'_> {
             let transitions_len = transition_stack.transitions.len();
             if is_gaddag_phase && this_word[this_word_len - 1] == 0 {
                 transition_stack.indexes.pop().unwrap();
-                // gaddag["AC@"] points to dawg["CA"]
-                let mut p = dawg_start_state;
-                for &sought_tile in this_word[0..this_word_len - 1].iter().rev() {
-                    loop {
-                        if self.states[p as usize].tile == sought_tile {
-                            p = self.states[p as usize].arc_index;
-                            break;
-                        }
-                        p = self.states[p as usize].next_index;
-                    }
-                }
-                transition_stack.transitions[transitions_len - 1].arc_index = p;
+                transition_stack.transitions[transitions_len - 1].arc_index = sorted_machine_words
+                    .turnaround_target(machine_word_index, self.states, dawg_start_state);
             } else {
                 transition_stack.transitions[transitions_len - 1].accepts = true;
             }
@@ -235,10 +225,29 @@ impl StateMaker<'_> {
     }
 }
 
+// the dawg's node a word leads to, its tiles followed from dawg_start_state
+#[inline(always)]
+fn dawg_target(states: &[State], dawg_start_state: u32, word: impl Iterator<Item = u8>) -> u32 {
+    let mut p = dawg_start_state;
+    for sought_tile in word {
+        loop {
+            if states[p as usize].tile == sought_tile {
+                p = states[p as usize].arc_index;
+                break;
+            }
+            p = states[p as usize].next_index;
+        }
+    }
+    p
+}
+
 // words in ascending order, as make_dawg reads them
 trait MachineWords {
     fn num_words(&self) -> usize;
     fn word(&self, index: usize) -> &[u8];
+    // for a word that ends at a turnaround (tile 0), the dawg's node of the
+    // tiles before it, reversed: gaddag["AC@"] points to dawg["CA"]
+    fn turnaround_target(&self, index: usize, states: &[State], dawg_start_state: u32) -> u32;
 }
 
 impl MachineWords for [bites::Bites] {
@@ -251,6 +260,16 @@ impl MachineWords for [bites::Bites] {
     fn word(&self, index: usize) -> &[u8] {
         &self[index]
     }
+
+    #[inline(always)]
+    fn turnaround_target(&self, index: usize, states: &[State], dawg_start_state: u32) -> u32 {
+        let word = &self[index];
+        dawg_target(
+            states,
+            dawg_start_state,
+            word[..word.len() - 1].iter().rev().copied(),
+        )
+    }
 }
 
 // a drowword: where its tiles start in the drowwords' tiles, how many there
@@ -260,6 +279,7 @@ struct Drowword {
     key: u64, // the first 8 tiles, big-endian, 0 past the last
     start: u32,
     len: u32,
+    turnaround_target: u32, // for one that ends at a turnaround
 }
 
 // the drowwords of a word list, their tiles one after another, so that none is
@@ -268,6 +288,8 @@ struct Drowword {
 struct Drowwords {
     tiles: Vec<u8>,
     words: Vec<Drowword>,
+    path: Vec<u32>, // the dawg's nodes along path_tiles: the start, then each one's
+    path_tiles: Vec<u8>,
 }
 
 impl MachineWords for Drowwords {
@@ -281,12 +303,17 @@ impl MachineWords for Drowwords {
         let word = self.words[index];
         &self.tiles[word.start as usize..(word.start + word.len) as usize]
     }
+
+    #[inline(always)]
+    fn turnaround_target(&self, index: usize, _: &[State], _: u32) -> u32 {
+        self.words[index].turnaround_target
+    }
 }
 
 impl Drowwords {
     // the drowword of the tiles just pushed, from start on
     #[inline(always)]
-    fn end_word(&mut self, start: usize) {
+    fn end_word(&mut self, start: usize, turnaround_target: u32) {
         let tiles = &self.tiles[start..];
         let mut key = [0u8; 8];
         let num_key_tiles = tiles.len().min(key.len());
@@ -295,6 +322,7 @@ impl Drowwords {
             key: u64::from_be_bytes(key),
             start: start as u32,
             len: tiles.len() as u32,
+            turnaround_target,
         });
     }
 
@@ -312,11 +340,21 @@ impl Drowwords {
     }
 }
 
-// machine_drowwords, the builder's, emptied here
+// machine_drowwords, the builder's, emptied here; each turnaround's target in
+// the dawg made of machine_words (states, from dawg_start_state) is found from
+// the nodes of the prefix this word shares with the last one walked
 #[inline]
-fn gen_machine_drowwords(machine_words: &[bites::Bites], machine_drowwords: &mut Drowwords) {
+fn gen_machine_drowwords(
+    machine_words: &[bites::Bites],
+    states: &[State],
+    dawg_start_state: u32,
+    machine_drowwords: &mut Drowwords,
+) {
     machine_drowwords.tiles.clear();
     machine_drowwords.words.clear();
+    machine_drowwords.path.clear();
+    machine_drowwords.path.push(dawg_start_state);
+    machine_drowwords.path_tiles.clear();
     for machine_word_index in 0..machine_words.len() {
         let this_word = &machine_words[machine_word_index];
         let this_word_len = this_word.len();
@@ -335,18 +373,36 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites], machine_drowwords: &mut
         machine_drowwords
             .tiles
             .extend(this_word.iter().rev().copied());
-        machine_drowwords.end_word(start);
+        machine_drowwords.end_word(start, 0);
         let num_prefixes = this_word_len - prefix_len;
+        if num_prefixes >= 2 {
+            // the walk keeps the prefix it shares with this word, and goes on
+            // to the prefix one tile short of it
+            let Drowwords {
+                path, path_tiles, ..
+            } = machine_drowwords;
+            let mut num_kept = 0;
+            let max_kept = path_tiles.len().min(this_word_len - 1);
+            while num_kept < max_kept && path_tiles[num_kept] == this_word[num_kept] {
+                num_kept += 1;
+            }
+            path.truncate(num_kept + 1);
+            path_tiles.truncate(num_kept);
+            for &tile in &this_word[num_kept..this_word_len - 1] {
+                let p = *path.last().unwrap();
+                path.push(dawg_target(states, p, std::iter::once(tile)));
+                path_tiles.push(tile);
+            }
+        }
         for drow_prefix_len in 1..num_prefixes {
             let start = machine_drowwords.tiles.len();
-            machine_drowwords.tiles.extend(
-                this_word[..this_word_len - drow_prefix_len]
-                    .iter()
-                    .rev()
-                    .copied(),
-            );
+            let target_len = this_word_len - drow_prefix_len;
+            machine_drowwords
+                .tiles
+                .extend(this_word[..target_len].iter().rev().copied());
             machine_drowwords.tiles.push(0); // the '@'
-            machine_drowwords.end_word(start);
+            let turnaround_target = machine_drowwords.path[target_len];
+            machine_drowwords.end_word(start, turnaround_target);
         }
     }
     machine_drowwords.sort();
@@ -1379,7 +1435,12 @@ impl Builder {
         let gaddag_start_state = match build_content {
             BuildContent::DawgOnly => 0,
             BuildContent::Gaddawg => {
-                gen_machine_drowwords(machine_words, machine_drowwords);
+                gen_machine_drowwords(
+                    machine_words,
+                    state_maker.states,
+                    dawg_start_state,
+                    machine_drowwords,
+                );
                 state_maker.make_dawg(
                     &mut transition_stack,
                     machine_drowwords,
