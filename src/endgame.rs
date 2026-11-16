@@ -2115,6 +2115,17 @@ impl KeptTable {
     }
 }
 
+// a helper thread's solver between its searches: all of it but what it
+// borrows, its listener, and its own helpers, so that a thread can be handed
+// it (EndgameSolver::into_helper, EndgameSolver::of_helper)
+struct Helper<L: kwg::Node, G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> {
+    klv: Box<klv::Klv<L>>,
+    board_tiles: Vec<u8>,
+    racks: [Vec<u8>; 2],
+    work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
+    kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>,
+}
+
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
@@ -2140,6 +2151,7 @@ pub struct EndgameSolver<
     scoreless: [u8; 2], // the passes and the zeros before the position to solve
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
     progress: Option<ProgressFn>, // its listener, apart from the buffer
+    helpers: Vec<Option<Helper<L, G, JUMPS, ANY_SIDE>>>, // each lane's, kept from pass to pass
     kept_sub: Option<Box<Self>>,  // the bag searches' solver, kept from call to call
     kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // and their generator
 }
@@ -2199,6 +2211,7 @@ impl<
             scoreless: [0, 0],
             work_buffer: WorkBuffer::new(movegen, run_letter_bits),
             progress: None,
+            helpers: Vec::new(),
             kept_sub: None,
             kept_mg: None,
         })
@@ -2215,6 +2228,56 @@ impl<
         self.scoreless = [0, 0];
         self.progress = None;
         self.work_buffer.renew();
+    }
+
+    // the solver a helper thread keeps between its searches, taken apart
+    #[inline(always)]
+    fn into_helper(self) -> Helper<L, G, JUMPS, ANY_SIDE> {
+        Helper {
+            klv: self.klv,
+            board_tiles: self.board_tiles,
+            racks: self.racks,
+            work_buffer: self.work_buffer,
+            kept_mg: self.kept_mg,
+        }
+    }
+
+    // a helper thread's kept solver, made whole again with what it borrows and
+    // renewed for its next search, or one just made
+    #[inline]
+    fn of_helper(
+        game_config: &'a game_config::GameConfig,
+        kwg: &'a kwg::Kwg<N>,
+        arm_tables: &'a anagrams::ArmTables,
+        run_letters: &kwg::RunLetters,
+        helper: Option<Helper<L, G, JUMPS, ANY_SIDE>>,
+    ) -> error::Returns<Self> {
+        let Some(helper) = helper else {
+            return Self::with_generator(
+                game_config,
+                kwg,
+                arm_tables,
+                run_letters.clone(),
+                movegen::KurniaMoveGenerator::new_in(game_config),
+            );
+        };
+        let mut own = Self {
+            game_config,
+            kwg,
+            arm_tables,
+            run_letters: run_letters.clone(),
+            klv: helper.klv,
+            board_tiles: helper.board_tiles,
+            racks: helper.racks,
+            scoreless: [0, 0],
+            work_buffer: helper.work_buffer,
+            progress: None,
+            helpers: Vec::new(),
+            kept_sub: None,
+            kept_mg: helper.kept_mg,
+        };
+        own.renew();
+        Ok(own)
     }
 
     // the solver of this one's bag searches, made at the first and kept for
@@ -5521,6 +5584,7 @@ impl<
             let stopped = if threads > 1 {
                 Self::value_on_threads(
                     sub,
+                    klv,
                     &mut *mg,
                     state,
                     PegBagRoot {
@@ -5635,8 +5699,10 @@ impl<
     // sharing what they value below the moves (state.searched). Whether a limit
     // stopped the pass; the moves it valued in every split then go first in the
     // order, so a solve resuming the pass goes on after them
+    #[allow(clippy::too_many_arguments)]
     fn value_on_threads<At: Fn(&[u8], &[u8]) -> InBag + Sync>(
         sub: &mut Self,
+        klv: &klv::Klv<L>,
         mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         state: &mut PegBagState,
         root: PegBagRoot<'_, At>,
@@ -5804,21 +5870,18 @@ impl<
         kept.resize_with(threads - 1, || None);
         let mut pools = std::mem::take(&mut state.lanes);
         pools.resize_with(threads - 1, LanePool::new);
-        let (shares, kept, pools) = std::thread::scope(|s| {
-            let handles = (kept.into_iter().zip(pools))
-                .map(|(table, lanes)| {
+        // and its solver and generator, made at its first pass and kept
+        let mut helpers = std::mem::take(&mut sub.helpers);
+        helpers.resize_with(threads - 1, || None);
+        let (shares, kept, pools, helpers) = std::thread::scope(|s| {
+            let handles = (kept.into_iter().zip(pools).zip(helpers))
+                .map(|((table, lanes), helper)| {
                     let work = &work;
                     s.spawn(move || {
                         let mut own =
-                            match EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
-                                gc,
-                                kwg,
-                                arm_tables,
-                                run_letters.clone(),
-                                movegen::KurniaMoveGenerator::new_in(gc),
-                            ) {
+                            match Self::of_helper(gc, kwg, arm_tables, run_letters, helper) {
                                 Ok(own) => own,
-                                Err(e) => return (Err(e), table, lanes),
+                                Err(e) => return (Err(e), table, lanes, None),
                             };
                         if let Some(table) = table {
                             // made by a solver of this game and lexicon, so
@@ -5829,61 +5892,61 @@ impl<
                         if !LEAN {
                             own.pool_lanes_as(deal);
                         }
-                        let mut mg = movegen::KurniaMoveGenerator::new_in(gc);
-                        let share = klv::Klv::<L>::empty().and_then(|klv| {
-                            let limits = BagLimits::on_the_clock(on_one_clock);
-                            let mut search = BagSearch {
-                                gc,
-                                kwg,
-                                arm_tables,
-                                klv: &klv,
-                                sub: &mut own,
-                                mg: &mut mg,
-                                valued,
-                                limits: &limits,
-                                model,
-                                exact: true,
-                                hand_overs,
-                                hand_over: None,
-                                ply: 0,
-                            };
-                            work(&mut search, &limits)
-                        });
+                        let mut mg = own.take_mg();
+                        let limits = BagLimits::on_the_clock(on_one_clock);
+                        let mut search = BagSearch {
+                            gc,
+                            kwg,
+                            arm_tables,
+                            klv,
+                            sub: &mut own,
+                            mg: &mut mg,
+                            valued,
+                            limits: &limits,
+                            model,
+                            exact: true,
+                            hand_overs,
+                            hand_over: None,
+                            ply: 0,
+                        };
+                        let share = work(&mut search, &limits);
+                        own.kept_mg = Some(mg);
                         let lanes = std::mem::take(&mut own.work_buffer.lane_pool);
-                        (share, Some(own.take_table()), lanes)
+                        let table = own.take_table();
+                        (share, Some(table), lanes, Some(own.into_helper()))
                     })
                 })
                 .collect::<Vec<_>>();
-            let klv = klv::Klv::<L>::empty();
-            let mine = klv.and_then(|klv| {
-                let mut search = BagSearch {
-                    gc,
-                    kwg,
-                    arm_tables,
-                    klv: &klv,
-                    sub: &mut *sub,
-                    mg,
-                    valued,
-                    limits,
-                    model,
-                    exact: true,
-                    hand_overs,
-                    hand_over: None,
-                    ply: 0,
-                };
-                work(&mut search, limits)
-            });
-            let (mut shares, mut kept, mut pools) = (vec![mine], Vec::new(), Vec::new());
+            let mut search = BagSearch {
+                gc,
+                kwg,
+                arm_tables,
+                klv,
+                sub: &mut *sub,
+                mg,
+                valued,
+                limits,
+                model,
+                exact: true,
+                hand_overs,
+                hand_over: None,
+                ply: 0,
+            };
+            let mine = work(&mut search, limits);
+            let (mut shares, mut kept, mut pools, mut helpers) =
+                (vec![mine], Vec::new(), Vec::new(), Vec::new());
             for handle in handles {
-                let (share, table, lanes) = handle.join().unwrap();
+                let (share, table, lanes, helper) = handle.join().unwrap();
                 shares.push(share);
                 kept.push(table);
                 pools.push(lanes);
+                helpers.push(helper);
             }
-            (shares, kept, pools)
+            (shares, kept, pools, helpers)
         });
         state.tables = kept;
         state.lanes = pools;
+        sub.helpers = helpers;
         if refused.load(Relaxed) {
             limits.refused.set(true);
         }
