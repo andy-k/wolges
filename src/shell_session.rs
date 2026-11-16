@@ -261,6 +261,7 @@ pub struct Session {
     infer_generator: movegen::KurniaMoveGenerator,
     play_scorer: play_scorer::PlayScorer,
     sim: Option<Sim>, // of the position shown; any change to the game ends it
+    sim_generator: Option<movegen::KurniaMoveGenerator>, // an ended sim's, for the next
     seats: [Seat; 2],
     racks_given: [bool; 2], // by seat, whether its current rack is given
     names: [Option<(String, String)>; 2], // a seat's nickname and full name
@@ -467,6 +468,7 @@ impl Session {
             infer_generator: movegen::KurniaMoveGenerator::new(game_config),
             play_scorer: play_scorer::PlayScorer::new(),
             sim: None,
+            sim_generator: None,
             seats: [Seat::Human; 2],
             racks_given: [false; 2],
             names: Default::default(),
@@ -1402,7 +1404,7 @@ impl Session {
                         };
                         self.sim_show(n)?;
                     }
-                    Some("stop") if args.len() == 1 => self.sim = None,
+                    Some("stop") if args.len() == 1 => self.end_sim(),
                     Some(iterations) if args.len() == 1 => {
                         let iterations = iterations.parse::<u64>().map_err(|_| USAGE)?;
                         self.sim_run(iterations)?;
@@ -1414,7 +1416,7 @@ impl Session {
             _ => return Err("no such command, help for the commands".into()),
         };
         self.log.push(logged);
-        self.sim = None;
+        self.end_sim();
         Ok(())
     }
 
@@ -1425,6 +1427,18 @@ impl Session {
             .or_insert_with(|| kwg.run_letters());
         self.move_generator.reset_for_another_kwg();
         self.infer_generator.reset_for_another_kwg();
+        // a sim of the old graph ends, its generator made ready for the new
+        self.end_sim();
+        if let Some(sim_generator) = &mut self.sim_generator {
+            sim_generator.reset_for_another_kwg();
+        }
+    }
+
+    // the sim ended, its generator kept for the next (sim_generator)
+    fn end_sim(&mut self) {
+        if let Some(sim) = self.sim.take() {
+            self.sim_generator = Some(sim.move_generator);
+        }
     }
 
     // play by these rules from here on: the game ends (its tiles were the old
@@ -1440,6 +1454,9 @@ impl Session {
         self.state = game_state::GameState::new(game_config);
         self.move_generator = movegen::KurniaMoveGenerator::new(game_config);
         self.infer_generator = movegen::KurniaMoveGenerator::new(game_config);
+        // a sim of the old rules ends, and its generator, theirs, goes
+        self.sim = None;
+        self.sim_generator = None;
         self.arm_tables_built.clear();
         self.endgame_solvers.clear();
         self.infer_tables = None;
@@ -2328,7 +2345,8 @@ impl Session {
             let kwg = self.kwg()?;
             let arm_tables = self.arm_tables()?;
             let leaves = self.kept_leaves()?;
-            let mut move_generator = movegen::KurniaMoveGenerator::new(self.game_config);
+            let mut move_generator = (self.sim_generator.take())
+                .unwrap_or_else(|| movegen::KurniaMoveGenerator::new(self.game_config));
             move_picker::gen_simmer_candidates(
                 &mut move_filter::GenMoves::Unfiltered,
                 &mut move_generator,
@@ -2436,7 +2454,7 @@ impl Session {
                 let stream = sim.stream_of[index];
                 if !sim.simmer.readmit_with_history(stream) {
                     if begun {
-                        self.sim = None;
+                        self.end_sim();
                     }
                     return Err("already a candidate".into());
                 }
