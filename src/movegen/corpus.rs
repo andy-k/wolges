@@ -1,19 +1,12 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-// a frozen corpus of generations on the tests' own word list: boards empty,
-// sparse, dense, and closed, and the boards of games played out turn by turn on
-// generators kept across all of them; racks of no blank, one, and two, of
-// repeated letters, and short; with no leaves and with some; a pass only when
-// forced and as a candidate; exchanges allowed and used up. Every arm (the
-// tables keyed by nibbles, by their layout, the lean arm with its table and
-// with none, the wasm's generator) asked every way (all, the best few, raw, on
-// some lanes, the endgame's walk by runs, the async lean arm) generates each
-// case's moves the same, whole and in order, and the corpus is what it was
-// frozen as
+// a frozen corpus of generations on the tests' own word list: each pick, one
+// case's moves (on a board given or reached by a game played out) asked of an
+// arm one way, generates them as a new generator of the first arm does, and
+// that list is what it was frozen as
 
 use super::tests::{
-    LONG_RACKS, SWEEP_RACKS, SWEEP_WORDS, parse_test_rack, sweep_kwg_covering, test_kad,
-    uneven_game_config,
+    SWEEP_RACKS, SWEEP_WORDS, parse_test_rack, sweep_kwg_covering, test_kad, uneven_game_config,
 };
 use super::*;
 use crate::{anagrams, display, game_config, klv, kwg};
@@ -79,13 +72,65 @@ fn on_lanes(lane: Option<(bool, i8)>, rows: u128, cols: u128) -> bool {
 
 // the moves of a list, as sets: each move with no equity, sorted
 #[inline]
-fn set_of<'a>(list: impl Iterator<Item = &'a Listed>, places_only: bool) -> Vec<&'a str> {
+fn set_of<'a>(list: impl Iterator<Item = &'a ValuedMove>, places_only: bool) -> Vec<&'a Play> {
     let mut set = list
-        .filter(|l| !places_only || l.lane.is_some())
-        .map(|l| &l.play[..])
+        .map(|m| &m.play)
+        .filter(|p| !places_only || matches!(p, Play::Place { .. }))
         .collect::<Vec<_>>();
-    set.sort_unstable();
+    set.sort_unstable_by(|a, b| cmp_play(a, b));
     set
+}
+
+#[inline]
+fn lane_of(play: &Play) -> Option<(bool, i8)> {
+    match play {
+        Play::Place { down, lane, .. } => Some((*down, *lane)),
+        Play::Exchange { .. } => None,
+    }
+}
+
+// the lists alike, each move with its equity, in order; listed when not
+#[inline]
+fn assert_same<N: kwg::Node, L: kwg::Node>(
+    got: &[ValuedMove],
+    want: &[ValuedMove],
+    board_snapshot: &BoardSnapshot<'_, N, L>,
+    at: &dyn Fn() -> String,
+) {
+    if got.len() != want.len()
+        || got
+            .iter()
+            .zip(want)
+            .any(|(g, w)| g.equity != w.equity || g.play != w.play)
+    {
+        let at = at();
+        assert_eq!(
+            listed(got, board_snapshot),
+            listed(want, board_snapshot),
+            "{at}"
+        );
+        panic!("{at}: alike as listed, not as moves");
+    }
+}
+
+// the sets alike; listed when not
+#[inline]
+fn assert_same_set<N: kwg::Node, L: kwg::Node>(
+    got: &[&Play],
+    want: &[&Play],
+    board_snapshot: &BoardSnapshot<'_, N, L>,
+    at: &dyn Fn() -> String,
+) {
+    if got != want {
+        let at = at();
+        let text = |set: &[&Play]| {
+            set.iter()
+                .map(|p| format!("{}", p.fmt(board_snapshot)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(text(got), text(want), "{at}");
+        panic!("{at}: alike as listed, not as moves");
+    }
 }
 
 struct Ask<'a> {
@@ -95,6 +140,7 @@ struct Ask<'a> {
     masks: &'a [(u128, u128)],
     run_letter_bits: &'a [u64],
     at: &'a str,
+    way: &'a str,
 }
 
 // one arm's generator asked every way for a case's moves, each set against
@@ -105,7 +151,7 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
     call: Call,
     board_snapshot: &BoardSnapshot<'_, N, L>,
     ask: &Ask<'_>,
-    expected: &[Listed],
+    expected: &[ValuedMove],
 ) {
     let at = ask.at;
     let params = |max_gen: usize| GenMovesParams {
@@ -116,116 +162,142 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
         pass_policy: ask.pass_policy,
         dynamic_leaves: None,
     };
-    let generate = |g: &mut KurniaMoveGenerator<G, JUMPS, ANY_SIDE>, max_gen: usize| {
-        match call {
-            Call::Tables => g.gen_moves_unfiltered(&params(max_gen)),
-            Call::Lean => g.gen_moves_unfiltered_lean(&params(max_gen)),
-        }
-        listed(&g.plays, board_snapshot)
+    let generate = |g: &mut KurniaMoveGenerator<G, JUMPS, ANY_SIDE>, max_gen: usize| match call {
+        Call::Tables => g.gen_moves_unfiltered(&params(max_gen)),
+        Call::Lean => g.gen_moves_unfiltered_lean(&params(max_gen)),
     };
+    let asked = |way: &str| ask.way == way || ask.way == "every";
     // all, then the best few, each the head of all
-    assert_eq!(generate(generator, usize::MAX), expected, "{at}, all");
-    for top in TOPS {
-        assert_eq!(
-            generate(generator, top),
-            expected[..top.min(expected.len())],
-            "{at}, the best {top}"
+    if asked("all") {
+        generate(generator, usize::MAX);
+        assert_same(&generator.plays, expected, board_snapshot, &|| {
+            format!("{at}, all")
+        });
+    }
+    for top in TOPS
+        .into_iter()
+        .filter(|top| asked(&format!("the best {top}")))
+    {
+        generate(generator, top);
+        assert_same(
+            &generator.plays,
+            &expected[..top.min(expected.len())],
+            board_snapshot,
+            &|| format!("{at}, the best {top}"),
         );
     }
     // raw: every move, unsorted and with no equity
-    match call {
-        Call::Tables => generator.gen_moves_raw_all_unsorted(
+    if asked("raw") {
+        match call {
+            Call::Tables => generator.gen_moves_raw_all_unsorted(
+                board_snapshot,
+                ask.rack,
+                ask.num_exchanges_by_this_player,
+                ask.pass_policy,
+            ),
+            Call::Lean => generator.gen_moves_raw_all_unsorted_lean(
+                board_snapshot,
+                ask.rack,
+                ask.num_exchanges_by_this_player,
+                ask.pass_policy,
+            ),
+        }
+        assert_same_set(
+            &set_of(generator.plays.iter(), false),
+            &set_of(expected.iter(), false),
             board_snapshot,
-            ask.rack,
-            ask.num_exchanges_by_this_player,
-            ask.pass_policy,
-        ),
-        Call::Lean => generator.gen_moves_raw_all_unsorted_lean(
-            board_snapshot,
-            ask.rack,
-            ask.num_exchanges_by_this_player,
-            ask.pass_policy,
-        ),
+            &|| format!("{at}, raw"),
+        );
     }
-    assert_eq!(
-        set_of(listed(&generator.plays, board_snapshot).iter(), false),
-        set_of(expected.iter(), false),
-        "{at}, raw"
-    );
     // some lanes alone, sorted and raw, and the endgame's walk by runs there
     for &(rows, cols) in ask.masks {
+        let lanes = format!("{rows:#x} {cols:#x}");
         let on = expected
             .iter()
-            .filter(|l| on_lanes(l.lane, rows, cols))
+            .filter(|m| on_lanes(lane_of(&m.play), rows, cols))
             .cloned()
             .collect::<Vec<_>>();
-        match call {
-            Call::Tables => {
-                generator.gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols);
-            }
-            Call::Lean => {
-                generator.gen_moves_unfiltered_lanes_lean(&params(usize::MAX), rows, cols);
-            }
-        }
         // where the lanes hold no move, a pass only when forced is forced
         let forced = on.is_empty() && matches!(ask.pass_policy, PassPolicy::OnlyWhenForced);
-        let on_lanes = listed(&generator.plays, board_snapshot);
-        if forced {
-            assert_eq!(
-                on_lanes.iter().map(|l| &l.play[..]).collect::<Vec<_>>(),
-                ["Pass"],
-                "{at}, lanes {rows:#x} {cols:#x}, forced"
-            );
-        } else {
-            assert_eq!(on_lanes, on, "{at}, lanes {rows:#x} {cols:#x}");
+        let passed = |g: &KurniaMoveGenerator<G, JUMPS, ANY_SIDE>| {
+            listed(&g.plays, board_snapshot)
+                .into_iter()
+                .map(|l| l.play)
+                .collect::<Vec<_>>()
+        };
+        if asked(&format!("lanes {lanes}")) {
+            match call {
+                Call::Tables => {
+                    generator.gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols);
+                }
+                Call::Lean => {
+                    generator.gen_moves_unfiltered_lanes_lean(&params(usize::MAX), rows, cols);
+                }
+            }
+            if forced {
+                assert_eq!(
+                    passed(generator),
+                    ["Pass"],
+                    "{at}, lanes {rows:#x} {cols:#x}, forced"
+                );
+            } else {
+                assert_same(&generator.plays, &on, board_snapshot, &|| {
+                    format!("{at}, lanes {rows:#x} {cols:#x}")
+                });
+            }
         }
-        match call {
-            Call::Tables => generator.gen_moves_raw_lanes_unsorted(
+        if asked(&format!("raw lanes {lanes}")) {
+            match call {
+                Call::Tables => generator.gen_moves_raw_lanes_unsorted(
+                    board_snapshot,
+                    ask.rack,
+                    ask.num_exchanges_by_this_player,
+                    ask.pass_policy,
+                    rows,
+                    cols,
+                ),
+                Call::Lean => generator.gen_moves_raw_lanes_unsorted_lean(
+                    board_snapshot,
+                    ask.rack,
+                    ask.num_exchanges_by_this_player,
+                    ask.pass_policy,
+                    rows,
+                    cols,
+                ),
+            }
+            if forced {
+                assert_eq!(
+                    passed(generator),
+                    ["Pass"],
+                    "{at}, raw lanes {rows:#x} {cols:#x}, forced"
+                );
+            } else {
+                assert_same_set(
+                    &set_of(generator.plays.iter(), false),
+                    &set_of(on.iter(), false),
+                    board_snapshot,
+                    &|| format!("{at}, raw lanes {rows:#x} {cols:#x}"),
+                );
+            }
+        }
+        if asked(&format!("by runs {lanes}")) {
+            generator.gen_moves_raw_lanes_unsorted_by_runs(
+                ask.run_letter_bits,
                 board_snapshot,
                 ask.rack,
-                ask.num_exchanges_by_this_player,
-                ask.pass_policy,
                 rows,
                 cols,
-            ),
-            Call::Lean => generator.gen_moves_raw_lanes_unsorted_lean(
+            );
+            assert_same_set(
+                &set_of(generator.plays.iter(), true),
+                &set_of(on.iter(), true),
                 board_snapshot,
-                ask.rack,
-                ask.num_exchanges_by_this_player,
-                ask.pass_policy,
-                rows,
-                cols,
-            ),
-        }
-        let raw = listed(&generator.plays, board_snapshot);
-        if forced {
-            assert_eq!(
-                set_of(raw.iter(), false),
-                ["Pass"],
-                "{at}, raw lanes {rows:#x} {cols:#x}, forced"
-            );
-        } else {
-            assert_eq!(
-                set_of(raw.iter(), false),
-                set_of(on.iter(), false),
-                "{at}, raw lanes {rows:#x} {cols:#x}"
+                &|| format!("{at}, by runs {rows:#x} {cols:#x}"),
             );
         }
-        generator.gen_moves_raw_lanes_unsorted_by_runs(
-            ask.run_letter_bits,
-            board_snapshot,
-            ask.rack,
-            rows,
-            cols,
-        );
-        assert_eq!(
-            set_of(listed(&generator.plays, board_snapshot).iter(), true),
-            set_of(on.iter(), true),
-            "{at}, by runs {rows:#x} {cols:#x}"
-        );
     }
     // the async lean arm's
-    if call == Call::Lean {
+    if call == Call::Lean && asked("async") {
         let params = params(usize::MAX);
         {
             let mut fut = std::pin::pin!(generator.gen_moves_filtered_async_lean(
@@ -238,11 +310,9 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
             while fut.as_mut().poll(&mut cx).is_pending() {}
         }
-        assert_eq!(
-            listed(&generator.plays, board_snapshot),
-            expected,
-            "{at}, async"
-        );
+        assert_same(&generator.plays, expected, board_snapshot, &|| {
+            format!("{at}, async")
+        });
     }
 }
 
@@ -295,6 +365,15 @@ struct Config<'a> {
     bag: &'a str,
 }
 
+// a case's moves, by its name, asked of an arm (by its name, ending " on the
+// wasm's" for that generator) one way, every way, or none (the frozen list
+// alone)
+struct Pick {
+    case: &'static str,
+    arm: &'static str,
+    way: &'static str,
+}
+
 // the generators kept across a config's whole corpus, one an arm, and the
 // wasm's for the lean arms where its board fits it
 struct Kept {
@@ -303,7 +382,7 @@ struct Kept {
 }
 
 #[inline]
-fn run_config(config: &Config<'_>, out: &mut String) {
+fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
     let gc = &config.gc;
     let kwg = match gc.game_rules() {
         game_config::GameRules::Classic => sweep_kwg_covering(gc),
@@ -387,9 +466,15 @@ fn run_config(config: &Config<'_>, out: &mut String) {
         for fen in config.boards {
             let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
             for rack in config.racks {
+                let case = format!("{} {klv_name} {fen} {rack}", config.name);
+                if !picks.iter().any(|p| p.case.starts_with(&case)) {
+                    continue;
+                }
                 let rack_tiles = parse_test_rack(gc.alphabet(), rack);
                 run_case(
                     config,
+                    picks,
+                    false,
                     &kwg,
                     klv,
                     &arms,
@@ -398,12 +483,16 @@ fn run_config(config: &Config<'_>, out: &mut String) {
                     &rack_tiles,
                     &masks,
                     &run_letter_bits,
-                    &format!("{} {klv_name} {fen} {rack}", config.name),
+                    &case,
                     out,
                 );
             }
         }
         // a game played out from the bag, the board changing each turn
+        let game = format!("{} {klv_name} game ", config.name);
+        if !picks.iter().any(|p| p.case.starts_with(&game)) {
+            continue;
+        }
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         let mut bag = parse_test_rack(gc.alphabet(), config.bag);
         bag.reverse();
@@ -421,6 +510,8 @@ fn run_config(config: &Config<'_>, out: &mut String) {
                 .collect::<String>();
             let best = run_case(
                 config,
+                picks,
+                true,
                 &kwg,
                 klv,
                 &arms,
@@ -464,6 +555,8 @@ fn run_config(config: &Config<'_>, out: &mut String) {
 #[allow(clippy::too_many_arguments)]
 fn run_case<'a>(
     config: &Config<'_>,
+    picks: &[Pick],
+    game: bool,
     kwg: &kwg::Kwg<kwg::Node24>,
     klv: &klv::Klv<kwg::Node24>,
     arms: &[Arm<'a>],
@@ -483,6 +576,11 @@ fn run_case<'a>(
     ] {
         for num_exchanges_by_this_player in [0, gc.exchanges_allowed_per_player()] {
             let at = format!("{case} {policy_name} {num_exchanges_by_this_player}");
+            let picked = picks.iter().filter(|p| p.case == at).collect::<Vec<_>>();
+            let leads = game && best.is_none();
+            if picked.is_empty() && !leads {
+                continue;
+            }
             let snapshot = |arm: &Arm<'a>| BoardSnapshot {
                 board_tiles,
                 game_config: gc,
@@ -506,7 +604,6 @@ fn run_case<'a>(
                 Call::Tables => fresh.gen_moves_unfiltered(&params),
                 Call::Lean => fresh.gen_moves_unfiltered_lean(&params),
             }
-            let expected = listed(&fresh.plays, &first);
             if best.is_none()
                 && matches!(pass_policy, PassPolicy::OnlyWhenForced)
                 && num_exchanges_by_this_player == 0
@@ -519,7 +616,19 @@ fn run_case<'a>(
                         .map(|p| p.play.clone()),
                 );
             }
-            for (i, arm) in arms.iter().enumerate() {
+            if picked.is_empty() {
+                continue;
+            }
+            let expected = listed(&fresh.plays, &first);
+            for pick in picked.iter().filter(|p| p.way != "none") {
+                let wasm_arm = pick.arm.strip_suffix(" on the wasm's");
+                let Some(i) = arms
+                    .iter()
+                    .position(|arm| arm.name == wasm_arm.unwrap_or(pick.arm))
+                else {
+                    panic!("{at}: no arm {}", pick.arm);
+                };
+                let arm = &arms[i];
                 let board_snapshot = snapshot(arm);
                 let ask = Ask {
                     rack,
@@ -527,21 +636,20 @@ fn run_case<'a>(
                     num_exchanges_by_this_player,
                     masks,
                     run_letter_bits,
-                    at: &format!("{at}, {}", arm.name),
+                    at: &format!("{at}, {}", pick.arm),
+                    way: pick.way,
                 };
-                check_arm(
-                    &mut kept.arms[i],
-                    arm.call,
-                    &board_snapshot,
-                    &ask,
-                    &expected,
-                );
-                if let Some(wasm) = &mut kept.wasm[i] {
-                    let ask = Ask {
-                        at: &format!("{at}, {} on the wasm's", arm.name),
-                        ..ask
-                    };
-                    check_arm(wasm, arm.call, &board_snapshot, &ask, &expected);
+                if wasm_arm.is_none() {
+                    check_arm(
+                        &mut kept.arms[i],
+                        arm.call,
+                        &board_snapshot,
+                        &ask,
+                        &fresh.plays,
+                    );
+                } else {
+                    let wasm = kept.wasm[i].as_mut().expect("the wasm's generator fits");
+                    check_arm(wasm, arm.call, &board_snapshot, &ask, &fresh.plays);
                 }
             }
             writeln!(
@@ -560,7 +668,7 @@ fn run_case<'a>(
 }
 
 #[inline]
-fn corpus_output() -> String {
+fn corpus_output(picks: &[Pick]) -> String {
     let fifteen = [
         "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
         "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
@@ -599,10 +707,10 @@ fn corpus_output() -> String {
             bag,
         },
         Config {
-            name: "hong kong",
-            gc: game_config::make_hong_kong_english_game_config(),
-            boards: &fifteen[..3],
-            racks: LONG_RACKS,
+            name: "punctured",
+            gc: game_config::make_punctured_english_game_config(),
+            boards: &["15/15/15/15/15/15/15/6CAT6/15/15/15/15/15/15/15"],
+            racks: &["AEINRST", "?EINRST"],
             bag,
         },
         Config {
@@ -615,16 +723,103 @@ fn corpus_output() -> String {
         Config {
             name: "jumbled",
             gc: game_config::make_jumbled_english_game_config(),
-            boards: &fifteen[..3],
+            boards: &[
+                fifteen[0],
+                "15/15/15/15/15/15/15/12A1A/15/15/15/15/15/15/15",
+            ],
             racks: &jumbled_racks,
             bag: jumbled_bag,
         },
     ];
     let mut out = String::new();
     for config in &configs {
-        run_config(config, &mut out);
+        run_config(config, picks, &mut out);
+    }
+    for pick in picks {
+        assert!(
+            out.contains(&format!("== {}: ", pick.case)),
+            "no case {}",
+            pick.case
+        );
     }
     out
+}
+
+#[inline]
+fn picks() -> [Pick; 12] {
+    [
+        // the first list: spans, bounds, and subracks
+        Pick {
+            case: "english no leaves 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15 AEINRST forced 0",
+            arm: "",
+            way: "none",
+        },
+        // a blank in the subracks
+        Pick {
+            case: "english no leaves 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15 ?EINRST forced 0",
+            arm: "",
+            way: "none",
+        },
+        // blanks on blanks
+        Pick {
+            case: "english no leaves 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15 ?ANTS?? forced 0",
+            arm: "",
+            way: "none",
+        },
+        // the last lanes
+        Pick {
+            case: "english no leaves CARE11/15/15/15/15/15/15/15/15/15/15/15/15/15/11CARE AEINRST forced 0",
+            arm: "",
+            way: "none",
+        },
+        // the wasm's lean walk on two columns
+        Pick {
+            case: "english no leaves 15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15 ?ANTS?? forced 0",
+            arm: "lean bare on the wasm's",
+            way: "lanes 0x0 0x240",
+        },
+        // jumbled arrangements
+        Pick {
+            case: "jumbled no leaves 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15 AEINRST forced 0",
+            arm: "",
+            way: "none",
+        },
+        // a jumbled opening
+        Pick {
+            case: "jumbled no leaves game turn 0 ACENRST forced 0",
+            arm: "",
+            way: "none",
+        },
+        // a word between holes, and the squares beside them
+        Pick {
+            case: "punctured no leaves 15/15/15/15/15/15/15/6CAT6/15/15/15/15/15/15/15 AEINRST forced 0",
+            arm: "",
+            way: "none",
+        },
+        Pick {
+            case: "punctured no leaves 15/15/15/15/15/15/15/6CAT6/15/15/15/15/15/15/15 ?EINRST forced 0",
+            arm: "lean",
+            way: "every",
+        },
+        // a square between two lone tiles at a lane's end
+        Pick {
+            case: "jumbled no leaves 15/15/15/15/15/15/15/12A1A/15/15/15/15/15/15/15 ?AT forced 0",
+            arm: "",
+            way: "none",
+        },
+        // the lean arm in a wide game
+        Pick {
+            case: "super no leaves game turn 3 AEIOSTT forced 0",
+            arm: "lean",
+            way: "every",
+        },
+        // the lean arm handed the turn, capped at one
+        Pick {
+            case: "uneven no leaves game turn 5 EINORST forced 0",
+            arm: "handed back",
+            way: "the best 1",
+        },
+    ]
 }
 
 // the baseline keeps each case's count and hash alone, a line a case in the
@@ -643,7 +838,7 @@ fn counts_and_hashes(full: &str) -> String {
 #[inline]
 #[test]
 fn every_arm_asked_every_way_generates_the_frozen_corpus() {
-    let full = corpus_output();
+    let full = corpus_output(&picks());
     let got = counts_and_hashes(&full);
     let want = include_str!("../movegen-corpus-baseline.txt");
     if got == want {
@@ -680,7 +875,7 @@ fn every_arm_asked_every_way_generates_the_frozen_corpus() {
 fn write_corpus_baseline() {
     std::fs::write(
         "src/movegen-corpus-baseline.txt",
-        counts_and_hashes(&corpus_output()),
+        counts_and_hashes(&corpus_output(&picks())),
     )
     .unwrap();
 }
