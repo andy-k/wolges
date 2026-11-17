@@ -410,6 +410,7 @@ pub struct Simmer<
     num_sim_iters: u64,
     num_sim_plies: usize,
     retired: Vec<Candidate>,
+    spare_objectives: Vec<Vec<f64>>, // emptied, for the next candidates
     iters_done: u64,
     next_stream_id: u64,
     win_pct_table: Option<&'a win_pct::WinPctTable>,
@@ -613,6 +614,7 @@ impl<
             num_sim_iters: params.num_sim_iters,
             num_sim_plies: params.num_sim_plies,
             retired: Vec::new(),
+            spare_objectives: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
             win_pct_table: params.win_pct_table,
@@ -645,10 +647,16 @@ impl<
         self.decision_seed = seed;
     }
 
+    // the last decision's candidates, those in, and those retired, gone; one a
+    // play in their place, each with the memory of a gone one's objectives
     #[inline(always)]
     fn take_candidates(&mut self, num_plays: usize) -> Vec<Candidate> {
         let mut candidates = std::mem::take(&mut self.candidates);
-        candidates.clear();
+        for candidate in candidates.drain(..).chain(self.retired.drain(..)) {
+            let mut objectives = candidate.objectives;
+            objectives.clear();
+            self.spare_objectives.push(objectives);
+        }
         candidates.reserve(num_plays);
         for idx in 0..num_plays {
             candidates.push(Candidate {
@@ -658,7 +666,7 @@ impl<
                 equity_stats: stats::Stats::new(),
                 win_rate_stats: stats::Stats::new(),
                 first_iter: 1,
-                objectives: Vec::new(),
+                objectives: self.spare_objectives.pop().unwrap_or_default(),
             });
         }
         candidates
@@ -702,7 +710,7 @@ impl<
             equity_stats: stats::Stats::new(),
             win_rate_stats: stats::Stats::new(),
             first_iter: self.iters_done + 1,
-            objectives: Vec::new(),
+            objectives: self.spare_objectives.pop().unwrap_or_default(),
         });
         stream_id
     }
