@@ -1386,7 +1386,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     t0: Option<Started>,              // the solve's start, for its time limit
     dur_movegen: std::time::Duration, // for progress, timed only while something listens
     movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
-    run_letter_bits: Option<Box<[u64]>>,
+    run_letter_bits: Option<std::sync::Arc<[u64]>>,
     board_tiles: Vec<u8>,  // the position searched, made and unmade in place
     racks: [Vec<u8>; 2],   // its racks, each sorted
     rack_scores: [i32; 2], // what its racks' tiles score
@@ -1443,7 +1443,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
 impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G, JUMPS, ANY_SIDE> {
     fn new(
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
-        run_letter_bits: Option<Box<[u64]>>,
+        run_letter_bits: Option<std::sync::Arc<[u64]>>,
     ) -> Self {
         let held_kept = 2 * (std::mem::size_of::<Candidate>() + std::mem::size_of::<u128>())
             + movegen.longest_lane();
@@ -2015,6 +2015,7 @@ pub struct EndgameSolver<
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
     arm_tables: &'a anagrams::ArmTables,
+    run_letters: kwg::RunLetters, // the graph's, for its sub-solvers
     klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
@@ -2032,6 +2033,7 @@ impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, L
             game_config,
             kwg,
             arm_tables,
+            kwg.run_letters(),
             movegen::KurniaMoveGenerator::new(game_config),
         )
     }
@@ -2047,24 +2049,29 @@ impl<
     const ANY_SIDE: bool,
 > EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>
 {
-    // as new, generating by the caller's move generator (the wasm's, in u32);
+    // as new, generating by the caller's move generator (the wasm's, in u32),
+    // with the run letters found where the graph loaded
+    // (kwg::Kwg::run_letters);
     // the game config must have passed supports(Op::Endgame) at init, as this
     // is made for each solve and each of a search's sub-solves
     pub fn with_generator(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
+        run_letters: kwg::RunLetters,
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     ) -> error::Returns<Self> {
         // the run letters, unless the tables are the lean arm's (rack lengths),
         // which reads no more than the word graph, and only for a graph whose
         // runs ascend, as a walk with them goes straight to a tile's node
-        let run_letter_bits = (arm_tables.rack_lengths().is_none() && kwg.runs_ascend())
-            .then(|| kwg.compute_letter_bits().letter_bits);
+        let run_letter_bits = (run_letters.of(kwg)?)
+            .filter(|_| arm_tables.rack_lengths().is_none())
+            .cloned();
         Ok(Self {
             game_config,
             kwg,
             arm_tables,
+            run_letters,
             klv: Box::new(klv::Klv::<L>::empty()?),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
@@ -2522,6 +2529,7 @@ impl<
             self.game_config,
             self.kwg,
             self.arm_tables,
+            self.run_letters.clone(),
             movegen::KurniaMoveGenerator::new_in(self.game_config),
         )
         .unwrap();
@@ -4600,11 +4608,13 @@ impl<
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
+        let run_letters = &self.run_letters;
 
         let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
             gc,
             kwg,
             arm_tables,
+            run_letters.clone(),
             movegen::KurniaMoveGenerator::new_in(gc),
         )?;
 
@@ -5133,6 +5143,7 @@ impl<
             gc,
             self.kwg,
             self.arm_tables,
+            self.run_letters.clone(),
             movegen::KurniaMoveGenerator::new_in(gc),
         )?;
         // the endgames keep what they learn in this solver's table, lent to the
@@ -5395,6 +5406,7 @@ impl<
         let gc = sub.game_config;
         let kwg = sub.kwg;
         let arm_tables = sub.arm_tables;
+        let run_letters = &sub.run_letters.clone();
         let deepens = limits.deepens();
         let base = state.next;
         let rest = state.order.len() - base;
@@ -5551,6 +5563,7 @@ impl<
                                 gc,
                                 kwg,
                                 arm_tables,
+                                run_letters.clone(),
                                 movegen::KurniaMoveGenerator::new_in(gc),
                             ) {
                                 Ok(own) => own,
@@ -5782,6 +5795,7 @@ impl<
             self.game_config,
             self.kwg,
             self.arm_tables,
+            self.run_letters.clone(),
             movegen::KurniaMoveGenerator::new_in(self.game_config),
         )?;
         // the endgames keep what they learn in this solver's table, lent to the
@@ -9705,6 +9719,7 @@ mod tests {
                 &gc,
                 &kwg,
                 &arm_tables,
+                kwg.run_letters(),
                 movegen::KurniaMoveGenerator::try_new(&gc).unwrap(),
             )
             .unwrap();
