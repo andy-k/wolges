@@ -45,8 +45,9 @@ fn snapshot<'a>(
 }
 
 // a game played greedily (the generator's best by static equity) for so many
-// turns from the deal this seed makes
+// turns from the deal this seed makes, on the caller's generator
 fn position(
+    mg: &mut movegen::KurniaMoveGenerator,
     gc: &game_config::GameConfig,
     kwg: &Kwg,
     klv: &Klv,
@@ -56,7 +57,6 @@ fn position(
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
     let mut gs = game_state::GameState::new(gc);
     gs.reset_and_draw_tiles(gc, &mut rng);
-    let mut mg = movegen::KurniaMoveGenerator::new(gc);
     let mut final_scores = vec![0; gc.num_players() as usize];
     for _ in 0..turns {
         mg.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
@@ -190,6 +190,8 @@ fn main() -> error::Returns<()> {
     let mut tables = infer::InferTables::new(&gc, &klv)?;
     let mut mg = movegen::KurniaMoveGenerator::new(&gc);
     let no_tables = &anagrams::ArmTables::None;
+    // one simmer for every position, prepared for each
+    let mut sim = simmer::Simmer::new(&gc)?;
     println!(
         "kwg {} klv {} candidates {num_candidates} iterations {iterations} plies {}",
         args[1], args[2], args[5]
@@ -197,7 +199,7 @@ fn main() -> error::Returns<()> {
     for spec in &args[6..] {
         let (seed, turns) = spec.split_once(':').ok_or("seed:turns")?;
         let (seed, turns) = (seed.parse::<u64>()?, turns.parse::<usize>()?);
-        let real = position(&gc, &kwg, &klv, seed, turns)?;
+        let real = position(&mut mg, &gc, &kwg, &klv, seed, turns)?;
         let turn = real.turn as usize;
         let rack = real.players[turn].rack.clone();
         println!();
@@ -236,7 +238,6 @@ fn main() -> error::Returns<()> {
             exact.push((reply, start.elapsed().as_secs_f64()));
         }
         let sgs = sim_state(&gc, &real);
-        let mut sim = simmer::Simmer::new(&gc)?;
         sim.prepare(&gc, &sgs, &simmer::SimChoices::new(plies, true, &[]));
         let pristine = sim.prepared_state().clone();
         // per candidate: objective, spread (points), win, reply equity (points)
