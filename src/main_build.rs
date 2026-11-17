@@ -153,27 +153,157 @@ fn leave_value(leave: &str, value: &str) -> error::Returns<f32> {
     }
 }
 
+// a leave and what its record says of it, with its first tiles as a number
+// that orders as they do and where its record starts in the input
+struct LeaveRecord<T> {
+    key: u64, // the first 8 tiles, big-endian, 0 past the last
+    leave: bites::Bites,
+    position: u64,
+    value: T,
+}
+
+// the first record, in the input's order, whose leave an earlier one had, of
+// these records sorted by leave and then by position
+#[inline]
+fn first_duplicate<T>(sorted: &[LeaveRecord<T>]) -> Option<u64> {
+    sorted
+        .windows(2)
+        .filter(|pair| pair[0].leave == pair[1].leave)
+        .map(|pair| pair[1].position)
+        .min()
+}
+
+// the error a duplicate record gives, read again from the input at its
+// position
+#[inline(never)]
+fn duplicate_error(input: &[u8], position: u64) -> error::BoxAnyError {
+    let mut record = csv::StringRecord::new();
+    let read = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(&input[position as usize..])
+        .read_record(&mut record);
+    match read {
+        Ok(true) => error::new(format!("duplicate record {}", &record[0])).into(),
+        _ => error::new(format!("duplicate record at byte {position}")).into(),
+    }
+}
+
+// the records sorted by leave and then by position
+#[inline(always)]
+fn sort_leave_records<T>(records: &mut [LeaveRecord<T>]) {
+    records.sort_unstable_by(|a, b| {
+        a.key
+            .cmp(&b.key)
+            .then_with(|| a.leave.cmp(&b.leave))
+            .then_with(|| a.position.cmp(&b.position))
+    });
+}
+
+// a leave table's leave,value records, each leave's tiles in ascending order,
+// value giving what is kept of each record: ascending, each leave once. The
+// first error in the input's order is the one given, a duplicate leave's among
+// them, as if each record were checked against those before it
+#[inline]
+fn read_leave_records<T>(
+    input: &[u8],
+    alph: &alphabet::Alphabet,
+    mut value: impl FnMut(&csv::StringRecord) -> error::Returns<T>,
+) -> error::Returns<Vec<(bites::Bites, T)>> {
+    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(alph);
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(input);
+    let mut records = Vec::<LeaveRecord<T>>::new();
+    let mut record = csv::StringRecord::new();
+    let mut v = Vec::new();
+    loop {
+        let read = (|| -> error::Returns<Option<LeaveRecord<T>>> {
+            if !csv_reader.read_record(&mut record)? {
+                return Ok(None);
+            }
+            if record.len() < 2 {
+                wolges::return_error!(format!(
+                    "{:?} is not a leave and a value",
+                    record.as_slice()
+                ));
+            }
+            alphabet_reader.set_word(&record[0], &mut v)?;
+            v.sort_unstable();
+            let mut key = [0u8; 8];
+            let num_key_tiles = v.len().min(key.len());
+            key[..num_key_tiles].copy_from_slice(&v[..num_key_tiles]);
+            Ok(Some(LeaveRecord {
+                key: u64::from_be_bytes(key),
+                leave: v[..].into(),
+                position: record.position().map_or(0, |position| position.byte()),
+                value: value(&record)?,
+            }))
+        })();
+        match read {
+            Ok(Some(leave_record)) => records.push(leave_record),
+            Ok(None) => break,
+            Err(e) => {
+                // a duplicate before this record is the first error
+                sort_leave_records(&mut records);
+                return Err(first_duplicate(&records)
+                    .map_or(e, |position| duplicate_error(input, position)));
+            }
+        }
+    }
+    sort_leave_records(&mut records);
+    if let Some(position) = first_duplicate(&records) {
+        return Err(duplicate_error(input, position));
+    }
+    Ok(records
+        .into_iter()
+        .map(|leave_record| (leave_record.leave, leave_record.value))
+        .collect())
+}
+
+// a leave table's graph and its values, the values written by write_value
+#[inline]
+fn write_leaves<T>(
+    leaves: &[(bites::Bites, T)],
+    build_layout: build::BuildLayout,
+    value_size: usize,
+    write_value: impl Fn(&T, &mut [u8]),
+) -> error::Returns<Vec<u8>> {
+    let mut sorted_machine_words = Vec::with_capacity(leaves.len());
+    sorted_machine_words.extend(leaves.iter().map(|(leave, _)| leave.clone()));
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build_layout,
+        build::BuildOrder::Sorted,
+        &sorted_machine_words,
+    )?;
+    drop(sorted_machine_words);
+    let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leaves.len() * value_size];
+    let mut w = 0;
+    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+    w += 4;
+    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
+    w += leaves_kwg.len();
+    bin[w..w + 4].copy_from_slice(&(leaves.len() as u32).to_le_bytes());
+    w += 4;
+    for (_, v) in leaves {
+        write_value(v, &mut bin[w..w + value_size]);
+        w += value_size;
+    }
+    assert_eq!(w, bin.len());
+    Ok(bin)
+}
+
 #[inline]
 fn build_leaves_scaled_i16<Readable: std::io::Read>(
-    f: Readable,
+    mut f: Readable,
     alph: alphabet::Alphabet,
     build_layout: build::BuildLayout,
     scale: f32,
 ) -> error::Returns<Vec<u8>> {
-    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
-    let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
-    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
-    let mut v = Vec::new();
-    for result in csv_reader.records() {
-        let record = result?;
-        if record.len() < 2 {
-            wolges::return_error!(format!(
-                "{:?} is not a leave and a value",
-                record.as_slice()
-            ));
-        }
-        alphabet_reader.set_word(&record[0], &mut v)?;
-        v.sort_unstable();
+    let mut input = Vec::new();
+    f.read_to_end(&mut input)?;
+    let leaves = read_leave_records(&input, &alph, |record| {
         let rounded_leave = (leave_value(&record[0], &record[1])? * scale).round();
         let int_leave = rounded_leave as i16;
         if (int_leave as f32 - rounded_leave).abs() != 0.0 {
@@ -191,100 +321,33 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
                 (int_leave as f32 - rounded_leave).abs(),
             ));
         }
-        if leaves_map.insert(v[..].into(), int_leave).is_some() {
-            wolges::return_error!(format!("duplicate record {}", &record[0]));
-        }
-    }
-    let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
-    sorted_machine_words.sort_unstable();
-    let leaves_kwg = build::build(
-        build::BuildContent::DawgOnly,
-        build_layout,
-        build::BuildOrder::Sorted,
-        &sorted_machine_words,
-    )?;
-    let leave_values = sorted_machine_words
-        .iter()
-        .map(|s| leaves_map[s])
-        .collect::<Box<_>>();
-    drop(sorted_machine_words);
-    drop(leaves_map);
-    let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
-    let mut w = 0;
-    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
-    w += 4;
-    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
-    w += leaves_kwg.len();
-    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
-    w += 4;
-    for v in &leave_values[..] {
-        bin[w..w + 2].copy_from_slice(&v.to_le_bytes());
-        w += 2;
-    }
-    assert_eq!(w, bin.len());
-    Ok(bin)
+        Ok(int_leave)
+    })?;
+    write_leaves(&leaves, build_layout, 2, |v, out| {
+        out.copy_from_slice(&v.to_le_bytes())
+    })
 }
 
+// leaves, ascending, each once
 #[inline]
 fn write_leaves_f32(
-    leaves_map: fash::MyHashMap<bites::Bites, f32>,
+    leaves: &[(bites::Bites, f32)],
     build_layout: build::BuildLayout,
 ) -> error::Returns<Vec<u8>> {
-    let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
-    sorted_machine_words.sort_unstable();
-    let leaves_kwg = build::build(
-        build::BuildContent::DawgOnly,
-        build_layout,
-        build::BuildOrder::Sorted,
-        &sorted_machine_words,
-    )?;
-    let leave_values = sorted_machine_words
-        .iter()
-        .map(|s| leaves_map[s])
-        .collect::<Box<_>>();
-    drop(sorted_machine_words);
-    drop(leaves_map);
-    let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
-    let mut w = 0;
-    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
-    w += 4;
-    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
-    w += leaves_kwg.len();
-    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
-    w += 4;
-    for v in &leave_values[..] {
-        bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
-        w += 4;
-    }
-    assert_eq!(w, bin.len());
-    Ok(bin)
+    write_leaves(leaves, build_layout, 4, |v, out| {
+        out.copy_from_slice(&v.to_le_bytes())
+    })
 }
 
+// a leave table's leaves, ascending, each once, with their values
 #[inline]
 fn read_leaves_f32<Readable: std::io::Read>(
-    f: Readable,
+    mut f: Readable,
     alph: &alphabet::Alphabet,
-) -> error::Returns<fash::MyHashMap<bites::Bites, f32>> {
-    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(alph);
-    let mut leaves_map = fash::MyHashMap::<bites::Bites, _>::default();
-    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
-    let mut v = Vec::new();
-    for result in csv_reader.records() {
-        let record = result?;
-        if record.len() < 2 {
-            wolges::return_error!(format!(
-                "{:?} is not a leave and a value",
-                record.as_slice()
-            ));
-        }
-        alphabet_reader.set_word(&record[0], &mut v)?;
-        v.sort_unstable();
-        let float_leave = leave_value(&record[0], &record[1])?;
-        if leaves_map.insert(v[..].into(), float_leave).is_some() {
-            wolges::return_error!(format!("duplicate record {}", &record[0]));
-        }
-    }
-    Ok(leaves_map)
+) -> error::Returns<Vec<(bites::Bites, f32)>> {
+    let mut input = Vec::new();
+    f.read_to_end(&mut input)?;
+    read_leave_records(&input, alph, |record| leave_value(&record[0], &record[1]))
 }
 
 #[inline]
@@ -691,7 +754,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             let alphabet = make_alphabet()?;
             let built = match args.klv {
                 KlvFormat::Two => write_leaves_f32(
-                    read_leaves_f32(&mut make_reader(&args.leaves)?, &alphabet)?,
+                    &read_leaves_f32(&mut make_reader(&args.leaves)?, &alphabet)?,
                     args.layout.build_layout(),
                 )?,
                 KlvFormat::One | KlvFormat::Sixteen => build_leaves_scaled_i16(
@@ -732,11 +795,11 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     })
                     .or_insert(value_a);
             }
-            let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
-            leaves_map.reserve(mixed.len());
-            for (leave, value) in mixed.drain() {
-                leaves_map.insert(leave, value as f32);
-            }
+            let mut leaves = mixed
+                .drain()
+                .map(|(leave, value)| (leave, value as f32))
+                .collect::<Vec<_>>();
+            leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             drop(mixed);
             let mut out = make_writer(&args.out)?;
             writeln!(
@@ -747,7 +810,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 num_b - in_both,
                 args.b,
             )?;
-            out.write_all(&write_leaves_f32(leaves_map, args.layout.build_layout())?)?;
+            out.write_all(&write_leaves_f32(&leaves, args.layout.build_layout())?)?;
             Ok(())
         }
         Task::Macondo(args) => {
@@ -802,9 +865,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         }
         Task::SortLeaves(args) => {
             let alphabet = make_alphabet()?;
-            let mut leaves = read_leaves_f32(&mut make_reader(&args.leaves)?, &alphabet)?
-                .drain()
-                .collect::<Box<_>>();
+            let mut leaves = read_leaves_f32(&mut make_reader(&args.leaves)?, &alphabet)?;
             match (args.len, args.val) {
                 (false, false) => {
                     leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -887,7 +948,7 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/CSW24.klv2",
         write_leaves_f32(
-            read_leaves_f32(
+            &read_leaves_f32(
                 Box::new(std::fs::File::open("lexsrc/CSW24.csv")?),
                 &alphabet::make_english_alphabet(),
             )?,
