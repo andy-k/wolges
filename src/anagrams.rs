@@ -669,7 +669,7 @@ impl Anagrams {
 pub struct RackLengths {
     layout: alphagram::KeyLayout,
     present: std::collections::HashSet<u128, std::hash::BuildHasherDefault<KeyHasher>>,
-    run_letters: kwg::RunLetters, // the graph's (Kwg::run_letters_if), if kept
+    run_letters: kwg::RunBits, // the graph's (Kwg::run_bits_if), if kept
 }
 
 impl RackLengths {
@@ -731,7 +731,7 @@ impl RackLengths {
         if !room {
             return Ok(None);
         }
-        let run_letters = g.run_letters_if(|bytes| ledger.take(bytes).is_some());
+        let run_letters = g.run_bits_if(|bytes| ledger.take(bytes).is_some());
         Ok(Some(Self {
             layout,
             present,
@@ -759,7 +759,7 @@ impl RackLengths {
 
     // the graph's run letters, kept or not, for its solvers to share
     #[inline(always)]
-    pub fn run_letters(&self) -> &kwg::RunLetters {
+    pub fn run_letters(&self) -> &kwg::RunBits {
         &self.run_letters
     }
 
@@ -767,7 +767,7 @@ impl RackLengths {
     #[inline(always)]
     fn bytes(&self) -> usize {
         table_bytes::<u128>(self.present.capacity())
-            + (self.run_letters.bits()).map_or(0, |bits| kwg::RunLetters::bytes_for(bits.len()))
+            + (self.run_letters.bits()).map_or(0, |bits| kwg::RunBits::bytes_for(bits.len()))
     }
 }
 

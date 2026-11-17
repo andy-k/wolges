@@ -2192,7 +2192,7 @@ pub struct EndgameSolver<
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
     arm_tables: &'a anagrams::ArmTables,
-    run_letters: kwg::RunLetters, // the graph's, for its sub-solvers
+    run_letters: kwg::RunLetters<'a>, // the graph's, for its sub-solvers
     klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
@@ -2213,7 +2213,7 @@ impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, L
         // the lean arm's tables hold the graph's run letters; else they are
         // found here, as this is made once for its graph
         let run_letters = match arm_tables.rack_lengths() {
-            Some(rack_lengths) => rack_lengths.run_letters().clone(),
+            Some(rack_lengths) => rack_lengths.run_letters().of(kwg)?,
             None => kwg.run_letters(),
         };
         Self::with_generator(
@@ -2245,7 +2245,7 @@ impl<
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
-        run_letters: kwg::RunLetters,
+        run_letters: kwg::RunLetters<'a>,
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     ) -> error::Returns<Self> {
         // the run letters, unless the tables are the lean arm's (rack lengths),
@@ -2304,7 +2304,7 @@ impl<
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
-        run_letters: &kwg::RunLetters,
+        run_letters: &kwg::RunLetters<'a>,
         helper: Option<Helper<L, G, JUMPS, ANY_SIDE>>,
     ) -> error::Returns<Self> {
         let Some(helper) = helper else {
@@ -2363,7 +2363,7 @@ impl<
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
-        run_letters: kwg::RunLetters,
+        run_letters: kwg::RunLetters<'a>,
         kept: KeptSolver<L, G, JUMPS, ANY_SIDE>,
     ) -> error::Returns<Self> {
         let made_with = [
