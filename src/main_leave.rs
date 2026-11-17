@@ -6535,8 +6535,6 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let finished_games = std::sync::atomic::AtomicU64::new(0);
     let tick = std::sync::atomic::AtomicU64::new(0);
 
-    let ln_ratio = (1.0f64 / 0.9 - 1.0).ln();
-
     let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
@@ -6581,10 +6579,14 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             -1 => 0.0,
                             _ => 0.5,
                         };
-                        let tab = table.get(lead, bag, my, opp) as f64;
-
-                        let exp_width = -(30.0 + (bag + my + opp) as f64) / ln_ratio;
-                        let sig = 1.0 / (1.0 + (-(lead as f64) / exp_width).exp());
+                        let sig = wolges::simmer::win_prob_unfinished(
+                            lead.saturating_mul(equity::SCALE),
+                            bag + my + opp,
+                        );
+                        let tab = match table.get_opt(lead, bag, my, opp) {
+                            Some(tab) => tab as f64,
+                            None => sig,
+                        };
                         bt += (tab - result) * (tab - result);
                         bs += (sig - result) * (sig - result);
                         n += 1;
