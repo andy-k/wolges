@@ -16288,6 +16288,17 @@ mod tests {
 
     #[inline]
     #[test]
+    fn jumbled_movegen_lets_both_blanks_be_one_letter_not_held() {
+        // SEATS: both blanks an S
+        assert!(
+            jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "??EAT")
+                .iter()
+                .any(|play| play.split(' ').nth(1).is_some_and(|word| word.len() == 5))
+        );
+    }
+
+    #[inline]
+    #[test]
     fn jumbled_movegen_opens_with_a_blank() {
         assert_eq!(
             jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "?A"),
