@@ -1712,19 +1712,26 @@ fn solve_position<N: kwg::Node>(
             )?;
             return Ok(());
         }
-        let deals = result
-            .hypotheses
-            .iter()
-            .map(|&(_, ways, _)| ways)
-            .sum::<u64>();
+        let (splits, deals) = progress.splits();
         writeln!(
             std::io::stdout(),
-            "peg: {bag_size} tiles in the bag, {} distinct splits over {deals} deals of {} \
+            "peg: {bag_size} tiles in the bag, {splits} distinct splits over {deals} deals of {} \
              unseen tiles (current score {score_diff:+})",
-            result.hypotheses.len(),
             oppo_rack.len(),
         )?;
-        for (bag, ways, value) in result.hypotheses.iter() {
+        let best = result.best_move.as_ref().unwrap();
+        let rows = egs.peg_bag_rows(&mut progress, best, 0..splits, &solving.limits)?;
+        let hypotheses = match rows {
+            Ok(rows) => rows.hypotheses,
+            Err(missing) => {
+                writeln!(
+                    std::io::stdout(),
+                    "peg: no rows of the best move: {missing:?}"
+                )?;
+                Vec::new()
+            }
+        };
+        for (bag, ways, value) in hypotheses.iter() {
             let mut opp = Vec::new();
             for (u, &c) in available_tally.iter().enumerate() {
                 let in_bag = bag.iter().filter(|&&t| t as usize == u).count() as u8;
