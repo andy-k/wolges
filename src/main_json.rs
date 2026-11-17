@@ -49,15 +49,18 @@ struct Cli {
 
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
-    let game_config = cli.game.make_game_config()?;
+    let game_config = std::sync::Arc::new(cli.game.make_game_config()?);
     // of course this should be cached
-    let klv = if cli.klv == "-" {
+    let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
         klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
-    };
+    });
     game_config.check_klv(&klv)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
+        std::fs::read(&cli.kwg)?,
+        cli.kbwg,
+    )?);
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
     answer(&kwg, &klv, &game_config, cli.lean)
 }
@@ -78,10 +81,10 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 }
 
 #[inline(always)]
-fn answer<N: kwg::Node + Sync>(
-    kwg: &kwg::Kwg<N>,
-    klv: &klv::Klv<kwg::Node24>,
-    game_config: &game_config::GameConfig,
+fn answer<N: kwg::Node + Send + Sync + 'static>(
+    kwg: &std::sync::Arc<kwg::Kwg<N>>,
+    klv: &std::sync::Arc<klv::Klv<kwg::Node24>>,
+    game_config: &std::sync::Arc<game_config::GameConfig>,
     lean: bool,
 ) -> error::Returns<()> {
     let data = r#"
@@ -235,7 +238,9 @@ fn answer<N: kwg::Node + Sync>(
         &kibitzer.board_tiles,
     )?;
 
-    let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean)?;
+    let arm_tables =
+        std::sync::Arc::new(wolges::anagrams::ArmTables::build(kwg, game_config, lean)?);
+
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,

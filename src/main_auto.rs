@@ -96,17 +96,20 @@ fn main() -> error::Returns<()> {
         None => None,
     };
 
-    let game_config = cli.game.make_game_config()?;
+    let game_config = std::sync::Arc::new(cli.game.make_game_config()?);
     if game_config.num_players() != 2 {
         wolges::return_error!("auto plays two seats, so it needs exactly 2 players".to_string());
     }
-    let klv = if cli.klv == "-" {
+    let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
         klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
-    };
+    });
     game_config.check_klv(&klv)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
+        std::fs::read(&cli.kwg)?,
+        cli.kbwg,
+    )?);
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
     do_it(
         &kwg,
@@ -136,9 +139,9 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 
 #[inline(always)]
 fn do_it(
-    kwg: &kwg::Kwg<kwg::Node24>,
-    klv: &klv::Klv<kwg::Node24>,
-    game_config: &game_config::GameConfig,
+    kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
+    klv: &std::sync::Arc<klv::Klv<kwg::Node24>>,
+    game_config: &std::sync::Arc<game_config::GameConfig>,
     harvest: Option<HarvestWriter>,
     games: Option<u64>,
     lean: bool,
@@ -147,7 +150,7 @@ fn do_it(
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let arm_tables = anagrams::ArmTables::build(kwg, game_config, lean)?;
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(kwg, game_config, lean)?);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
         tilt: move_filter::Tilt::new(game_config, kwg, move_filter::Tilt::length_importances()),
