@@ -607,7 +607,10 @@ impl<
         let census = held.as_deref().and_then(Option::as_ref);
         // the lanes this rollout's plays have touched since the start board
         let mut touched = (0u128, 0u128);
-        while (ply <= self.num_sim_plies || self.game_state.bag.is_empty())
+        while (ply <= self.num_sim_plies
+            || self.game_state.bag.is_empty()
+            || (self.game_state.bag.len() <= game_config.rack_size() as usize
+                && forced_passes < seats_moving))
             && (forced_passes < seats_moving
                 || game_config.num_passes_to_end() != 0
                 || (game_config.num_zeros_to_end() != 0
@@ -647,7 +650,11 @@ impl<
                     },
                     rack: &self.game_state.current_player().rack,
                     max_gen: 1,
-                    num_exchanges_by_this_player: self.game_state.current_player().num_exchanges,
+                    num_exchanges_by_this_player: if ply > self.num_sim_plies {
+                        game_config.exchanges_allowed_per_player()
+                    } else {
+                        self.game_state.current_player().num_exchanges
+                    },
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 };
@@ -1246,6 +1253,92 @@ mod tests {
         // a game that ends on scoreless turns takes each player's own tiles off
         // their score, so the mover is ahead by 6 points
         assert_eq!(simmer.final_equity_spread().unwrap(), 6 * equity::SCALE);
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_past_its_horizon_with_a_small_bag_ends_once_each_seat_passes() {
+        let mut game_config = game_config::make_english_game_config();
+        let game_config::GameConfig::Static(rules) = &mut game_config;
+        rules.num_passes_to_end = 0;
+        rules.num_zeros_to_end = 0;
+        let rack_size = game_config.rack_size() as usize;
+        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        for (bag_len, played) in [(rack_size, 2), (rack_size + 1, 0)] {
+            let mut game_state = a_bag_emptied_onto_the_board(&game_config);
+            let on_board = game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+            let bag = game_state.board_tiles[on_board - bag_len..on_board].to_vec();
+            game_state.board_tiles[on_board - bag_len..on_board].fill(0);
+            game_state.bag.set_from_iter(bag);
+            let mut simmer = Simmer::new(&game_config).unwrap();
+            simmer.reseed(5);
+            simmer.prepare(&game_config, &game_state, 0, false, &[]);
+            simmer.prepare_iteration();
+            let game_ended = simmer
+                .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+                .unwrap();
+            assert!(!game_ended, "{bag_len}");
+            assert_eq!(simmer.plies_played().len(), played, "{bag_len}");
+            assert!(
+                simmer.plies_played().iter().all(|ply| ply.tiles == 0),
+                "{bag_len}"
+            );
+            assert_eq!(simmer.game_state.bag.len(), bag_len, "{bag_len}");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_past_its_horizon_with_a_small_bag_plays_to_the_game_end() {
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        let dim = game_config.board_layout().dim();
+        let rack_size = game_config.rack_size() as usize;
+        let mut game_state = game_state::GameState::new(&game_config);
+        game_state.players[0].rack.extend_from_slice(&[1, 2]);
+        game_state.players[1].rack.push(17);
+        let mut unseen = Vec::new();
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                unseen.push(tile);
+            }
+        }
+        for player in game_state.players.iter() {
+            for &tile in player.rack.iter() {
+                let at = unseen.iter().position(|&t| t == tile).unwrap();
+                unseen.remove(at);
+            }
+        }
+        let bag = unseen.split_off(unseen.len() - rack_size);
+        let mut squares = (0..dim.rows)
+            .step_by(2)
+            .flat_map(|row| (0..dim.cols).map(move |col| dim.at_row_col(row, col)));
+        for tile in unseen {
+            game_state.board_tiles[squares.next().unwrap()] = if tile == 0 { 0x81 } else { tile };
+        }
+        game_state.bag.set_from_iter(bag);
+        let letters = (1..alphabet.len()).collect::<Vec<_>>();
+        let kwg = kwg_of(&letters);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.reseed(5);
+        simmer.prepare(&game_config, &game_state, 0, false, &[]);
+        simmer.prepare_iteration();
+        let game_ended = simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+            .unwrap();
+        assert!(game_ended);
+        assert!(simmer.game_state.bag.is_empty());
+        assert!(simmer.plies_played().len() > 1);
     }
 
     #[test]
