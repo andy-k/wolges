@@ -154,6 +154,10 @@ impl Moments {
         1.0 / (1.0 - self.rho() * self.rho())
     }
 
+    fn worth_per_second(&self, rollouts_secs: f64, reply_secs: f64) -> f64 {
+        self.worth() * rollouts_secs / (rollouts_secs + reply_secs)
+    }
+
     // the estimate of x's mean with y's exact mean known
     fn adjusted(&self, my_exact: f64) -> f64 {
         self.mx - self.cxy / self.vy * (self.my - my_exact)
@@ -259,13 +263,14 @@ fn main() -> error::Returns<()> {
         }
         let rollout_secs =
             start.elapsed().as_secs_f64() / (iterations * candidates.len() as u64) as f64;
+        let rollouts_secs = rollout_secs * iterations as f64;
         println!(
             "rollout {:.3} ms; weightage {}",
             rollout_secs * 1e3,
             sim.win_prob_weightage()
         );
         println!(
-            "  # static  exact_reply  reply_ms  mean_reply  z      obj      obj_cv   worth_obj  worth_spread  worth_win  no_reply"
+            "  # static  exact_reply  reply_ms  mean_reply  z      obj      obj_cv   worth_obj  net_obj  worth_spread  worth_win  no_reply"
         );
         for (c, candidate) in candidates.iter().enumerate() {
             let Some(reply) = exact[c].0 else {
@@ -278,7 +283,7 @@ fn main() -> error::Returns<()> {
             let m_win = moments(win, y);
             let z = (m_obj.my - reply.mean) / (m_obj.vy / m_obj.n).sqrt();
             println!(
-                "{c:3} {:7.3} {:11.3} {:9.1} {:11.3} {:6.2} {:8.3} {:8.3} {:10.3} {:13.3} {:10.3} {:9}",
+                "{c:3} {:7.3} {:11.3} {:9.1} {:11.3} {:6.2} {:8.3} {:8.3} {:10.3} {:8.3} {:13.3} {:10.3} {:9}",
                 candidate.equity.as_f64(),
                 reply.mean,
                 exact[c].1 * 1e3,
@@ -287,6 +292,7 @@ fn main() -> error::Returns<()> {
                 m_obj.mx,
                 m_obj.adjusted(reply.mean),
                 m_obj.worth(),
+                m_obj.worth_per_second(rollouts_secs, exact[c].1),
                 m_spread.worth(),
                 m_win.worth(),
                 no_reply[c]
@@ -303,7 +309,7 @@ fn main() -> error::Returns<()> {
             });
         if let Some(best) = best {
             println!(
-                "  against candidate {best}: diff, diff_cv, worth_diff, worth_diff_spread, worth_diff_win"
+                "  against candidate {best}: diff, diff_cv, worth_diff, net_diff, worth_diff_spread, worth_diff_win"
             );
             let diff = |xs: &[f64], ys: &[f64]| {
                 (xs.iter().zip(ys)).map(|(a, b)| a - b).collect::<Vec<_>>()
@@ -318,10 +324,11 @@ fn main() -> error::Returns<()> {
                 let m_win = moments(&diff(&rec[c].2, &rec[best].2), &e);
                 let exact_e = exact[c].0.unwrap().mean - exact[best].0.unwrap().mean;
                 println!(
-                    "{c:3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3}",
+                    "{c:3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3}",
                     m.mx,
                     m.adjusted(exact_e),
                     m.worth(),
+                    m.worth_per_second(2.0 * rollouts_secs, exact[c].1 + exact[best].1),
                     m_spread.worth(),
                     m_win.worth()
                 );
