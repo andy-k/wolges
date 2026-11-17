@@ -2196,6 +2196,7 @@ mod lane_bits {
 pub trait LaneBits:
     lane_bits::Sealed
     + Copy
+    + Send
     + Eq
     + From<u8>
     + std::ops::BitAnd<Output = Self>

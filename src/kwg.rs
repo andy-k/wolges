@@ -2,7 +2,7 @@
 
 use super::error;
 
-pub trait Node: Copy {
+pub trait Node: Copy + Send + Sync {
     fn new(v: u32) -> Self;
     fn tile(&self) -> u8;
     fn accepts(&self) -> bool;
