@@ -490,19 +490,31 @@ fn run_batch<N: kwg::Node>(
         let solved = egs.solve_within(player, &solving.limits)?;
         let elapsed = t0.elapsed();
         if solved.exact {
-            writeln!(out, "{line_index}\t{}\t{elapsed:?}", solved.value)?;
+            writeln!(
+                out,
+                "{line_index}\t{}\t{elapsed:?}",
+                solved
+                    .value
+                    .map_or_else(|| "-".to_string(), |v| v.to_string())
+            )?;
         } else if let Some(partway) = solved.partway {
             writeln!(
                 out,
                 "{line_index}\t{}\t{elapsed:?}\tcut short after depth {}; a move in depth \
                  {partway} beat its best",
-                solved.value, solved.depth,
+                solved
+                    .value
+                    .map_or_else(|| "-".to_string(), |v| v.to_string()),
+                solved.depth,
             )?;
         } else {
             writeln!(
                 out,
                 "{line_index}\t{}\t{elapsed:?}\tcut short after depth {}",
-                solved.value, solved.depth,
+                solved
+                    .value
+                    .map_or_else(|| "-".to_string(), |v| v.to_string()),
+                solved.depth,
             )?;
         }
     }
@@ -1852,14 +1864,20 @@ fn solve_position<N: kwg::Node>(
             solving.scoreless[1],
         );
         let solved = egs.evaluate(0, &solving.limits)?;
-        let future_margin = solved.value;
-        let total_margin =
-            equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
-        writeln!(
-            std::io::stdout(),
-            "total game margin (current score {score_diff:+} + future {future_margin}) = \
-             {total_margin}",
-        )?;
+        if let Some(future_margin) = solved.value {
+            let total_margin =
+                equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
+            writeln!(
+                std::io::stdout(),
+                "total game margin (current score {score_diff:+} + future {future_margin}) = \
+                 {total_margin}",
+            )?;
+        } else {
+            writeln!(
+                std::io::stdout(),
+                "total game margin (current score {score_diff:+} + future -) = -",
+            )?;
+        }
         if let Some(partway) = solved.partway {
             // the lines so far stop at the finished depth; this one starts with
             // the stopped pass's answer
