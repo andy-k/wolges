@@ -8030,18 +8030,23 @@ fn moves_of<
             .map(|vm| vm.play.clone()),
     );
     if exchange_legal(gc, bag_len, made) {
-        let mut tally = vec![0u8; gc.alphabet().len() as usize];
+        // the rack's tally, then room for one exchange's tiles, which each
+        // exchange is written into in turn
+        let tiles_at = gc.alphabet().len() as usize;
+        let mut buffer = vec![0u8; tiles_at + rack.len()];
+        let (tally, thrown) = buffer.split_at_mut(tiles_at);
         for &tile in rack {
             tally[tile as usize] += 1;
         }
         for n in 1..=rack.len().min(bag_len) {
-            each_split(&tally, n, &mut |tiles, _, _| {
-                let tiles = (0u8..)
-                    .zip(tiles)
-                    .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
-                    .collect::<Vec<_>>();
+            each_split(tally, n, &mut |tiles, _, _| {
+                let mut len = 0;
+                for (tile, &count) in (0u8..).zip(tiles) {
+                    thrown[len..len + count as usize].fill(tile);
+                    len += count as usize;
+                }
                 moves.push(movegen::Play::Exchange {
-                    tiles: tiles[..].into(),
+                    tiles: thrown[..len].into(),
                 });
             });
         }
