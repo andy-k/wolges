@@ -4637,8 +4637,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     }
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let mut csv_out = csv::Writer::from_path(&out_name)?;
+    let mut value_text = String::new();
     for (_, leave, value) in &rows {
-        csv_out.serialize((leave, klv::value_text(*value)))?;
+        klv::value_text_into(*value, &mut value_text);
+        csv_out.serialize((leave, &value_text))?;
     }
     csv_out.flush()?;
     writeln!(

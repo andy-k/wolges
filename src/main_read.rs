@@ -841,6 +841,7 @@ fn do_klv_anagram(
     let num_tiles = std::sync::atomic::AtomicUsize::new(0);
     let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
     let mut csv_out = csv::Writer::from_writer(make_writer(out)?);
+    let mut value_text = String::new();
     iter_dawg(
         DawgSource {
             a: &WolgesAlphabetLabel { alphabet },
@@ -862,7 +863,8 @@ fn do_klv_anagram(
                 }
             };
             if !dominated {
-                csv_out.serialize((s, klv::value_text(leave_value)))?;
+                klv::value_text_into(leave_value, &mut value_text);
+                csv_out.serialize((s, &value_text))?;
             }
             Ok(())
         },
@@ -1754,6 +1756,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             }
             let scale = if is_klv16 { 1.0 / 8.0 } else { 1.0 / 256.0 };
             let mut csv_out = csv::Writer::from_writer(make_writer(&out)?);
+            let mut value_text = String::new();
             iter_dawg(
                 DawgSource {
                     a: &WolgesAlphabetLabel {
@@ -1775,7 +1778,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     } else {
                         return Err("missing leaves".into());
                     };
-                    csv_out.serialize((s, klv::value_text(v)))?;
+                    klv::value_text_into(v, &mut value_text);
+                    csv_out.serialize((s, &value_text))?;
                     Ok(())
                 },
                 &mut default_in,
@@ -2718,6 +2722,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             let mut csv_out = csv::Writer::from_writer(make_writer(&out)?);
             let mut i = 0;
             let mut s = String::new();
+            let mut value_text = String::new();
             while i < bytes.len() {
                 let l = bytes[i] as usize;
                 if i + l + 3 > bytes.len() {
@@ -2735,10 +2740,11 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     }
                 }
                 i += l + 3;
-                csv_out.serialize((
-                    &s,
-                    klv::value_text((read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0),
-                ))?;
+                klv::value_text_into(
+                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
+                    &mut value_text,
+                );
+                csv_out.serialize((&s, &value_text))?;
             }
             Ok(())
         }

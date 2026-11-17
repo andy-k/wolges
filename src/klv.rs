@@ -143,10 +143,21 @@ pub fn kbwg_from_bytes_alloc(buf: Vec<u8>) -> error::Returns<Klv<kwg::Node24>> {
 // 0.000000834465, as kwgc's read-klv writes it
 #[inline]
 pub fn value_text<F: ryu::Float>(value: F) -> String {
+    let mut out = String::new();
+    value_text_into(value, &mut out);
+    out
+}
+
+// the same, written over out, whose memory is kept, so that a writer of one
+// line a leave allocates nothing a line once out has grown
+#[inline]
+pub fn value_text_into<F: ryu::Float>(value: F, out: &mut String) {
+    out.clear();
     let mut buffer = ryu::Buffer::new();
     let text = buffer.format(value);
     let Some((mantissa, exponent)) = text.split_once('e') else {
-        return text.to_string();
+        out.push_str(text);
+        return;
     };
     let exponent = exponent.parse::<i32>().unwrap_or(0);
     let (sign, mantissa) = match mantissa.strip_prefix('-') {
@@ -154,24 +165,29 @@ pub fn value_text<F: ryu::Float>(value: F) -> String {
         None => ("", mantissa),
     };
     let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let digits = format!("{whole}{fraction}");
+    // the digits, whole then fraction, from one place among them to another
+    let digits = |out: &mut String, from: usize, to: usize| {
+        let (w, f) = (whole.len(), fraction.len());
+        out.push_str(&whole[from.min(w)..to.min(w)]);
+        out.push_str(&fraction[from.clamp(w, w + f) - w..to.clamp(w, w + f) - w]);
+    };
+    let num_digits = whole.len() + fraction.len();
     // where the point falls among the digits
     let point = whole.len() as i32 + exponent;
-    let mut out = String::from(sign);
+    out.push_str(sign);
     if point <= 0 {
         out.push_str("0.");
         out.extend(std::iter::repeat_n('0', point.unsigned_abs() as usize));
-        out.push_str(&digits);
-    } else if point as usize >= digits.len() {
-        out.push_str(&digits);
-        out.extend(std::iter::repeat_n('0', point as usize - digits.len()));
+        digits(out, 0, num_digits);
+    } else if point as usize >= num_digits {
+        digits(out, 0, num_digits);
+        out.extend(std::iter::repeat_n('0', point as usize - num_digits));
         out.push_str(".0");
     } else {
-        out.push_str(&digits[..point as usize]);
+        digits(out, 0, point as usize);
         out.push('.');
-        out.push_str(&digits[point as usize..]);
+        digits(out, point as usize, num_digits);
     }
-    out
 }
 
 // a klv2 value as the millipoints a leave is kept in; one that is not a number,
