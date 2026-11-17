@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, anagrams, bites, build, endgame, equity, game_config, kwg};
+use wolges::{alphabet, anagrams, bites, build, endgame, equity, game_config, klv, kwg, movegen};
 
 thread_local! {
     static COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -194,4 +194,57 @@ fn a_one_in_bag_solve_refused_its_largest_growth_answers_as_before() {
     let (answer, refused) = refusing_at(largest, solve);
     assert_eq!(refused, 1);
     assert_eq!(answer, want);
+}
+
+#[test]
+fn a_jumbled_generation_refused_its_largest_growth_says_so() {
+    let gc = game_config::make_jumbled_english_game_config();
+    let letters = b"ACENRST";
+    let mut words = vec![String::new()];
+    for _ in 0..gc.rack_size() {
+        let longer = (words.iter())
+            .flat_map(|word| {
+                let from = (letters.iter())
+                    .position(|&l| word.as_bytes().last().is_some_and(|&w| w == l))
+                    .unwrap_or(0);
+                letters[from..]
+                    .iter()
+                    .map(move |&l| format!("{word}{}", l as char))
+            })
+            .collect::<Vec<_>>();
+        words.extend(longer);
+        words.sort_unstable();
+        words.dedup();
+    }
+    let words = (words.iter())
+        .filter(|word| word.len() >= 2)
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let kwg = test_kwg(&gc, build::BuildContent::DawgOnly, &words);
+    let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+    let dim = gc.board_layout().dim();
+    let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+    let board_snapshot = movegen::BoardSnapshot {
+        board_tiles: &board_tiles,
+        game_config: &gc,
+        kwg: &kwg,
+        anagrams: None,
+        rack_lengths: None,
+        klv: &klv,
+    };
+    let pool = parse_test_rack(gc.alphabet(), "AACCEENNRRSSTT??");
+    let plays = || {
+        let mut generator = movegen::KurniaMoveGenerator::new(&gc);
+        let mut count = 0usize;
+        generator.pool_plays(&board_snapshot, &pool, |_, _, _, _, _| count += 1);
+        (count, generator.out_of_memory())
+    };
+    let ((all, refused), largest) = largest_in(plays);
+    assert!(all > 0);
+    assert!(!refused);
+    let ((some, refused), refusals) = refusing_at(largest, plays);
+    assert_eq!(refusals, 1);
+    assert!(refused);
+    assert!(some < all, "{some} {all}");
+    assert_eq!(plays(), (all, false));
 }

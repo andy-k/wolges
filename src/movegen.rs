@@ -5493,6 +5493,9 @@ fn gen_classic_place_moves<
 struct JumbledMultisets {
     multisets: Vec<u8>,
     by_size: Vec<Vec<u32>>,
+    staged: Vec<Vec<u32>>, // a walk's lists by size, reserved by stage
+    staged_bytes: usize,   // the room stage reserves in multisets
+    bounded: bool,         // staged is reserved for this generation's rack
     kept: Vec<([u8; MAX_ALPHABET_LEN], u32)>,
     current: Vec<u8>,
     walk: u8,
@@ -5627,9 +5630,64 @@ struct JumbledSplits {
     by_value: Vec<u8>,       // letters' places, their scores highest first
     blank_value: i32,
     starts: Vec<u32>,
+    out_of_memory: bool,
+}
+
+// the distinct orders of tiles in these counts: n! over each count's !
+fn arrangements(counts: &[u8]) -> usize {
+    let mut ways = 1u128;
+    let mut placed = 0u128;
+    for &count in counts {
+        for i in 1..=count as u128 {
+            placed += 1;
+            let Some(more) = ways.checked_mul(placed) else {
+                return usize::MAX;
+            };
+            ways = more / i;
+        }
+    }
+    usize::try_from(ways).unwrap_or(usize::MAX)
 }
 
 impl JumbledSplits {
+    // room for a start for each way of designating the multiset's blanks, and
+    // one past the last; false, with out_of_memory set, where it is refused.
+    // Apart from the walk, as sort_by_value
+    #[inline(never)]
+    fn reserve_starts(&mut self) -> bool {
+        let designations = (self.letter_counts.iter()).fold(1usize, |ways, &count| {
+            ways.saturating_mul(count as usize + 1)
+        });
+        if self
+            .starts
+            .try_reserve(designations.saturating_add(1))
+            .is_err()
+        {
+            self.out_of_memory = true;
+            return false;
+        }
+        true
+    }
+
+    // room for every way to share this designation's tiles among the classes,
+    // each a member: no more than the orders of its tiles by value, nor than
+    // their orders by class; false, with out_of_memory set, where it is
+    // refused. Apart from the walk, as sort_by_value
+    #[inline(never)]
+    fn reserve_members(&mut self) -> bool {
+        let ways = arrangements(&self.value_left).min(arrangements(&self.class_sizes));
+        let stride = self.blanks.len() + self.matrix.len();
+        if self.members.try_reserve(ways).is_err()
+            || (self.member_data)
+                .try_reserve(ways.saturating_mul(stride))
+                .is_err()
+        {
+            self.out_of_memory = true;
+            return false;
+        }
+        true
+    }
+
     // the multiset's letters by score, sorted once for every split's bound;
     // apart from the walk, so its one copy serves every walk the generator has
     #[inline(never)]
@@ -5686,6 +5744,9 @@ impl JumbledMultisets {
         Self {
             multisets: Vec::new(),
             by_size: Vec::new(),
+            staged: Vec::new(),
+            staged_bytes: 0,
+            bounded: false,
             kept: Vec::new(),
             current: Vec::new(),
             walk: JUMBLED_EVERY_ARRANGEMENT,
@@ -5707,10 +5768,12 @@ impl JumbledMultisets {
         self.kept.clear();
         self.current.clear();
         self.walk = JUMBLED_EVERY_ARRANGEMENT;
+        self.splits.out_of_memory = false;
         self.window = 0..u64::MAX;
         self.through = None;
         self.seen = 0;
         self.held = false;
+        self.bounded = false;
         self.floor = i32::MIN;
     }
 
@@ -5722,6 +5785,82 @@ impl JumbledMultisets {
         }
         self.multisets.clear();
         self.kept.clear();
+        self.splits.out_of_memory = false;
+        self.bounded = false;
+    }
+
+    // staged reserved, once a generation, for the most multisets of each size
+    // up to max_size a walk of the rack (rack_tally, its blanks first) can
+    // find: those its letters make, each with any letters its blanks stand
+    // for; and multisets for the bytes they would take. False, with
+    // out_of_memory set, where that room is refused
+    #[inline(never)]
+    fn stage(&mut self, rack_tally: &[u8], alphabet_len: u8, max_size: usize) -> bool {
+        if self.bounded && self.staged.len() > max_size {
+            return self.multisets.try_reserve(self.staged_bytes).is_ok() || self.refuse();
+        }
+        // by size: the multisets of the rack's letters, then those with as
+        // many letters as each count of blanks stands for
+        let mut letters = [0usize; MAX_ALPHABET_LEN + 1];
+        letters[0] = 1;
+        let mut most = 0;
+        for &count in &rack_tally[1..alphabet_len as usize] {
+            most = (most + count as usize).min(max_size);
+            for size in (1..=most).rev() {
+                let mut ways = 0usize;
+                for taken in 1..=(count as usize).min(size) {
+                    ways = ways.saturating_add(letters[size - taken]);
+                }
+                letters[size] = letters[size].saturating_add(ways);
+            }
+        }
+        let letter_kinds = alphabet_len as usize - 1;
+        if self.staged.try_reserve(max_size + 1).is_err() {
+            return self.refuse();
+        }
+        if self.staged.len() <= max_size {
+            self.staged.resize_with(max_size + 1, Vec::new);
+        }
+        self.staged_bytes = 0;
+        for size in 0..=max_size {
+            // blanks standing for `blanks` letters: a multiset of that many of
+            // the alphabet's letters, kinds + blanks - 1 choose blanks
+            let mut bound = letters[size];
+            let mut stood = 1usize;
+            for blanks in 1..=(rack_tally[0] as usize).min(size) {
+                stood = stood.saturating_mul(letter_kinds + blanks - 1) / blanks;
+                bound = bound.saturating_add(letters[size - blanks].saturating_mul(stood));
+            }
+            self.staged_bytes = (self.staged_bytes).saturating_add(bound.saturating_mul(size));
+            let staged = &mut self.staged[size];
+            staged.clear();
+            if staged.try_reserve(bound).is_err() {
+                return self.refuse();
+            }
+        }
+        self.bounded = true;
+        self.multisets.try_reserve(self.staged_bytes).is_ok() || self.refuse()
+    }
+
+    #[inline(never)]
+    fn refuse(&mut self) -> bool {
+        self.splits.out_of_memory = true;
+        false
+    }
+
+    // staged's lists moved to by_size from start, each with one reservation;
+    // false, with out_of_memory set, where one is refused
+    #[inline(never)]
+    fn unstage(&mut self, start: usize, max_size: usize) -> bool {
+        for size in 1..=max_size {
+            let (staged, lists) = (&mut self.staged[size], &mut self.by_size[start + size]);
+            if lists.try_reserve_exact(staged.len()).is_err() {
+                return self.refuse();
+            }
+            lists.extend_from_slice(staged);
+            staged.clear();
+        }
+        true
     }
 
     // the start in by_size of the lists for these forced letters, and whether
@@ -5732,6 +5871,15 @@ impl JumbledMultisets {
             return (start as usize, true);
         }
         let start = self.kept.len() * (max_size + 1);
+        if self.kept.try_reserve(1).is_err()
+            || self
+                .by_size
+                .try_reserve((start + max_size + 1).saturating_sub(self.by_size.len()))
+                .is_err()
+        {
+            self.splits.out_of_memory = true;
+            return (0, true);
+        }
         if self.by_size.len() < start + max_size + 1 {
             self.by_size.resize_with(start + max_size + 1, Vec::new);
         }
@@ -5757,6 +5905,9 @@ fn gen_jumbled_place_moves<
     single_tile_plays: bool,
     opening: Option<bool>,
 ) {
+    if params.jumbled.splits.out_of_memory {
+        return;
+    }
     match params.jumbled.walk {
         JUMBLED_EVERY_ARRANGEMENT => {
             gen_jumbled_place_moves_walk::<BAG_TERM, JUMBLED_EVERY_ARRANGEMENT, _, _, _>(
@@ -5825,7 +5976,6 @@ fn gen_jumbled_place_moves_walk<
         forced: &'a [u8; MAX_ALPHABET_LEN],
         rack_tally: &'a [u8],
         max_size: u8,
-        start: usize, // the lists' start in out.by_size
         out: &'a mut JumbledMultisets,
     }
 
@@ -5839,7 +5989,10 @@ fn gen_jumbled_place_moves_walk<
     ) {
         if letter >= c.alphabet_len {
             if size != 0 && c.kwg[p].accepts() {
-                c.out.by_size[c.start + size as usize].push(c.out.multisets.len() as u32);
+                // reserved by stage
+                let staged = &mut c.out.staged[size as usize];
+                debug_assert!(staged.len() < staged.capacity());
+                staged.push(c.out.multisets.len() as u32);
                 c.out.multisets.extend_from_slice(&c.out.current);
             }
             return;
@@ -5925,6 +6078,9 @@ fn gen_jumbled_place_moves_walk<
         at: usize,
         fixed: i32,
     ) {
+        if env.params.jumbled.splits.out_of_memory {
+            return;
+        }
         let mut s = std::mem::take(&mut env.params.jumbled.splits);
         let num_played = env.num_played as usize;
         let alphabet = env.alphabet;
@@ -5971,6 +6127,10 @@ fn gen_jumbled_place_moves_walk<
         s.blanks.clear();
         s.blanks.resize(num_letters, 0);
         s.starts.clear();
+        if !s.reserve_starts() {
+            env.params.jumbled.splits = s;
+            return;
+        }
         designate_blanks::<BAG_TERM, _, _, _>(env, &mut s, 0, env.params.rack_tally[0], fixed);
         if WALK == JUMBLED_BEST_PER_RACK_TILES {
             walk_best_splits(env, &mut s, cells, num_letters);
@@ -5978,6 +6138,11 @@ fn gen_jumbled_place_moves_walk<
             return;
         }
         s.order.clear();
+        if s.out_of_memory || s.order.try_reserve(s.members.len()).is_err() {
+            s.out_of_memory = true;
+            env.params.jumbled.splits = s;
+            return;
+        }
         s.order.extend(0..s.members.len() as u32);
         let members = &s.members;
         let member_data = &s.member_data;
@@ -6022,6 +6187,9 @@ fn gen_jumbled_place_moves_walk<
             if !env.params.is_census && score + leave_value < env.params.threshold {
                 continue;
             }
+            if !hold_group(&mut s) {
+                break;
+            }
             if place_smallest(env, &mut s, 0, 0) {
                 env.params.threshold = (env.params.callback)(
                     env.idx_left,
@@ -6046,6 +6214,11 @@ fn gen_jumbled_place_moves_walk<
         cells: usize,
         num_letters: usize,
     ) {
+        s.order.clear();
+        if s.out_of_memory || s.order.try_reserve(s.members.len()).is_err() {
+            s.out_of_memory = true;
+            return;
+        }
         s.placed.clear();
         s.placed.resize(cells, 0);
         s.blanks_used.clear();
@@ -6080,6 +6253,9 @@ fn gen_jumbled_place_moves_walk<
                 first = last;
                 if !env.params.is_census && score + leave_value < env.params.threshold {
                     continue;
+                }
+                if !hold_group(s) {
+                    return;
                 }
                 if place_smallest(env, s, 0, 0) {
                     env.params.threshold = (env.params.callback)(
@@ -6152,6 +6328,9 @@ fn gen_jumbled_place_moves_walk<
             s.class_left.clone_from(&s.class_sizes);
             s.matrix.clear();
             s.matrix.resize(s.class_sizes.len() * s.values.len(), 0);
+            if !s.reserve_members() {
+                return;
+            }
             s.starts.push(s.members.len() as u32);
             share_classes(s, 0, fixed, 0, leave_value);
             return;
@@ -6183,6 +6362,7 @@ fn gen_jumbled_place_moves_walk<
     ) {
         let num_values = s.values.len();
         if cell == s.matrix.len() {
+            debug_assert!(s.members.len() < s.members.capacity());
             let offset = s.member_data.len() as u32;
             s.member_data.extend_from_slice(&s.blanks);
             s.member_data.extend_from_slice(&s.matrix);
@@ -6223,6 +6403,19 @@ fn gen_jumbled_place_moves_walk<
         s.matrix[cell] = 0;
     }
 
+    // room for a group's narrowing: each take pushes at most the group's
+    // members, and place_smallest's squares and an assignable's narrowed
+    // squares stand at most a take each
+    fn hold_group(s: &mut JumbledSplits) -> bool {
+        let takes = s.squares.len() + s.narrowed.len();
+        let room = s.group.len().saturating_mul(takes);
+        if s.group.try_reserve(room).is_err() {
+            s.out_of_memory = true;
+            return false;
+        }
+        true
+    }
+
     #[inline(always)]
     fn take(s: &mut JumbledSplits, class: usize, j: usize, blank: bool, from: usize) -> bool {
         let num_letters = s.letters.len();
@@ -6248,6 +6441,7 @@ fn gen_jumbled_place_moves_walk<
                 s.letter_counts[j] - blanks
             };
             if used <= most && placed <= s.member_data[offset + num_letters + cell] {
+                debug_assert!(s.group.len() < s.group.capacity());
                 s.group.push(offset as u32);
             }
         }
@@ -6545,7 +6739,13 @@ fn gen_jumbled_place_moves_walk<
                     if collected_epoch != forced_epoch {
                         let (start, kept) =
                             env.params.jumbled.find(&forced, num_max_played as usize);
-                        if !kept {
+                        if !kept
+                            && env.params.jumbled.stage(
+                                env.params.rack_tally,
+                                alphabet_len,
+                                num_max_played as usize,
+                            )
+                        {
                             collect_multisets(
                                 &mut Collect {
                                     kwg: env.params.board_snapshot.kwg,
@@ -6553,7 +6753,6 @@ fn gen_jumbled_place_moves_walk<
                                     forced: &forced,
                                     rack_tally: env.params.rack_tally,
                                     max_size: num_max_played,
-                                    start,
                                     out: env.params.jumbled,
                                 },
                                 0,
@@ -6561,6 +6760,10 @@ fn gen_jumbled_place_moves_walk<
                                 env.params.rack_tally[0],
                                 0,
                             );
+                            env.params.jumbled.unstage(start, num_max_played as usize);
+                        }
+                        if env.params.jumbled.splits.out_of_memory {
+                            return;
                         }
                         lists_start = start;
                         collected_epoch = forced_epoch;
@@ -7719,6 +7922,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
     }
 
     #[inline(always)]
+    pub fn out_of_memory(&self) -> bool {
+        self.working_buffer.jumbled.splits.out_of_memory
+    }
+
+    #[inline(always)]
     pub fn num_tiles_in_bag(&self) -> i16 {
         self.working_buffer.num_tiles_in_bag
     }
@@ -8483,6 +8691,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             );
         }
 
+        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
@@ -8714,6 +8923,15 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         }
         let mut walked = std::mem::take(&mut self.working_buffer.pool.walked);
         walked.clear();
+        let len = tally
+            .iter()
+            .map(|&count| count.min(rack_size) as usize)
+            .sum();
+        if walked.try_reserve(len).is_err() {
+            self.working_buffer.pool.walked = walked;
+            self.working_buffer.jumbled.splits.out_of_memory = true;
+            return None;
+        }
         walked.extend(
             (0u8..).zip(tally.iter()).flat_map(|(tile, &count)| {
                 std::iter::repeat_n(tile, count.min(rack_size) as usize)
@@ -8752,6 +8970,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         (row, col): (i8, i8),
         mut found: impl FnMut(bool, i8, i8, &[u8], i32),
     ) {
+        let mut out_of_memory = false;
         for (lanes, through) in [((1 << row, 0), col), ((0, 1 << col), row)] {
             self.pool_plays_window(
                 board_snapshot,
@@ -8769,7 +8988,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
                     }
                 },
             );
+            out_of_memory |= self.out_of_memory();
         }
+        self.working_buffer.jumbled.splits.out_of_memory = out_of_memory;
     }
 
     pub fn pool_plays_spans_through_top<N: kwg::Node, L: kwg::Node>(
@@ -8884,6 +9105,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         self.working_buffer.jumbled.walk = walk;
         self.working_buffer.jumbled.held = false;
         std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.jumbled.splits.out_of_memory = lists.0.splits.out_of_memory;
         self.working_buffer.pool.walked = walked;
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
@@ -8997,6 +9219,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
         self.working_buffer.jumbled.walk = walk;
         self.working_buffer.jumbled.held = false;
         std::mem::swap(&mut self.working_buffer.jumbled, &mut lists.0);
+        self.working_buffer.jumbled.splits.out_of_memory = lists.0.splits.out_of_memory;
         self.working_buffer.pool.walked = walked;
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
@@ -9482,6 +9705,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             );
         }
 
+        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
@@ -9753,6 +9977,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool>
             );
         }
 
+        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
@@ -9941,18 +10166,19 @@ trait Kept {
         self.len() == 0
     }
     fn push(&mut self, candidate: ValuedMove);
+    fn refused(&self) -> bool;
     // the candidate in place of the worst kept, false if it is no better
     fn replace_worst(&mut self, candidate: ValuedMove) -> bool;
     fn worst_equity(&self) -> equity::Equity;
     fn into_sorted_vec(self) -> Vec<ValuedMove>;
 }
 
-struct KeptHeap(std::collections::BinaryHeap<ValuedMove>);
+struct KeptHeap(std::collections::BinaryHeap<ValuedMove>, bool);
 
 impl Kept for KeptHeap {
     #[inline(always)]
     fn from_vec(plays: Vec<ValuedMove>) -> Self {
-        Self(std::collections::BinaryHeap::from(plays))
+        Self(std::collections::BinaryHeap::from(plays), false)
     }
 
     #[inline(always)]
@@ -9962,7 +10188,16 @@ impl Kept for KeptHeap {
 
     #[inline(always)]
     fn push(&mut self, candidate: ValuedMove) {
+        if self.0.try_reserve(1).is_err() {
+            self.1 = true;
+            return;
+        }
         self.0.push(candidate);
+    }
+
+    #[inline(always)]
+    fn refused(&self) -> bool {
+        self.1
     }
 
     #[inline(always)]
@@ -10008,6 +10243,11 @@ impl Kept for KeptOne {
     fn push(&mut self, candidate: ValuedMove) {
         debug_assert!(self.best.is_none());
         self.best = Some(candidate);
+    }
+
+    #[inline(always)]
+    fn refused(&self) -> bool {
+        false
     }
 
     #[inline(always)]
