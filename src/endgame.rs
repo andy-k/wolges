@@ -4374,6 +4374,12 @@ impl<
             ply, player_idx, ..
         } = node;
         for i in 0..self.work_buffer.orders[ply].len() {
+            if i == 1 && !frame.table_first && frame.node.beta == f32::INFINITY {
+                // nothing can cut: the best of the rest found by a scan, named
+                // as the sort would have named it
+                self.take_best_of_rest(&mut frame, player_idx, ply);
+                break;
+            }
             let work_buffer = &mut self.work_buffer;
             if i == 1 && !frame.table_first {
                 order(
@@ -4413,6 +4419,49 @@ impl<
         }
         self.finish(&frame);
         frame.best
+    }
+
+    // search_last_ply's moves after its first, beta infinite: each valued, the
+    // best taken (the first in order's among equals) with the index order
+    // would give it, the others left unsorted
+    #[inline(always)]
+    fn take_best_of_rest(&mut self, frame: &mut Frame, player_idx: u8, ply: usize) {
+        let work_buffer = &self.work_buffer;
+        let (list, ordered) = (&work_buffer.lists[ply], &work_buffer.orders[ply]);
+        let before = |a: u128, b: u128| {
+            a >> 32 < b >> 32
+                || a >> 32 == b >> 32
+                    && movegen::cmp_play(
+                        &list[a as u32 as usize].play,
+                        &list[b as u32 as usize].play,
+                    )
+                    .is_lt()
+        };
+        let mut best: Option<(f32, u128)> = None;
+        for &key in &ordered[1..] {
+            let candidate = &list[key as u32 as usize];
+            let value = if candidate.plays_out {
+                candidate.valuation
+            } else {
+                frame.best.complete = false;
+                candidate.valuation
+                    - self.both_pass_value_after(player_idx, ply, key as u32 as usize)
+            };
+            if best.is_none_or(|(v, b)| value > v || value == v && before(key, b)) {
+                best = Some((value, key));
+            }
+        }
+        let Some((value, key)) = best else {
+            return;
+        };
+        let place = 1 + ordered[1..].iter().filter(|&&k| before(k, key)).count();
+        let index = if place < PASS_PLAY as usize {
+            place as u16
+        } else {
+            NO_PLAY
+        };
+        self.work_buffer.lists[ply][key as u32 as usize].index = index;
+        frame.take_value(&mut self.work_buffer.proven, place, index, value);
     }
 
     // a node's search done: its value stored, and at a pass's root its move
