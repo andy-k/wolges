@@ -6579,12 +6579,13 @@ impl<
         let exchange_memo = &mut progress.exchange_memo;
         // each tile's value to the pass's depth, from the positions the pass
         // has valued already
-        let mut pass = |this: &mut Self| -> error::Returns<PegResult> {
+        let mut pass = |this: &mut Self| -> error::Returns<(PegResult, Vec<equity::Equity>)> {
             if exchange_memo.0 != limits.depth.get() {
                 *exchange_memo = (limits.depth.get(), BagTable::default());
             }
             let memo = &mut exchange_memo.1;
             let mut hypotheses: Vec<(u8, u32, equity::Equity)> = Vec::new();
+            let mut run = vec![equity::Equity::ZERO; unseen_tally.len()];
             let mut exact = true;
 
             let mut opp_rack: Vec<u8> = Vec::new();
@@ -6608,35 +6609,38 @@ impl<
                     .raw() as f32
                     + score_diff;
                 hypotheses.push((bag_tile, count as u32, to_equity(v)));
+                run[t] = to_equity(v);
             }
             let weighted: Vec<(u32, equity::Equity)> =
                 hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
             let (win_pct, expected_margin) = peg_aggregate(&weighted);
-            Ok(PegResult {
+            let result = PegResult {
                 win_pct,
                 expected_margin,
-                hypotheses,
+                row: None,
                 best_move: None,
                 moves: Vec::new(),
                 committed: false,
                 exact,
                 depth: limits.depth.get(),
                 out_of_memory: false,
-            })
+            };
+            Ok((result, run))
         };
         let deepens = limits.deepens();
         let found = &mut progress.clairvoyant;
+        let found_margins = &mut progress.clairvoyant_margins;
         limits.may_stop.set(deepens);
         if found.is_none() {
             limits.depth.set(if deepens { 1 } else { COMPLETE });
             match pass(self) {
-                Ok(first) => *found = Some(first),
+                Ok((first, run)) => (*found, *found_margins) = (Some(first), run),
                 Err(_) if limits.stopped.get() => {
                     // stopped before the first pass valued every tile: none yet
                     return Ok(PegResult {
                         win_pct: 0.0,
                         expected_margin: equity::Equity::ZERO,
-                        hypotheses: Vec::new(),
+                        row: None,
                         best_move: None,
                         moves: Vec::new(),
                         committed: false,
@@ -6652,7 +6656,7 @@ impl<
         while let Some(result) = found.as_ref().filter(|r| !r.exact && r.depth < COMPLETE) {
             limits.depth.set(result.depth + 1);
             match pass(self) {
-                Ok(deeper) => *found = Some(deeper),
+                Ok((deeper, run)) => (*found, *found_margins) = (Some(deeper), run),
                 Err(_) if limits.stopped.get() => break,
                 Err(e) => return Err(e),
             }
@@ -6691,6 +6695,7 @@ impl<
                 board: &progress.board,
                 mover_rack: &progress.mover_rack,
                 unseen: &unseen,
+                tiles: progress.unseen_tally.len(),
                 scoreless: self.scoreless,
             },
             progress.score_diff.raw() as f32,
@@ -6764,7 +6769,7 @@ impl<
         score_diff: f32,
         limits: &BagLimits,
         moves: &[PegMove],
-    ) -> Vec<Option<PegValue>> {
+    ) -> (Vec<Option<PegValue>>, Vec<equity::Equity>) {
         use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
         // each thread's solver, made at its first solve and kept for the next
         let mut helpers = std::mem::take(&mut sub.helpers);
@@ -6780,10 +6785,12 @@ impl<
                 .map(|helper| {
                     s.spawn(move || {
                         let mut found = Vec::new();
+                        // each move found's margins, a run each, in turn
+                        let mut runs = Vec::new();
                         let limits = BagLimits::on_the_clock(clock);
                         let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper)
                         else {
-                            return (found, 0, 0, None);
+                            return (found, runs, 0, 0, None);
                         };
                         // empty, with this solver's room, as each solve's
                         own.work_buffer.table.empty_to(buckets);
@@ -6791,6 +6798,7 @@ impl<
                             own.pool_lanes_as(deal);
                         }
                         let mut opp_rack = Vec::new();
+                        let mut run = vec![equity::Equity::ZERO; position.tiles];
                         loop {
                             let i = next.fetch_add(1, Relaxed);
                             let Some(cand) = moves.get(i) else {
@@ -6803,6 +6811,7 @@ impl<
                                 position.unseen,
                                 score_diff,
                                 &mut opp_rack,
+                                &mut run,
                                 |_, drawn, opp_rack, exact| {
                                     Self::peg_place_endgame(
                                         &mut own, position, play, drawn, opp_rack, &limits, exact,
@@ -6813,9 +6822,10 @@ impl<
                                 break;
                             };
                             found.push((i, value));
+                            runs.extend_from_slice(&run);
                         }
                         let (endgames, nodes) = (limits.endgames.get(), limits.nodes.get());
-                        (found, endgames, nodes, Some(own.into_helper()))
+                        (found, runs, endgames, nodes, Some(own.into_helper()))
                     })
                 })
                 .collect::<Vec<_>>();
@@ -6823,16 +6833,19 @@ impl<
                 .map(|handle| handle.join().unwrap())
                 .collect::<Vec<_>>()
         });
+        let k = position.tiles;
         let mut ready = vec![None; moves.len()];
-        for (found, endgames, nodes, helper) in helped {
-            for (i, value) in found {
+        let mut ready_margins = vec![equity::Equity::ZERO; moves.len() * k];
+        for (found, runs, endgames, nodes, helper) in helped {
+            for ((i, value), run) in found.into_iter().zip(runs.chunks_exact(k)) {
                 ready[i] = Some(value);
+                ready_margins[i * k..][..k].copy_from_slice(run);
             }
             limits.endgames.set(limits.endgames.get() + endgames);
             limits.nodes.set(limits.nodes.get() + nodes);
             sub.helpers.push(helper);
         }
-        ready
+        (ready, ready_margins)
     }
 
     // the committed model's search, its endgames solved by sub: the move with
@@ -6858,6 +6871,7 @@ impl<
             board,
             mover_rack,
             unseen,
+            tiles,
             scoreless,
         } = *position;
         let gc = sub.game_config;
@@ -6921,21 +6935,26 @@ impl<
                         moves.push(PegMove::Place(vm.play.clone()));
                     }
                 }
+                // a run of margins a move, one a tile of the alphabet, for the
+                // pass under way and for the answer
+                let runs = n.saturating_mul(tiles);
                 Ok((
                     moves,
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
+                    list_in_room(limits, runs)?,
+                    list_in_room(limits, runs)?,
                 ))
             })();
-            let (moves, order, valued, reached, answered) = match lists {
+            let (moves, order, valued, reached, answered, margins, answered_margins) = match lists {
                 Ok(lists) => lists,
                 Err(_) if limits.stopped.get() => {
                     return Ok(PegResult {
                         win_pct: 0.0,
                         expected_margin: equity::Equity::ZERO,
-                        hypotheses: Vec::new(),
+                        row: None,
                         best_move: None,
                         moves: Vec::new(),
                         committed: true,
@@ -6948,6 +6967,10 @@ impl<
             };
             (state.moves, state.order, state.valued) = (moves, order, valued);
             (state.reached, state.answered) = (reached, answered);
+            (state.margins, state.answered_margins) = (margins, answered_margins);
+            let runs = state.moves.len() * tiles;
+            state.margins.resize(runs, equity::Equity::ZERO);
+            state.answered_margins.resize(runs, equity::Equity::ZERO);
             // the order the first pass values the moves in
             state.order.extend(0..state.moves.len());
             if deepens {
@@ -6965,76 +6988,86 @@ impl<
         }
 
         // one pass: each move's value is exact, so the same on any thread
-        let mut ready = Vec::new();
+        let k = tiles;
+        let (mut ready, mut ready_margins) = (Vec::new(), Vec::new());
         if !deepens && sub.work_buffer.threads > 1 && state.next == 0 {
-            ready = Self::peg_places_on_threads(sub, position, score_diff, limits, &state.moves);
+            (ready, ready_margins) =
+                Self::peg_places_on_threads(sub, position, score_diff, limits, &state.moves);
         }
         // the pass's memo, made once and renewed for each tile
         let mut pass_memo = BagTable::default();
         let mut value_move = |cand: &PegMove,
                               line: &mut PassLine,
-                              kept: &mut PassKept|
+                              kept: &mut PassKept,
+                              margins: &mut [equity::Equity]|
          -> error::Returns<PegValue> {
             let PassKept {
                 opp_rack,
                 r2,
                 placed,
             } = kept;
-            peg_value(unseen, score_diff, opp_rack, |t, drawn, opp_rack, exact| {
-                Ok(match cand {
-                    PegMove::Place(play) => Self::peg_place_endgame(
-                        sub, position, play, drawn, opp_rack, limits, exact,
-                    )?,
-                    // the pass ends the game at once when it brings the
-                    // scoreless turns to the config's count, each losing their
-                    // rack
-                    PegMove::Pass if pass_ends_the_game => {
-                        (alphabet.scaled_rack_score(opp_rack)
-                            - alphabet.scaled_rack_score(mover_rack)) as f32
-                    }
-                    PegMove::Pass => {
-                        // PEG2-7: with two or more in the bag, draw every tile
-                        // from the same end -- pop, the back -- and store a
-                        // scenario reversed to match. Do NOT reuse
-                        // Bag::replenish for the enumeration: it pops for even
-                        // players and shifts for odd ones, which on a reversed
-                        // bag hands p1 the leftover instead of the next popped
-                        // tile.
-                        r2[mover as usize].clear();
-                        r2[mover as usize].extend_from_slice(mover_rack);
-                        r2[opp as usize].clear();
-                        r2[opp as usize].extend_from_slice(opp_rack);
-                        pass_memo.renew();
-                        let mut search = OneInBag {
-                            gc,
-                            kwg,
-                            arm_tables,
-                            klv,
-                            sub: &mut *sub,
-                            mg: &mut *mg,
-                            memo: &mut pass_memo,
-                            limits,
-                            exact: true,
-                            line: Some(&mut *line),
-                            placed: &mut *placed,
-                        };
-                        let v = -Self::one_in_bag_minimax(
-                            &mut search,
-                            board,
-                            r2,
-                            OneInBagTurn {
-                                mover: opp,
-                                bag_tile: t,
-                                passes: pass_passes,
-                                zeros: pass_zeros,
-                                answering: true,
-                            },
-                        )?;
-                        *exact &= search.exact;
-                        v
-                    }
-                })
-            })
+            peg_value(
+                unseen,
+                score_diff,
+                opp_rack,
+                margins,
+                |t, drawn, opp_rack, exact| {
+                    Ok(match cand {
+                        PegMove::Place(play) => Self::peg_place_endgame(
+                            sub, position, play, drawn, opp_rack, limits, exact,
+                        )?,
+                        // the pass ends the game at once when it brings the
+                        // scoreless turns to the config's count, each losing
+                        // their rack
+                        PegMove::Pass if pass_ends_the_game => {
+                            (alphabet.scaled_rack_score(opp_rack)
+                                - alphabet.scaled_rack_score(mover_rack))
+                                as f32
+                        }
+                        PegMove::Pass => {
+                            // PEG2-7: with two or more in the bag, draw every
+                            // tile from the same end -- pop, the back -- and
+                            // store a scenario reversed to match. Do NOT reuse
+                            // Bag::replenish for the enumeration: it pops for
+                            // even players and shifts for odd ones, which on a
+                            // reversed bag hands p1 the leftover instead of
+                            // the next popped tile.
+                            r2[mover as usize].clear();
+                            r2[mover as usize].extend_from_slice(mover_rack);
+                            r2[opp as usize].clear();
+                            r2[opp as usize].extend_from_slice(opp_rack);
+                            pass_memo.renew();
+                            let mut search = OneInBag {
+                                gc,
+                                kwg,
+                                arm_tables,
+                                klv,
+                                sub: &mut *sub,
+                                mg: &mut *mg,
+                                memo: &mut pass_memo,
+                                limits,
+                                exact: true,
+                                line: Some(&mut *line),
+                                placed: &mut *placed,
+                            };
+                            let v = -Self::one_in_bag_minimax(
+                                &mut search,
+                                board,
+                                r2,
+                                OneInBagTurn {
+                                    mover: opp,
+                                    bag_tile: t,
+                                    passes: pass_passes,
+                                    zeros: pass_zeros,
+                                    answering: true,
+                                },
+                            )?;
+                            *exact &= search.exact;
+                            v
+                        }
+                    })
+                },
+            )
         };
 
         while !state.done {
@@ -7045,9 +7078,13 @@ impl<
                 limits
                     .may_stop
                     .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
+                let run = &mut state.margins[i * k..][..k];
                 let valued = match ready.get_mut(i).and_then(Option::take) {
-                    Some(value) => Ok(value),
-                    None => value_move(&state.moves[i], &mut state.passing, &mut state.kept),
+                    Some(value) => {
+                        run.copy_from_slice(&ready_margins[i * k..][..k]);
+                        Ok(value)
+                    }
+                    None => value_move(&state.moves[i], &mut state.passing, &mut state.kept, run),
                 };
                 match valued {
                     Ok(value) => {
@@ -7068,7 +7105,7 @@ impl<
                     return Ok(PegResult {
                         win_pct: 0.0,
                         expected_margin: equity::Equity::ZERO,
-                        hypotheses: Vec::new(),
+                        row: None,
                         best_move: None,
                         moves: Vec::new(),
                         committed: true,
@@ -7099,6 +7136,7 @@ impl<
             }
             // the pass's values become the answer's, swapped in, not cloned
             std::mem::swap(&mut state.answered, &mut state.valued);
+            std::mem::swap(&mut state.answered_margins, &mut state.margins);
             state.valued.clear();
             state.valued.resize_with(state.answered.len(), || None);
             state.rank_answer();
@@ -7123,14 +7161,14 @@ impl<
 fn peg_value(
     unseen: &[(u8, u32)],
     score_diff: f32,
-    opp_rack: &mut Vec<u8>, // the caller's, refilled for each tile
+    opp_rack: &mut Vec<u8>,         // the caller's, refilled for each tile
+    margins: &mut [equity::Equity], // the move's run, a margin a tile, by tile
     mut endgame: impl FnMut(u8, u8, &[u8], &mut bool) -> error::Returns<f32>,
 ) -> error::Returns<PegValue> {
     let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
     let mut exact = true;
     let mut win = 0.0f32;
     let mut marg = 0.0f32;
-    let mut hyps: Vec<(u8, u32, equity::Equity)> = Vec::with_capacity(unseen.len());
     // the opponent's rack for each tile in the bag, in the caller's buffer:
     // every tile unseen but the one drawn
     for &(t, w) in unseen {
@@ -7154,16 +7192,11 @@ fn peg_value(
             } else {
                 0.0
             };
-        hyps.push((t, w, to_equity(vv)));
+        margins[t as usize] = to_equity(vv);
     }
     win /= total;
     marg /= total;
-    Ok(PegValue {
-        win,
-        marg,
-        hyps,
-        exact,
-    })
+    Ok(PegValue { win, marg, exact })
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
@@ -7201,7 +7234,7 @@ fn peg_result(
     PegResult {
         win_pct: value.win,
         expected_margin: to_equity(value.marg),
-        hypotheses: value.hyps.clone(),
+        row: Some(best),
         best_move: Some(moves[best].clone()),
         moves: Vec::new(),
         committed: true,
@@ -7224,6 +7257,7 @@ pub struct PegProgress {
     score_diff: equity::Equity,
     committed: PegCommitted,
     clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
+    clairvoyant_margins: Vec<equity::Equity>, // its margin a tile, by tile
     // with exchanges legal, the positions the pass under way has valued (and
     // its depth), kept so a solve a limit stopped goes on from them
     exchange_memo: (i8, BagTable<f32>),
@@ -7251,6 +7285,7 @@ impl PegProgress {
             score_diff,
             committed: Default::default(),
             clairvoyant: None,
+            clairvoyant_margins: Vec::new(),
             exchange_memo: (0, BagTable::default()),
             endgames: 0,
             nodes: 0,
@@ -7294,11 +7329,28 @@ impl PegProgress {
                     play: committed.moves[i].clone(),
                     win_pct: value.win,
                     expected_margin: to_equity(value.marg),
-                    hypotheses: value.hyps.clone(),
+                    row: i,
                     exact: value.exact,
                 }
             })
             .collect()
+    }
+
+    // the hypotheses of a row of the last solve's answer (PegResult::row,
+    // PegMoveValue::row): each tile the mover cannot see, its count, and the
+    // row's margin were it in the bag, read from the answer's margins; with no
+    // row, the clairvoyant model's (none before it valued every tile)
+    pub fn hypotheses(&self, row: Option<usize>) -> PegHypotheses<'_> {
+        let k = self.unseen_tally.len();
+        let margins = match row {
+            Some(i) => &self.committed.answer_margins()[i * k..][..k],
+            None => &self.clairvoyant_margins[..],
+        };
+        PegHypotheses {
+            tally: &self.unseen_tally,
+            margins,
+            at: 0,
+        }
     }
 
     // where the last solve's answer lists this move, best first (the place
@@ -7335,6 +7387,8 @@ struct PegCommitted {
     ranked: Vec<usize>,
     places: Vec<usize>,
     kept: PassKept,
+    margins: Vec<equity::Equity>,
+    answered_margins: Vec<equity::Equity>,
 }
 
 // what valuing a move of the committed model refills for each tile, kept from
@@ -7357,6 +7411,17 @@ impl PegCommitted {
             &self.answered
         } else {
             &self.valued
+        }
+    }
+
+    // each tile's margin of those values, a run of the unseen tiles' count a
+    // move, at the move's index times that count
+    #[inline(always)]
+    fn answer_margins(&self) -> &[equity::Equity] {
+        if self.answer.is_some() {
+            &self.answered_margins
+        } else {
+            &self.margins
         }
     }
 
@@ -7387,23 +7452,25 @@ pub enum PegMove {
 }
 
 // a move of a search with a tile in the bag and its value: its share of the
-// bag's tiles won (a tie counted half), its mean margin, its margin for each
-// tile the bag may hold (the tile, its count, the margin), and whether every
-// endgame valuing it was searched to its end
+// bag's tiles won (a tie counted half), its mean margin, its row of the answer
+// (PegProgress::hypotheses reads its margin for each tile the bag may hold),
+// and whether every endgame valuing it was searched to its end
 #[derive(Clone)]
 pub struct PegMoveValue {
     pub play: PegMove,
     pub win_pct: f32,
     pub expected_margin: equity::Equity,
-    pub hypotheses: Vec<(u8, u32, equity::Equity)>,
+    pub row: usize,
     pub exact: bool,
 }
 
+// row: the best move's row of the answer, as PegMoveValue::row; none in the
+// clairvoyant model, or before a move was valued
 #[derive(Clone)]
 pub struct PegResult {
     pub win_pct: f32,
     pub expected_margin: equity::Equity,
-    pub hypotheses: Vec<(u8, u32, equity::Equity)>,
+    pub row: Option<usize>,
     pub best_move: Option<PegMove>,
     pub moves: Vec<PegMoveValue>, // the committed model's alone: every move valued, best first
     pub committed: bool,
@@ -7413,14 +7480,47 @@ pub struct PegResult {
 }
 
 // a move's value in the committed model: the share of the bag's tiles it wins
-// (a tie counted half), its mean margin, each tile's margin, and whether every
-// endgame valuing it was searched to its end
+// (a tie counted half), its mean margin, and whether every endgame valuing it
+// was searched to its end; each tile's margin is in the search's margins
 #[derive(Clone)]
 struct PegValue {
     win: f32,
     marg: f32,
-    hyps: Vec<(u8, u32, equity::Equity)>,
     exact: bool,
+}
+
+// a row's hypotheses as PegProgress::hypotheses reads them: each tile the
+// mover cannot see (in tile order), its count, and the row's margin, joined as
+// read from the tally and the row's run of margins, a margin a tile
+pub struct PegHypotheses<'a> {
+    tally: &'a [u8],
+    margins: &'a [equity::Equity],
+    at: usize,
+}
+
+impl PegHypotheses<'_> {
+    // whether the row has none: no row valued yet
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.margins.is_empty()
+    }
+}
+
+impl Iterator for PegHypotheses<'_> {
+    type Item = (u8, u32, equity::Equity);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(&margin) = self.margins.get(self.at) {
+            let tile = self.at;
+            self.at += 1;
+            let count = self.tally[tile];
+            if count != 0 {
+                return Some((tile as u8, count as u32, margin));
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -8048,13 +8148,15 @@ struct PassLine {
 
 // a position with a tile in the bag as the peg model searches it: the mover,
 // the board, the mover's rack, the tiles they cannot see with each one's count,
-// and the scoreless turns before it (the passes and the zeros)
+// the alphabet's tile count (blank included: a move's run of margins, one a
+// tile), and the scoreless turns before it (the passes and the zeros)
 #[derive(Clone, Copy)]
 struct PegPosition<'a> {
     mover: u8,
     board: &'a [u8],
     mover_rack: &'a [u8],
     unseen: &'a [(u8, u32)],
+    tiles: usize,
     scoreless: [u8; 2],
 }
 
@@ -10424,6 +10526,90 @@ mod tests {
     use super::{EndgameSolver, PegMove, splitmix64};
     use crate::{alphabet, anagrams, bites, build, equity, fash, game_config, klv, kwg, movegen};
 
+    // a one-in-bag answer with every row's hypotheses read out of the search's
+    // margins, as the tests compare them
+    #[derive(Clone)]
+    struct Solved {
+        win_pct: f32,
+        expected_margin: equity::Equity,
+        hypotheses: Vec<(u8, u32, equity::Equity)>,
+        best_move: Option<PegMove>,
+        moves: Vec<SolvedMove>,
+        committed: bool,
+        exact: bool,
+        depth: i8,
+    }
+
+    #[derive(Clone)]
+    struct SolvedMove {
+        play: PegMove,
+        win_pct: f32,
+        expected_margin: equity::Equity,
+        hypotheses: Vec<(u8, u32, equity::Equity)>,
+        exact: bool,
+    }
+
+    // the answer with its hypotheses, and its moves' (all of them, as a resume
+    // filling moves lists them)
+    fn solved(progress: &super::PegProgress, result: super::PegResult) -> Solved {
+        Solved {
+            win_pct: result.win_pct,
+            expected_margin: result.expected_margin,
+            hypotheses: progress.hypotheses(result.row).collect(),
+            best_move: result.best_move,
+            moves: (result.moves.into_iter())
+                .map(|m| SolvedMove {
+                    hypotheses: progress.hypotheses(Some(m.row)).collect(),
+                    play: m.play,
+                    win_pct: m.win_pct,
+                    expected_margin: m.expected_margin,
+                    exact: m.exact,
+                })
+                .collect(),
+            committed: result.committed,
+            exact: result.exact,
+            depth: result.depth,
+        }
+    }
+
+    // solve_peg_one_in_bag, its answer read out with its progress (solved)
+    trait SolveFull {
+        fn solve_peg_one_in_bag_full(
+            &mut self,
+            mover: u8,
+            board: &[u8],
+            mover_rack: &[u8],
+            unseen_tally: &[u8],
+            score_diff: equity::Equity,
+            limits: &super::Limits,
+        ) -> crate::error::Returns<Result<Solved, super::PegUnsupported>>;
+    }
+
+    impl<
+        N: kwg::Node,
+        L: kwg::Node,
+        const LEAN: bool,
+        G: movegen::LaneBits,
+        const JUMPS: bool,
+        const ANY_SIDE: bool,
+    > SolveFull for EndgameSolver<'_, N, L, LEAN, G, JUMPS, ANY_SIDE>
+    {
+        fn solve_peg_one_in_bag_full(
+            &mut self,
+            mover: u8,
+            board: &[u8],
+            mover_rack: &[u8],
+            unseen_tally: &[u8],
+            score_diff: equity::Equity,
+            limits: &super::Limits,
+        ) -> crate::error::Returns<Result<Solved, super::PegUnsupported>> {
+            let mut progress =
+                super::PegProgress::new(mover, board, mover_rack, unseen_tally, score_diff);
+            let result = self.resume_peg_one_in_bag(&mut progress, limits)?;
+            Ok(result.map(|result| solved(&progress, result)))
+        }
+    }
+
     #[inline]
     fn tiny_word_list() -> Vec<bites::Bites> {
         let gc = game_config::make_english_game_config();
@@ -11113,6 +11299,7 @@ mod tests {
                 .resume_peg_one_in_bag_on_threads(&mut progress, &super::Limits::NONE, threads)
                 .unwrap()
                 .expect("english one-in-bag is always solvable");
+            let result = solved(&progress, result);
             let moves = (result.moves.iter())
                 .map(|m| {
                     (
@@ -11420,7 +11607,7 @@ mod tests {
                                 .unwrap()
                         };
                         let Ok(full) = new()
-                            .solve_peg_one_in_bag(
+                            .solve_peg_one_in_bag_full(
                                 0,
                                 &board,
                                 &rack,
@@ -11438,7 +11625,7 @@ mod tests {
                                 ..super::Limits::NONE
                             };
                             let got = new()
-                                .solve_peg_one_in_bag(
+                                .solve_peg_one_in_bag_full(
                                     0,
                                     &board,
                                     &rack,
@@ -14120,7 +14307,7 @@ mod tests {
         let mut egs =
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
-            .solve_peg_one_in_bag(
+            .solve_peg_one_in_bag_full(
                 0,
                 &board,
                 &mover_rack,
@@ -14155,7 +14342,7 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let result = egs
-            .solve_peg_one_in_bag(
+            .solve_peg_one_in_bag_full(
                 0,
                 &board,
                 &mover_rack,
@@ -14217,7 +14404,7 @@ mod tests {
                 for &y in &tiles {
                     let mover_rack = [x, y];
                     let mut solve = |limits: &super::Limits| {
-                        egs.solve_peg_one_in_bag(
+                        egs.solve_peg_one_in_bag_full(
                             0,
                             &board,
                             &mover_rack,
@@ -14304,7 +14491,7 @@ mod tests {
         mover_rack: &[u8],
         unseen_tally: &[u8],
         limits: &super::Limits,
-    ) -> (super::PegResult, u64) {
+    ) -> (Solved, u64) {
         let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(gc, kwg, arm_tables).unwrap();
         let endgames = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let heard = endgames.clone();
@@ -14316,7 +14503,7 @@ mod tests {
         };
         let result = egs
             .listening(listener, |egs| {
-                egs.solve_peg_one_in_bag(
+                egs.solve_peg_one_in_bag_full(
                     0,
                     board,
                     mover_rack,
@@ -14701,7 +14888,7 @@ mod tests {
                     let full =
                         EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
                             .unwrap()
-                            .solve_peg_one_in_bag(
+                            .solve_peg_one_in_bag_full(
                                 0,
                                 &board,
                                 &mover_rack,
@@ -14719,7 +14906,7 @@ mod tests {
                         equity::Equity::ZERO,
                     );
                     let mut kept = None;
-                    let mut last: Option<super::PegResult> = None;
+                    let mut last: Option<Solved> = None;
                     for step in 1.. {
                         assert!(step < 10000, "the steps never ended");
                         let mut egs =
@@ -14738,6 +14925,7 @@ mod tests {
                             .resume_peg_one_in_bag(&mut progress, &limits)
                             .unwrap()
                             .expect("both configs solve one in the bag");
+                        let got = solved(&progress, got);
                         // resumed with no room for a position more, it answers
                         // as it did: a search begun again would answer from
                         // depth 0
@@ -14754,6 +14942,7 @@ mod tests {
                                 )
                                 .unwrap()
                                 .expect("both configs solve one in the bag");
+                            let again = solved(&progress, again);
                             assert_eq!(
                                 (again.depth, again.exact, &again.hypotheses),
                                 (got.depth, got.exact, &got.hypotheses),
@@ -14984,7 +15173,7 @@ mod tests {
                 nodes.set(0);
                 let result = egs
                     .listening(heard(), |egs| {
-                        egs.solve_peg_one_in_bag(
+                        egs.solve_peg_one_in_bag_full(
                             0,
                             &board,
                             &[1, 2], // A B
@@ -16238,7 +16427,7 @@ mod tests {
         let e = equity::Equity::new;
         let mut solve = |passes, zeros| {
             egs.set_scoreless_turns(passes, zeros);
-            egs.solve_peg_one_in_bag(
+            egs.solve_peg_one_in_bag_full(
                 0,
                 &board,
                 &mover_rack,
@@ -16399,7 +16588,7 @@ mod tests {
         let mut egs =
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
-            .solve_peg_one_in_bag(
+            .solve_peg_one_in_bag_full(
                 0,
                 &board,
                 &mover_rack,
@@ -16417,7 +16606,7 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc_en, &kwg, &arm_tables_en).unwrap();
         assert!(
             egs_en
-                .solve_peg_one_in_bag(
+                .solve_peg_one_in_bag_full(
                     0,
                     &board,
                     &mover_rack,
@@ -16435,7 +16624,7 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc_bad, &kwg, &arm_tables_bad).unwrap();
         assert!(matches!(
             egs_bad
-                .solve_peg_one_in_bag(
+                .solve_peg_one_in_bag_full(
                     0,
                     &board,
                     &mover_rack,
@@ -16625,7 +16814,7 @@ mod tests {
                             )
                             .unwrap();
                             let got = egs
-                                .solve_peg_one_in_bag(
+                                .solve_peg_one_in_bag_full(
                                     0,
                                     board,
                                     mrack,
@@ -17020,7 +17209,7 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let t0 = std::time::Instant::now();
         let result = egs
-            .solve_peg_one_in_bag(
+            .solve_peg_one_in_bag_full(
                 0,
                 &board,
                 &rack,
@@ -17066,7 +17255,7 @@ mod tests {
                         for score_diff in [e(0), e(3000), e(-1000)] {
                             let case = (&board[..], mover_rack, unseen, score_diff);
                             let one = egs
-                                .solve_peg_one_in_bag(
+                                .solve_peg_one_in_bag_full(
                                     0,
                                     &board,
                                     &mover_rack,
@@ -17232,7 +17421,7 @@ mod tests {
         unseen_tally[2] = 0; // A H, one of them in the bag
         let result = egs
             .listening(listener, |egs| {
-                egs.solve_peg_one_in_bag(
+                egs.solve_peg_one_in_bag_full(
                     0,
                     &board,
                     &[1, 2],
@@ -18768,10 +18957,7 @@ mod tests {
             let all = progress.answer_moves(0..usize::MAX);
             assert_eq!(all.len(), progress.answer_total());
             assert!(best.best_move == all.first().map(|first| first.play.clone()));
-            assert!(
-                all.first()
-                    .is_none_or(|first| first.hypotheses == best.hypotheses)
-            );
+            assert!(all.first().is_none_or(|first| Some(first.row) == best.row));
             assert!(all.windows(2).all(|pair| {
                 let (x, y) = (&pair[0], &pair[1]);
                 x.win_pct > y.win_pct
@@ -18789,7 +18975,7 @@ mod tests {
                         x.play == y.play
                             && x.win_pct == y.win_pct
                             && x.expected_margin == y.expected_margin
-                            && x.hypotheses == y.hypotheses
+                            && x.row == y.row
                             && x.exact == y.exact
                     }));
                     ranged += (to - from > 1 && to - from < all.len()) as usize;

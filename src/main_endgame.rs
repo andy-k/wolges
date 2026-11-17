@@ -1776,14 +1776,15 @@ fn solve_position<N: kwg::Node>(
         } else if bag_size == 1 {
             let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
             egs.set_scoreless_turns(solving.scoreless[0], solving.scoreless[1]);
+            let mut progress = endgame::PegProgress::new(
+                0,
+                &board_tiles,
+                &question.rack,
+                &available_tally,
+                scaled_score_diff,
+            );
             let result = egs.resume_peg_one_in_bag_on_threads(
-                &mut endgame::PegProgress::new(
-                    0,
-                    &board_tiles,
-                    &question.rack,
-                    &available_tally,
-                    scaled_score_diff,
-                ),
+                &mut progress,
                 &solving.limits,
                 solving.threads,
             )?;
@@ -1795,7 +1796,8 @@ fn solve_position<N: kwg::Node>(
                     return Ok(());
                 }
             };
-            let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
+            let hypotheses = progress.hypotheses(result.row).collect::<Vec<_>>();
+            let total_unseen: u32 = hypotheses.iter().map(|&(_, weight, _)| weight).sum();
 
             match &result.best_move {
                 Some(endgame::PegMove::Pass) => {
@@ -1842,10 +1844,10 @@ fn solve_position<N: kwg::Node>(
                 std::io::stdout(),
                 "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
                  (current score {score_diff:+})",
-                result.hypotheses.len(),
+                hypotheses.len(),
                 total_unseen,
             )?;
-            for &(bag_tile, weight, value) in &result.hypotheses {
+            for &(bag_tile, weight, value) in &hypotheses {
                 let mut opp = Vec::new();
                 for (u, &c) in available_tally.iter().enumerate() {
                     let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
