@@ -13320,7 +13320,7 @@ mod tests {
                 "{p} stops before the star"
             );
         }
-        assert!(plays.contains(&"8E SEAT 8".to_string()));
+        assert!(plays.iter().any(|i| i == "8E SEAT 8"));
         assert_eq!(plays.len(), 50);
     }
 
