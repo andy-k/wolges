@@ -250,6 +250,30 @@ type SimDriver = (
     move_picker::Simmer<'static, kwg::Node24, kwg::Node24, true>,
 );
 
+// the commands that built a session, in one String, each ending where ends
+// says, so that a command logged only grows them
+#[derive(Default)]
+struct Log {
+    text: String,
+    ends: Vec<usize>,
+}
+
+impl Log {
+    #[inline(always)]
+    fn push(&mut self, line: &str) {
+        self.text.push_str(line);
+        self.ends.push(self.text.len());
+    }
+
+    #[inline(always)]
+    fn lines(&self) -> impl Iterator<Item = &str> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        starts
+            .zip(&self.ends)
+            .map(|(from, &to)| &self.text[from..to])
+    }
+}
+
 pub struct Session {
     game_config: &'static std::sync::Arc<game_config::GameConfig>,
     spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
@@ -283,7 +307,7 @@ pub struct Session {
     challenge_rule: ChallengeRule,
     public_view: bool, // a sim's inference knows neither rack, as an annotator
     printing: bool,    // false while a file's game is read in
-    log: Vec<String>,
+    log: Log,
     quiet: bool, // no progress printed while a sim or a solve runs
     memory: Option<endgame::MemoryLimit>, // the memory an endgame solve stays within
 }
@@ -500,7 +524,7 @@ impl Session {
             },
             public_view: false,
             printing: true,
-            log: Vec::new(),
+            log: Log::default(),
             quiet,
             memory,
         })
@@ -601,6 +625,7 @@ impl Session {
             return self.run_one(&words.join(" "), &words);
         }
         let args = &words[1..];
+        // what is logged: an empty String logs the line as it was typed
         let logged = match words[0].as_str() {
             "lexicon" => {
                 let [path] = args else {
@@ -625,7 +650,7 @@ impl Session {
                     return Err(format!("{path} has tiles past these rules' {alphabet_len}").into());
                 }
                 self.use_kwg(path, kwg);
-                line.to_string()
+                String::new()
             }
             "leaves" => {
                 let [path] = args else {
@@ -649,7 +674,7 @@ impl Session {
                     self.klv = klv;
                     self.infer_tables = None;
                 }
-                line.to_string()
+                String::new()
             }
             "rules" => {
                 let [name] = args else {
@@ -679,7 +704,7 @@ impl Session {
                     }
                 };
                 self.use_rules(game_config)?;
-                line.to_string()
+                String::new()
             }
             "new" => {
                 let seed = match args {
@@ -720,7 +745,7 @@ impl Session {
                         .set_word(tiles, &mut rack)?;
                 }
                 self.type_rack(seat, rack)?;
-                line.to_string()
+                String::new()
             }
             "play" | "phony" => {
                 let phony = words[0] == "phony";
@@ -753,7 +778,7 @@ impl Session {
                     self.push_turn(play, false)?;
                 }
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "end" => {
                 // declare the game over here; the shell cannot see the end
@@ -773,7 +798,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "withdraw" | "bonus" | "challenge" => {
                 // for a challenge, what the last move's words say: the board
@@ -963,7 +988,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "lost" => {
                 // what a challenge under triple does, by hand: player N lost
@@ -990,7 +1015,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "nickname" => {
                 const USAGE: &str = "nickname N NICKNAME [FULL NAME]";
@@ -1011,7 +1036,7 @@ impl Session {
                     full.join(" ")
                 };
                 self.names[n - 1] = Some((nickname.clone(), full));
-                line.to_string()
+                String::new()
             }
             "time" => {
                 const USAGE: &str = "time N POINTS";
@@ -1042,7 +1067,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "adjust" => {
                 const USAGE: &str = "adjust POINTS (below 0 for fewer)";
@@ -1067,7 +1092,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "note" => {
                 if args.is_empty() {
@@ -1090,7 +1115,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "lines" => {
                 let game = self.game.as_ref().ok_or("no game: new first")?;
@@ -1152,7 +1177,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "challenges" => {
                 const USAGE: &str =
@@ -1177,7 +1202,7 @@ impl Session {
                     },
                     _ => return Err(USAGE.into()),
                 };
-                line.to_string()
+                String::new()
             }
             "infer" => {
                 const USAGE: &str = "infer mover, or infer public";
@@ -1186,7 +1211,7 @@ impl Session {
                     ["public"] => true,
                     _ => return Err(USAGE.into()),
                 };
-                line.to_string()
+                String::new()
             }
             "progress" => {
                 self.quiet = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -1228,7 +1253,7 @@ impl Session {
                     self.rebuild()?;
                     return Err(e);
                 }
-                line.to_string()
+                String::new()
             }
             "back" | "forward" => {
                 let back = words[0] == "back";
@@ -1252,7 +1277,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "goto" => {
                 let [n] = args else {
@@ -1270,7 +1295,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "undo" => {
                 if !args.is_empty() {
@@ -1299,7 +1324,7 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
-                line.to_string()
+                String::new()
             }
             "bot" => {
                 let sim_ms = match args {
@@ -1396,7 +1421,7 @@ impl Session {
             }
             "log" => {
                 let mut out = std::io::stdout();
-                for line in &self.log {
+                for line in self.log.lines() {
                     writeln!(out, "{line}")?;
                 }
                 return Ok(());
@@ -1409,7 +1434,7 @@ impl Session {
                     .write(true)
                     .create_new(true)
                     .open(path)?;
-                for line in &self.log {
+                for line in self.log.lines() {
                     writeln!(file, "{line}")?;
                 }
                 return Ok(());
@@ -1467,7 +1492,8 @@ impl Session {
             }
             _ => return Err("no such command, help for the commands".into()),
         };
-        self.log.push(logged);
+        self.log
+            .push(if logged.is_empty() { line } else { &logged });
         self.end_sim();
         Ok(())
     }
@@ -3903,6 +3929,11 @@ fn completed(known: &[u8], needed: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a session's log, as a list of its lines
+    fn log_of(session: &Session) -> Vec<String> {
+        session.log.lines().map(str::to_string).collect()
+    }
     use wolges::build;
 
     // every two- and three-letter word of A, E, and T
@@ -3996,12 +4027,16 @@ mod tests {
         }
         // the bot answered the typed move, logged as its play
         assert_eq!(first.game.as_ref().unwrap().turns.len(), 2);
-        assert_eq!(first.log.len(), 5);
-        assert!(first.log[4].starts_with("play "), "{}", first.log[4]);
+        assert_eq!(log_of(&first).len(), 5);
+        assert!(
+            log_of(&first)[4].starts_with("play "),
+            "{}",
+            log_of(&first)[4]
+        );
         // read back as source reads it, the log replays the same game, with no
         // extra move
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
@@ -4067,10 +4102,10 @@ mod tests {
         assert!(first.game.as_ref().unwrap().turns[3].hidden);
         assert!(run(&mut first, "play exch 9").is_err());
         // logged as the long commands, and replayed the same
-        assert!(first.log.iter().any(|i| i == "rack 2 AT"));
-        assert!(first.log.iter().any(|i| i == "play 9H EA"));
+        assert!(log_of(&first).iter().any(|i| i == "rack 2 AT"));
+        assert!(log_of(&first).iter().any(|i| i == "play 9H EA"));
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
@@ -4110,7 +4145,7 @@ mod tests {
         let twice = 2 * alphabet.scaled_rack_score(&first.state.players[0].rack);
         assert_eq!(first.final_scores, Some(vec![score(0), score(1) + twice]));
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
@@ -4145,7 +4180,7 @@ mod tests {
         run(&mut first, "forward").unwrap();
         assert_eq!(first.final_scores, Some(vec![score + 2 * ee, 0]));
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
@@ -4234,7 +4269,7 @@ mod tests {
         assert!(first.state.players[1].rack.is_empty());
         run(&mut first, "play pass").unwrap();
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&second), snapshot(&first));
@@ -4255,7 +4290,7 @@ mod tests {
         run(&mut third, "play pass").unwrap();
         assert_eq!(third.game.as_ref().unwrap().turns.len(), 4);
         let mut fourth = session();
-        for line in third.log.clone() {
+        for line in log_of(&third).clone() {
             replay(&mut fourth, &line).unwrap();
         }
         assert_eq!(snapshot(&fourth), snapshot(&third));
@@ -4322,9 +4357,9 @@ mod tests {
         for line in GAME {
             run(&mut first, line).unwrap();
         }
-        assert_eq!(first.log, GAME);
+        assert_eq!(log_of(&first), GAME);
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             run(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
@@ -4386,7 +4421,7 @@ mod tests {
                 assert_eq!(snapshot(&session), before, "{bad}");
             }
         }
-        assert_eq!(session.log.len(), 3);
+        assert_eq!(log_of(&session).len(), 3);
     }
 
     #[test]
@@ -4399,11 +4434,19 @@ mod tests {
         run(&mut first, "bot").unwrap();
         run(&mut first, "rack TEATEAT").unwrap();
         run(&mut first, "bot sim 30").unwrap();
-        assert!(first.log[2].starts_with("play "), "{}", first.log[2]);
-        assert!(first.log[4].starts_with("play "), "{}", first.log[4]);
-        assert!(!first.log.iter().any(|line| line.starts_with("bot")));
+        assert!(
+            log_of(&first)[2].starts_with("play "),
+            "{}",
+            log_of(&first)[2]
+        );
+        assert!(
+            log_of(&first)[4].starts_with("play "),
+            "{}",
+            log_of(&first)[4]
+        );
+        assert!(!log_of(&first).iter().any(|line| line.starts_with("bot")));
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             run(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
@@ -4484,7 +4527,7 @@ mod tests {
         );
         // the game is untouched and nothing is logged; then a move ends the sim
         assert_eq!(snapshot(&session), before);
-        assert_eq!(session.log.len(), 2);
+        assert_eq!(log_of(&session).len(), 2);
         run(&mut session, "play 8G AT").unwrap();
         assert!(session.sim.is_none());
         assert!(run(&mut session, "sim drop 8G AT").is_err());
@@ -4522,10 +4565,10 @@ mod tests {
         assert!(rack.iter().all(|&t| t < polish));
         assert!(run(&mut first, "rules klingon").is_err());
         assert!(first.game.is_some());
-        assert_eq!(first.log.last().unwrap(), "new 7");
-        assert!(first.log.iter().any(|i| i == "rules polish"));
+        assert_eq!(log_of(&first).last().unwrap(), "new 7");
+        assert!(log_of(&first).iter().any(|i| i == "rules polish"));
         let mut second = session();
-        for line in &first.log {
+        for line in &log_of(&first) {
             run(&mut second, line).unwrap();
         }
         assert_eq!(snapshot(&second), snapshot(&first));
@@ -4639,7 +4682,7 @@ mod tests {
         second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert!(second.seats[1] == Seat::Given);
         assert_eq!(snapshot(&second), snapshot(&first));
-        assert!(second.log.iter().any(|i| i == "phony exch 3"));
+        assert!(log_of(&second).iter().any(|i| i == "phony exch 3"));
         assert_eq!(second.gcg_text().unwrap(), text);
         // back at their leave, the T: it is written as known, the rest as _
         run(&mut first, "back 4").unwrap();
@@ -4830,7 +4873,7 @@ mod tests {
         let mut third = session();
         third.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert_eq!(third.final_scores, first.final_scores);
-        assert!(third.log.contains(&format!("rack 2 {shown}")));
+        assert!(log_of(&third).contains(&format!("rack 2 {shown}")));
         // a cost the file gets wrong stops the load there
         let wrong = text.replace(&line, &format!(">p2: {shown} ({shown}) -{} ", cost + 1));
         let error = session()
@@ -4871,7 +4914,7 @@ mod tests {
             assert_eq!(second.gcg_text().unwrap(), text);
             second
         };
-        assert!(loads_back(&text, &first).log.iter().any(|i| i == "end"));
+        assert!(log_of(&loads_back(&text, &first)).iter().any(|i| i == "end"));
         // with both shown, each rack counts against its player
         run(&mut first, "rack 2 EE").unwrap();
         let text = first.gcg_text().unwrap();
@@ -4947,13 +4990,13 @@ mod tests {
         let scores = |s: &Session| s.state.players.iter().map(|p| p.score).collect::<Vec<_>>();
         // logged as the commands that made it: the players' names, a rack and a
         // play for each move, then each rack as it is
-        assert!(second.log[0].starts_with("new "));
+        assert!(log_of(&second)[0].starts_with("new "));
         assert_eq!(
-            second.log[1..3],
+            log_of(&second)[1..3],
             ["nickname 1 p1 player 1", "nickname 2 p2 player 2"]
         );
-        assert_eq!(second.log.len(), 3 + 2 * 5 + 2);
-        assert_eq!(second.log[3..5], ["rack AETAETE", "phony 8G AT"]);
+        assert_eq!(log_of(&second).len(), 3 + 2 * 5 + 2);
+        assert_eq!(log_of(&second)[3..5], ["rack AETAETE", "phony 8G AT"]);
         // a total that disagrees with its score stops the load there (a score
         // the board does not make is a misscore)
         let wrong = text.replace("8G AT +4 4", "8G AT +5 4");
@@ -5002,7 +5045,7 @@ mod tests {
         incomplete.push_str("\n#incomplete AAEETTT\n");
         let mut third = session();
         third.load_moves(&gcg_moves(&incomplete).unwrap()).unwrap();
-        assert_eq!(third.log.last().unwrap(), "rack AAEETTT");
+        assert_eq!(log_of(&third).last().unwrap(), "rack AAEETTT");
         // #rack1 is #player1's, here the second player to move
         let swapped = "#player1 bob\n#player2 ann\n>ann: AETAETE 8G AT +4 4\n#rack1 EEE\n";
         let moves = gcg_moves(swapped).unwrap();
@@ -5080,7 +5123,7 @@ mod tests {
         let mut second = session();
         second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert_eq!(second.gcg_text().unwrap(), text);
-        assert!(second.log.iter().any(|i| i == "adjust 1"));
+        assert!(log_of(&second).iter().any(|i| i == "adjust 1"));
         // without the note, as other programs write it, the same game loads
         let plain = text.replace("#note the correct score is 4\n", "");
         let mut third = session();
@@ -5507,7 +5550,7 @@ mod tests {
         assert!(!mover.is_empty());
         run(&mut session, "infer public").unwrap();
         assert!(session.public_view);
-        assert!(session.log.iter().any(|i| i == "infer public"));
+        assert!(log_of(&session).iter().any(|i| i == "infer public"));
         let public = session.kept_leaves().unwrap();
         assert!(public.len() >= mover.len());
         assert_ne!(public, mover);
@@ -5528,7 +5571,11 @@ mod tests {
         assert!(run(&mut session, "progress").is_err());
         assert!(run(&mut session, "progress loud").is_err());
         assert!(!session.quiet);
-        assert!(!session.log.iter().any(|line| line.starts_with("progress")));
+        assert!(
+            !log_of(&session)
+                .iter()
+                .any(|line| line.starts_with("progress"))
+        );
     }
 
     // a move's reply is refused before a game; on a board holding every tile
@@ -5633,7 +5680,7 @@ mod tests {
         )
         .unwrap();
         second.use_kwg("tiny", session.kwg().unwrap());
-        for line in session.log.clone() {
+        for line in log_of(&session).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&second), snapshot(&session));
@@ -5742,7 +5789,7 @@ mod tests {
         assert!(text.ends_with(">p2: EEE -- -4 0\n"), "{text}");
         loads_back(&text, &second);
         let mut third = session();
-        for line in second.log.clone() {
+        for line in log_of(&second).clone() {
             replay(&mut third, &line).unwrap();
         }
         assert_eq!(third.loser, Some(1));
@@ -5842,7 +5889,7 @@ mod tests {
         assert_eq!(at(&fourth), Some((1, 1)));
         // the log replays to the same game
         let mut fifth = session();
-        for line in second.log.clone() {
+        for line in log_of(&second).clone() {
             replay(&mut fifth, &line).unwrap();
         }
         assert_eq!(snapshot(&fifth), snapshot(&second));
@@ -5873,7 +5920,7 @@ mod tests {
         assert!(run(&mut first, "line 2").is_err());
         // the log replays to the same game, lines and all
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             replay(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&second), what_if);
@@ -5987,7 +6034,7 @@ mod tests {
         assert_eq!(first.state.players[1].rack.len(), 2);
         run(&mut first, "play 9H EA").unwrap();
         let mut second = session();
-        for line in first.log.clone() {
+        for line in log_of(&first).clone() {
             run(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&second), snapshot(&first));
