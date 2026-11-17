@@ -310,7 +310,7 @@ impl<L: kwg::Node> Klv<L> {
         nodes.extend([node; 2]);
         counts.extend([0u32; 2]);
         Some(Klv {
-            kwg: kwg::Kwg(nodes.into_boxed_slice()),
+            kwg: kwg::Kwg(nodes),
             counts: counts.into_boxed_slice(),
             leaves: Box::new([]),
             racks: None,

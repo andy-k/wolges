@@ -12621,7 +12621,7 @@ mod tests {
             }
         }
         assert!(turned > 0, "no run could be turned round");
-        let descending = kwg::Kwg(nodes.into_boxed_slice());
+        let descending = kwg::Kwg(nodes);
         assert!(!descending.runs_ascend());
         for racks in [
             [&[2u8, 8][..], &[1, 1, 19]],
