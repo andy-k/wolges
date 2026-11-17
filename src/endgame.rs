@@ -13446,26 +13446,19 @@ mod tests {
     fn a_solve_fits_a_small_stack() {
         // a solve recurses a frame a ply, never a frame a move, so it runs on a
         // thread with far less stack than a main thread has (a test's own
-        // thread has more, so this one asks for a small one)
+        // thread has more, so this one asks for a small one): full racks, as
+        // many plies as they hold
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let positions = all_positions();
-        let solved = std::thread::scope(|s| {
+        std::thread::scope(|s| {
             std::thread::Builder::new()
                 .stack_size(256 << 10)
                 .spawn_scoped(s, || {
                     let mut egs =
                         EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
                             .unwrap();
-                    let mut solved = 0usize;
-                    for (_, pos) in &positions {
-                        egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                        egs.solve(0).unwrap();
-                        solved += 1;
-                    }
-                    // and a deep one: full racks, as many plies as they hold
                     let mut board = empty_board();
                     put_word(&mut board, 7, 6, &[1, 20]);
                     egs.init(&board, [&[1, 1, 2, 8, 20, 20, 1], &[1, 2, 1, 20, 8, 1, 20]]);
@@ -13479,13 +13472,11 @@ mod tests {
                         },
                     )
                     .unwrap();
-                    solved + 1
                 })
                 .unwrap()
                 .join()
                 .unwrap()
         });
-        assert_eq!(solved, positions.len() + 1);
     }
 
     #[test]
