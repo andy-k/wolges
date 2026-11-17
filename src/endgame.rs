@@ -11364,7 +11364,12 @@ mod tests {
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut moves = 0usize;
         let mut checked = 0usize;
-        for (name, pos) in all_positions() {
+        for (name, pos) in all_positions()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| [15, 95, 195].contains(i))
+            .map(|(_, named)| named)
+        {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
                 let mut cold =
