@@ -419,6 +419,7 @@ pub struct Simmer<
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
     late_board: Box<[u8]>, // the board the late graph was pruned for
+    thread_kept: Vec<(simmer::Simmer<R>, SimRows)>, // each thread's, kept run to run
 }
 
 // the opponent's last move and the board before it, from which a sim infers
@@ -447,12 +448,93 @@ pub struct SimRows {
 }
 
 impl SimRows {
+    // the rows emptied, their memory kept
+    #[inline(always)]
+    fn clear(&mut self) {
+        self.objective.clear();
+        self.equity.clear();
+        self.win_rate.clear();
+    }
+
+    // append a copy of the rows of the iterations that follow these
+    #[inline(always)]
+    fn extend_from(&mut self, later: &SimRows) {
+        self.objective.extend_from_slice(&later.objective);
+        self.equity.extend_from_slice(&later.equity);
+        self.win_rate.extend_from_slice(&later.win_rate);
+    }
+
     // append the rows of the iterations that follow these
     #[inline]
     pub fn extend(&mut self, later: SimRows) {
-        self.objective.extend(later.objective);
-        self.equity.extend(later.equity);
-        self.win_rate.extend(later.win_rate);
+        self.extend_from(&later);
+    }
+}
+
+// what a sim's block rows are rolled out by, apart from the simmer: the
+// tables, the decision's seed, and the late graph, if any, borrowed apart from
+// the sim so that its threads can read them while it takes rows in
+struct RowsOf<'a, 'g, N: kwg::Node, L: kwg::Node> {
+    game_config: &'a game_config::GameConfig,
+    kwg: &'a kwg::Kwg<N>,
+    arm_tables: &'a anagrams::ArmTables,
+    klv: &'a klv::Klv<L>,
+    win_pct_table: Option<&'a win_pct::WinPctTable>,
+    decision_seed: u64,
+    late_graph: Option<&'g (kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
+}
+
+impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
+    // the rows of the iterations after lo up to hi for plays, in place of
+    // those held, on a simmer prepared as pristine is, which each iteration is
+    // restored to
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn push_rows<const OBSERVE: bool, R: rand::Rng + SeedableRng + simmer::CopyState>(
+        &self,
+        simmer: &mut simmer::Simmer<R>,
+        pristine: &game_state::GameState,
+        move_generator: &movegen::KurniaMoveGenerator,
+        lo: u64,
+        hi: u64,
+        plays: &[usize],
+        rows: &mut SimRows,
+    ) -> error::Returns<()> {
+        rows.clear();
+        for sim_iter in lo + 1..=hi {
+            simmer.restore_prepared(pristine);
+            simmer.reseed(mix(self.decision_seed, sim_iter));
+            simmer.prepare_iteration();
+            for &play_index in plays {
+                let play = &move_generator.plays[play_index].play;
+                let (value, sim_spread, win_prob) = match self.late_graph {
+                    Some((kwg, arm_tables)) => rollout_objective(
+                        simmer,
+                        self.game_config,
+                        kwg,
+                        arm_tables,
+                        self.klv,
+                        play,
+                        self.win_pct_table,
+                    )?,
+                    None => rollout_objective(
+                        simmer,
+                        self.game_config,
+                        self.kwg,
+                        self.arm_tables,
+                        self.klv,
+                        play,
+                        self.win_pct_table,
+                    )?,
+                };
+                rows.objective.push(value);
+                if OBSERVE {
+                    rows.equity.push(simmer::spread_points(sim_spread));
+                    rows.win_rate.push(win_prob);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -524,6 +606,7 @@ impl<
             infer: None,
             late_graph: None,
             late_board: Box::default(),
+            thread_kept: Vec::new(),
         }
     }
 
@@ -1560,7 +1643,7 @@ impl<
     N: kwg::Node + Sync,
     L: kwg::Node + Sync,
     const OBSERVE: bool,
-    R: rand::Rng + SeedableRng + simmer::CopyState + Sync,
+    R: rand::Rng + SeedableRng + simmer::CopyState + Send + Sync,
 > Simmer<'a, N, L, OBSERVE, R>
 {
     #[inline]
@@ -1685,40 +1768,34 @@ impl<
             equity: Vec::new(),
             win_rate: Vec::new(),
         };
-        for sim_iter in lo + 1..=hi {
-            simmer.restore_prepared(&pristine);
-            simmer.reseed(mix(self.decision_seed, sim_iter));
-            simmer.prepare_iteration();
-            for &play_index in plays {
-                let play = &move_generator.plays[play_index].play;
-                let (value, sim_spread, win_prob) = match &self.late_graph {
-                    Some((kwg, arm_tables)) => rollout_objective(
-                        &mut simmer,
-                        self.game_config,
-                        kwg,
-                        arm_tables,
-                        self.klv,
-                        play,
-                        self.win_pct_table,
-                    )?,
-                    None => rollout_objective(
-                        &mut simmer,
-                        self.game_config,
-                        self.kwg,
-                        self.arm_tables,
-                        self.klv,
-                        play,
-                        self.win_pct_table,
-                    )?,
-                };
-                rows.objective.push(value);
-                if OBSERVE {
-                    rows.equity.push(simmer::spread_points(sim_spread));
-                    rows.win_rate.push(win_prob);
-                }
-            }
-        }
+        (self.rows_of(self.late_graph.as_ref())).push_rows::<OBSERVE, R>(
+            &mut simmer,
+            &pristine,
+            move_generator,
+            lo,
+            hi,
+            plays,
+            &mut rows,
+        )?;
         Ok(rows)
+    }
+
+    // what a block's rows are rolled out by, apart from the simmer, on the
+    // late graph given (the sim's own, or one taken out of it)
+    #[inline(always)]
+    fn rows_of<'g>(
+        &self,
+        late_graph: Option<&'g (kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
+    ) -> RowsOf<'a, 'g, N, L> {
+        RowsOf {
+            game_config: self.game_config,
+            kwg: self.kwg,
+            arm_tables: self.arm_tables,
+            klv: self.klv,
+            win_pct_table: self.win_pct_table,
+            decision_seed: self.decision_seed,
+            late_graph,
+        }
     }
 
     // take in a whole block's rows, each candidate's in iteration order
@@ -1774,7 +1851,10 @@ impl<
     }
 
     // split each block into contiguous ranges, one per thread, and put the rows
-    // back together in iteration order
+    // back together in iteration order. The threads are started once for all
+    // the blocks, each on its own simmer, prepared as the sim's for the run
+    // (restored to that for each iteration), and its own rows; the simmers and
+    // the rows are kept from run to run, so their memory is grown once
     #[cfg(not(target_family = "wasm"))]
     #[inline]
     fn run_iterations_parallel(
@@ -1783,40 +1863,88 @@ impl<
         count: u64,
     ) -> error::Returns<()> {
         let num_threads = self.sim_threads;
-        let end = self.iters_done + count;
-        while let Some(block) = self.next_block(end) {
-            let block_len = (block.hi - block.lo) as usize;
-            let mut rows = SimRows {
+        let mut kept = std::mem::take(&mut self.thread_kept);
+        kept.truncate(num_threads);
+        for (simmer, _) in &mut kept {
+            simmer.prepare_as(self.game_config, &self.simmer);
+        }
+        while kept.len() < num_threads {
+            let rows = SimRows {
                 objective: Vec::new(),
                 equity: Vec::new(),
                 win_rate: Vec::new(),
             };
-            let this = &*self;
-            std::thread::scope(|scope| -> error::Returns<()> {
-                let mut handles = Vec::with_capacity(num_threads);
-                for thread_index in 0..num_threads {
-                    let base = block_len / num_threads;
-                    let extra = block_len % num_threads;
+            kept.push((self.simmer.prepared_clone(self.game_config), rows));
+        }
+        // the late graph, taken out for the threads to read while the blocks'
+        // rows are taken in, then put back
+        let late_graph = self.late_graph.take();
+        type Job = (u64, u64, std::sync::Arc<[usize]>);
+        let start = self.iters_done;
+        let end = start + count;
+        let rows_of = &self.rows_of(late_graph.as_ref());
+        let result = std::thread::scope(|scope| -> error::Returns<()> {
+            // each thread's jobs, and what it sends back: its rows, or why not
+            let mut threads = Vec::with_capacity(num_threads);
+            for (simmer, kept) in kept.iter_mut() {
+                let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let done = std::sync::Arc::new(std::sync::Mutex::new(kept));
+                let theirs = done.clone();
+                scope.spawn(move || {
+                    let pristine = simmer.prepared_state().clone();
+                    for (lo, hi, plays) in job_rx {
+                        let Ok(mut kept) = theirs.lock() else {
+                            break;
+                        };
+                        let made = rows_of.push_rows::<OBSERVE, R>(
+                            simmer,
+                            &pristine,
+                            move_generator,
+                            lo,
+                            hi,
+                            &plays,
+                            &mut kept,
+                        );
+                        drop(kept);
+                        if done_tx.send(made).is_err() {
+                            break;
+                        }
+                    }
+                });
+                threads.push((job_tx, done_rx, done));
+            }
+            while let Some(block) = self.next_block(end) {
+                let block_len = (block.hi - block.lo) as usize;
+                let plays = std::sync::Arc::<[usize]>::from(&block.plays[..]);
+                let base = block_len / num_threads;
+                let extra = block_len % num_threads;
+                for (thread_index, (job_tx, _, _)) in threads.iter().enumerate() {
                     let lo = thread_index * base + thread_index.min(extra);
                     let hi = lo + base + if thread_index < extra { 1 } else { 0 };
-                    let block = &block;
-                    handles.push(scope.spawn(move || {
-                        this.block_rows(
-                            move_generator,
-                            block.lo + lo as u64,
-                            block.lo + hi as u64,
-                            &block.plays,
-                        )
-                    }));
+                    let job = (block.lo + lo as u64, block.lo + hi as u64, plays.clone());
+                    if job_tx.send(job).is_err() {
+                        return Err("a sim thread stopped".into());
+                    }
                 }
-                for handle in handles {
-                    rows.extend(handle.join().unwrap()?);
+                for (_, done_rx, _) in &threads {
+                    done_rx.recv().map_err(|_| "a sim thread stopped")??;
                 }
-                Ok(())
-            })?;
-            self.absorb_block(&block, &rows)?;
-        }
-        Ok(())
+                // the first thread's rows, the others' appended in order (the
+                // first's next rows replace them all)
+                let mut rows = threads[0].2.lock().map_err(|_| "a sim thread stopped")?;
+                for (_, _, done) in &threads[1..] {
+                    let later = done.lock().map_err(|_| "a sim thread stopped")?;
+                    rows.extend_from(&later);
+                }
+                self.absorb_block(&block, &rows)?;
+                drop(rows);
+            }
+            Ok(())
+        });
+        self.late_graph = late_graph;
+        self.thread_kept = kept;
+        result
     }
 
     // the leaves the opponent's last move says they kept, each with its weight,
@@ -1898,6 +2026,9 @@ impl<
             late && self.late_graph.is_some() && self.late_board[..] == game_state.board_tiles[..];
         if !keep && (late || self.late_graph.is_some()) {
             self.simmer.reset_for_another_kwg();
+            for (simmer, _) in &mut self.thread_kept {
+                simmer.reset_for_another_kwg();
+            }
         }
         self.late_graph = if keep {
             self.late_graph.take()
