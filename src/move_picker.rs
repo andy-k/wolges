@@ -446,6 +446,7 @@ pub struct Simmer<
     late_prune: LatePrune, // what each late graph is pruned with
     memory: Option<endgame::MemoryLimit>, // what the program stays within
     thread_kept: Vec<SimWorker<R>>, // the sim's threads, kept for its life
+    spare_plays: Vec<usize>, // the last block's plays, for the next
 }
 
 // what a sim's late graph is pruned with, kept from one decision to the next:
@@ -676,6 +677,7 @@ impl<
                 arm_scratch: Default::default(),
             },
             thread_kept: Vec::new(),
+            spare_plays: Vec::new(),
         }
     }
 
@@ -2012,21 +2014,21 @@ impl<
 
     // the next block to roll out: from the iterations done up to the next look
     // or end, whichever is first, for the candidates still in; none once end is
-    // reached or fewer than two candidates are left
+    // reached or fewer than two candidates are left. Its list of plays is made
+    // in the memory of the spare one, which a run puts back
     #[inline]
-    pub fn next_block(&self, end: u64) -> Option<SimBlock> {
+    pub fn next_block(&mut self, end: u64) -> Option<SimBlock> {
         if self.candidates.len() < 2 || self.iters_done >= end {
             return None;
         }
         let lo = self.iters_done;
+        let mut plays = std::mem::take(&mut self.spare_plays);
+        plays.clear();
+        plays.extend(self.candidates.iter().map(|candidate| candidate.play_index));
         Some(SimBlock {
             lo,
             hi: end.min((lo / PRUNE_CADENCE + 1) * PRUNE_CADENCE),
-            plays: self
-                .candidates
-                .iter()
-                .map(|candidate| candidate.play_index)
-                .collect(),
+            plays,
         })
     }
 
@@ -2220,6 +2222,7 @@ impl<
                 }
                 self.absorb_block(&block, &first.1)?;
                 drop(first);
+                self.spare_plays = block.plays;
                 look(block.hi - start, self.candidates.len())?;
             }
             Ok(())
