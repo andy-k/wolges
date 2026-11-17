@@ -253,6 +253,8 @@ type SimDriver = (
 pub struct Session {
     game_config: &'static std::sync::Arc<game_config::GameConfig>,
     spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
+    played_line: String, // a computer's play as the command run and logged, kept
+    played_words: Vec<String>, // that command's words, kept from play to play
     kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
     klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
     kwgs_read: std::collections::HashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
@@ -465,6 +467,8 @@ impl Session {
         Ok(Self {
             game_config,
             spare_state: Default::default(),
+            played_line: String::new(),
+            played_words: Vec::new(),
             kwg: None,
             klv: none,
             kwgs_read: Default::default(),
@@ -527,19 +531,50 @@ impl Session {
                 return Ok(());
             }
             let play = self.computer_move(sim_ms)?;
-            let line = format!("play {}", self.play_text(&play)?);
-            writeln!(
-                std::io::stdout(),
-                "player {}: {}",
-                mover + 1,
-                self.computer_says(&play)?
-            )?;
-            let words = line
-                .split_whitespace()
-                .map(String::from)
-                .collect::<Vec<_>>();
-            self.run_one(&line, &words)?;
+            self.run_as_played(&play, |session, _| {
+                writeln!(
+                    std::io::stdout(),
+                    "player {}: {}",
+                    mover + 1,
+                    session.computer_says(&play)?
+                )?;
+                Ok(())
+            })?;
         }
+    }
+
+    // run a computer's play as the play command it is logged as, the line and
+    // its words made in the session's kept buffers; said first writes out what
+    // the computer says, given the line
+    fn run_as_played(
+        &mut self,
+        play: &movegen::Play,
+        said: impl FnOnce(&Self, &str) -> error::Returns<()>,
+    ) -> error::Returns<()> {
+        let mut line = std::mem::take(&mut self.played_line);
+        let mut words = std::mem::take(&mut self.played_words);
+        line.clear();
+        line.push_str("play ");
+        let ran = (self.write_play_text(play, &mut line))
+            .and_then(|()| said(self, &line))
+            .and_then(|()| {
+                let mut count = 0;
+                for word in line.split_whitespace() {
+                    match words.get_mut(count) {
+                        Some(kept) => {
+                            kept.clear();
+                            kept.push_str(word);
+                        }
+                        None => words.push(word.to_string()),
+                    }
+                    count += 1;
+                }
+                words.truncate(count);
+                self.run_one(&line, &words)
+            });
+        self.played_line = line;
+        self.played_words = words;
+        ran
     }
 
     // run one command. A command that changes the session is logged as line
@@ -1280,13 +1315,10 @@ impl Session {
                 let play = self.computer_move(sim_ms)?;
                 // run and logged as the move it chose, so that a replay makes
                 // the same move however the sim went
-                let line = format!("play {}", self.play_text(&play)?);
-                writeln!(std::io::stdout(), "bot: {line}")?;
-                let words = line
-                    .split_whitespace()
-                    .map(String::from)
-                    .collect::<Vec<_>>();
-                return self.run_one(&line, &words);
+                return self.run_as_played(&play, |_, line| {
+                    writeln!(std::io::stdout(), "bot: {line}")?;
+                    Ok(())
+                });
             }
             "endgame" => {
                 let seconds = match args {
@@ -3213,14 +3245,25 @@ impl Session {
     // a move written as play takes it: a coordinate and a word (8D across, D8
     // down; a tile played through in parentheses), exch and its tiles, or pass
     fn play_text(&self, play: &movegen::Play) -> error::Returns<String> {
-        Ok(match play {
-            movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".into(),
+        let mut text = String::new();
+        self.write_play_text(play, &mut text)?;
+        Ok(text)
+    }
+
+    // the same, written after what text holds
+    fn write_play_text(&self, play: &movegen::Play, text: &mut String) -> error::Returns<()> {
+        use std::fmt::Write as _;
+        match play {
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => text.push_str("pass"),
             movegen::Play::Exchange { tiles } => {
-                format!("exch {}", self.game_config.alphabet().fmt_rack(tiles))
+                write!(text, "exch {}", self.game_config.alphabet().fmt_rack(tiles))?;
             }
             movegen::Play::Place { .. } => {
-                let shown = play
-                    .fmt(&movegen::BoardSnapshot {
+                let at = text.len();
+                write!(
+                    text,
+                    "{}",
+                    play.fmt(&movegen::BoardSnapshot {
                         board_tiles: &self.state.board_tiles,
                         game_config: self.game_config,
                         kwg: self.kwg()?,
@@ -3228,13 +3271,14 @@ impl Session {
                         rack_lengths: None,
                         klv: self.klv,
                     })
-                    .to_string();
+                )?;
                 // without its score
-                shown
-                    .rsplit_once(' ')
-                    .map_or(shown.clone(), |(text, _)| text.to_string())
+                if let Some(space) = text[at..].rfind(' ') {
+                    text.truncate(at + space);
+                }
             }
-        })
+        }
+        Ok(())
     }
 }
 
