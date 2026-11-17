@@ -485,7 +485,7 @@ pub struct MultiLeaves {
 // the most leaves a rack's tiles may have for them to be kept as a table, each
 // read by its index; past it, each is walked from the klv when read. A table
 // costs a walk of every leave and the bytes of each (LEAVE_BYTES), so a
-// generator holding few bytes takes a smaller bound (set_dense_most)
+// generator holding few bytes takes a smaller bound (with_dense_most)
 pub const DENSE_LEAVES_MOST: u32 = 1 << 20;
 
 // the bytes a table keeps for each leave: its value and the tiles played
@@ -524,12 +524,18 @@ impl Clone for MultiLeaves {
 
 impl MultiLeaves {
     pub fn new() -> Self {
+        Self::with_dense_most(DENSE_LEAVES_MOST)
+    }
+
+    // keeping a rack's leaves as a table only when they number at most
+    // dense_most
+    pub fn with_dense_most(dense_most: u32) -> Self {
         Self {
             unique_tiles: Vec::new(),
             digits: Vec::new(),
             leave_values: Vec::new(),
             num_playeds: Vec::new(),
-            dense_most: DENSE_LEAVES_MOST,
+            dense_most,
             bag_terms: Vec::new(),
         }
     }
