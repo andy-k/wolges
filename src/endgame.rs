@@ -2162,6 +2162,16 @@ struct Helper<L: kwg::Node, G: movegen::LaneBits, const JUMPS: bool, const ANY_S
     racks: [Vec<u8>; 2],
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
     kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>,
+    kept_sub: Box<Option<KeptSolver<L, G, JUMPS, ANY_SIDE>>>,
+}
+
+// a solver kept apart from any (EndgameSolver::into_kept), to be made whole
+// only by one of the game_config, kwg, and arm_tables it was made with, by
+// address (EndgameSolver::with_kept)
+pub struct KeptSolver<L: kwg::Node, G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> {
+    own: Helper<L, G, JUMPS, ANY_SIDE>, // its bag searches' solver with it
+    helpers: Vec<Option<Helper<L, G, JUMPS, ANY_SIDE>>>,
+    made_with: [usize; 3],
 }
 
 // EndgameSolver is the main two-player endgame solver.
@@ -2190,7 +2200,7 @@ pub struct EndgameSolver<
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
     progress: Option<ProgressFn>, // its listener, apart from the buffer
     helpers: Vec<Option<Helper<L, G, JUMPS, ANY_SIDE>>>, // each lane's, kept from pass to pass
-    kept_sub: Option<Box<Self>>,  // the bag searches' solver, kept from call to call
+    kept_sub: Box<Option<KeptSolver<L, G, JUMPS, ANY_SIDE>>>, // bag searches', taken apart
     kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // and their generator
 }
 
@@ -2250,7 +2260,7 @@ impl<
             work_buffer: WorkBuffer::new(movegen, run_letter_bits),
             progress: None,
             helpers: Vec::new(),
-            kept_sub: None,
+            kept_sub: Box::new(None),
             kept_mg: None,
         })
     }
@@ -2277,6 +2287,7 @@ impl<
             racks: self.racks,
             work_buffer: self.work_buffer,
             kept_mg: self.kept_mg,
+            kept_sub: self.kept_sub,
         }
     }
 
@@ -2311,10 +2322,55 @@ impl<
             work_buffer: helper.work_buffer,
             progress: None,
             helpers: Vec::new(),
-            kept_sub: None,
+            kept_sub: helper.kept_sub,
             kept_mg: helper.kept_mg,
         };
         own.renew();
+        Ok(own)
+    }
+
+    // the solver taken apart from what it borrows, for a caller that keeps no
+    // solver between solves (a wasm32 page keeps it in a handle, beside the
+    // table it takes first with take_table), with its bag searches' solver and
+    // its threads' kept too
+    #[inline]
+    pub fn into_kept(self) -> KeptSolver<L, G, JUMPS, ANY_SIDE> {
+        KeptSolver {
+            made_with: self.made_with(),
+            helpers: self.helpers,
+            own: Helper {
+                klv: self.klv,
+                board_tiles: self.board_tiles,
+                racks: self.racks,
+                work_buffer: self.work_buffer,
+                kept_mg: self.kept_mg,
+                kept_sub: self.kept_sub,
+            },
+        }
+    }
+
+    // a kept solver made whole again with what it borrows, as with_generator
+    // makes one (renew), with the memory it holds kept; refused for any
+    // game_config, kwg, or arm_tables but those it was made with, by address
+    #[inline]
+    pub fn with_kept(
+        game_config: &'a game_config::GameConfig,
+        kwg: &'a kwg::Kwg<N>,
+        arm_tables: &'a anagrams::ArmTables,
+        run_letters: kwg::RunLetters,
+        kept: KeptSolver<L, G, JUMPS, ANY_SIDE>,
+    ) -> error::Returns<Self> {
+        let made_with = [
+            std::ptr::from_ref(game_config).addr(),
+            std::ptr::from_ref(kwg).addr(),
+            std::ptr::from_ref(arm_tables).addr(),
+        ];
+        if kept.made_with != made_with {
+            return Err("a kept solver is given back only to its own tables".into());
+        }
+        run_letters.of(kwg)?;
+        let mut own = Self::of_helper(game_config, kwg, arm_tables, &run_letters, Some(kept.own))?;
+        own.helpers = kept.helpers;
         Ok(own)
     }
 
@@ -2322,20 +2378,27 @@ impl<
     // the next: each takes it as with_generator made it, with what it holds of
     // its generator and its lists kept (WorkBuffer::renew)
     #[inline]
-    fn take_sub(&mut self) -> error::Returns<Box<Self>> {
-        Ok(match self.kept_sub.take() {
-            Some(mut sub) => {
-                sub.renew();
-                sub
-            }
-            None => Box::new(Self::with_generator(
-                self.game_config,
-                self.kwg,
-                self.arm_tables,
-                self.run_letters.clone(),
-                movegen::KurniaMoveGenerator::new_in(self.game_config),
-            )?),
-        })
+    fn take_sub(&mut self) -> error::Returns<Self> {
+        let kept = self.kept_sub.take();
+        let (own, helpers) = match kept {
+            Some(kept) => (Some(kept.own), kept.helpers),
+            None => (None, Vec::new()),
+        };
+        let mut sub = Self::of_helper(
+            self.game_config,
+            self.kwg,
+            self.arm_tables,
+            &self.run_letters,
+            own,
+        )?;
+        sub.helpers = helpers;
+        Ok(sub)
+    }
+
+    // the solver take_sub gave, kept again in its box
+    #[inline(always)]
+    fn keep_sub(&mut self, sub: Self) {
+        *self.kept_sub = Some(sub.into_kept());
     }
 
     // the generator of this one's bag searches, made at the first and kept for
@@ -5106,7 +5169,7 @@ impl<
         if !LEAN {
             self.swap_lanes(&mut sub);
         }
-        self.kept_sub = Some(sub);
+        self.keep_sub(sub);
         self.kept_mg = Some(mg);
         Ok(to_equity(value?))
     }
@@ -5649,7 +5712,7 @@ impl<
         }
         std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
         self.swap_tables(&mut sub)?;
-        self.kept_sub = Some(sub);
+        self.keep_sub(sub);
         self.kept_mg = Some(mg);
         self.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
@@ -5702,7 +5765,7 @@ impl<
         let Some(valued) = searched.map(BagValued::over) else {
             std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
             self.swap_tables(&mut sub)?;
-            self.kept_sub = Some(sub);
+            self.keep_sub(sub);
             return Ok(Err(PegBagRowsMissing::Stopped {
                 out_of_memory: true,
             }));
@@ -5741,7 +5804,7 @@ impl<
         })();
         std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
         self.swap_tables(&mut sub)?;
-        self.kept_sub = Some(sub);
+        self.keep_sub(sub);
         self.kept_mg = Some(mg);
         match found {
             Ok(found) => Ok(Ok(found)),
@@ -6384,7 +6447,7 @@ impl<
         if !LEAN {
             self.swap_lanes(&mut sub);
         }
-        self.kept_sub = Some(sub);
+        self.keep_sub(sub);
         self.kept_mg = Some(mg);
         result
     }
