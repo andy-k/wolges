@@ -1680,17 +1680,11 @@ impl<
     ) -> error::Returns<SimRows> {
         let mut simmer = self.simmer.prepared_clone(self.game_config);
         let pristine = simmer.prepared_state().clone();
-        let size = (hi - lo) as usize * plays.len();
         let mut rows = SimRows {
             objective: Vec::new(),
             equity: Vec::new(),
             win_rate: Vec::new(),
         };
-        rows.objective.reserve(size);
-        if OBSERVE {
-            rows.equity.reserve(size);
-            rows.win_rate.reserve(size);
-        }
         for sim_iter in lo + 1..=hi {
             simmer.restore_prepared(&pristine);
             simmer.reseed(mix(self.decision_seed, sim_iter));
