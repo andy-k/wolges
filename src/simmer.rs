@@ -331,6 +331,13 @@ impl<
         &self.kept
     }
 
+    // lets go of the leaves kept for each seat, so that whoever shares them
+    // holds them alone; the next prepare keeps a seat's again
+    #[inline(always)]
+    pub fn release_kept(&mut self) {
+        self.kept.clear();
+    }
+
     #[inline(always)]
     pub fn opponents_pass(&self) -> bool {
         self.opponents_pass
@@ -354,8 +361,10 @@ impl<
         choices: &SimChoices<'_>,
     ) {
         self.kept.clear();
-        let next_seat = (game_state.turn + 1) % game_state.players.len() as u8;
-        self.keep(KeptLeaves::listed(next_seat, choices.kept_leaves));
+        if !choices.kept_leaves.is_empty() {
+            let next_seat = (game_state.turn + 1) % game_state.players.len() as u8;
+            self.keep(KeptLeaves::listed(next_seat, choices.kept_leaves));
+        }
         self.initial_game_state.clone_from(game_state);
         self.game_state.clone_from(game_state);
         self.initial_score_spread = game_state.current_player().score

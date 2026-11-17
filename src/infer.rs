@@ -809,7 +809,7 @@ impl InferTables {
 // for each leave: every leave's tiles one after another, where each one ends,
 // the weights in the same order, and their running sums, which a weighted draw
 // searches. No weight is below 0, past f64's finite range, or not a number
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PackedLeaves {
     tiles: Vec<u8>,
     ends: Vec<u32>,
