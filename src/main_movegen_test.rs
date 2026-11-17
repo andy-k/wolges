@@ -445,6 +445,16 @@ fn run(
                 disagreements += 1;
             }
         }
+        let every_way = !matches!(game_config.game_rules(), game_config::GameRules::Jumbled)
+            || rack.len() <= game_config.rack_size() as usize;
+        if !every_way {
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "Case {case_idx}: not asked every way: under jumbled rules every arrangement of {} tiles, past a rack's {}, is a play",
+                rack.len(),
+                game_config.rack_size()
+            )?;
+        }
         // every arm asked every way: all, capped (the head of all), and raw
         // (all's moves), all the same on every arm
         let mut first_all = None;
@@ -497,31 +507,34 @@ fn run(
                 }
                 digest(g, case.max_gen)
             };
-            let all = generate(&mut move_generator, usize::MAX);
+            let all = every_way.then(|| generate(&mut move_generator, usize::MAX));
             let capped = generate(&mut move_generator, case.max_gen);
             let mut differs = Vec::new();
-            if tables {
-                move_generator.gen_moves_raw_all_unsorted(
-                    &board_snapshot,
-                    &rack,
-                    case.num_exchanges_by_this_player,
-                    case.pass_policy,
-                );
-            } else {
-                move_generator.gen_moves_raw_all_unsorted_lean(
-                    &board_snapshot,
-                    &rack,
-                    case.num_exchanges_by_this_player,
-                    case.pass_policy,
-                );
+            if let Some(all) = &all {
+                if tables {
+                    move_generator.gen_moves_raw_all_unsorted(
+                        &board_snapshot,
+                        &rack,
+                        case.num_exchanges_by_this_player,
+                        case.pass_policy,
+                    );
+                } else {
+                    move_generator.gen_moves_raw_all_unsorted_lean(
+                        &board_snapshot,
+                        &rack,
+                        case.num_exchanges_by_this_player,
+                        case.pass_policy,
+                    );
+                }
+                let raw = digest(&move_generator, 0);
+                if (capped.0, capped.1) != (case.max_gen.min(all.0), all.3) {
+                    differs.push("capped is not the head of all");
+                }
+                if (raw.0, raw.2) != (all.0, all.2) {
+                    differs.push("raw is not all");
+                }
             }
-            let raw = digest(&move_generator, 0);
-            if (capped.0, capped.1) != (case.max_gen.min(all.0), all.3) {
-                differs.push("capped is not the head of all");
-            }
-            if (raw.0, raw.2) != (all.0, all.2) {
-                differs.push("raw is not all");
-            }
+            let all = all.unwrap_or(capped);
             match &first_all {
                 None => first_all = Some(all),
                 Some(first) => {
