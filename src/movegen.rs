@@ -8495,6 +8495,27 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         )
     }
 
+    // gen_moves_raw_all_unsorted under a limit: true, the list cut short,
+    // where growing it would pass the limit
+    #[inline(always)]
+    pub(crate) fn gen_moves_raw_all_unsorted_held<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+        limit: HeldBytes,
+    ) -> bool {
+        self.gen_moves_raw_all_unsorted_within(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+            (),
+            limit,
+        )
+    }
+
     #[inline(always)]
     pub(crate) fn gen_moves_raw_lanes_unsorted_within<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -8594,12 +8615,15 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
 
         let grown_bytes = working_buffer.grown_bytes;
         let mut stopped = false;
+        // whether the list, full, would grow past the limit: it is cut there
+        #[inline(always)]
+        fn cut<T: RawStop>(stop: &T, moves: &[ValuedMove], room: usize, grown: usize) -> bool {
+            moves.len() == room && stop.passed(room.max(1), grown)
+        }
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: i32| {
                 if T::STOPS
-                    && (stopped
-                        || (vec_moves.len() == vec_moves.capacity()
-                            && stop.passed(vec_moves.capacity().max(1), grown_bytes)))
+                    && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes))
                 {
                     stopped = true;
                     return i32::MAX;
@@ -8679,6 +8703,12 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             &multi_leaves,
             num_exchanges_by_this_player,
             |exchanged_tiles: &[u8], _leave_value: i32| {
+                if T::STOPS
+                    && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes))
+                {
+                    stopped = true;
+                    return;
+                }
                 vec_moves.push(ValuedMove {
                     equity: equity::Equity::ZERO,
                     play: Play::Exchange {
@@ -8687,7 +8717,14 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 });
             },
         );
-        if pass_policy.emits_unconditionally() || vec_moves.is_empty() {
+        if T::STOPS
+            && !stopped
+            && (pass_policy.emits_unconditionally() || vec_moves.is_empty())
+            && cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes)
+        {
+            stopped = true;
+        }
+        if !stopped && (pass_policy.emits_unconditionally() || vec_moves.is_empty()) {
             vec_moves.push(ValuedMove {
                 equity: equity::Equity::ZERO,
                 play: Play::Exchange {

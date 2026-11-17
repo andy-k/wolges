@@ -1922,11 +1922,18 @@ impl BagLimits {
     #[inline(always)]
     fn refuse(&self, bytes: usize) -> error::Returns<()> {
         if self.memory.is_some_and(|memory| bytes > memory.room()) {
-            self.stopped.set(true);
-            self.refused.set(true);
-            return Err("the memory limit stopped the search".into());
+            return Err(self.stop_refused());
         }
         Ok(())
+    }
+
+    // the search stopped by the memory limit before it took what passes it
+    // (stopped and refused set): the error it stops with
+    #[inline(never)]
+    fn stop_refused(&self) -> error::BoxAnyError {
+        self.stopped.set(true);
+        self.refused.set(true);
+        "the memory limit stopped the search".into()
     }
 
     // whether the memory limit cut the search short
@@ -5931,24 +5938,48 @@ impl<
             // board, the mover's rack, and how many tiles the bag holds (so a
             // part's are made at the whole's first split)
             let (opp_rack, bag) = &*moves_at;
-            let mut pos = InBag::default();
-            at(opp_rack, bag, &mut pos);
-            let mut lists = PlyLists::default();
-            in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-                gc, kwg, arm_tables, klv, &mut *mg, &pos, &mut lists,
-            );
-            state.moves = lists.moves;
-            state.order = (0..state.moves.len()).collect();
+            // the root's lists, made once a search at their full lengths, so
+            // no pass grows them. Where the memory limit has no room for them
+            // the search stops before it starts, nothing kept, and the next
+            // step tries again
+            let lists = (|| -> error::Returns<_> {
+                let mut pos = InBag::default();
+                at(opp_rack, bag, &mut pos);
+                let moves = root_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                    gc, kwg, arm_tables, klv, &mut *mg, &pos, limits,
+                )?;
+                let n = moves.len();
+                Ok((
+                    moves,
+                    list_in_room(limits, n)?,
+                    list_in_room(limits, n)?,
+                    list_in_room(limits, n)?,
+                    list_in_room(limits, n)?,
+                ))
+            })();
+            let (moves, mut order, mut valued, answered, reached) = match lists {
+                Ok(lists) => lists,
+                // out of memory only when no other limit has passed, as passed
+                // notes it
+                Err(_) if limits.stopped.get() => {
+                    let timed_out = (limits.time).is_some_and(|time| limits.t0.elapsed() >= time);
+                    return Ok(peg_bag_result(&[], &[], None, 0, false, !timed_out));
+                }
+                Err(e) => return Err(e),
+            };
+            order.extend(0..moves.len());
             if deepens {
-                state.order.sort_unstable_by_key(|&i| {
-                    let score = match &state.moves[i] {
+                order.sort_unstable_by_key(|&i| {
+                    let score = match &moves[i] {
                         movegen::Play::Place { score, .. } => *score,
                         _ => i32::MIN,
                     };
                     (std::cmp::Reverse(score), i)
                 });
             }
-            state.valued = state.moves.iter().map(|_| None).collect();
+            valued.resize_with(moves.len(), || None);
+            (state.moves, state.order, state.valued) = (moves, order, valued);
+            (state.answered, state.reached) = (answered, reached);
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
@@ -6042,8 +6073,10 @@ impl<
             state.answer = Some((best, state.depth));
             let done = state.pass_exact || state.depth == COMPLETE;
             if !done {
-                // the next pass values the moves best first by this one, afresh
-                state.order = std::mem::take(&mut state.reached);
+                // the next pass values the moves best first by this one,
+                // afresh; each list keeps its room
+                std::mem::swap(&mut state.order, &mut state.reached);
+                state.reached.clear();
                 let valued = &state.valued;
                 (state.order).sort_unstable_by(|&a, &b| peg_bag_ranks(valued, a, b));
             }
@@ -8305,32 +8338,138 @@ fn moves_of<
             .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
             .map(|vm| vm.play.clone()),
     );
-    if exchange_legal(gc, bag_len, made) {
-        // in scratch, the rack's tally, an exchange's tally, then room for its
-        // tiles, which each exchange is written into in turn
-        let tiles_at = gc.alphabet().len() as usize;
-        scratch.clear();
-        scratch.resize(2 * tiles_at + rack.len(), 0);
-        let (tally, rest) = scratch.split_at_mut(tiles_at);
-        let (drawn, thrown) = rest.split_at_mut(tiles_at);
-        for &tile in rack {
-            tally[tile as usize] += 1;
-        }
-        for n in 1..=rack.len().min(bag_len) {
-            let mut more = first_draw(tally, n, drawn);
-            while more {
-                let mut len = 0;
-                for (tile, &count) in (0u8..).zip(drawn.iter()) {
-                    thrown[len..len + count as usize].fill(tile);
-                    len += count as usize;
-                }
-                moves.push(movegen::Play::Exchange {
-                    tiles: thrown[..len].into(),
-                });
-                more = next_draw(tally, drawn);
+    each_exchange(gc, rack, made, bag_len, scratch, |tiles| {
+        moves.push(movegen::Play::Exchange {
+            tiles: tiles.into(),
+        })
+    });
+}
+
+// the exchanges moves_of lists after the placements, each as its tiles: by how
+// many tiles, then by tile; worked in scratch, the rack's tally, an exchange's
+// tally, then room for its tiles, which each is written into
+fn each_exchange(
+    gc: &game_config::GameConfig,
+    rack: &[u8],
+    made: i16,
+    bag_len: usize,
+    scratch: &mut Vec<u8>,
+    mut found: impl FnMut(&[u8]),
+) {
+    if !exchange_legal(gc, bag_len, made) {
+        return;
+    }
+    let tiles_at = gc.alphabet().len() as usize;
+    scratch.clear();
+    scratch.resize(2 * tiles_at + rack.len(), 0);
+    let (tally, rest) = scratch.split_at_mut(tiles_at);
+    let (drawn, thrown) = rest.split_at_mut(tiles_at);
+    for &tile in rack {
+        tally[tile as usize] += 1;
+    }
+    for n in 1..=rack.len().min(bag_len) {
+        let mut more = first_draw(tally, n, drawn);
+        while more {
+            let mut len = 0;
+            for (tile, &count) in (0u8..).zip(drawn.iter()) {
+                thrown[len..len + count as usize].fill(tile);
+                len += count as usize;
             }
+            found(&thrown[..len]);
+            more = next_draw(tally, drawn);
         }
     }
+}
+
+// in_bag_moves's moves at a search's root, each growth of them checked against
+// the memory limit, where there is one, before it is taken: the placements
+// found, every one moved (not copied) into a list made at its full length, and
+// the generator's list let go. Refused (the search stopped) where one would
+// pass the limit, nothing kept
+fn root_moves<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    gc: &game_config::GameConfig,
+    kwg: &kwg::Kwg<N>,
+    arm_tables: &anagrams::ArmTables,
+    klv: &klv::Klv<L>,
+    mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+    pos: &InBag,
+    limits: &BagLimits,
+) -> error::Returns<Vec<movegen::Play>> {
+    let Some(memory) = limits.memory else {
+        let mut lists = PlyLists::default();
+        in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+            gc, kwg, arm_tables, klv, mg, pos, &mut lists,
+        );
+        return Ok(lists.moves);
+    };
+    let mover = pos.mover as usize;
+    let (rack, made) = (&pos.racks[mover], pos.exchanges[mover]);
+    let cut = mg.gen_moves_raw_all_unsorted_held(
+        &movegen::BoardSnapshot {
+            board_tiles: &pos.board,
+            game_config: gc,
+            kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv,
+        },
+        rack,
+        made,
+        movegen::PassPolicy::OnlyWhenForced,
+        movegen::HeldBytes {
+            held: memory.held,
+            bytes: memory.bytes,
+            kept: 0,
+        },
+    );
+    let mut plays = std::mem::take(&mut mg.plays);
+    if cut {
+        return Err(limits.stop_refused());
+    }
+    let places = (plays.iter())
+        .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+        .count();
+    // the scratch each_exchange works in, then the pass, the placements, and
+    // the exchanges, then each exchange's tiles
+    let mut scratch = list_in_room::<u8>(limits, 2 * gc.alphabet().len() as usize + rack.len())?;
+    let mut exchanges = 0;
+    each_exchange(gc, rack, made, pos.bag_len(), &mut scratch, |_| {
+        exchanges += 1
+    });
+    let mut moves = list_in_room::<movegen::Play>(limits, 1 + places + exchanges)?;
+    limits.refuse((exchanges + 1) * rack.len())?;
+    moves.push(movegen::Play::Exchange {
+        tiles: [][..].into(),
+    });
+    moves.extend(
+        (plays.drain(..))
+            .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+            .map(|vm| vm.play),
+    );
+    drop(plays);
+    each_exchange(gc, rack, made, pos.bag_len(), &mut scratch, |tiles| {
+        moves.push(movegen::Play::Exchange {
+            tiles: tiles.into(),
+        })
+    });
+    Ok(moves)
+}
+
+// an empty list with room for n, under the memory limit: refused (the search
+// stopped) where it would take more than the room left
+fn list_in_room<T>(limits: &BagLimits, n: usize) -> error::Returns<Vec<T>> {
+    limits.refuse(n.saturating_mul(std::mem::size_of::<T>()))?;
+    let mut list = Vec::new();
+    list.try_reserve_exact(n)
+        .map_err(|_| limits.stop_refused())?;
+    Ok(list)
 }
 
 // whether a player who has exchanged this many times may exchange with this
