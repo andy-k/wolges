@@ -10452,6 +10452,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         let _ = self.gen_remaining_words_within(board_snapshot, None, found_word);
     }
 
+    // the buffers the word prune keeps from one prune to the next let go, for
+    // a generator lent to others whose prunes are far apart
+    #[inline]
+    pub fn let_go_of_prune(&mut self) {
+        self.working_buffer.prune = PruneBuffers::default();
+    }
+
     // gen_remaining_words, every growth of the prune's own taken only within
     // memory, if given: refused, found_word is never called. Under a limit the
     // prune keeps nothing past itself, so what earlier prunes kept goes first,
