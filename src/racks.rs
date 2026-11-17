@@ -267,7 +267,11 @@ mod tests {
         // for full racks across the table, the leaves, tiles played, and
         // subracks' order read from it are those init and subrack_order make;
         // the table read back from its file is the same
-        let gc = game_config::make_english_game_config();
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let gc = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            rack_size: 5,
+            ..english
+        });
         let tiles = gc.alphabet().len();
         let mut leaves = Vec::new();
         for a in 0..tiles {
@@ -291,7 +295,7 @@ mod tests {
         let mut walked = klv::MultiLeaves::new();
         let mut read = klv::MultiLeaves::new();
         let mut order = Vec::new();
-        for rank in (0..table.num_racks()).step_by(997) {
+        for rank in (0..table.num_racks()).step_by(97) {
             table.unrank(rank as u64, &mut rack);
             assert_eq!(table.rank(&rack), Some(rank));
             let (setup_leaves, given) = table.get(&rack).unwrap();
