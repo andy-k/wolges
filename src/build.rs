@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, error, game_config, kwg};
+use super::{bites, endgame, error, game_config, kwg};
 
 // Unconfirmed entries.
 // Memory wastage notes:
@@ -19,21 +19,29 @@ struct TransitionStack<'a> {
 
 impl TransitionStack<'_> {
     #[inline(always)]
-    fn push(&mut self, tile: &u8) {
+    fn push(
+        &mut self,
+        tile: &u8,
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> Result<(), endgame::Refused> {
+        endgame::room_in(memory, self.transitions, 1)?;
+        endgame::room_in(memory, self.indexes, 1)?;
         self.transitions.push(Transition {
             tile: *tile,
             accepts: false,
             arc_index: 0, // Filled up later.
         });
         self.indexes.push(self.transitions.len());
+        Ok(())
     }
 
     #[inline(always)]
-    fn pop(&mut self, state_maker: &mut StateMaker<'_>) {
+    fn pop(&mut self, state_maker: &mut StateMaker<'_>) -> Result<(), endgame::Refused> {
         let start_of_batch = self.indexes.pop().unwrap();
-        let new_arc_index = state_maker.make_state(&self.transitions[start_of_batch..]);
+        let new_arc_index = state_maker.make_state(&self.transitions[start_of_batch..])?;
         self.transitions[start_of_batch - 1].arc_index = new_arc_index;
         self.transitions.truncate(start_of_batch);
+        Ok(())
     }
 }
 
@@ -99,13 +107,18 @@ impl<K: FinderKey> Finder<K> {
     const LOAD: (usize, usize) = (3, 4);
 
     // empty, with room for this many keys before it grows (len, until then,
-    // is the last fill's)
+    // is the last fill's), its slots taken within memory, if given
     #[inline(always)]
-    fn clear(&mut self, expected_len: usize) {
+    fn clear(
+        &mut self,
+        expected_len: usize,
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> Result<(), endgame::Refused> {
         let num_slots = (expected_len.max(1) * Self::LOAD.1)
             .div_ceil(Self::LOAD.0)
             .next_power_of_two();
         self.slots.clear();
+        endgame::room_in(memory, &mut self.slots, num_slots)?;
         self.slots.resize(
             num_slots,
             FinderSlot {
@@ -115,6 +128,7 @@ impl<K: FinderKey> Finder<K> {
         );
         self.len = 0;
         self.shift = u64::BITS - num_slots.trailing_zeros();
+        Ok(())
     }
 
     #[inline(always)]
@@ -122,9 +136,16 @@ impl<K: FinderKey> Finder<K> {
         (key.hash_key().wrapping_mul(Self::MULTIPLIER) >> shift) as usize
     }
 
-    // the index of the key like this one, else new_index, now its index
+    // the index of the key like this one, else new_index, now its index; the
+    // growth after it is taken within memory, if given (refused, the key is
+    // in, and the table is fuller than it keeps itself)
     #[inline(always)]
-    fn find_or_insert(&mut self, key: &K, new_index: u32) -> u32 {
+    fn find_or_insert(
+        &mut self,
+        key: &K,
+        new_index: u32,
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> Result<u32, endgame::Refused> {
         let mask = self.slots.len() - 1;
         let mut i = Self::slot_of(self.shift, key);
         loop {
@@ -133,7 +154,7 @@ impl<K: FinderKey> Finder<K> {
                 break;
             }
             if slot.key == *key {
-                return slot.index;
+                return Ok(slot.index);
             }
             i = (i + 1) & mask;
         }
@@ -143,17 +164,19 @@ impl<K: FinderKey> Finder<K> {
         };
         self.len += 1;
         if self.len * Self::LOAD.1 > self.slots.len() * Self::LOAD.0 {
-            self.grow();
+            self.grow(memory)?;
         }
-        new_index
+        Ok(new_index)
     }
 
-    // twice the slots, every key rehashed into them
+    // twice the slots, every key rehashed into them, the growth taken within
+    // memory, if given (refused, the table is as it was)
     #[cold]
-    fn grow(&mut self) {
+    fn grow(&mut self, memory: Option<&endgame::MemoryLimit>) -> Result<(), endgame::Refused> {
         let num_slots = self.slots.len() * 2;
+        self.spare.clear();
+        endgame::room_in(memory, &mut self.spare, num_slots)?;
         std::mem::swap(&mut self.slots, &mut self.spare);
-        self.slots.clear();
         self.slots.resize(
             num_slots,
             FinderSlot {
@@ -173,6 +196,7 @@ impl<K: FinderKey> Finder<K> {
             }
             self.slots[i] = slot;
         }
+        Ok(())
     }
 }
 
@@ -181,11 +205,12 @@ impl<K: FinderKey> Finder<K> {
 struct StateMaker<'a> {
     states: &'a mut Vec<State>,
     states_finder: &'a mut StatesFinder,
+    memory: Option<&'a endgame::MemoryLimit>, // every growth's limit
 }
 
 impl StateMaker<'_> {
     #[inline(always)]
-    fn make_state(&mut self, node_transitions: &[Transition]) -> u32 {
+    fn make_state(&mut self, node_transitions: &[Transition]) -> Result<u32, endgame::Refused> {
         let mut ret = 0;
         for node_transition in node_transitions.iter().rev() {
             let state = State {
@@ -195,12 +220,15 @@ impl StateMaker<'_> {
                 next_index: ret,
             };
             let new_ret = self.states.len() as u32;
-            ret = self.states_finder.find_or_insert(&state, new_ret);
+            endgame::room_in(self.memory, self.states, 1)?;
+            ret = self
+                .states_finder
+                .find_or_insert(&state, new_ret, self.memory)?;
             if ret == new_ret {
                 self.states.push(state);
             }
         }
-        ret
+        Ok(ret)
     }
 
     // transition_stack is the builder's, emptied here
@@ -211,7 +239,7 @@ impl StateMaker<'_> {
         sorted_machine_words: &W,
         dawg_start_state: u32,
         is_gaddag_phase: bool,
-    ) -> u32 {
+    ) -> Result<u32, endgame::Refused> {
         transition_stack.transitions.clear();
         transition_stack.indexes.clear();
         for machine_word_index in 0..sorted_machine_words.num_words() {
@@ -226,11 +254,11 @@ impl StateMaker<'_> {
                     prefix_len += 1;
                 }
                 for _ in prefix_len..prev_word_len {
-                    transition_stack.pop(self);
+                    transition_stack.pop(self)?;
                 }
             }
             for tile in &this_word[prefix_len..this_word_len] {
-                transition_stack.push(tile);
+                transition_stack.push(tile, self.memory)?;
             }
             let transitions_len = transition_stack.transitions.len();
             if is_gaddag_phase && this_word[this_word_len - 1] == 0 {
@@ -242,7 +270,7 @@ impl StateMaker<'_> {
             }
         }
         for _ in 0..transition_stack.indexes.len() {
-            transition_stack.pop(self);
+            transition_stack.pop(self)?;
         }
         self.make_state(&transition_stack.transitions[..])
     }
@@ -334,9 +362,16 @@ impl MachineWords for PackedWords {
 }
 
 impl PackedWords {
-    // the word of the tiles just pushed, from start on
+    // the word of the tiles just pushed, from start on, its room taken within
+    // memory, if given
     #[inline(always)]
-    fn end_word(&mut self, start: usize, turnaround_target: u32) {
+    fn end_word(
+        &mut self,
+        start: usize,
+        turnaround_target: u32,
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> Result<(), endgame::Refused> {
+        endgame::room_in(memory, &mut self.words, 1)?;
         let tiles = &self.tiles[start..];
         let mut key = [0u8; 8];
         let num_key_tiles = tiles.len().min(key.len());
@@ -347,6 +382,7 @@ impl PackedWords {
             len: tiles.len() as u32,
             turnaround_target,
         });
+        Ok(())
     }
 
     // in ascending order of their tiles: by key, and by the tiles past it when
@@ -376,17 +412,20 @@ impl PackedWords {
 
 // machine_drowwords, the builder's, emptied here; each turnaround's target in
 // the dawg made of machine_words (states, from dawg_start_state) is found from
-// the nodes of the prefix this word shares with the last one walked
+// the nodes of the prefix this word shares with the last one walked. Each
+// growth is taken within memory, if given
 #[inline]
 fn gen_machine_drowwords<W: MachineWords + ?Sized>(
     machine_words: &W,
     states: &[State],
     dawg_start_state: u32,
     machine_drowwords: &mut PackedWords,
-) {
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     machine_drowwords.tiles.clear();
     machine_drowwords.words.clear();
     machine_drowwords.path.clear();
+    endgame::room_in(memory, &mut machine_drowwords.path, 1)?;
     machine_drowwords.path.push(dawg_start_state);
     machine_drowwords.path_tiles.clear();
     for machine_word_index in 0..machine_words.num_words() {
@@ -404,10 +443,11 @@ fn gen_machine_drowwords<W: MachineWords + ?Sized>(
         }
         // CARE = ERAC, RAC@, AC@, C@
         let start = machine_drowwords.tiles.len();
+        endgame::room_in(memory, &mut machine_drowwords.tiles, this_word_len)?;
         machine_drowwords
             .tiles
             .extend(this_word.iter().rev().copied());
-        machine_drowwords.end_word(start, 0);
+        machine_drowwords.end_word(start, 0, memory)?;
         let num_prefixes = this_word_len - prefix_len;
         if num_prefixes >= 2 {
             // the walk keeps the prefix it shares with this word, and goes on
@@ -422,6 +462,8 @@ fn gen_machine_drowwords<W: MachineWords + ?Sized>(
             }
             path.truncate(num_kept + 1);
             path_tiles.truncate(num_kept);
+            endgame::room_in(memory, path, this_word_len - 1 - num_kept)?;
+            endgame::room_in(memory, path_tiles, this_word_len - 1 - num_kept)?;
             for &tile in &this_word[num_kept..this_word_len - 1] {
                 let p = *path.last().unwrap();
                 path.push(dawg_target(states, p, std::iter::once(tile)));
@@ -431,40 +473,50 @@ fn gen_machine_drowwords<W: MachineWords + ?Sized>(
         for drow_prefix_len in 1..num_prefixes {
             let start = machine_drowwords.tiles.len();
             let target_len = this_word_len - drow_prefix_len;
+            endgame::room_in(memory, &mut machine_drowwords.tiles, target_len + 1)?;
             machine_drowwords
                 .tiles
                 .extend(this_word[..target_len].iter().rev().copied());
             machine_drowwords.tiles.push(0); // the '@'
             let turnaround_target = machine_drowwords.path[target_len];
-            machine_drowwords.end_word(start, turnaround_target);
+            machine_drowwords.end_word(start, turnaround_target, memory)?;
         }
     }
     machine_drowwords.sort();
+    Ok(())
 }
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
 #[inline]
 pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     let mut machine_dorws = PackedWords::default();
-    fill_packed_alphagrams(machine_words, &mut machine_dorws);
+    // with no limit, nothing is refused
+    let _ = fill_packed_alphagrams(machine_words, &mut machine_dorws, None);
     (0..machine_dorws.num_words())
         .map(|index| machine_dorws.word(index).into())
         .collect()
 }
 
-// make_alphagrams packed into machine_dorws, the builder's, emptied here
+// make_alphagrams packed into machine_dorws, the builder's, emptied here, each
+// growth taken within memory, if given
 #[inline]
-fn fill_packed_alphagrams(machine_words: &[bites::Bites], machine_dorws: &mut PackedWords) {
+fn fill_packed_alphagrams(
+    machine_words: &[bites::Bites],
+    machine_dorws: &mut PackedWords,
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     machine_dorws.tiles.clear();
     machine_dorws.words.clear();
     for this_word in machine_words {
         let start = machine_dorws.tiles.len();
+        endgame::room_in(memory, &mut machine_dorws.tiles, this_word.len())?;
         machine_dorws.tiles.extend_from_slice(this_word);
         machine_dorws.tiles[start..].sort_unstable();
-        machine_dorws.end_word(start, 0);
+        machine_dorws.end_word(start, 0, memory)?;
     }
     machine_dorws.sort();
     machine_dorws.dedup();
+    Ok(())
 }
 
 // build formats
@@ -516,6 +568,18 @@ struct StatesDefragger<'a> {
     destination: &'a mut Vec<u32>,
     num_written: u32,
     stack: &'a mut Vec<(u32, u32, u32)>, // walk_lists': head, next arc, entered
+    memory: Option<&'a endgame::MemoryLimit>, // the walk's growths' limit
+    refused: bool,                       // one refused: it places no more
+}
+
+impl StatesDefragger<'_> {
+    // whether list has room for more, its growth taken within memory, if
+    // given; once one is refused, none is
+    #[inline(always)]
+    fn room<T>(&mut self, list: &mut Vec<T>, more: usize) -> bool {
+        self.refused = self.refused || endgame::room_in(self.memory, list, more).is_err();
+        !self.refused
+    }
 }
 
 impl StatesDefragger<'_> {
@@ -540,6 +604,10 @@ impl StatesDefragger<'_> {
                 // temp value to break self-cycles.
                 self.destination[p as usize] = !0;
                 let entered = enter(self, p);
+                if self.refused || endgame::room_in(self.memory, self.stack, 1).is_err() {
+                    self.refused = true;
+                    return;
+                }
                 self.stack.push((p, p, entered));
             }
             loop {
@@ -635,6 +703,14 @@ impl StatesDefragger<'_> {
             |this, p| {
                 // non-legacy mode reserves the space first.
                 let num = this.to_end_lens[p as usize];
+                // room for every push below: a block a 16 of num, one more to
+                // align, and one for the rest, and a stack entry each
+                let most = num as usize / 16 + 2;
+                if !this.room(params.block_len, most)
+                    || !(params.blocks_with_len.iter_mut()).all(|stack| this.room(stack, 2))
+                {
+                    return 0;
+                }
                 // choose a cache-friendly page to place these.
                 let mut num_blocks = params.block_len.len() as u32;
                 let initial_num_written;
@@ -699,12 +775,15 @@ impl StatesDefragger<'_> {
     // compares keys and reads nothing else
     #[inline(always)]
     fn order_by_ways(
-        &self,
+        &mut self,
         num_ways: &[u32],
         in_front: impl Fn(usize) -> bool,
         order: &mut Vec<u128>,
     ) {
         order.clear();
+        if !self.room(order, self.states.len()) {
+            return;
+        }
         order.extend((1..self.states.len()).map(|p| {
             let field = u32::BITS;
             ((!in_front(p) as u128) << (field * 3))
@@ -756,6 +835,9 @@ impl StatesDefragger<'_> {
             BuildContent::Gaddawg => {
                 // Check which nodes are used in dawg.
                 used_in_dawg.clear();
+                if !self.room(used_in_dawg, self.states.len()) {
+                    return;
+                }
                 used_in_dawg.resize(self.states.len(), false);
                 used_in_dawg
                     .iter_mut()
@@ -772,11 +854,19 @@ impl StatesDefragger<'_> {
         }
 
         params.clear();
+        if !self.room(params.block_len, 1)
+            || !self.room(&mut params.blocks_with_len[self.num_written as usize], 1)
+        {
+            return;
+        }
         // num_written is either 1 or 2, both are < 16.
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
         for &key in order.iter() {
             self.defrag_cache_friendly(params, key as u32);
+            if self.refused {
+                return;
+            }
         }
         self.num_written =
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
@@ -879,9 +969,14 @@ impl StatesDefragger<'_> {
 
 // each gen_* below fills its output, the builder's, emptied first
 #[inline]
-fn gen_head_indexes(states: &[State], head_indexes: &mut Vec<u32>) {
+fn gen_head_indexes(
+    states: &[State],
+    head_indexes: &mut Vec<u32>,
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     let states_len = states.len();
     head_indexes.clear();
+    endgame::room_in(memory, head_indexes, states_len)?;
     head_indexes.extend(0..states_len as u32);
 
     // point to immediate prev.
@@ -894,12 +989,18 @@ fn gen_head_indexes(states: &[State], head_indexes: &mut Vec<u32>) {
     for p in (1..states_len).rev() {
         head_indexes[p] = head_indexes[head_indexes[p] as usize];
     }
+    Ok(())
 }
 
 #[inline]
-fn gen_to_end_lens(states: &[State], to_end_lens: &mut Vec<u32>) {
+fn gen_to_end_lens(
+    states: &[State],
+    to_end_lens: &mut Vec<u32>,
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     let states_len = states.len();
     to_end_lens.clear();
+    endgame::room_in(memory, to_end_lens, states_len)?;
     to_end_lens.resize(states_len, 1);
 
     for p in 1..states_len {
@@ -908,6 +1009,7 @@ fn gen_to_end_lens(states: &[State], to_end_lens: &mut Vec<u32>) {
             to_end_lens[p] += to_end_lens[next as usize];
         }
     }
+    Ok(())
 }
 
 #[inline]
@@ -917,9 +1019,11 @@ fn gen_num_ways(
     dawg_start_state: u32,
     gaddag_start_state: u32,
     num_ways: &mut Vec<u32>,
-) {
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
     let states_len = states.len();
     num_ways.clear();
+    endgame::room_in(memory, num_ways, states_len)?;
     num_ways.resize(states_len, 0);
 
     num_ways[dawg_start_state as usize] = 1;
@@ -937,6 +1041,7 @@ fn gen_num_ways(
             *v = v.saturating_add(this_num_ways);
         }
     }
+    Ok(())
 }
 
 #[inline]
@@ -990,6 +1095,15 @@ fn is_sublist(states: &[State], mut a: u32, mut b: u32) -> bool {
         a = a_state.next_index;
     }
     true
+}
+
+// what a growth under no limit gives: never refused
+#[inline(always)]
+fn unlimited<T>(grown: Result<T, endgame::Refused>) -> T {
+    match grown {
+        Ok(value) => value,
+        Err(endgame::Refused) => unreachable!("no limit refuses a growth"),
+    }
 }
 
 // what reorder_states fills, kept by the builder from one build to the next
@@ -1058,7 +1172,7 @@ fn reorder_states(
     } = buffers;
 
     let states_len = states.len();
-    gen_to_end_lens(states, to_end_lens);
+    unlimited(gen_to_end_lens(states, to_end_lens, None));
 
     is_head.clear();
     is_head.resize(states_len, false);
@@ -1095,15 +1209,18 @@ fn reorder_states(
     }
 
     // room for an entry a list, or for as many as the last reorder found
-    entry_indexes.clear(movable.len().max(entry_indexes.len));
+    unlimited(entry_indexes.clear(movable.len().max(entry_indexes.len), None));
     entry_counts.clear();
     element_entries.clear();
     for &head in movable.iter() {
         let mut p = head;
         while p != 0 {
             let num_entries = entry_counts.len() as u32;
-            let entry_index =
-                entry_indexes.find_or_insert(&entry_key(&states[p as usize]), num_entries);
+            let entry_index = unlimited(entry_indexes.find_or_insert(
+                &entry_key(&states[p as usize]),
+                num_entries,
+                None,
+            ));
             if entry_index == num_entries {
                 entry_counts.push(0);
             }
@@ -1281,11 +1398,12 @@ fn reorder_states(
     new_states.clear();
     new_states.reserve(states_len);
     new_states.push(states[0].clone());
-    states_finder.clear(states_len);
-    states_finder.find_or_insert(&states[0], 0);
+    unlimited(states_finder.clear(states_len, None));
+    unlimited(states_finder.find_or_insert(&states[0], 0, None));
     let mut state_maker = StateMaker {
         states: new_states,
         states_finder,
+        memory: None,
     };
     new_heads.clear();
     new_heads.resize(states_len, 0);
@@ -1316,7 +1434,7 @@ fn reorder_states(
                 q = state.next_index;
             }
         }
-        new_heads[p] = state_maker.make_state(transitions);
+        new_heads[p] = unlimited(state_maker.make_state(transitions));
     }
 
     (
@@ -1360,7 +1478,13 @@ impl Builder {
         build_order: BuildOrder,
         machine_words: &[bites::Bites],
     ) -> error::Returns<&[u8]> {
-        self.do_build::<1, _>(build_content, build_layout, build_order, machine_words)?;
+        self.do_build::<1, _>(
+            build_content,
+            build_layout,
+            build_order,
+            machine_words,
+            None,
+        )?;
         Ok(&self.out)
     }
 
@@ -1372,7 +1496,13 @@ impl Builder {
         build_order: BuildOrder,
         machine_words: &[bites::Bites],
     ) -> error::Returns<&[u8]> {
-        self.do_build::<2, _>(build_content, build_layout, build_order, machine_words)?;
+        self.do_build::<2, _>(
+            build_content,
+            build_layout,
+            build_order,
+            machine_words,
+            None,
+        )?;
         Ok(&self.out)
     }
 
@@ -1383,23 +1513,40 @@ impl Builder {
         game_config: &game_config::GameConfig,
         machine_words: &[bites::Bites],
     ) -> error::Returns<&[u8]> {
+        self.build_for_game_within(game_config, machine_words, None)
+    }
+
+    // build_for_game, every growth of the build's own taken only within
+    // memory, if given: refused, the error is an endgame::Refused
+    #[inline]
+    pub fn build_for_game_within(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        machine_words: &[bites::Bites],
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> error::Returns<&[u8]> {
         match game_config.game_rules() {
             game_config::GameRules::Classic => self.do_build::<2, _>(
                 BuildContent::Gaddawg,
                 BuildLayout::Wolges,
                 BuildOrder::Sorted,
                 machine_words,
+                memory,
             )?,
             game_config::GameRules::Jumbled => {
                 // lent to the build, then put back for the next
                 let mut alphagrams = std::mem::take(&mut self.alphagrams);
-                fill_packed_alphagrams(machine_words, &mut alphagrams);
-                let built = self.do_build::<2, _>(
-                    BuildContent::DawgOnly,
-                    BuildLayout::Wolges,
-                    BuildOrder::Sorted,
-                    &alphagrams,
-                );
+                let built = fill_packed_alphagrams(machine_words, &mut alphagrams, memory)
+                    .map_err(error::BoxAnyError::from)
+                    .and_then(|()| {
+                        self.do_build::<2, _>(
+                            BuildContent::DawgOnly,
+                            BuildLayout::Wolges,
+                            BuildOrder::Sorted,
+                            &alphagrams,
+                            memory,
+                        )
+                    });
                 self.alphagrams = alphagrams;
                 built?
             }
@@ -1407,7 +1554,9 @@ impl Builder {
         Ok(&self.out)
     }
 
-    // machine_words must be sorted and unique.
+    // machine_words must be sorted and unique. Every growth is taken within
+    // memory, if given (a reordered build's, never asked of a limited one,
+    // aside)
     #[inline]
     fn do_build<const VARIANT: u8, W: MachineWords + ?Sized>(
         &mut self,
@@ -1415,6 +1564,7 @@ impl Builder {
         build_layout: BuildLayout,
         build_order: BuildOrder,
         machine_words: &W,
+        memory: Option<&endgame::MemoryLimit>,
     ) -> error::Returns<()> {
         // a word ends on an accepting arc, so an empty word has nowhere to
         // end; sorted, it can only come first
@@ -1444,6 +1594,7 @@ impl Builder {
 
         // The sink state always exists.
         states.clear();
+        endgame::room_in(memory, states, 1)?;
         states.push(State {
             tile: 0,
             accepts: false,
@@ -1452,19 +1603,20 @@ impl Builder {
         });
 
         // room for a state a word, or for as many as the last build made
-        states_finder.clear(machine_words.num_words().max(states_finder.len));
-        states_finder.find_or_insert(&states[0], 0);
+        states_finder.clear(machine_words.num_words().max(states_finder.len), memory)?;
+        states_finder.find_or_insert(&states[0], 0, memory)?;
 
         let mut state_maker = StateMaker {
             states,
             states_finder,
+            memory,
         };
         let mut transition_stack = TransitionStack {
             transitions,
             indexes,
         };
         let dawg_start_state =
-            state_maker.make_dawg(&mut transition_stack, machine_words, 0, false);
+            state_maker.make_dawg(&mut transition_stack, machine_words, 0, false)?;
         let gaddag_start_state = match build_content {
             BuildContent::DawgOnly => 0,
             BuildContent::Gaddawg => {
@@ -1473,13 +1625,14 @@ impl Builder {
                     state_maker.states,
                     dawg_start_state,
                     machine_drowwords,
-                );
+                    memory,
+                )?;
                 state_maker.make_dawg(
                     &mut transition_stack,
                     machine_drowwords,
                     dawg_start_state,
                     true,
-                )
+                )?
             }
         };
 
@@ -1507,11 +1660,12 @@ impl Builder {
             BuildLayout::Legacy
             | BuildLayout::MagpieMerged
             | BuildLayout::Experimental
-            | BuildLayout::Wolges => gen_head_indexes(states, head_indexes),
+            | BuildLayout::Wolges => gen_head_indexes(states, head_indexes, memory)?,
             BuildLayout::Magpie => head_indexes.clear(),
         }
-        gen_to_end_lens(states, to_end_lens);
+        gen_to_end_lens(states, to_end_lens, memory)?;
         destination.clear();
+        endgame::room_in(memory, destination, states.len())?;
         destination.resize(states.len(), 0);
         let mut states_defragger = StatesDefragger {
             states,
@@ -1523,6 +1677,8 @@ impl Builder {
                 BuildContent::Gaddawg => 2,
             },
             stack,
+            memory,
+            refused: false,
         };
         let mut params = StateDefraggerExperimentalParams {
             block_len,
@@ -1540,7 +1696,8 @@ impl Builder {
                     dawg_start_state,
                     gaddag_start_state,
                     num_ways,
-                );
+                    None,
+                )?;
                 gen_top_indexes(states, states_defragger.head_indexes, top_indexes);
                 states_defragger.build_experimental(num_ways, top_indexes, order, &mut params)
             }
@@ -1551,7 +1708,8 @@ impl Builder {
                     dawg_start_state,
                     gaddag_start_state,
                     num_ways,
-                );
+                    memory,
+                )?;
                 states_defragger.build_wolges(
                     num_ways,
                     &build_content,
@@ -1574,6 +1732,9 @@ impl Builder {
             },
         }
         states_defragger.destination[0] = 0; // useful for empty lexicon
+        if states_defragger.refused {
+            return Err(endgame::Refused.into());
+        }
 
         if states_defragger.num_written
             > match VARIANT {
@@ -1589,6 +1750,8 @@ impl Builder {
             ));
         }
 
+        out.clear();
+        endgame::room_in(memory, out, (states_defragger.num_written as usize) * 4)?;
         states_defragger.to_vec::<VARIANT>(
             build_content,
             dawg_start_state,
@@ -2247,6 +2410,50 @@ mod tests {
                     &machine_words,
                 )
                 .is_err()
+            );
+        }
+    }
+
+    // a game graph built under a memory limit, classic and jumbled, is the one
+    // built with none, or refused; a limit of a byte refuses it, one of every
+    // byte never does, and one between refuses some growth past the first
+    #[test]
+    #[inline]
+    fn a_game_graph_under_a_limit_is_the_graph_or_refused() {
+        let machine_words: Vec<bites::Bites> = WORD_LIST
+            .iter()
+            .map(|w| w.bytes().collect::<Vec<u8>>()[..].into())
+            .collect();
+        let held = || 0;
+        for game_config in [
+            game_config::make_english_game_config(),
+            game_config::make_jumbled_english_game_config(),
+        ] {
+            let mut builder = Builder::default();
+            let every = builder
+                .build_for_game(&game_config, &machine_words)
+                .unwrap()
+                .to_vec();
+            let mut refused = Vec::new();
+            for bytes in [1, 256, 4096, 65536, usize::MAX] {
+                let memory = endgame::MemoryLimit { bytes, held };
+                match Builder::default().build_for_game_within(
+                    &game_config,
+                    &machine_words,
+                    Some(&memory),
+                ) {
+                    Ok(built) => assert_eq!(built, &every[..], "{bytes}"),
+                    Err(e) => assert!(e.is::<endgame::Refused>(), "{bytes}: {e}"),
+                }
+                refused.push(
+                    Builder::default()
+                        .build_for_game_within(&game_config, &machine_words, Some(&memory))
+                        .is_err(),
+                );
+            }
+            assert!(
+                refused[0] && refused[1] && !refused[refused.len() - 1],
+                "{refused:?}"
             );
         }
     }
