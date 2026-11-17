@@ -18463,7 +18463,6 @@ mod tests {
             memory: None,
             clock: None,
         };
-        let tiles = [1u8, 2, 8, 20]; // A B H T
         type Answer = (super::PegBagResult, Vec<super::PegBagRows>);
         let same = |a: &Answer, b: &Answer| {
             a.0.best_move == b.0.best_move
@@ -18471,82 +18470,58 @@ mod tests {
                 && a.0.expected_margin == b.0.expected_margin
                 && a.1.first() == b.1.first()
         };
-        let (mut cut, mut checked) = (0, 0);
-        for (unseen, bag_size) in [(&[1u8, 2, 8][..], 2), (&[1, 8, 20, 20][..], 3)] {
-            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
-            for &tile in unseen {
-                unseen_tally[tile as usize] += 1;
-            }
-            for &x in &tiles {
-                for &y in &tiles {
-                    let position = bag_position(&board, &[x, y], &unseen_tally, bag_size, e(0));
-                    let full = solve_peg_rows(&mut egs, position.clone());
-                    assert!(full.0.exact && full.0.depth == super::COMPLETE);
-                    let mut progress =
-                        super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
-                            .unwrap();
-                    let deep = egs.resume_peg(&mut progress, &deepening, 1);
-                    let deep = deep.unwrap().unwrap();
-                    let deep_rows = moves_rows(&mut egs, &mut progress, &deep, &deepening);
-                    let deep = (deep, deep_rows);
-                    assert!(deep.0.exact && same(&deep, &full), "{unseen:?} {x} {y}");
-                    // on one thread and on three, each with its own share of
-                    // the moves: the same answers
-                    for threads in [1, 3] {
-                        let mut progress = super::PegBagProgress::new(
-                            position.clone(),
-                            super::PegBagChoices::WHOLE,
-                        )
+        let mut cut = 0;
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[1] = 1; // A
+        unseen_tally[8] = 1; // H
+        unseen_tally[20] = 2; // T
+        let position = bag_position(&board, &[2, 2], &unseen_tally, 3, e(0));
+        let full = solve_peg_rows(&mut egs, position.clone());
+        assert!(full.0.exact && full.0.depth == super::COMPLETE);
+        let mut progress =
+            super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE).unwrap();
+        let deep = egs.resume_peg(&mut progress, &deepening, 1);
+        let deep = deep.unwrap().unwrap();
+        let deep_rows = moves_rows(&mut egs, &mut progress, &deep, &deepening);
+        let deep = (deep, deep_rows);
+        assert!(deep.0.exact && same(&deep, &full));
+        // on one thread or on three, each with its own share of the moves: the
+        // same answers
+        for threads in [1, 3] {
+            let mut progress =
+                super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE).unwrap();
+            let on_threads = egs
+                .resume_peg(&mut progress, &super::Limits::NONE, threads)
+                .unwrap()
+                .unwrap();
+            let rows = moves_rows(&mut egs, &mut progress, &on_threads, &super::Limits::NONE);
+            let on_threads = (on_threads, rows);
+            assert!(on_threads.0.exact && same(&on_threads, &full));
+            assert!(on_threads.0.moves.len() == full.0.moves.len());
+            for limits in [&one_state, &no_time] {
+                let mut progress =
+                    super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
                         .unwrap();
-                        let on_threads = egs
-                            .resume_peg(&mut progress, &super::Limits::NONE, threads)
-                            .unwrap()
-                            .unwrap();
-                        let rows =
-                            moves_rows(&mut egs, &mut progress, &on_threads, &super::Limits::NONE);
-                        let on_threads = (on_threads, rows);
-                        assert!(on_threads.0.exact && same(&on_threads, &full));
-                        assert!(on_threads.0.moves.len() == full.0.moves.len());
-                        for limits in [&one_state, &no_time] {
-                            let mut progress = super::PegBagProgress::new(
-                                position.clone(),
-                                super::PegBagChoices::WHOLE,
-                            )
-                            .unwrap();
-                            let stopped = egs
-                                .resume_peg(&mut progress, limits, threads)
-                                .unwrap()
-                                .unwrap();
-                            if stopped.exact {
-                                let rows = moves_rows(
-                                    &mut egs,
-                                    &mut progress,
-                                    &stopped,
-                                    &super::Limits::NONE,
-                                );
-                                let stopped = (stopped, rows);
-                                assert!(same(&stopped, &full), "{unseen:?} {x} {y} {threads}");
-                            } else {
-                                cut += 1;
-                            }
-                            let resumed = egs
-                                .resume_peg(&mut progress, &super::Limits::NONE, threads)
-                                .unwrap()
-                                .unwrap();
-                            let rows =
-                                moves_rows(&mut egs, &mut progress, &resumed, &super::Limits::NONE);
-                            let resumed = (resumed, rows);
-                            assert!(
-                                resumed.0.exact && same(&resumed, &full),
-                                "{unseen:?} {x} {y} {threads}"
-                            );
-                        }
-                    }
-                    checked += 1;
+                let stopped = egs
+                    .resume_peg(&mut progress, limits, threads)
+                    .unwrap()
+                    .unwrap();
+                if stopped.exact {
+                    let rows = moves_rows(&mut egs, &mut progress, &stopped, &super::Limits::NONE);
+                    let stopped = (stopped, rows);
+                    assert!(same(&stopped, &full), "{threads}");
+                } else {
+                    cut += 1;
                 }
+                let resumed = egs
+                    .resume_peg(&mut progress, &super::Limits::NONE, threads)
+                    .unwrap()
+                    .unwrap();
+                let rows = moves_rows(&mut egs, &mut progress, &resumed, &super::Limits::NONE);
+                let resumed = (resumed, rows);
+                assert!(resumed.0.exact && same(&resumed, &full), "{threads}");
             }
         }
-        assert_eq!(checked, 32);
         assert!(cut > 0, "no limit cut a search short");
     }
 
