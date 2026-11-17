@@ -184,6 +184,7 @@ fn main() -> error::Returns<()> {
         args[5].parse::<usize>()?
     };
     let gc = game_config::make_english_game_config();
+    gc.supports(game_config::Op::Inference)?;
     let mut tables = infer::InferTables::new(&gc, &klv)?;
     let mut mg = movegen::KurniaMoveGenerator::new(&gc);
     let no_tables = &anagrams::ArmTables::None;

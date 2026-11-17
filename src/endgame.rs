@@ -1984,16 +1984,15 @@ impl<
     const ANY_SIDE: bool,
 > EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>
 {
-    // as new, generating by the caller's move generator (the wasm's, in u32)
+    // as new, generating by the caller's move generator (the wasm's, in u32);
+    // the game config must have passed supports(Op::Endgame) at init, as this
+    // is made for each solve and each of a search's sub-solves
     pub fn with_generator(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     ) -> error::Returns<Self> {
-        if game_config.num_players() != 2 {
-            return Err("cannot solve non-2-player endgames".into());
-        }
         // the run letters, unless the tables are the lean arm's (rack lengths),
         // which reads no more than the word graph, and only for a graph whose
         // runs ascend, as a walk with them goes straight to a tile's node
@@ -11813,7 +11812,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn a_solver_for_three_players_is_an_error() {
+    fn an_endgame_for_three_players_is_refused_at_setup() {
         let gc = game_config::Options {
             preset: "english",
             tiles: None,
@@ -11829,10 +11828,7 @@ mod tests {
         }
         .make_game_config(&|_| Err("no files here".into()))
         .unwrap();
-        let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        assert!(EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).is_err());
+        assert!(gc.supports(game_config::Op::Endgame).is_err());
     }
 
     #[test]

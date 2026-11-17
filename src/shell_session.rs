@@ -1988,7 +1988,10 @@ impl Session {
             });
         let tables = match &mut self.infer_tables {
             Some(tables) => tables,
-            tables @ None => tables.insert(infer::InferTables::new(self.game_config, self.klv)?),
+            tables @ None => {
+                self.game_config.supports(game_config::Op::Inference)?;
+                tables.insert(infer::InferTables::new(self.game_config, self.klv)?)
+            }
         };
         let mut out = std::io::stdout();
         for (i, valued) in self.move_generator.plays.iter().enumerate() {
@@ -2212,7 +2215,10 @@ impl Session {
         let kwg = self.kwg()?;
         let tables = match &mut self.infer_tables {
             Some(tables) => tables,
-            tables @ None => tables.insert(infer::InferTables::new(self.game_config, self.klv)?),
+            tables @ None => {
+                self.game_config.supports(game_config::Op::Inference)?;
+                tables.insert(infer::InferTables::new(self.game_config, self.klv)?)
+            }
         };
         infer::kept_leaves(
             tables,
@@ -3108,6 +3114,7 @@ fn endgame_solver(
     if !state.bag.is_empty() {
         return Err("the bag is not empty, and an endgame needs it to be".into());
     }
+    game_config.supports(game_config::Op::Endgame)?;
     let mut solver = endgame::EndgameSolver::new(game_config, kwg, arm_tables)?;
     solver.init_after_scoreless_turns(
         &state.board_tiles,
