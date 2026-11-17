@@ -38,16 +38,7 @@ impl From<&movegen::Play> for JsonPlay {
                 score,
             } => {
                 // turn 0x81u8, 0x82u8 into -1i8, -2i8
-                let word_played = word
-                    .iter()
-                    .map(|&x| {
-                        if x & 0x80 != 0 {
-                            -((x & !0x80) as i8)
-                        } else {
-                            x as i8
-                        }
-                    })
-                    .collect::<Vec<i8>>();
+                let word_played = word.iter().map(|&x| signed_tile(x)).collect::<Vec<i8>>();
                 // across plays: down=false, lane=row, idx=col (0-based).
                 // down plays: down=true, lane=col, idx=row (0-based).
                 // word: 0 for play-through, 1 for A, -1 for blank-as-A.
@@ -58,6 +49,94 @@ impl From<&movegen::Play> for JsonPlay {
                     word: word_played.into(),
                     score: equity::descale_score(*score),
                 }
+            }
+        }
+    }
+}
+
+// a tile as JsonPlay's word writes it: 0x81u8, 0x82u8 turned into -1i8, -2i8
+#[inline(always)]
+fn signed_tile(x: u8) -> i8 {
+    if x & 0x80 != 0 {
+        -((x & !0x80) as i8)
+    } else {
+        x as i8
+    }
+}
+
+// a play as JsonPlay writes it, read where it is held, so that writing it
+// copies no tiles: its word and score as movegen::Play holds them
+#[derive(Clone, Copy)]
+pub enum JsonPlayRef<'a> {
+    Exchange {
+        tiles: &'a [u8],
+    },
+    Play {
+        down: bool,
+        lane: i8,
+        idx: i8,
+        word: &'a [u8],
+        score: i32,
+    },
+}
+
+impl<'a> From<&'a movegen::Play> for JsonPlayRef<'a> {
+    #[inline(always)]
+    fn from(play: &'a movegen::Play) -> Self {
+        match play {
+            movegen::Play::Exchange { tiles } => Self::Exchange { tiles },
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => Self::Play {
+                down: *down,
+                lane: *lane,
+                idx: *idx,
+                word,
+                score: *score,
+            },
+        }
+    }
+}
+
+// a word's tiles as JsonPlay's word writes them
+struct SignedWord<'a>(&'a [u8]);
+
+impl serde::Serialize for SignedWord<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|&x| signed_tile(x)))
+    }
+}
+
+// the fields JsonPlay's derive writes, in its order, its tag first
+impl serde::Serialize for JsonPlayRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match *self {
+            Self::Exchange { tiles } => {
+                let mut play = serializer.serialize_struct("JsonPlay", 2)?;
+                play.serialize_field("action", "exchange")?;
+                play.serialize_field("tiles", tiles)?;
+                play.end()
+            }
+            Self::Play {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => {
+                let mut play = serializer.serialize_struct("JsonPlay", 6)?;
+                play.serialize_field("action", "play")?;
+                play.serialize_field("down", &down)?;
+                play.serialize_field("lane", &lane)?;
+                play.serialize_field("idx", &idx)?;
+                play.serialize_field("word", &SignedWord(word))?;
+                play.serialize_field("score", &equity::descale_score(score))?;
+                play.end()
             }
         }
     }
@@ -124,6 +203,25 @@ fn equity_as_printed<S: serde::Serializer>(equity: &f32, serializer: S) -> Resul
 impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
     #[inline(always)]
     fn from(play: &movegen::ValuedMove) -> Self {
+        Self {
+            equity: play.equity.as_f64() as f32,
+            play: (&play.play).into(),
+        }
+    }
+}
+
+// a valued play as JsonPlayWithEquity writes it, read where it is held
+#[derive(serde::Serialize, Clone, Copy)]
+pub struct JsonPlayRefWithEquity<'a> {
+    #[serde(serialize_with = "equity_as_printed")]
+    pub equity: f32,
+    #[serde(flatten)]
+    pub play: JsonPlayRef<'a>,
+}
+
+impl<'a> From<&'a movegen::ValuedMove> for JsonPlayRefWithEquity<'a> {
+    #[inline(always)]
+    fn from(play: &'a movegen::ValuedMove) -> Self {
         Self {
             equity: play.equity.as_f64() as f32,
             play: (&play.play).into(),
@@ -257,7 +355,9 @@ impl Default for Kibitzer {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonPlay, JsonPlayWithEquity};
+    use super::{
+        JsonPlay, JsonPlayRef, JsonPlayRefWithEquity, JsonPlayWithEquity, equity, movegen,
+    };
 
     #[test]
     #[inline]
@@ -290,6 +390,49 @@ mod tests {
                     .equity,
                 equity
             );
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_play_read_in_place_writes_the_json_its_copy_writes() {
+        let plays = [
+            movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+            movegen::Play::Exchange {
+                tiles: [0, 3, 3, 26][..].into(),
+            },
+            movegen::Play::Place {
+                down: true,
+                lane: 7,
+                idx: 3,
+                word: [3, 0, 0x81, 20, 0x9a][..].into(),
+                score: 27 * equity::SCALE,
+            },
+            movegen::Play::Place {
+                down: false,
+                lane: 0,
+                idx: 14,
+                word: [1][..].into(),
+                score: 0,
+            },
+        ];
+        for play in &plays {
+            assert_eq!(
+                serde_json::to_string(&JsonPlayRef::from(play)).unwrap(),
+                serde_json::to_string(&JsonPlay::from(play)).unwrap()
+            );
+            for equity in [32.0, -87.25, 71.303, 0.001, 0.0] {
+                let valued = movegen::ValuedMove {
+                    equity: equity::Equity::new((equity * equity::SCALE as f32).round() as i32),
+                    play: play.clone(),
+                };
+                assert_eq!(
+                    serde_json::to_string(&JsonPlayRefWithEquity::from(&valued)).unwrap(),
+                    serde_json::to_string(&JsonPlayWithEquity::from(&valued)).unwrap()
+                );
+            }
         }
     }
 }
