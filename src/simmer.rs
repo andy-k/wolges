@@ -154,7 +154,9 @@ pub struct Simmer<
     num_tiles_that_matter: usize,
     win_prob_weightage: f64,
     wants_win_prob: bool,
-    opponents_pass: bool, // every seat but the mover's passes in a rollout
+    opponents_pass: bool,      // every seat but the mover's passes in a rollout
+    scoreless_end_start: bool, // scoreless turns end a game on the start board
+    scoreless_end_tiled: bool, // zeros end one on a board with a tile
 
     game_state: game_state::GameState,
     last_seen_leave_values: Box<[i32]>,
@@ -254,6 +256,8 @@ impl<
             win_prob_weightage: 0.0,
             wants_win_prob: false,
             opponents_pass: false,
+            scoreless_end_start: false,
+            scoreless_end_tiled: false,
 
             game_state: game_state::GameState::new(game_config),
             last_seen_leave_values: vec![0i32; game_config.num_players() as usize]
@@ -359,6 +363,12 @@ impl<
             self.keep(kept.clone());
         }
         self.opponents_pass = choices.opponents_pass;
+        let zeros_end = game_config.num_zeros_to_end() != 0;
+        self.scoreless_end_tiled = zeros_end;
+        self.scoreless_end_start = game_config.num_passes_to_end() != 0
+            || (zeros_end
+                && (game_config.zeros_can_end_empty_board()
+                    || game_state.board_tiles.iter().any(|&tile| tile != 0)));
         self.census = Default::default();
         self.census_taken = None;
     }
@@ -604,6 +614,10 @@ impl<
             game_config.num_players() as usize
         };
         let mut forced_passes = 0;
+        // whether scoreless turns can end the game on the board as it is: a
+        // board only gains tiles in a rollout, so its first placement settles
+        // what zeros need
+        let mut scoreless_ends = self.scoreless_end_start;
         let mut ply = 0;
         if !LEAN
             && self.census_taken.is_none()
@@ -636,11 +650,7 @@ impl<
             || self.game_state.bag.is_empty()
             || (self.game_state.bag.len() <= game_config.rack_size() as usize
                 && forced_passes < seats_moving))
-            && (forced_passes < seats_moving
-                || game_config.num_passes_to_end() != 0
-                || (game_config.num_zeros_to_end() != 0
-                    && (game_config.zeros_can_end_empty_board()
-                        || self.game_state.board_tiles.iter().any(|&tile| tile != 0))))
+            && (forced_passes < seats_moving || scoreless_ends)
         {
             // whether the generator picks this ply's move: not the candidate's,
             // nor a pass the opponents make by choice
@@ -732,6 +742,9 @@ impl<
                 self.game_state.challenged_off(game_config);
             } else {
                 self.game_state.play(game_config, rng, &next_play)?;
+                if matches!(next_play, movegen::Play::Place { .. }) {
+                    scoreless_ends |= self.scoreless_end_tiled;
+                }
             }
             match &next_play {
                 movegen::Play::Exchange { tiles } if tiles.is_empty() => {
