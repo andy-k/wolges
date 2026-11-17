@@ -4611,8 +4611,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         rack_size.saturating_sub(1)
     };
-    let mut rows: Vec<(usize, String, f64)> = Vec::new();
-    let mut leave_ser = String::new();
+    // each row's size, its leave (from one place to another in leaves_text),
+    // and its value
+    let mut rows: Vec<(usize, usize, usize, f64)> = Vec::new();
+    let mut leaves_text = String::new();
     // the sizes kept: not the empty one (the baseline), nor a full rack unless
     // full
     for idx in lat.size_start(1)..lat.size_start(max_keep + 1) {
@@ -4627,20 +4629,21 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.unrank_into(idx, &mut tally_buf);
         let size: usize = tally_buf.iter().map(|&c| c as usize).sum();
         let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
-        leave_ser.clear();
+        let start = leaves_text.len();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {
-                leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
+                leaves_text.push_str(alphabet.of_rack(t as u8).unwrap());
             }
         }
-        rows.push((size, leave_ser.clone(), centered_points));
+        rows.push((size, start, leaves_text.len(), centered_points));
     }
-    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let leave = |&(_, start, end, _): &(usize, usize, usize, f64)| &leaves_text[start..end];
+    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| leave(a).cmp(leave(b))));
     let mut csv_out = csv::Writer::from_path(&out_name)?;
     let mut value_text = String::new();
-    for (_, leave, value) in &rows {
-        klv::value_text_into(*value, &mut value_text);
-        csv_out.serialize((leave, &value_text))?;
+    for row in &rows {
+        klv::value_text_into(row.3, &mut value_text);
+        csv_out.serialize((leave(row), &value_text))?;
     }
     csv_out.flush()?;
     writeln!(
