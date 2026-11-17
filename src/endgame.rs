@@ -5309,9 +5309,10 @@ impl<
         Ok(Ok(result?))
     }
 
-    // a move's rows: each split valued again alone, at the depth of the pass
-    // the answer is of, on this solver's table. Under a time or state limit,
-    // or none, they are the rows the search found
+    // a move's rows: each split valued again, at the depth of the pass the
+    // answer is of, over what that pass valued below the moves (read through,
+    // never written). Under a time or state limit, or none, on one thread,
+    // they are the rows the search found
     #[inline]
     pub fn peg_bag_rows(
         &mut self,
@@ -5344,9 +5345,22 @@ impl<
         let scoreless = self.scoreless;
         let at = |opp_rack: &[u8], bag: &[u8]| position.after_split(scoreless, opp_rack, bag);
         let score_diff = position.score_diff.raw() as f64;
+        let state = &progress.state;
+        let searched = if state.answer.is_none() || state.done {
+            Some(&state.searched)
+        } else {
+            state.answered_searched.as_ref()
+        };
+        let Some(valued) = searched.map(BagValued::over) else {
+            std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
+            self.swap_tables(&mut sub)?;
+            self.kept_sub = Some(sub);
+            return Ok(Err(PegBagRowsMissing::Stopped {
+                out_of_memory: true,
+            }));
+        };
         let mut mg = self.take_mg();
         let found = (|| {
-            let valued = BagValued::new(1);
             let mut search = BagSearch {
                 gc,
                 kwg: self.kwg,
@@ -5565,6 +5579,7 @@ impl<
             }
             state.next = 0;
             state.pass_exact = true;
+            state.answered_searched = state.searched.shared(limits.memory);
             state.searched.deepen();
             state.depth += 1;
         }
@@ -6784,7 +6799,9 @@ struct PegBagRoot<'r, At: Fn(&[u8], &[u8]) -> InBag + Sync> {
 // the pass's endgames were exact, and its depth; what the search has valued
 // below the moves; the table and lane pool each thread but the calling one
 // left; the best move of the deepest pass that valued every move, with that
-// depth, and that pass's values; and whether that answer is final
+// depth, that pass's values, and what it had valued below the moves as it
+// ended (none where the memory limit refused the room); and whether that
+// answer is final
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -6800,6 +6817,7 @@ struct PegBagState {
     lanes: Vec<LanePool>,
     answer: Option<(usize, i8)>,
     answered: Vec<Option<PegBagValue>>,
+    answered_searched: Option<BagValued>,
     done: bool,
 }
 
@@ -7458,10 +7476,14 @@ fn draws_of(bag: &[u8], n: usize) -> Vec<(Vec<u8>, u64)> {
 }
 
 // what the search with tiles in the bag has valued, one for all its threads:
-// shards by key, each behind a lock of its own (BagShard)
+// shards by key, each behind a lock of its own (BagShard), each shared with a
+// copy until written (copy on write); and, read through where its own shard
+// has no entry for a key, the shards of another it was laid over (under, none
+// unless over made it)
 #[derive(Default)]
 struct BagValued {
-    shards: Box<[std::sync::Mutex<BagShard>]>,
+    shards: Box<[std::sync::Mutex<std::sync::Arc<BagShard>>]>,
+    under: Box<[std::sync::Arc<BagShard>]>,
 }
 
 // one shard of what the search has valued, by key, each kind in a table of its
@@ -7469,7 +7491,7 @@ struct BagValued {
 // its mover, and whether exact, or none where a shallower pass found it not
 // exact; and as much as a position's for what a player knows (InfoSet), whose
 // value is their chance to win with their mean margin
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BagShard {
     nodes: BagTable<BagEntry<f64>>,
     endgames: BagTable<Option<(f64, bool)>>,
@@ -7480,6 +7502,7 @@ struct BagShard {
 // player knows: its value, the move that gets it, and whether no endgame a
 // depth cut short went into it; or, from a shallower pass, the move found best
 // there alone, to be tried first
+#[derive(Clone)]
 enum BagEntry<V> {
     Valued(V, movegen::Play, bool),
     First(movegen::Play),
@@ -7507,6 +7530,17 @@ impl<V> BagEntry<V> {
     }
 }
 
+impl<V: Clone> BagEntry<V> {
+    // as deepened, from an entry another table still shares
+    #[inline(always)]
+    fn deepened_from(&self) -> Self {
+        match self {
+            BagEntry::Valued(_, play, false) => BagEntry::First(play.clone()),
+            entry => entry.clone(),
+        }
+    }
+}
+
 // what a search with tiles in the bag keeps of one kind, by key: in one row of
 // entries, a key's first place by multiply-shift, its later ones each the next
 // in turn, the first empty entry ending them (linear probing). Before three
@@ -7515,6 +7549,7 @@ impl<V> BagEntry<V> {
 // nothing is lost while it can grow. Refused, it keeps its size: a key not in
 // it takes the place of the first entry worth least on its way, and is not kept
 // when its first place is empty
+#[derive(Clone)]
 struct BagTable<T> {
     entries: Vec<Option<(u64, T)>>,
     held: usize, // the entries holding a key
@@ -7531,6 +7566,11 @@ impl<T> Default for BagTable<T> {
 }
 
 impl<T> BagTable<T> {
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        self.entries.len() * std::mem::size_of::<Option<(u64, T)>>()
+    }
+
     // a key's first place
     #[inline(always)]
     fn first(&self, key: u64) -> usize {
@@ -7631,32 +7671,100 @@ impl<T> BagTable<T> {
             }
         }
     }
+
+    // a table each value of which is one kept here passed through f, each in
+    // the place it has here
+    fn kept_through(&self, f: impl Fn(&T) -> T) -> Self {
+        Self {
+            entries: (self.entries.iter())
+                .map(|entry| entry.as_ref().map(|(key, value)| (*key, f(value))))
+                .collect(),
+            held: self.held,
+        }
+    }
 }
 
 impl BagValued {
+    // a copy sharing every shard until one is written, none where the memory
+    // limit refuses the room a copy of them all would take, as the next pass's
+    // writes may make one
+    fn shared(&self, memory: Option<MemoryLimit>) -> Option<Self> {
+        let shards = (self.shards.iter())
+            .map(|shard| shard.lock().unwrap().clone())
+            .collect::<Box<[_]>>();
+        let bytes = (shards.iter())
+            .map(|shard| shard.nodes.bytes() + shard.endgames.bytes() + shard.infos.bytes())
+            .sum::<usize>();
+        if memory.is_some_and(|memory| bytes > memory.room()) {
+            return None;
+        }
+        Some(Self {
+            shards: shards.into_iter().map(std::sync::Mutex::new).collect(),
+            under: Default::default(),
+        })
+    }
+
     // nothing valued yet, in as many shards as threads search
     fn new(threads: usize) -> Self {
         Self {
             shards: (0..threads.max(1)).map(|_| Default::default()).collect(),
+            under: Default::default(),
         }
     }
 
-    // the shard that holds key, locked
+    // nothing valued yet, laid over what under has valued: read through to it,
+    // written apart from it, which it shares but never sees
+    fn over(under: &Self) -> Self {
+        Self {
+            shards: (0..under.shards.len())
+                .map(|_| Default::default())
+                .collect(),
+            under: (under.shards.iter())
+                .map(|shard| shard.lock().unwrap().clone())
+                .collect(),
+        }
+    }
+
+    // what read finds for key in the shard that holds it, else in the one
+    // under it
     #[inline(always)]
-    fn shard(&self, key: u64) -> std::sync::MutexGuard<'_, BagShard> {
-        self.shards[key as usize % self.shards.len()]
+    fn read<R>(&self, key: u64, read: impl Fn(&BagShard) -> Option<R>) -> Option<R> {
+        let at = key as usize % self.shards.len();
+        let found = read(&self.shards[at].lock().unwrap());
+        found.or_else(|| self.under.get(at).and_then(|shard| read(shard)))
+    }
+
+    // write to the shard that holds key, locked, copied first where a copy
+    // still shares it
+    #[inline(always)]
+    fn write<R>(&self, key: u64, write: impl FnOnce(&mut BagShard) -> R) -> R {
+        let mut shard = self.shards[key as usize % self.shards.len()]
             .lock()
-            .unwrap()
+            .unwrap();
+        write(std::sync::Arc::make_mut(&mut shard))
     }
 
     // for a deeper pass: the exact values kept, and the move found best at each
-    // other position, to be tried first there
+    // other position, to be tried first there; a shard a copy shares made
+    // afresh in one walk, the copy keeping its own
     fn deepen(&mut self) {
         for shard in self.shards.iter_mut() {
             let shard = shard.get_mut().unwrap();
-            shard.nodes.each_kept(BagEntry::deepened);
-            shard.infos.each_kept(BagEntry::deepened);
-            (shard.endgames).each_kept(|endgame| endgame.filter(|&(_, exact)| exact));
+            let endgame = |endgame: &Option<(f64, bool)>| endgame.filter(|&(_, exact)| exact);
+            match std::sync::Arc::get_mut(shard) {
+                Some(shard) => {
+                    shard.nodes.each_kept(BagEntry::deepened);
+                    shard.infos.each_kept(BagEntry::deepened);
+                    (shard.endgames).each_kept(|kept| endgame(&kept));
+                }
+                None => {
+                    *shard = std::sync::Arc::new(BagShard {
+                        nodes: shard.nodes.kept_through(BagEntry::deepened_from),
+                        endgames: shard.endgames.kept_through(endgame),
+                        infos: shard.infos.kept_through(BagEntry::deepened_from),
+                    });
+                }
+            }
         }
     }
 }
@@ -7828,12 +7936,18 @@ impl<
         // it searches
         self.stop_at_a_limit()?;
         let key = pos.key();
-        let first = match self.valued.shard(key).nodes.get(key) {
-            Some(&BagEntry::Valued(value, _, exact)) => {
+        let found = self.valued.read(key, |shard| {
+            shard.nodes.get(key).map(|entry| match entry {
+                &BagEntry::Valued(value, _, exact) => Ok((value, exact)),
+                BagEntry::First(play) => Err(play.clone()),
+            })
+        });
+        let first = match found {
+            Some(Ok((value, exact))) => {
                 self.exact &= exact;
                 return Ok(value);
             }
-            Some(BagEntry::First(play)) => Some(play.clone()),
+            Some(Err(play)) => Some(play),
             None => None,
         };
         Ok(self.node_searched(pos, key, first)?.0)
@@ -7843,12 +7957,18 @@ impl<
     // when another entry has taken its place, searched for again
     fn node_play(&mut self, pos: &InBag) -> error::Returns<movegen::Play> {
         let key = pos.key();
-        let first = match self.valued.shard(key).nodes.get(key) {
-            Some(BagEntry::Valued(_, play, exact)) => {
-                self.exact &= *exact;
-                return Ok(play.clone());
+        let found = self.valued.read(key, |shard| {
+            shard.nodes.get(key).map(|entry| match entry {
+                BagEntry::Valued(_, play, exact) => (play.clone(), Some(*exact)),
+                BagEntry::First(play) => (play.clone(), None),
+            })
+        });
+        let first = match found {
+            Some((play, Some(exact))) => {
+                self.exact &= exact;
+                return Ok(play);
             }
-            Some(BagEntry::First(play)) => Some(play.clone()),
+            Some((play, None)) => Some(play),
             None => None,
         };
         Ok(self.node_searched(pos, key, first)?.1)
@@ -7913,7 +8033,10 @@ impl<
         self.exact = was_exact && exact;
         let play = moves.swap_remove(best.1);
         let entry = BagEntry::Valued(best.0, play.clone(), exact);
-        (self.valued.shard(key).nodes).keep(key, entry, self.limits.memory, BagEntry::worth);
+        let memory = self.limits.memory;
+        (self.valued).write(key, |shard| {
+            shard.nodes.keep(key, entry, memory, BagEntry::worth)
+        });
         Ok((best.0, play))
     }
 
@@ -7970,12 +8093,18 @@ impl<
     // highest-scoring); none without such a placement
     fn least(&mut self, pos: &InBag) -> error::Returns<Option<f64>> {
         let key = pos.key();
-        let first = match self.valued.shard(key).nodes.get(key) {
-            Some(&BagEntry::Valued(value, _, exact)) => {
+        let found = self.valued.read(key, |shard| {
+            shard.nodes.get(key).map(|entry| match entry {
+                &BagEntry::Valued(value, _, exact) => Ok((value, exact)),
+                BagEntry::First(play) => Err(play.clone()),
+            })
+        });
+        let first = match found {
+            Some(Ok((value, exact))) => {
                 self.exact &= exact;
                 return Ok(Some(value));
             }
-            Some(BagEntry::First(play)) => Some(play.clone()),
+            Some(Err(play)) => Some(play),
             None => None,
         };
         let bag_len = pos.bag_len();
@@ -8017,7 +8146,7 @@ impl<
     // the value to its mover of a position whose bag is empty: its endgame
     fn endgame(&mut self, pos: &InBag) -> error::Returns<f64> {
         let key = pos.key();
-        let found = self.valued.shard(key).endgames.get(key).copied().flatten();
+        let found = (self.valued).read(key, |shard| shard.endgames.get(key).copied().flatten());
         if let Some((value, exact)) = found {
             self.exact &= exact;
             return Ok(value);
@@ -8040,8 +8169,10 @@ impl<
     #[inline(always)]
     fn keep_endgame(&self, key: u64, value: f64, exact: bool) {
         let memory = self.limits.memory;
-        (self.valued.shard(key).endgames).keep(key, Some((value, exact)), memory, |endgame| {
-            endgame.map_or(0, |(_, exact)| 1 + exact as u8)
+        (self.valued).write(key, |shard| {
+            (shard.endgames).keep(key, Some((value, exact)), memory, |endgame| {
+                endgame.map_or(0, |(_, exact)| 1 + exact as u8)
+            })
         });
     }
 
@@ -8050,7 +8181,7 @@ impl<
     // alone, which stops sooner than a search for the value
     fn endgame_below(&mut self, pos: &InBag, beta: f64) -> error::Returns<Option<f64>> {
         let key = pos.key();
-        let found = self.valued.shard(key).endgames.get(key).copied().flatten();
+        let found = (self.valued).read(key, |shard| shard.endgames.get(key).copied().flatten());
         if let Some((value, exact)) = found {
             self.exact &= exact;
             return Ok((value < beta).then_some(value));
@@ -8311,12 +8442,18 @@ impl<
         // read even where the info set has its value, as node does
         self.stop_at_a_limit()?;
         let key = info.key();
-        let first = match self.valued.shard(key).infos.get(key) {
-            Some(&BagEntry::Valued(value, _, exact)) => {
+        let found = self.valued.read(key, |shard| {
+            shard.infos.get(key).map(|entry| match entry {
+                &BagEntry::Valued(value, _, exact) => Ok((value, exact)),
+                BagEntry::First(play) => Err(play.clone()),
+            })
+        });
+        let first = match found {
+            Some(Ok((value, exact))) => {
                 self.exact &= exact;
                 return Ok(value);
             }
-            Some(BagEntry::First(play)) => Some(play.clone()),
+            Some(Err(play)) => Some(play),
             None => None,
         };
         let was_exact = std::mem::replace(&mut self.exact, true);
@@ -8400,7 +8537,10 @@ impl<
         let exact = self.exact;
         self.exact = was_exact && exact;
         let entry = BagEntry::Valued((best.0, best.1), moves.swap_remove(best.2), exact);
-        (self.valued.shard(key).infos).keep(key, entry, self.limits.memory, BagEntry::worth);
+        let memory = self.limits.memory;
+        (self.valued).write(key, |shard| {
+            shard.infos.keep(key, entry, memory, BagEntry::worth)
+        });
         Ok((best.0, best.1))
     }
 
