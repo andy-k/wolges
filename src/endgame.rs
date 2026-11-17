@@ -1792,6 +1792,13 @@ impl MemoryLimit {
     fn room(&self) -> usize {
         self.bytes.saturating_sub((self.held)()).saturating_sub(1)
     }
+
+    // whether the program may take on this many bytes and still hold fewer
+    // than its bytes
+    #[inline(always)]
+    pub fn has_room(&self, bytes: usize) -> bool {
+        bytes <= self.room()
+    }
 }
 
 // a growth a memory limit refused: taken, it would have had the program hold
