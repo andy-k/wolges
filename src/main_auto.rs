@@ -9,6 +9,9 @@ use wolges::{
     game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
+// its counting allocator and --max-memory; its endgame watching goes unused
+#[allow(dead_code)]
+mod endgame_watch;
 mod game_args;
 
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
@@ -17,6 +20,16 @@ type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
 #[derive(clap::Parser)]
 #[command(version = wolges::VERSION)]
 struct Cli {
+    #[arg(
+        long,
+        value_name = "GB",
+        default_value_t = 0.0,
+        help = "keep the program within GB gigabytes (of 10^9 bytes), its word graph \
+                included (0: no limit): the late graph is pruned only where it fits, else \
+                the sim walks the whole lexicon, and a decision is refused where no room is \
+                left"
+    )]
+    max_memory: f64,
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,
     #[arg(
@@ -95,7 +108,15 @@ fn main() -> error::Returns<()> {
     game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-    do_it(&kwg, &klv, &game_config, harvest, cli.games, cli.lean)
+    do_it(
+        &kwg,
+        &klv,
+        &game_config,
+        harvest,
+        cli.games,
+        cli.lean,
+        endgame_watch::memory_limit(cli.max_memory)?,
+    )
 }
 
 #[inline]
@@ -121,6 +142,7 @@ fn do_it(
     harvest: Option<HarvestWriter>,
     games: Option<u64>,
     lean: bool,
+    memory: Option<wolges::endgame::MemoryLimit>,
 ) -> error::Returns<()> {
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
@@ -148,6 +170,7 @@ fn do_it(
             sim_threads: 1,
             win_pct_table: None,
             quiet: false,
+            memory,
         },
     )?));
     if true {
