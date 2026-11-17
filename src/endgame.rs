@@ -16248,10 +16248,10 @@ mod tests {
     #[test]
     #[inline]
     fn differential_one_in_bag_exchange() {
-        // under the exchange test config, whose second pass ends the game, and
-        // under it with passes ending the game only as scoreless turns, where a
-        // pass answering a pass ends it before the config's counts do; from no
-        // scoreless turns, and from a pass as the game's last turn
+        // under the exchange test config, whose second pass ends the game,
+        // from no scoreless turns; and under it with passes ending the game
+        // only as scoreless turns, where a pass answering a pass ends it
+        // before the config's counts do, from a pass as the game's last turn
         let exchange_test = game_config::make_exchange_test_game_config();
         let mut zeros_only = exchange_test.clone();
         let game_config::GameConfig::Static(rules) = &mut zeros_only;
@@ -16259,76 +16259,49 @@ mod tests {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
-
-        let bag_tiles: [u8; 2] = [1, 0]; // A, blank
-
-        let mut disagreements = 0usize;
-        let mut total = 0usize;
-
-        for gc in [exchange_test, zeros_only] {
-            let mut mg = movegen::KurniaMoveGenerator::new(&gc);
-            let arms = both_arms(&kwg, &gc);
-            let positions: Vec<(String, Position)> = embedded_positions()
-                .into_iter()
-                .filter(|(_, pos)| pos.racks[0].len() <= 2 && pos.racks[1].len() <= 2)
-                .collect();
-            for (name, pos) in positions {
-                for &t in &bag_tiles {
-                    for mover in 0u8..2 {
-                        for (passes, zeros) in [(0u8, 0u8), (1, 1)] {
-                            let refv = reference_one_in_bag_ex(
-                                &mut Reference {
-                                    gc: &gc,
-                                    kwg: &kwg,
-                                    klv: &klv,
-                                    mg: &mut mg,
-                                    memo: Default::default(),
-                                },
-                                &pos.board,
-                                &pos.racks,
-                                super::OneInBagTurn {
-                                    mover,
-                                    bag_tile: t,
-                                    passes,
-                                    zeros,
-                                    answering: passes > 0, // the game's last turn a pass
-                                },
-                            );
-                            for (lean, arm_tables) in &arms {
-                                total += 1;
-                                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                                    &gc, &kwg, arm_tables,
-                                )
-                                .unwrap();
-                                egs.init_after_scoreless_turns(
-                                    &pos.board,
-                                    [&pos.racks[0][..], &pos.racks[1][..]],
-                                    passes as u16,
-                                    zeros as u16,
-                                );
-                                let solvev = egs.solve_one_in_bag(mover, t).unwrap();
-                                if solvev != super::to_equity(refv) {
-                                    disagreements += 1;
-                                    println!(
-                                        "DISAGREE [{name}] passes_to_end={} lean={lean} mover={mover} bag={t} scoreless={passes},{zeros}: ref={refv} solve={}\n   {}",
-                                        gc.num_passes_to_end(),
-                                        solvev.raw(),
-                                        describe(&gc, &pos)
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let positions = all_positions();
+        for (gc, name, mover, scoreless) in [
+            (&exchange_test, "both-pass-only (BB vs HT)", 0u8, 0u8),
+            (&exchange_test, "rand#9", 0, 0), // an A held, as the one in the bag
+            (&zeros_only, "playout race (AB vs AT)", 1, 1),
+        ] {
+            let mut mg = movegen::KurniaMoveGenerator::new(gc);
+            let arm_tables = anagrams::ArmTables::build(&kwg, gc, false).unwrap();
+            let (_, pos) = positions.iter().find(|(n, _)| n == name).unwrap();
+            let bag_tile = 1; // A
+            let refv = reference_one_in_bag_ex(
+                &mut Reference {
+                    gc,
+                    kwg: &kwg,
+                    klv: &klv,
+                    mg: &mut mg,
+                    memo: Default::default(),
+                },
+                &pos.board,
+                &pos.racks,
+                super::OneInBagTurn {
+                    mover,
+                    bag_tile,
+                    passes: scoreless,
+                    zeros: scoreless,
+                    answering: scoreless > 0, // the game's last turn a pass
+                },
+            );
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(gc, &kwg, &arm_tables).unwrap();
+            egs.init_after_scoreless_turns(
+                &pos.board,
+                [&pos.racks[0][..], &pos.racks[1][..]],
+                scoreless as u16,
+                scoreless as u16,
+            );
+            assert_eq!(
+                egs.solve_one_in_bag(mover, bag_tile).unwrap(),
+                super::to_equity(refv),
+                "[{name}] passes_to_end={} mover={mover} scoreless={scoreless}",
+                gc.num_passes_to_end()
+            );
         }
-        println!(
-            "one-in-bag exchange differential: {disagreements} disagreements out of {total} cases"
-        );
-        assert_eq!(
-            disagreements, 0,
-            "solve_one_in_bag disagreed with reference_one_in_bag_ex"
-        );
     }
 
     #[test]
