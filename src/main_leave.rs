@@ -3069,8 +3069,9 @@ fn read_summary_into<Readable: std::io::Read>(
     let mut rack_bytes = Vec::new();
     let mut records = 0u64;
     let mut racks = 0usize;
-    for result in csv_in.records() {
-        let record = result?;
+    // each line read into the one record
+    let mut record = csv::StringRecord::new();
+    while csv_in.read_record(&mut record)? {
         if record.len() < 3 {
             return Err("a summary line has fewer than 3 fields".into());
         }
@@ -3177,8 +3178,13 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
     let mut row_count = 0u64;
-    for (record_num, result) in csv_reader.records().enumerate() {
-        let record = result?;
+    // each line read into the one record
+    let mut record = csv::StringRecord::new();
+    for record_num in 0usize.. {
+        if !csv_reader.read_record(&mut record)? {
+            break;
+        }
+        let record = &record;
         if let Err(e) = (|| -> error::Returns<()> {
             if record.len() < 11 {
                 return Err("a log line has fewer than 11 fields".into());
@@ -3336,7 +3342,13 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     };
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
-    for (rows_read, result) in (1u64..).zip(csv_in.records()) {
+    // each line read into the one record, counted from 1
+    let mut record = csv::StringRecord::new();
+    for rows_read in 1u64.. {
+        let read = csv_in.read_record(&mut record);
+        if matches!(read, Ok(false)) {
+            break;
+        }
         let elapsed_time_secs = t0.elapsed().as_secs();
         if !quiet && tick_periods.update(elapsed_time_secs) {
             writeln!(
@@ -3344,7 +3356,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
                 "After {elapsed_time_secs} seconds, have read {rows_read} rows"
             )?;
         }
-        let record = result?;
+        read?;
         if record.len() < 3 {
             return Err("a summary line has fewer than 3 fields".into());
         }
@@ -4801,7 +4813,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
-    for (rows_read, result) in (1u64..).zip(csv_in.records()) {
+    // each line read into the one record, counted from 1
+    let mut record = csv::StringRecord::new();
+    for rows_read in 1u64.. {
+        let read = csv_in.read_record(&mut record);
+        if matches!(read, Ok(false)) {
+            break;
+        }
         let elapsed_time_secs = t0.elapsed().as_secs();
         if !quiet && tick_periods.update(elapsed_time_secs) {
             writeln!(
@@ -4809,7 +4827,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                 "After {elapsed_time_secs} seconds, have read {rows_read} rows"
             )?;
         }
-        let record = result?;
+        read?;
         if record.len() < 3 {
             return Err("a summary line has fewer than 3 fields".into());
         }
@@ -5573,8 +5591,9 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let mut csv_in = csv::ReaderBuilder::new()
         .has_headers(false)
         .from_reader(make_reader(playability)?);
-    for record in csv_in.records() {
-        let record = record?;
+    // each line read into the one record
+    let mut record = csv::StringRecord::new();
+    while csv_in.read_record(&mut record)? {
         if record.len() != 6 {
             return Err("a playability line with its losses has 6 fields".into());
         }
@@ -5608,8 +5627,10 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     // the racks by rack loss, each once
     let mut racks = Vec::<(bites::Bites, f64)>::new();
     let mut seen = fash::MyHashSet::<bites::Bites>::default();
+    let mut key = Vec::new();
     for studied in &words {
-        let mut key = studied.word.to_vec();
+        key.clear();
+        key.extend_from_slice(&studied.word);
         key.sort_unstable();
         if seen.insert(key[..].into()) {
             racks.push((key[..].into(), studied.rack_loss));
