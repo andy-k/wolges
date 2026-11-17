@@ -2632,6 +2632,38 @@ mod tests {
                 "{kept:?}"
             );
         }
+        // a blank the mover does not hold
+        let blank_ta = movegen::Play::Place {
+            down: true,
+            lane: 0,
+            idx: 11,
+            word: [0, 0x81][..].into(),
+            score: 0,
+        };
+        assert!(
+            reply_on(
+                &mut tables,
+                &mut move_generator,
+                &board_tiles,
+                &[],
+                &blank_ta,
+                1
+            )
+            .is_err()
+        );
+        // an exchange from a bag too small for one
+        let board_tiles = reply_board(&game_config, &small, &mover);
+        assert!(
+            reply_on(
+                &mut tables,
+                &mut move_generator,
+                &board_tiles,
+                &[],
+                &exchange,
+                1
+            )
+            .is_err()
+        );
         // the mover's draw empties the bag: three placed, three in it
         let tae = movegen::Play::Place {
             down: true,
