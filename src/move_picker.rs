@@ -419,7 +419,18 @@ pub struct Simmer<
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
     late_board: Box<[u8]>, // the board the late graph was pruned for
+    late_prune: LatePrune, // what each late graph is pruned with
     thread_kept: Vec<(simmer::Simmer<R>, SimRows)>, // each thread's, kept run to run
+}
+
+// what a sim's late graph is pruned with, kept from one decision to the next:
+// the generator (made at its first use), the words, the builder, and the graph
+// of no late graph, whose nodes the next one is made in
+struct LatePrune {
+    generator: Option<movegen::KurniaMoveGenerator>,
+    words: Vec<bites::Bites>,
+    builder: build::Builder,
+    spare: kwg::Kwg<kwg::Node24>,
 }
 
 // the opponent's last move and the board before it, from which a sim infers
@@ -606,6 +617,12 @@ impl<
             infer: None,
             late_graph: None,
             late_board: Box::default(),
+            late_prune: LatePrune {
+                generator: None,
+                words: Vec::new(),
+                builder: Default::default(),
+                spare: kwg::Kwg(Vec::new()),
+            },
             thread_kept: Vec::new(),
         }
     }
@@ -2030,26 +2047,35 @@ impl<
                 simmer.reset_for_another_kwg();
             }
         }
+        let LatePrune {
+            generator,
+            words,
+            builder,
+            spare,
+        } = &mut self.late_prune;
         self.late_graph = if keep {
             self.late_graph.take()
         } else if late {
             self.late_board.clone_from(&game_state.board_tiles);
-            let mut words = Vec::<bites::Bites>::new();
-            movegen::KurniaMoveGenerator::new(self.game_config).gen_remaining_words(
-                &movegen::BoardSnapshot {
-                    board_tiles: &game_state.board_tiles,
-                    game_config: self.game_config,
-                    kwg: self.kwg,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: self.klv,
-                },
-                |word: &[u8]| words.push(word.into()),
-            );
-            let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&build::build_for_game(
-                self.game_config,
-                &words,
-            )?)?;
+            words.clear();
+            (generator.get_or_insert_with(|| movegen::KurniaMoveGenerator::new(self.game_config)))
+                .gen_remaining_words(
+                    &movegen::BoardSnapshot {
+                        board_tiles: &game_state.board_tiles,
+                        game_config: self.game_config,
+                        kwg: self.kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: self.klv,
+                    },
+                    |word: &[u8]| words.push(word.into()),
+                );
+            // made in the nodes of the graph before, if any
+            let mut kwg = match self.late_graph.take() {
+                Some((kwg, _)) => kwg,
+                None => std::mem::replace(spare, kwg::Kwg(Vec::new())),
+            };
+            kwg.refill_from_bytes(builder.build_for_game(self.game_config, words)?)?;
             // tables of the arm the given ones are of
             let arm_tables = match self.arm_tables {
                 anagrams::ArmTables::Anagrams(_) => {
@@ -2062,6 +2088,10 @@ impl<
             };
             Some((kwg, arm_tables))
         } else {
+            // its nodes kept for the next
+            if let Some((kwg, _)) = self.late_graph.take() {
+                *spare = kwg;
+            }
             None
         };
         self.candidates = self.take_candidates(move_generator.plays.len());
