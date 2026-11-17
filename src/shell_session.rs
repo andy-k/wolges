@@ -3619,7 +3619,7 @@ impl Replay {
         let out = placed && !turn.given && state.players[mover].rack.is_empty();
         let rack = &mut state.players[mover].rack;
         let leave = held.saturating_sub(used).min(rack.len());
-        self.typed[mover] = kept(&self.typed[mover], &rack[..leave]);
+        keep_typed(&mut self.typed[mover], &rack[..leave]);
         if turn.given {
             let drawn = rack.split_off(leave);
             state.bag.return_tiles(&drawn);
@@ -3749,7 +3749,8 @@ impl Replay {
     // shell drew goes back in the bag
     fn forget_drawn(&mut self, seat: usize) {
         let mut drawn = std::mem::take(&mut self.state.players[seat].rack);
-        let known = kept(&self.typed[seat], &drawn);
+        let mut known = self.typed[seat].clone();
+        keep_typed(&mut known, &drawn);
         for tile in &known {
             if let Some(at) = drawn.iter().position(|t| t == tile) {
                 drawn.swap_remove(at);
@@ -3794,18 +3795,20 @@ impl std::fmt::Display for RackShown<'_> {
     }
 }
 
-// the typed tiles a leave still holds: when a move used a copy of a tile, a
-// drawn copy is taken to have gone first
-fn kept(typed: &[u8], leave: &[u8]) -> Vec<u8> {
-    let mut spare = leave.to_vec();
-    let mut kept = Vec::new();
-    for &tile in typed {
-        if let Some(at) = spare.iter().position(|&t| t == tile) {
-            spare.swap_remove(at);
-            kept.push(tile);
-        }
+// the typed tiles a leave still holds, in place: when a move used a copy of a
+// tile, a drawn copy is taken to have gone first
+fn keep_typed(typed: &mut Vec<u8>, leave: &[u8]) {
+    // the leave's copies of each tile not yet matched to a typed one
+    let mut spare = [0usize; 1 << u8::BITS];
+    for &tile in leave {
+        spare[tile as usize] += 1;
     }
-    kept
+    typed.retain(|&tile| {
+        let left = &mut spare[tile as usize];
+        let kept = *left > 0;
+        *left -= kept as usize;
+        kept
+    });
 }
 
 // draw a dealt rack up to full from the bag (never past full)
