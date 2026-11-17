@@ -2002,8 +2002,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 .from_reader(make_reader(&csv)?);
             let mut values = Vec::new();
             let mut v = Vec::new();
-            for result in csv_reader.records() {
-                let record = result?;
+            // each line read into the one record
+            let mut record = csv::StringRecord::new();
+            while csv_reader.read_record(&mut record)? {
                 if record.len() < 7 {
                     return Err("a line has fewer than 7 fields".into());
                 }

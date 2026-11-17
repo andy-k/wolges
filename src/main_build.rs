@@ -90,8 +90,12 @@ fn trim_csv<R: std::io::Read, W: std::io::Write>(
         .from_reader(input);
     let mut csv_out = csv::WriterBuilder::new().flexible(true).from_writer(output);
     let mut v = Vec::new();
-    for (i, result) in csv_in.records().enumerate() {
-        let record = result?;
+    // each line read into the one record
+    let mut record = csv::StringRecord::new();
+    for i in 0usize.. {
+        if !csv_in.read_record(&mut record)? {
+            break;
+        }
         if i >= header {
             let Some(field) = record.get(column) else {
                 wolges::return_error!(format!("record {} has no field {}", i + 1, column + 1));
