@@ -3839,8 +3839,8 @@ mod tests {
         assert!(first.game.as_ref().unwrap().turns[3].hidden);
         assert!(run(&mut first, "play exch 9").is_err());
         // logged as the long commands, and replayed the same
-        assert!(first.log.contains(&"rack 2 AT".to_string()));
-        assert!(first.log.contains(&"play 9H EA".to_string()));
+        assert!(first.log.iter().any(|i| i == "rack 2 AT"));
+        assert!(first.log.iter().any(|i| i == "play 9H EA"));
         let mut second = session();
         for line in first.log.clone() {
             replay(&mut second, &line).unwrap();
@@ -4295,7 +4295,7 @@ mod tests {
         assert!(run(&mut first, "rules klingon").is_err());
         assert!(first.game.is_some());
         assert_eq!(first.log.last().unwrap(), "new 7");
-        assert!(first.log.contains(&"rules polish".to_string()));
+        assert!(first.log.iter().any(|i| i == "rules polish"));
         let mut second = session();
         for line in &first.log {
             run(&mut second, line).unwrap();
@@ -4411,7 +4411,7 @@ mod tests {
         second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert!(second.seats[1] == Seat::Given);
         assert_eq!(snapshot(&second), snapshot(&first));
-        assert!(second.log.contains(&"phony exch 3".to_string()));
+        assert!(second.log.iter().any(|i| i == "phony exch 3"));
         assert_eq!(second.gcg_text().unwrap(), text);
         // back at their leave, the T: it is written as known, the rest as _
         run(&mut first, "back 4").unwrap();
@@ -4639,7 +4639,7 @@ mod tests {
             assert_eq!(second.gcg_text().unwrap(), text);
             second
         };
-        assert!(loads_back(&text, &first).log.contains(&"end".to_string()));
+        assert!(loads_back(&text, &first).log.iter().any(|i| i == "end"));
         // with both shown, each rack counts against its player
         run(&mut first, "rack 2 EE").unwrap();
         let text = first.gcg_text().unwrap();
@@ -4848,7 +4848,7 @@ mod tests {
         let mut second = session();
         second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert_eq!(second.gcg_text().unwrap(), text);
-        assert!(second.log.contains(&"adjust 1".to_string()));
+        assert!(second.log.iter().any(|i| i == "adjust 1"));
         // without the note, as other programs write it, the same game loads
         let plain = text.replace("#note the correct score is 4\n", "");
         let mut third = session();
@@ -5274,7 +5274,7 @@ mod tests {
         assert!(!mover.is_empty());
         run(&mut session, "infer public").unwrap();
         assert!(session.public_view);
-        assert!(session.log.contains(&"infer public".to_string()));
+        assert!(session.log.iter().any(|i| i == "infer public"));
         let public = session.kept_leaves().unwrap();
         assert!(public.len() >= mover.len());
         assert_ne!(public, mover);
