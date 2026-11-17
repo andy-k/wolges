@@ -167,7 +167,6 @@ fn last_each(racks: Vec<(usize, Vec<u8>)>) -> Vec<(usize, Vec<u8>)> {
 // the order set, each seat's last one counting), its moves, how many of them
 // the board shows, a rack given to the side to move who has not played yet, and
 // the lines what-ifs cut away
-#[derive(Clone)]
 struct Game {
     seed: u64,
     start: Vec<(usize, Vec<u8>)>,
@@ -175,6 +174,31 @@ struct Game {
     at: usize,
     rack: Option<Vec<u8>>,
     lines: Vec<Line>, // the games what-ifs cut away, each whole
+}
+
+// a copy made over another is made in its memory
+impl Clone for Game {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            seed: self.seed,
+            start: self.start.clone(),
+            turns: self.turns.clone(),
+            at: self.at,
+            rack: self.rack.clone(),
+            lines: self.lines.clone(),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.seed = source.seed;
+        self.start.clone_from(&source.start);
+        self.turns.clone_from(&source.turns);
+        self.at = source.at;
+        self.rack.clone_from(&source.rack);
+        self.lines.clone_from(&source.lines);
+    }
 }
 
 // a game a what-if cut away: the racks set before its first move, and its moves
@@ -280,6 +304,8 @@ pub struct Session {
     played_line: String, // a computer's play as the command run and logged, kept
     played_words: Vec<String>, // that command's words, kept from play to play
     spare_unseen: std::cell::Cell<Vec<u8>>, // the tiles show last counted unseen
+    game_before: Option<Game>,              // the game before the last change, its memory kept
+    spare_board: Vec<u8>,                   // a board before a last turn, for the next rebuild
     kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
     klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
     kwgs_read: std::collections::HashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
@@ -495,6 +521,8 @@ impl Session {
             played_line: String::new(),
             played_words: Vec::new(),
             spare_unseen: Default::default(),
+            game_before: None,
+            spare_board: Vec::new(),
             kwg: None,
             klv: none,
             kwgs_read: Default::default(),
@@ -1649,7 +1677,9 @@ impl Session {
         &mut self,
         f: impl FnOnce(&mut Option<Game>) -> error::Returns<()>,
     ) -> error::Returns<()> {
-        let before = self.game.clone();
+        // the game as it was, copied into the memory of the last one kept
+        let mut before = std::mem::take(&mut self.game_before);
+        before.clone_from(&self.game);
         let result = f(&mut self.game).and_then(|()| {
             if let Some(game) = &mut self.game {
                 let (start, turns) = (&game.start, &game.turns);
@@ -1659,9 +1689,12 @@ impl Session {
             self.rebuild()
         });
         if result.is_err() {
-            self.game = before;
+            std::mem::swap(&mut self.game, &mut before);
+            self.game_before = before;
             self.rebuild()?;
+            return result;
         }
+        self.game_before = before;
         result
     }
 
@@ -1797,7 +1830,7 @@ impl Session {
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut final_scores = None;
         // the board before the last turn, in one buffer, and that turn
-        let mut board_before = Vec::new();
+        let mut board_before = std::mem::take(&mut self.spare_board);
         let mut last_turn = None;
         let mut loser = None;
         for turn in game.turns[..game.at].iter() {
@@ -1815,7 +1848,13 @@ impl Session {
                 replay.state.next_turn();
             }
         }
-        let board_before_last = last_turn.map(|turn| (board_before, turn.played().into_owned()));
+        let board_before_last = match last_turn {
+            Some(turn) => Some((board_before, turn.played().into_owned())),
+            None => {
+                self.spare_board = board_before;
+                None
+            }
+        };
         if final_scores.is_none() {
             let to_move = replay.state.turn as usize;
             let given = self.seats[to_move] == Seat::Given;
@@ -1834,7 +1873,9 @@ impl Session {
         self.racks_given = replay.given;
         let was = std::mem::replace(&mut self.state, replay.state);
         self.spare_state.set(Some(was));
-        self.board_before_last = board_before_last;
+        if let Some((was, _)) = std::mem::replace(&mut self.board_before_last, board_before_last) {
+            self.spare_board = was;
+        }
         self.final_scores = final_scores;
         self.loser = loser;
         Ok(())
