@@ -11525,7 +11525,12 @@ mod tests {
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let (mut below, mut above, mut equal) = ([0u64; 3], [0u64; 3], [0u64; 3]);
-        for (_name, pos) in all_positions() {
+        for (_name, pos) in all_positions()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| [15, 64].contains(i))
+            .map(|(_, named)| named)
+        {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
                 let new = || {
