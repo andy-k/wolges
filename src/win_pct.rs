@@ -4,13 +4,15 @@
 // runs merge by adding counts. The reader symmetrizes each key, which is what
 // makes win%(0) exactly 0.5, then reverse-cumulates for an O(1) read.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::Write as _;
 
 pub type Key = (u16, u8, u8);
 
+// every count in one list, sorted by key and then delta, so that a count seen
+// before is found in place and a new one only grows the list.
 pub struct WinPctAccumulator {
-    rows: BTreeMap<Key, BTreeMap<i32, u64>>,
+    cells: Vec<(Key, i32, u64)>,
 }
 
 impl Default for WinPctAccumulator {
@@ -22,39 +24,56 @@ impl Default for WinPctAccumulator {
 
 impl WinPctAccumulator {
     pub fn new() -> Self {
-        Self {
-            rows: BTreeMap::new(),
-        }
+        Self { cells: Vec::new() }
+    }
+
+    // the count of a key's delta, put in at 0 if it is new.
+    #[inline(always)]
+    fn cell(&mut self, key: Key, delta: i32) -> &mut u64 {
+        let at = match self
+            .cells
+            .binary_search_by(|&(k, d, _)| (k, d).cmp(&(key, delta)))
+        {
+            Ok(at) => at,
+            Err(at) => {
+                self.cells.insert(at, (key, delta, 0));
+                at
+            }
+        };
+        &mut self.cells[at].2
+    }
+
+    // each key's cells, in order.
+    #[inline(always)]
+    fn rows(&self) -> impl Iterator<Item = (Key, &[(Key, i32, u64)])> {
+        self.cells
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(|row| (row[0].0, row))
     }
 
     #[inline(always)]
     pub fn record(&mut self, bag: usize, my: usize, opp: usize, spread: i32, final_spread: i32) {
         let key = (bag as u16, my as u8, opp as u8);
-        *self
-            .rows
-            .entry(key)
-            .or_default()
-            .entry(final_spread - spread)
-            .or_insert(0) += 1;
+        *self.cell(key, final_spread - spread) += 1;
     }
 
     #[inline(always)]
     pub fn merge(&mut self, other: &WinPctAccumulator) -> crate::error::Returns<()> {
-        for (key, hist) in &other.rows {
-            let mine = self.rows.get(key).into_iter().flat_map(|h| h.values());
+        for (key, hist) in other.rows() {
+            let from = self.cells.partition_point(|&(k, _, _)| k < key);
+            let to = self.cells.partition_point(|&(k, _, _)| k <= key);
+            let mine = &self.cells[from..to];
             if mine
-                .chain(hist.values())
-                .try_fold(0u64, |sum, &count| sum.checked_add(count))
+                .iter()
+                .chain(hist)
+                .try_fold(0u64, |sum, &(_, _, count)| sum.checked_add(count))
                 .is_none()
             {
                 return_error!(format!("win_pct: key {key:?} count overflows"));
             }
         }
-        for (key, hist) in &other.rows {
-            let dst = self.rows.entry(*key).or_default();
-            for (&delta, &count) in hist {
-                *dst.entry(delta).or_insert(0) += count;
-            }
+        for &(key, delta, count) in &other.cells {
+            *self.cell(key, delta) += count;
         }
         Ok(())
     }
@@ -65,17 +84,14 @@ impl WinPctAccumulator {
         let mut out = csv::WriterBuilder::new().flexible(true).from_writer(w);
         // each field written into the one buffer, and then out
         let mut field = Vec::new();
-        for (&(bag, my, opp), hist) in &self.rows {
-            if hist.is_empty() {
-                continue;
-            }
-            let total: u64 = hist.values().sum();
+        for ((bag, my, opp), hist) in self.rows() {
+            let total: u64 = hist.iter().map(|&(_, _, count)| count).sum();
             for value in [bag as u64, my as u64, opp as u64, total] {
                 field.clear();
                 write!(field, "{value}")?;
                 out.write_field(&field)?;
             }
-            for (&delta, &count) in hist {
+            for &(_, delta, count) in hist {
                 field.clear();
                 write!(field, "{delta}:{count}")?;
                 out.write_field(&field)?;
@@ -101,7 +117,6 @@ impl WinPctAccumulator {
             let my: u8 = field.next().unwrap_or("").parse()?;
             let opp: u8 = field.next().unwrap_or("").parse()?;
             let total: u64 = field.next().unwrap_or("").parse()?;
-            let hist = acc.rows.entry((bag, my, opp)).or_default();
             let mut sum = 0u64;
             for pair in field {
                 let (d, c) = pair
@@ -109,7 +124,7 @@ impl WinPctAccumulator {
                     .ok_or_else(|| format!("win_pct: bad pair {pair:?}"))?;
                 let delta: i32 = d.parse()?;
                 let count: u64 = c.parse()?;
-                let cell = hist.entry(delta).or_insert(0);
+                let cell = acc.cell((bag, my, opp), delta);
                 let (Some(cell_sum), Some(row_sum)) =
                     (cell.checked_add(count), sum.checked_add(count))
                 else {
@@ -130,10 +145,10 @@ impl WinPctAccumulator {
     #[inline(always)]
     pub fn finalize(&self) -> crate::error::Returns<WinPctTable> {
         let mut rows = HashMap::new();
-        rows.try_reserve(self.rows.len())?;
-        for (&key, hist) in &self.rows {
+        rows.try_reserve(self.rows().count())?;
+        for (key, hist) in self.rows() {
             let mut cap = None;
-            for &delta in hist.keys() {
+            for &(_, delta, _) in hist {
                 let Some(neg) = delta.checked_neg() else {
                     return_error!(format!(
                         "win_pct: key {key:?} delta {delta} has no negation"
@@ -151,7 +166,7 @@ impl WinPctAccumulator {
             let mut sym = Vec::new();
             sym.try_reserve_exact(width)?;
             sym.resize(width, 0u64);
-            for (&delta, &count) in hist {
+            for &(_, delta, count) in hist {
                 for i in [delta + cap, -delta + cap] {
                     let cell = &mut sym[i as usize];
                     let Some(sum) = cell.checked_add(count) else {
