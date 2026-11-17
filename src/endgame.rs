@@ -1794,6 +1794,54 @@ impl MemoryLimit {
     }
 }
 
+// a growth a memory limit refused: taken, it would have had the program hold
+// its bytes or more
+#[derive(Debug)]
+pub struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the memory limit refused the room")
+    }
+}
+
+impl std::error::Error for Refused {}
+
+// room in list for more items, its buffer grown when it has not: with no limit
+// as std grows one, else only when the limit has room for the new buffer's
+// bytes as well as the old one's, which the program holds while they move; to
+// twice its capacity, or less where the limit has not room for that, never
+// less than fits them. Refused, the list is as it was
+#[inline(always)]
+pub fn room_in<T>(
+    memory: Option<&MemoryLimit>,
+    list: &mut Vec<T>,
+    more: usize,
+) -> Result<(), Refused> {
+    if list.capacity() - list.len() >= more {
+        Ok(())
+    } else {
+        grow_in(memory, list, more)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn grow_in<T>(memory: Option<&MemoryLimit>, list: &mut Vec<T>, more: usize) -> Result<(), Refused> {
+    let Some(memory) = memory else {
+        list.reserve(more);
+        return Ok(());
+    };
+    let needed = list.len().checked_add(more).ok_or(Refused)?;
+    let fits = memory.room() / std::mem::size_of::<T>().max(1);
+    if needed > fits {
+        return Err(Refused);
+    }
+    let capacity = needed.max(list.capacity().saturating_mul(2).min(fits));
+    list.try_reserve_exact(capacity - list.len())
+        .map_err(|_| Refused)
+}
+
 // a clock: the time since any fixed start, never going back. A solve reads
 // std's (Instant) unless its solver is given one, as a wasm32 page must give
 // its own: std's has no clock there and panics when read
