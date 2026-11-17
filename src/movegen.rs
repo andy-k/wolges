@@ -13557,6 +13557,8 @@ mod tests {
         rack
     }
 
+    // every placement by brute force, with no word graph: each as its tiles by
+    // square and its score, in millipoints
     #[inline]
     fn reference_placements(
         gc: &game_config::GameConfig,
@@ -13622,6 +13624,8 @@ mod tests {
             }
             sum * times
         };
+        // on an empty symmetric board, a down placement is an across one
+        // mirrored, and only the across ones are listed
         let directions: &[bool] = if empty_board && layout.is_symmetric() {
             &[false]
         } else {
@@ -13635,6 +13639,7 @@ mod tests {
             };
             for r0 in 0..dim.rows {
                 for c0 in 0..dim.cols {
+                    // (next square, tiles placed so far, main word so far)
                     let mut stack = vec![((r0, c0), Vec::<(usize, u8)>::new(), Vec::<u8>::new())];
                     while let Some(((r, c), placed, main)) = stack.pop() {
                         let on_board = r < dim.rows && c < dim.cols;
