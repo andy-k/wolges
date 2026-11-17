@@ -645,6 +645,7 @@ fn main() -> error::Returns<()> {
                 .map_err(|e| error::new(format!("--time-limit: {e}")))?,
             states: cli.max_states,
             memory: endgame_watch::memory_limit(cli.max_memory)?,
+            clock: None,
         },
         reserve_table_bytes: (cli.reserve_table_mb).map_or(0, |mb| mb.saturating_mul(1 << 20)),
         threads: (cli.threads).map_or_else(parallelism::available, std::num::NonZeroUsize::get),
