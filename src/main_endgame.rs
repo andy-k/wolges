@@ -468,14 +468,16 @@ fn run_batch<N: kwg::Node>(
             },
             |word: &[u8]| vec_of_words.push(word.into()),
         );
-        let smaller_kwg_bytes = build::build_for_game(&game_config, &vec_of_words)?;
-        let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
-        let arm_tables = solver_tables(&smaller_kwg, &game_config, solving.lean)?;
+        let smaller_graph = build::graph_for_game(&game_config, &vec_of_words)?;
+        let smaller_kwg = smaller_graph.kwg();
+        let arm_tables = solver_tables(smaller_kwg, &game_config, solving.lean)?;
 
-        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
+        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::with_generator(
             &game_config,
-            &smaller_kwg,
+            smaller_kwg,
             &arm_tables,
+            smaller_graph.run_letters(),
+            movegen::KurniaMoveGenerator::new(&game_config),
         )?;
         egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
         reserve_table(&mut egs, solving);
