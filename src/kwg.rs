@@ -604,6 +604,19 @@ impl<N: Node> Kwg<N> {
 
     #[inline(always)]
     pub fn count_dawg_words_alloc(&self) -> error::Returns<Box<[u32]>> {
+        let mut word_counts = Vec::new();
+        self.count_dawg_words_into(&mut Vec::new(), &mut word_counts)?;
+        Ok(word_counts.into_boxed_slice())
+    }
+
+    // the same, into word_counts, the walk's marks in marks, both their memory
+    // kept
+    #[inline(always)]
+    pub fn count_dawg_words_into(
+        &self,
+        marks: &mut Vec<u8>,
+        word_counts: &mut Vec<u32>,
+    ) -> error::Returns<()> {
         fn max_from<N: Node>(nodes: &Kwg<N>, vis: &mut [u8], mut p: i32) -> i32 {
             let mut ret = 0;
             loop {
@@ -623,13 +636,17 @@ impl<N: Node> Kwg<N> {
             }
             ret.max(p)
         }
-        let required_size =
-            max_from(self, &mut vec![0u8; self.0.len().div_ceil(8)], 0) as usize + 1;
-        let mut word_counts = vec![0u32; required_size];
+        marks.clear();
+        marks.reserve_exact(self.0.len().div_ceil(8));
+        marks.resize(self.0.len().div_ceil(8), 0);
+        let required_size = max_from(self, marks, 0) as usize + 1;
+        word_counts.clear();
+        word_counts.reserve_exact(required_size);
+        word_counts.resize(required_size, 0);
         for p in (0..word_counts.len()).rev() {
-            self.count_words_at(&mut word_counts, p as i32)?;
+            self.count_words_at(word_counts, p as i32)?;
         }
-        Ok(word_counts.into_boxed_slice())
+        Ok(())
     }
 
     #[inline(always)]

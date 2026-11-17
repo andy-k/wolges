@@ -68,6 +68,19 @@ impl KeyLayout {
         })
     }
 
+    // whether this is the layout of(alphabet, board_dim) makes: its shifts and
+    // bits follow from its counts alone
+    #[inline(always)]
+    pub fn is_of(&self, alphabet: &super::alphabet::Alphabet, board_dim: u8) -> bool {
+        let blanks = alphabet.freq(0);
+        self.max_count.len() == alphabet.len() as usize
+            && self.max_count.first().is_none_or(|&count| count == 0)
+            && (1..alphabet.len()).all(|tile| {
+                self.max_count[tile as usize]
+                    == alphabet.freq(tile).saturating_add(blanks).min(board_dim)
+            })
+    }
+
     #[inline(always)]
     pub fn covers(&self, alphabet: &super::alphabet::Alphabet, board_dim: u8) -> bool {
         let blanks = alphabet.freq(0);
