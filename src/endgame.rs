@@ -1454,6 +1454,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     out_checks: u32,       // the skips a debug build checked by a solve of the reply
     lane_pool: LanePool,
     pool_walker: Option<(u32, movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>)>, // LanePool's walks, with its leaves' table bound, kept from solve to solve
+    next_deal: Deal, // where pool_lanes writes a search's deal, kept for the next
     #[cfg(test)]
     copied: usize, // the lanes copied from an earlier reply's list
     table: Table,
@@ -1524,6 +1525,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             out_checks: 0,
             lane_pool: LanePool::new(),
             pool_walker: None,
+            next_deal: Deal::default(),
             #[cfg(test)]
             copied: 0,
             table: Table::new(),
@@ -5660,21 +5662,22 @@ impl<
         if LEAN {
             return;
         }
-        let mut mover = mover_rack.to_vec();
-        mover.sort_unstable();
-        let mut pool = mover.clone();
+        // written in the buffer's own deal, as each solve of a search pools
+        let mut deal = std::mem::take(&mut self.work_buffer.next_deal);
+        deal.mover.clear();
+        deal.mover.extend_from_slice(mover_rack);
+        deal.mover.sort_unstable();
+        deal.pool.clone_from(&deal.mover);
         for (tile, &count) in unseen_tally.iter().enumerate() {
-            pool.extend(std::iter::repeat_n(tile as u8, count as usize));
+            deal.pool
+                .extend(std::iter::repeat_n(tile as u8, count as usize));
         }
-        pool.sort_unstable();
-        let budget = memory_limit.map_or(usize::MAX, |limit| {
+        deal.pool.sort_unstable();
+        deal.budget = memory_limit.map_or(usize::MAX, |limit| {
             limit.bytes / (POOL_SHARE * threads.max(1))
         });
-        self.pool_lanes_as(&Deal {
-            pool,
-            mover,
-            budget,
-        });
+        self.pool_lanes_as(&deal);
+        self.work_buffer.next_deal = deal;
     }
 
     // the same pool as another solver's (its deal)
