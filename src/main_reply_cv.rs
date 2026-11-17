@@ -237,7 +237,7 @@ fn main() -> error::Returns<()> {
         }
         let sgs = sim_state(&gc, &real);
         let mut sim = simmer::Simmer::new(&gc)?;
-        sim.prepare(&gc, &sgs, plies, true, &[]);
+        sim.prepare(&gc, &sgs, &simmer::SimChoices::new(plies, true, &[]));
         let pristine = sim.prepared_state().clone();
         // per candidate: objective, spread (points), win, reply equity (points)
         let mut rec = vec![(Vec::new(), Vec::new(), Vec::new(), Vec::new()); candidates.len()];
