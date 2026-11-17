@@ -252,6 +252,7 @@ type SimDriver = (
 
 pub struct Session {
     game_config: &'static game_config::GameConfig,
+    spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
     kwg: Option<(String, &'static kwg::Kwg<kwg::Node24>)>,
     klv: &'static klv::Klv<kwg::Node24>,
     kwgs_read: std::collections::HashMap<String, &'static kwg::Kwg<kwg::Node24>>,
@@ -460,6 +461,7 @@ impl Session {
         let none: &'static _ = Box::leak(Box::new(klv::Klv::<kwg::Node24>::empty()?));
         Ok(Self {
             game_config,
+            spare_state: Default::default(),
             kwg: None,
             klv: none,
             kwgs_read: Default::default(),
@@ -1459,6 +1461,7 @@ impl Session {
     // lexicon or leaves with tiles or values the new rules cannot hold go too
     fn use_rules(&mut self, game_config: &'static game_config::GameConfig) -> error::Returns<()> {
         self.game_config = game_config;
+        self.spare_state.take();
         self.change(|game| {
             *game = None;
             Ok(())
@@ -1694,7 +1697,8 @@ impl Session {
     // seats take turns, player 1 first.
     fn dealt(&self, game: &Game) -> error::Returns<(Replay, GameRng)> {
         let mut rng = GameRng::seed_from_u64(game.seed);
-        let mut state = game_state::GameState::new(self.game_config);
+        let mut state = (self.spare_state.take())
+            .unwrap_or_else(|| game_state::GameState::new(self.game_config));
         state.reset_and_draw_tiles_double_ended(self.game_config, &mut rng);
         let mut given = [false; 2];
         for (seat, given) in given.iter_mut().enumerate() {
@@ -1762,7 +1766,8 @@ impl Session {
             return Err("the game is over".into());
         }
         self.racks_given = replay.given;
-        self.state = replay.state;
+        let was = std::mem::replace(&mut self.state, replay.state);
+        self.spare_state.set(Some(was));
         self.board_before_last = board_before_last;
         self.final_scores = final_scores;
         self.loser = loser;
@@ -1975,6 +1980,7 @@ impl Session {
                 }
                 replay.state.next_turn();
             }
+            self.spare_state.set(Some(replay.state));
         }
         if let Some(final_scores) = &self.final_scores {
             // what time cost each player, shown in the scores
@@ -3192,6 +3198,7 @@ impl Session {
             }
             replay.state.next_turn();
         }
+        self.spare_state.set(Some(replay.state));
         Ok(())
     }
 
