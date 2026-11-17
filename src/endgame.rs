@@ -15756,26 +15756,38 @@ mod tests {
                 if !picked.contains(&(&name[..], mover)) {
                     continue;
                 }
-                // the table's size after each pass of a solve nothing stops (a
-                // state limit never reached, so every depth)
+                // the depth, the table's size, and the nodes after each pass
+                // of a solve nothing stops (a state limit never reached, so
+                // every depth)
                 let mut egs = fresh(&pos);
                 let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let seen = heard.clone();
                 let listener = move |p: &super::Progress| {
                     if p.value.is_some() {
-                        seen.borrow_mut().push(p.held);
+                        seen.borrow_mut().push((p.depth, p.held, p.nodes));
                     }
                     Ok(())
                 };
-                egs.listening(listener, |egs| egs.solve_within(mover, &states(usize::MAX)))
+                let full = egs
+                    .listening(listener, |egs| egs.solve_within(mover, &states(usize::MAX)))
                     .unwrap();
-                let (h1, h2) = match heard.borrow()[..] {
-                    [h1, h2, ..] => (h1, h2),
+                let passes = heard.borrow().clone();
+                assert!(
+                    (passes.iter().enumerate()).all(|(i, &(depth, _, _))| depth as usize == i + 1),
+                    "[{name}] every depth: {passes:?}"
+                );
+                let ((h1, nodes), h2) = match passes[..] {
+                    [(_, h1, nodes), (_, h2, _), ..] => ((h1, nodes), h2),
                     _ => continue,
                 };
+                // the first pass finishes whatever the limit, even with the
+                // table past it from the solve before
+                let again = egs.solve_within(mover, &states(1)).unwrap();
+                assert_eq!(again.value, full.value, "[{name}] the first pass finished");
                 // stopped at the second pass's first node: the first pass's best
                 let mut egs = fresh(&pos);
                 let first = egs.solve_within(mover, &states(h1)).unwrap();
+                assert_eq!(egs.searched(), nodes, "[{name}] no node past the pass");
                 let mut line = Vec::new();
                 egs.collect_pv(mover, &mut line);
                 let Some((_, best)) = line.first().cloned() else {
@@ -15787,7 +15799,23 @@ mod tests {
                 );
                 for cap in h1 + 1..=h2 {
                     let mut egs = fresh(&pos);
-                    let solved = egs.solve_within(mover, &states(cap)).unwrap();
+                    let held = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    let saw = held.clone();
+                    let listener = move |p: &super::Progress| {
+                        if p.value.is_none() {
+                            saw.borrow_mut().push(p.held);
+                        }
+                        Ok(())
+                    };
+                    let solved = egs
+                        .listening(listener, |egs| egs.solve_within(mover, &states(cap)))
+                        .unwrap();
+                    // it stops at the first node to see the table at the limit
+                    let held = held.borrow();
+                    assert!(
+                        held[..held.len() - 1].iter().all(|&h| h < cap),
+                        "[{name}] cap {cap}: past the limit"
+                    );
                     if solved.exact || solved.depth != 1 {
                         continue;
                     }
@@ -15824,6 +15852,18 @@ mod tests {
                         assert!(
                             at_two(&pos, mover, &best) < proven,
                             "[{name}] cap {cap}: above the first pass's best at two plies"
+                        );
+                        // with the window's floor at that value, the move is
+                        // only bounded there, so not proved
+                        let mut egs = fresh(&pos);
+                        egs.root_search(mover, 1, f32::NEG_INFINITY, f32::INFINITY)
+                            .unwrap();
+                        egs.work_buffer.root_best = egs.work_buffer.pass_best;
+                        egs.work_buffer.proven = None;
+                        egs.root_search(mover, 2, proven, f32::INFINITY).unwrap();
+                        assert!(
+                            (egs.work_buffer.proven).is_none_or(|(_, value)| value > proven),
+                            "[{name}] cap {cap}: a bound proved"
                         );
                     }
                     proved += 1;
