@@ -7394,7 +7394,21 @@ impl PegBagProgress {
     // a search of the position, not yet begun; an error for a bag that the
     // tiles the mover cannot see do not fill, or that holds none
     #[inline]
-    pub fn new(mut position: PegBagPosition, choices: PegBagChoices) -> error::Returns<Self> {
+    pub fn new(position: PegBagPosition, choices: PegBagChoices) -> error::Returns<Self> {
+        match Self::new_within(position, choices, None)? {
+            Some(progress) => Ok(progress),
+            None => unreachable!("no limit refuses the splits"),
+        }
+    }
+
+    // new, its splits taken only where memory, if given, has room for them
+    // all: else none
+    #[inline]
+    pub fn new_within(
+        mut position: PegBagPosition,
+        choices: PegBagChoices,
+        memory: Option<&MemoryLimit>,
+    ) -> error::Returns<Option<Self>> {
         let unseen = (position.unseen_tally.iter())
             .map(|&count| count as usize)
             .sum::<usize>();
@@ -7410,27 +7424,44 @@ impl PegBagProgress {
             return Err(format!("part: k below n, found {k} of {n}").into());
         }
         position.mover_rack.sort_unstable();
-        let mut splits: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
-        each_split(
-            &position.unseen_tally,
-            unseen - position.bag_size,
-            &mut |rack, bag, ways| {
-                let rack = (0u8..)
-                    .zip(rack)
-                    .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
-                    .collect();
-                splits.push((rack, bag.to_vec(), ways));
-            },
+        // the part's splits (every n-th from the k-th), counted first, so that
+        // their list, each rack, and each bag are taken at their full lengths,
+        // once the limit has room for them
+        let rack_len = unseen - position.bag_size;
+        let mut num_splits = 0;
+        each_split(&position.unseen_tally, rack_len, &mut |_, _, _| {
+            num_splits += 1;
+        });
+        let kept = num_splits / n + usize::from(k < num_splits % n);
+        let bytes = kept.saturating_mul(
+            std::mem::size_of::<(Vec<u8>, Vec<u8>, u64)>() + rack_len + position.bag_size,
         );
-        let moves_at: (Vec<u8>, Vec<u8>) = splits
-            .first()
-            .map(|(rack, bag, _)| (rack.clone(), bag.clone()))
-            .unwrap_or_default();
-        let splits = (splits.into_iter().enumerate())
-            .filter(|(i, _)| i % n == k)
-            .map(|(_, split)| split)
-            .collect();
-        Ok(Self {
+        if memory.is_some_and(|memory| !memory.has_room(bytes)) {
+            return Ok(None);
+        }
+        let mut splits: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
+        splits.try_reserve_exact(kept)?;
+        let mut moves_at = (Vec::new(), Vec::new());
+        let mut i = 0;
+        each_split(&position.unseen_tally, rack_len, &mut |rack, bag, ways| {
+            let tiles = |rack: &[u8]| {
+                let mut tiles = Vec::with_capacity(rack_len);
+                tiles.extend(
+                    (0u8..)
+                        .zip(rack)
+                        .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
+                );
+                tiles
+            };
+            if i == 0 {
+                moves_at = (tiles(rack), bag.to_vec());
+            }
+            if i % n == k {
+                splits.push((tiles(rack), bag.to_vec(), ways));
+            }
+            i += 1;
+        });
+        Ok(Some(Self {
             position,
             splits,
             moves_at,
@@ -7441,7 +7472,7 @@ impl PegBagProgress {
             nodes: 0,
             lanes: LanePool::new(),
             arenas: Vec::new(),
-        })
+        }))
     }
 
     // the part it is, k of n (0 of 1 when whole)
