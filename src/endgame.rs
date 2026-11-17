@@ -8703,14 +8703,18 @@ impl<
     // the search's leaves; not exact
     fn estimate(&mut self, score: f64, rack: &[u8], thrown: &[u8]) -> f64 {
         self.exact = false;
-        let mut kept = vec![0u8; self.gc.alphabet().len() as usize];
+        // the kept tiles' tally in this ply's room (BagArena)
+        let mut kept = self.arena.take(self.ply, TALLY);
+        kept.fill(0);
         for &tile in rack {
             kept[tile as usize] += 1;
         }
         for &tile in thrown {
             kept[tile as usize] -= 1;
         }
-        score + self.klv.leave_value_from_tally(&kept) as f64
+        let value = score + self.klv.leave_value_from_tally(&kept) as f64;
+        self.arena.give(self.ply, TALLY, kept);
+        value
     }
 
     // f's value at a position a move after the one valued
