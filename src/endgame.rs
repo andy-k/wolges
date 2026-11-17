@@ -1507,6 +1507,107 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         }
     }
 
+    // the buffer as new made it, for a solver kept from one bag search to the
+    // next: what it holds over a solver's life starts again, and what is made
+    // and remade in place (the generator, the board, the racks, and the lists,
+    // each list's serial past every earlier one's) keeps its memory. The
+    // walker of the lane pool is let go, as a solve's memory limit sizes it
+    fn renew(&mut self) {
+        let Self {
+            clock,
+            t0,
+            dur_movegen,
+            movegen: _,
+            run_letter_bits: _,
+            board_tiles: _,
+            racks: _,
+            rack_scores,
+            key,
+            lists: _,
+            orders: _,
+            zones: _,
+            spent: _,
+            keeps: _,
+            generated: _,
+            serials: _,
+            siblings: _,
+            singles: _,
+            outs: _,
+            out_skips,
+            out_checks,
+            lane_pool: _,
+            pool_walker,
+            table: _,
+            can_grow,
+            max_depth,
+            finished,
+            depth_cap,
+            time_limit,
+            state_limit,
+            memory_limit,
+            check_limits,
+            nodes,
+            searched,
+            cut_short,
+            movegen_cut,
+            progress,
+            in_bag,
+            in_bag_moves,
+            at_root,
+            pass_best,
+            root_best,
+            proven,
+            answer,
+            frames,
+            pending,
+            resumable,
+            stopped,
+            resumed,
+            line,
+            cadence,
+            next_look,
+            last_look,
+            ..
+        } = self;
+        *clock = None;
+        *t0 = None;
+        *dur_movegen = Default::default();
+        *rack_scores = [0, 0];
+        *key = 0;
+        *out_skips = 0;
+        *out_checks = 0;
+        *pool_walker = None;
+        *can_grow = true;
+        *max_depth = 0;
+        *finished = 0;
+        *depth_cap = COMPLETE;
+        *time_limit = None;
+        *state_limit = None;
+        *memory_limit = None;
+        *check_limits = false;
+        *nodes = 0;
+        *searched = 0;
+        *cut_short = false;
+        *movegen_cut = false;
+        *progress = None;
+        *in_bag = None;
+        *in_bag_moves = None;
+        *at_root = false;
+        *pass_best = NO_PLAY;
+        *root_best = NO_PLAY;
+        *proven = None;
+        *answer = None;
+        frames.clear();
+        *pending = None;
+        *resumable = false;
+        *stopped = None;
+        *resumed = 0;
+        *line = None;
+        *cadence = 1;
+        *next_look = 1;
+        *last_look = std::time::Duration::ZERO;
+    }
+
     // store a value, growing the table once three quarters of it holds
     // positions: to twice its size, or as big as the memory limit allows while
     // the old table is still held, at once while it is small, else a piece at
@@ -2021,6 +2122,8 @@ pub struct EndgameSolver<
     racks: [Vec<u8>; 2],
     scoreless: [u8; 2], // the passes and the zeros before the position to solve
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
+    kept_sub: Option<Box<Self>>, // the bag searches' solver, kept from call to call
+    kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // and their generator
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, LEAN> {
@@ -2077,7 +2180,41 @@ impl<
             racks: [Vec::new(), Vec::new()],
             scoreless: [0, 0],
             work_buffer: WorkBuffer::new(movegen, run_letter_bits),
+            kept_sub: None,
+            kept_mg: None,
         })
+    }
+
+    // the solver of this one's bag searches, made at the first and kept for
+    // the next: each takes it as with_generator made it, with what it holds of
+    // its generator and its lists kept (WorkBuffer::renew)
+    #[inline]
+    fn take_sub(&mut self) -> error::Returns<Box<Self>> {
+        Ok(match self.kept_sub.take() {
+            Some(mut sub) => {
+                sub.board_tiles.clear();
+                sub.racks[0].clear();
+                sub.racks[1].clear();
+                sub.scoreless = [0, 0];
+                sub.work_buffer.renew();
+                sub
+            }
+            None => Box::new(Self::with_generator(
+                self.game_config,
+                self.kwg,
+                self.arm_tables,
+                self.run_letters.clone(),
+                movegen::KurniaMoveGenerator::new_in(self.game_config),
+            )?),
+        })
+    }
+
+    // the generator of this one's bag searches, made at the first and kept for
+    // the next
+    #[inline(always)]
+    fn take_mg(&mut self) -> movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE> {
+        (self.kept_mg.take())
+            .unwrap_or_else(|| movegen::KurniaMoveGenerator::new_in(self.game_config))
     }
 
     // set the position to solve, with no scoreless turns before it; the table
@@ -4608,19 +4745,10 @@ impl<
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
-        let run_letters = &self.run_letters;
 
-        let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
-            gc,
-            kwg,
-            arm_tables,
-            run_letters.clone(),
-            movegen::KurniaMoveGenerator::new_in(gc),
-        )?;
+        let mut sub = self.take_sub()?;
 
-        let mut mg = movegen::KurniaMoveGenerator::new_in(gc);
-
-        let klv = klv::Klv::<L>::empty()?;
+        let mut mg = self.take_mg();
 
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
@@ -4635,7 +4763,7 @@ impl<
             gc,
             kwg,
             arm_tables,
-            klv: &klv,
+            klv: &self.klv,
             sub: &mut sub,
             mg: &mut mg,
             memo: std::mem::take(memo),
@@ -4663,6 +4791,8 @@ impl<
         if !LEAN {
             self.swap_lanes(&mut sub);
         }
+        self.kept_sub = Some(sub);
+        self.kept_mg = Some(mg);
         Ok(to_equity(value?))
     }
 
@@ -5139,13 +5269,8 @@ impl<
             self.work_buffer.clock,
         );
         limits.estimates = progress.estimates;
-        let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
-            gc,
-            self.kwg,
-            self.arm_tables,
-            self.run_letters.clone(),
-            movegen::KurniaMoveGenerator::new_in(gc),
-        )?;
+        let mut sub = self.take_sub()?;
+        let mut mg = self.take_mg();
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -5160,9 +5285,18 @@ impl<
         };
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, threads);
-        let result = Self::peg_bag_by(&mut sub, progress, self.scoreless, &limits);
+        let result = Self::peg_bag_by(
+            &mut sub,
+            &self.klv,
+            &mut mg,
+            progress,
+            self.scoreless,
+            &limits,
+        );
         std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
         self.swap_tables(&mut sub)?;
+        self.kept_sub = Some(sub);
+        self.kept_mg = Some(mg);
         self.work_buffer.progress = limits.progress.take();
         progress.endgames += limits.endgames.get();
         progress.nodes += limits.nodes.get();
@@ -5179,6 +5313,8 @@ impl<
     // the positions it valued below that move stay valued (state.searched)
     fn peg_bag_by(
         sub: &mut Self,
+        klv: &klv::Klv<L>,
+        mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         progress: &mut PegBagProgress,
         scoreless: [u8; 2],
         limits: &BagLimits,
@@ -5189,8 +5325,6 @@ impl<
         let gc = sub.game_config;
         let kwg = sub.kwg;
         let arm_tables = sub.arm_tables;
-        let klv = klv::Klv::<L>::empty()?;
-        let mut mg = movegen::KurniaMoveGenerator::new_in(gc);
         let deepens = limits.deepens();
         let PegBagProgress {
             position,
@@ -5236,8 +5370,8 @@ impl<
                 gc,
                 kwg,
                 arm_tables,
-                &klv,
-                &mut mg,
+                klv,
+                &mut *mg,
                 &at(opp_rack, bag),
             );
             state.order = (0..state.moves.len()).collect();
@@ -5272,7 +5406,7 @@ impl<
             let stopped = if threads > 1 {
                 Self::value_on_threads(
                     sub,
-                    &mut mg,
+                    &mut *mg,
                     state,
                     PegBagRoot {
                         splits,
@@ -5292,9 +5426,9 @@ impl<
                         gc,
                         kwg,
                         arm_tables,
-                        klv: &klv,
+                        klv,
                         sub: &mut *sub,
-                        mg: &mut mg,
+                        mg: &mut *mg,
                         valued: &state.searched,
                         limits,
                         model: position.model,
@@ -5791,13 +5925,8 @@ impl<
             .filter(|&(_, &c)| c != 0)
             .map(|(t, &c)| (t as u8, c as u32))
             .collect();
-        let mut sub = EndgameSolver::<N, L, LEAN, G, JUMPS, ANY_SIDE>::with_generator(
-            self.game_config,
-            self.kwg,
-            self.arm_tables,
-            self.run_letters.clone(),
-            movegen::KurniaMoveGenerator::new_in(self.game_config),
-        )?;
+        let mut sub = self.take_sub()?;
+        let mut mg = self.take_mg();
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -5806,6 +5935,8 @@ impl<
         }
         let result = Self::peg_committed_by(
             &mut sub,
+            &self.klv,
+            &mut mg,
             &PegPosition {
                 mover: progress.mover,
                 board: &progress.board,
@@ -5821,6 +5952,8 @@ impl<
         if !LEAN {
             self.swap_lanes(&mut sub);
         }
+        self.kept_sub = Some(sub);
+        self.kept_mg = Some(mg);
         result
     }
 
@@ -5835,6 +5968,8 @@ impl<
     #[inline]
     fn peg_committed_by(
         sub: &mut Self,
+        klv: &klv::Klv<L>,
+        mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         position: &PegPosition<'_>,
         score_diff: f32,
         limits: &BagLimits,
@@ -5850,7 +5985,6 @@ impl<
         let gc = sub.game_config;
         let kwg = sub.kwg;
         let arm_tables = sub.arm_tables;
-        let klv = klv::Klv::<L>::empty()?;
         let alphabet = gc.alphabet();
         let opp = mover ^ 1;
         let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
@@ -5860,18 +5994,17 @@ impl<
         let pass_ends_the_game =
             scoreless[0] > 0 || scoreless_turns_end(gc, None, pass_passes, pass_zeros);
 
-        let mut mg = movegen::KurniaMoveGenerator::new_in(gc);
         let deepens = limits.deepens();
         if state.moves.is_empty() {
             gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-                &mut mg,
+                &mut *mg,
                 &movegen::BoardSnapshot {
                     board_tiles: board,
                     game_config: gc,
                     kwg,
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
-                    klv: &klv,
+                    klv,
                 },
                 mover_rack,
                 0,
@@ -5960,9 +6093,9 @@ impl<
                             gc,
                             kwg,
                             arm_tables,
-                            klv: &klv,
+                            klv,
                             sub: &mut *sub,
-                            mg: &mut mg,
+                            mg: &mut *mg,
                             memo: BagTable::default(),
                             limits,
                             exact: true,
