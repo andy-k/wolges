@@ -17996,6 +17996,83 @@ mod tests {
         }
     }
 
+    // a move's value to its mover as a pass of this depth whose passes
+    // estimate finds it, ply moves below the root: as bag_reference_move, but
+    // a line that still leaves tiles in the bag at the pass's last ply is
+    // valued by what it scores
+    fn bag_reference_move_to<N: kwg::Node, L: kwg::Node>(
+        r: &mut BagReference<'_, '_, N, L, f64>,
+        pos: &super::InBag,
+        play: &movegen::Play,
+        ply: usize,
+        depth: usize,
+    ) -> f64 {
+        let gc = r.gc;
+        let horizon = ply + 1 >= depth;
+        match play {
+            movegen::Play::Place { word, score, .. } => {
+                let placed = placed(pos, gc, play);
+                let n = word.iter().filter(|&&tile| tile != 0).count();
+                if n < pos.bag_len() && horizon {
+                    return *score as f64;
+                }
+                let (mut sum, mut total) = (0.0, 0u64);
+                let mut draws = Vec::new();
+                super::each_split(&pos.bag, n.min(pos.bag_len()), &mut |drawn, _, ways| {
+                    draws.push((drawn.to_vec(), ways))
+                });
+                for (drawn, ways) in draws {
+                    let mut next = placed.clone();
+                    next.draw(&drawn);
+                    next.next_turn();
+                    let theirs = if next.bag_len() == 0 {
+                        bag_reference(r, &next)
+                    } else {
+                        bag_reference_to(r, &next, ply + 1, depth)
+                    };
+                    sum += ways as f64 * theirs;
+                    total += ways;
+                }
+                *score as f64 - sum / total as f64
+            }
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                if pos.a_pass_ends(gc) {
+                    return pos.racks_lost(gc);
+                }
+                if horizon {
+                    return 0.0;
+                }
+                let mut next = pos.clone();
+                next.pass();
+                next.next_turn();
+                -bag_reference_to(r, &next, ply + 1, depth)
+            }
+            movegen::Play::Exchange { .. } => unreachable!("too few in the bag to exchange"),
+        }
+    }
+
+    // a position's value to its mover as bag_reference_move_to finds its moves
+    fn bag_reference_to<N: kwg::Node, L: kwg::Node>(
+        r: &mut BagReference<'_, '_, N, L, f64>,
+        pos: &super::InBag,
+        ply: usize,
+        depth: usize,
+    ) -> f64 {
+        let mut lists = super::PlyLists::default();
+        super::in_bag_moves::<false, _, _, _, true, true>(
+            r.gc,
+            r.kwg,
+            r.arm_tables,
+            r.klv,
+            r.mg,
+            pos,
+            &mut lists,
+        );
+        (lists.moves.iter())
+            .map(|play| bag_reference_move_to(r, pos, play, ply, depth))
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
     #[test]
     #[inline]
     fn a_bag_search_values_each_move_as_a_search_that_rules_nothing_out() {
@@ -18780,5 +18857,70 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 2);
+        // with two in the bag, cut by a state limit after its second pass:
+        // each move's value is the reference's to that depth, a placement that
+        // empties the bag below the root valued by its endgame
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [1, 2, 8] {
+            unseen_tally[tile] = 1; // A B H
+        }
+        let position = bag_position(&board, &[1, 1], &unseen_tally, 2, equity::Equity::ZERO);
+        // the least state limit whose answer is of the second pass
+        let (result, progress) = (1..40)
+            .find_map(|step| {
+                let mut progress = super::PegBagProgress::new(
+                    position.clone(),
+                    super::PegBagChoices {
+                        part: (0, 1),
+                        estimates: true,
+                    },
+                )
+                .unwrap();
+                let limits = super::Limits {
+                    time: None,
+                    states: Some(10 * step * step),
+                    memory: None,
+                    clock: None,
+                };
+                let result = egs.resume_peg(&mut progress, &limits, 1).unwrap().unwrap();
+                (result.depth == 2).then_some((result, progress))
+            })
+            .unwrap();
+        let mut reference = BagReference {
+            gc: &gc,
+            kwg: &kwg,
+            arm_tables: &arm_tables,
+            klv: &klv,
+            mg: &mut mg,
+            own: &mut own,
+            known: fash::MyHashMap::default(),
+        };
+        for valued in &result.moves {
+            let (mut sum, mut total) = (0.0, 0u64);
+            for (opp_rack, bag, ways) in &progress.splits {
+                let pos = super::InBag {
+                    board: board.clone(),
+                    racks: [progress.position.mover_rack.clone(), opp_rack.clone()],
+                    bag: bag.clone(),
+                    mover: 0,
+                    passes: 0,
+                    zeros: 0,
+                    answering: false,
+                    exchanges: [0, 0],
+                };
+                sum +=
+                    *ways as f64 * bag_reference_move_to(&mut reference, &pos, &valued.play, 0, 2);
+                total += ways;
+            }
+            let want = sum / total as f64;
+            let margin = valued.expected_margin.raw() as f64;
+            assert!((margin - want).abs() <= 1.0, "{margin} against {want}");
+        }
     }
 }
