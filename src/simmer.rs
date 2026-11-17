@@ -316,7 +316,7 @@ impl<
     #[inline]
     pub fn prepare_as(&mut self, game_config: &game_config::GameConfig, other: &Self) {
         self.rng = R::seed_from_u64(0);
-        self.prepare(
+        self.prepare_sharing(
             game_config,
             &other.initial_game_state,
             &SimChoices {
@@ -324,6 +324,7 @@ impl<
                 opponents_pass: other.opponents_pass,
                 ..SimChoices::new(other.num_sim_plies, other.wants_win_prob, &[])
             },
+            Some(&other.census),
         );
         // one census a preparation, whichever of its clones takes it
         self.census = other.census.clone();
@@ -364,6 +365,19 @@ impl<
         game_state: &game_state::GameState,
         choices: &SimChoices<'_>,
     ) {
+        self.prepare_sharing(game_config, game_state, choices, None);
+    }
+
+    // as prepare; a census held elsewhere is let go of for shared, the one
+    // this preparation is to share, if given, or else for a new one
+    #[inline(always)]
+    fn prepare_sharing(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        game_state: &game_state::GameState,
+        choices: &SimChoices<'_>,
+        shared: Option<&std::sync::Arc<SharedCensus>>,
+    ) {
         self.kept.clear();
         if !choices.kept_leaves.is_empty() {
             let next_seat = (game_state.turn + 1) % game_state.players.len() as u8;
@@ -400,7 +414,7 @@ impl<
                     .take()
             }
             None => {
-                self.census = Default::default();
+                self.census = shared.cloned().unwrap_or_default();
                 None
             }
         };
