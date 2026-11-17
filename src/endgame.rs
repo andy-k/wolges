@@ -6043,8 +6043,17 @@ impl<
         // threads than the one before, set_threads)
         let cells = state.moves.len().checked_mul(splits.len());
         if threads > 1 && cells != Some(state.took.len()) {
-            // none made, the next step tries again
-            state.took = cells_of(cells, std::time::Duration::ZERO)?;
+            // none made, the next step tries again; none either where the
+            // memory limit has no room for them (refused, the search stopped),
+            // and then the threads' pass values none (value_on_threads)
+            state.took = Vec::new();
+            let room = cells.is_none_or(|n| {
+                (limits.refuse(n.saturating_mul(std::mem::size_of::<std::time::Duration>())))
+                    .is_ok()
+            });
+            if room {
+                state.took = cells_of(cells, std::time::Duration::ZERO)?;
+            }
         }
         let score_diff = position.score_diff.raw() as f64;
         if state.searched.shards.is_empty() {
@@ -6210,6 +6219,10 @@ impl<
         BagArena::at_least(arenas, threads, tiles, bag_len);
         let (mine, theirs) = arenas.split_at_mut(1);
         let tasks = rest * num_splits;
+        // what each move took, none where the memory limit had no room for it
+        if state.took.len() != state.moves.len() * num_splits {
+            return Ok(true); // stopped, nothing valued
+        }
         // the tasks' order, what each found, and their hand-overs; the moves'
         // splits not yet valued
         type Found = Option<(f64, f64, bool)>;
