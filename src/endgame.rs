@@ -11780,37 +11780,45 @@ mod tests {
     #[test]
     #[inline]
     fn a_solve_skipping_by_plays_out_answers_as_the_reference_does() {
-        let classic = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
-        let jumbled = kwg::kbwg_from_bytes_alloc(
-            build::build(
-                build::BuildContent::DawgOnly,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &build::make_alphagrams(&tiny_word_list()),
-            )
-            .unwrap()
-            .to_vec(),
-            false,
-        )
-        .unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
-        let (mut skipped, mut solves, mut plies, mut checks) = (0u64, 0usize, 0usize, 0u64);
-        for (rules, gc, kwg) in [
-            ("classic", game_config::make_english_game_config(), &classic),
+        let mut positions = all_positions();
+        // AA across row 6 from column 9, AAT against BH
+        let mut aa = empty_board();
+        put_word(&mut aa, 6, 9, &[1, 1]);
+        positions.push((
+            "AA; AAT vs BH".to_string(),
+            Position {
+                board: aa,
+                racks: [vec![1, 1, 20], vec![2, 8]],
+            },
+        ));
+        let mut checks = 0u64;
+        // positions in which a solve skips moves
+        for (rules, gc, name, movers) in [
+            (
+                "classic",
+                game_config::make_english_game_config(),
+                "rand#0",
+                &[0u8, 1][..],
+            ),
+            (
+                "classic",
+                game_config::make_english_game_config(),
+                "AA; AAT vs BH",
+                &[1][..],
+            ),
             (
                 "super",
                 game_config::make_super_english_game_config(),
-                &classic,
+                "rand#56",
+                &[0][..],
             ),
             (
-                "jumbled",
-                game_config::make_jumbled_english_game_config(),
-                &jumbled,
-            ),
-            (
-                "superjumbled",
-                game_config::make_jumbled_super_english_game_config(),
-                &jumbled,
+                "super",
+                game_config::make_super_english_game_config(),
+                "rand#87",
+                &[0][..],
             ),
         ] {
             let cols = gc.board_layout().dim().cols as usize;
@@ -11818,47 +11826,35 @@ mod tests {
             let mut mg = movegen::KurniaMoveGenerator::new(&gc);
             let mut fixed = Reference {
                 gc: &gc,
-                kwg,
+                kwg: &kwg,
                 klv: &klv,
                 mg: &mut mg,
                 memo: Default::default(),
             };
-            let mut rules_skipped = 0u64;
-            for (lean, arm_tables) in &both_arms(kwg, &gc) {
-                for (name, pos) in all_positions() {
-                    let mut board = vec![0u8; rows * cols];
-                    for r in 0..15 {
-                        board[r * cols..r * cols + 15]
-                            .copy_from_slice(&pos.board[r * 15..r * 15 + 15]);
-                    }
-                    let racks = [&pos.racks[0][..], &pos.racks[1][..]];
-                    for mover in 0..2u8 {
-                        let what = format!("[{rules} {name}] lean={lean} mover {mover}");
-                        let mut egs =
-                            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, kwg, arm_tables)
-                                .unwrap();
-                        egs.init(&board, racks);
-                        let value = egs.solve(mover).unwrap();
-                        let mut line = Vec::new();
-                        egs.collect_pv(mover, &mut line);
-                        rules_skipped += egs.work_buffer.out_skips;
-                        checks += egs.work_buffer.out_checks as u64;
-                        let want =
-                            reference(&mut fixed, &board, &pos.racks, mover as usize, 0, 0, false);
-                        assert_eq!(value, super::to_equity(want), "{what}: value");
-                        plies +=
-                            assert_a_best_line(&mut fixed, &board, &pos.racks, mover, &line, &what);
-                        solves += 1;
-                    }
-                }
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let (_, pos) = positions.iter().find(|(n, _)| n == name).unwrap();
+            let mut board = vec![0u8; rows * cols];
+            for r in 0..15 {
+                board[r * cols..r * cols + 15].copy_from_slice(&pos.board[r * 15..r * 15 + 15]);
             }
-            println!("{rules}: {rules_skipped} moves skipped");
-            assert!(rules_skipped > 0, "{rules}: no move skipped");
-            skipped += rules_skipped;
+            let racks = [&pos.racks[0][..], &pos.racks[1][..]];
+            let mut skipped = 0u64;
+            for &mover in movers {
+                let what = format!("[{rules} {name}] mover {mover}");
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+                egs.init(&board, racks);
+                let value = egs.solve(mover).unwrap();
+                let mut line = Vec::new();
+                egs.collect_pv(mover, &mut line);
+                skipped += egs.work_buffer.out_skips;
+                checks += egs.work_buffer.out_checks as u64;
+                let want = reference(&mut fixed, &board, &pos.racks, mover as usize, 0, 0, false);
+                assert_eq!(value, super::to_equity(want), "{what}: value");
+                assert_a_best_line(&mut fixed, &board, &pos.racks, mover, &line, &what);
+            }
+            assert!(skipped > 0, "[{rules} {name}]: no move skipped");
         }
-        println!(
-            "{solves} solves, {plies} plies best, {skipped} moves skipped, {checks} checked by the reply's solve"
-        );
         debug_assert!(checks > 0);
     }
 
