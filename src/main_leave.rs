@@ -5081,12 +5081,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
 
     let mut cur_rack_ser = String::new();
+    let mut value_text = String::new();
     for (k, v) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
             cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
-        csv_out.serialize((&cur_rack_ser, klv::value_text(*v)))?;
+        klv::value_text_into(*v, &mut value_text);
+        csv_out.serialize((&cur_rack_ser, &value_text))?;
         /*
         if let Some(orig_v) = subrack_map.get(k) {
             csv_out.serialize((&cur_rack_ser, v, orig_v.equity, orig_v.count))?;
