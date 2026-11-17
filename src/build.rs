@@ -76,17 +76,17 @@ impl StateMaker<'_> {
         ret
     }
 
+    // transition_stack is the builder's, emptied here
     #[inline(always)]
     fn make_dawg(
         &mut self,
+        transition_stack: &mut TransitionStack<'_>,
         sorted_machine_words: &[bites::Bites],
         dawg_start_state: u32,
         is_gaddag_phase: bool,
     ) -> u32 {
-        let mut transition_stack = TransitionStack {
-            transitions: &mut Vec::new(),
-            indexes: &mut Vec::new(),
-        };
+        transition_stack.transitions.clear();
+        transition_stack.indexes.clear();
         for machine_word_index in 0..sorted_machine_words.len() {
             let this_word = &sorted_machine_words[machine_word_index];
             let this_word_len = this_word.len();
@@ -131,10 +131,14 @@ impl StateMaker<'_> {
     }
 }
 
+// machine_drowwords and reverse_buffer are the builder's, emptied here
 #[inline]
-fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
-    let mut machine_drowwords = Vec::new();
-    let mut reverse_buffer = Vec::new();
+fn gen_machine_drowwords(
+    machine_words: &[bites::Bites],
+    machine_drowwords: &mut Vec<bites::Bites>,
+    reverse_buffer: &mut Vec<u8>,
+) {
+    machine_drowwords.clear();
     for machine_word_index in 0..machine_words.len() {
         let this_word = &machine_words[machine_word_index];
         let this_word_len = this_word.len();
@@ -161,26 +165,34 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> 
             }
         }
     }
-    drop(reverse_buffer);
     machine_drowwords.sort_unstable();
-    machine_drowwords.into_boxed_slice()
 }
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
 #[inline]
 pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     let mut machine_dorws = Vec::with_capacity(machine_words.len());
-    let mut rearrange_buffer = Vec::new();
+    fill_alphagrams(machine_words, &mut machine_dorws, &mut Vec::new());
+    machine_dorws.into_boxed_slice()
+}
+
+// make_alphagrams into machine_dorws and with rearrange_buffer, the builder's,
+// emptied here
+#[inline]
+fn fill_alphagrams(
+    machine_words: &[bites::Bites],
+    machine_dorws: &mut Vec<bites::Bites>,
+    rearrange_buffer: &mut Vec<u8>,
+) {
+    machine_dorws.clear();
     for this_word in machine_words {
         rearrange_buffer.clear();
         rearrange_buffer.extend_from_slice(this_word);
         rearrange_buffer.sort_unstable();
         machine_dorws.push(rearrange_buffer[..].into());
     }
-    drop(rearrange_buffer);
     machine_dorws.sort_unstable();
     machine_dorws.dedup();
-    machine_dorws.into_boxed_slice()
 }
 
 // build formats
@@ -216,12 +228,22 @@ struct StateDefraggerExperimentalParams<'a> {
     blocks_with_len: &'a mut [Vec<u32>; 16],
 }
 
+impl StateDefraggerExperimentalParams<'_> {
+    // every block gone, each stack kept for the next build
+    #[inline(always)]
+    fn clear(&mut self) {
+        self.block_len.clear();
+        self.blocks_with_len.iter_mut().for_each(Vec::clear);
+    }
+}
+
 struct StatesDefragger<'a> {
     states: &'a [State],
     head_indexes: &'a [u32],
     to_end_lens: &'a [u32], // using u8 costs runtime.
     destination: &'a mut Vec<u32>,
     num_written: u32,
+    stack: &'a mut Vec<(u32, u32, u32)>, // walk_lists': head, next arc, entered
 }
 
 impl StatesDefragger<'_> {
@@ -239,23 +261,23 @@ impl StatesDefragger<'_> {
         mut leave: impl FnMut(&mut Self, u32, u32),
     ) {
         // a list's head, its next arc to follow, what enter returned
-        let mut stack = Vec::<(u32, u32, u32)>::new();
+        self.stack.clear();
         loop {
             p = self.head_indexes[p as usize];
             if self.destination[p as usize] == 0 {
                 // temp value to break self-cycles.
                 self.destination[p as usize] = !0;
                 let entered = enter(self, p);
-                stack.push((p, p, entered));
+                self.stack.push((p, p, entered));
             }
             loop {
-                let Some(top) = stack.last_mut() else {
+                let Some(top) = self.stack.last_mut() else {
                     return;
                 };
                 let q = top.1;
                 if q == 0 {
                     let (head, _, entered) = *top;
-                    stack.pop();
+                    self.stack.pop();
                     leave(self, head, entered);
                     continue;
                 }
@@ -398,9 +420,17 @@ impl StatesDefragger<'_> {
         );
     }
 
+    // idxs and params are the builder's, emptied here
     #[inline]
-    fn build_experimental(&mut self, num_ways: &[u32], top_indexes: &[u32]) {
-        let mut idxs = Box::from_iter(1..self.states.len() as u32);
+    fn build_experimental(
+        &mut self,
+        num_ways: &[u32],
+        top_indexes: &[u32],
+        idxs: &mut Vec<u32>,
+        params: &mut StateDefraggerExperimentalParams<'_>,
+    ) {
+        idxs.clear();
+        idxs.extend(1..self.states.len() as u32);
         idxs.sort_unstable_by(|&a, &b| {
             num_ways[b as usize]
                 .cmp(&num_ways[a as usize])
@@ -411,28 +441,30 @@ impl StatesDefragger<'_> {
                 })
         });
 
-        let mut params = StateDefraggerExperimentalParams {
-            block_len: &mut Vec::new(),
-            blocks_with_len: &mut [(); 16].map(|_| Vec::new()),
-        };
+        params.clear();
         // num_written is either 1 or 2, both are < 16.
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
         for &p in idxs.iter() {
-            self.defrag_cache_friendly(&mut params, top_indexes[p as usize]);
+            self.defrag_cache_friendly(params, top_indexes[p as usize]);
         }
         self.num_written =
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
     }
 
+    // idxs, used_in_dawg, and params are the builder's, emptied here
     #[inline]
     fn build_wolges(
         &mut self,
         num_ways: &[u32],
         build_content: &BuildContent,
         dawg_start_state: u32,
+        idxs: &mut Vec<u32>,
+        used_in_dawg: &mut Vec<bool>,
+        params: &mut StateDefraggerExperimentalParams<'_>,
     ) {
-        let mut idxs = Box::from_iter(1..self.states.len() as u32);
+        idxs.clear();
+        idxs.extend(1..self.states.len() as u32);
         match build_content {
             BuildContent::DawgOnly => {
                 // All nodes are dawg nodes.
@@ -448,7 +480,8 @@ impl StatesDefragger<'_> {
             }
             BuildContent::Gaddawg => {
                 // Check which nodes are used in dawg.
-                let mut used_in_dawg = vec![false; self.states.len()];
+                used_in_dawg.clear();
+                used_in_dawg.resize(self.states.len(), false);
                 used_in_dawg
                     .iter_mut()
                     .take(dawg_start_state as usize + 1)
@@ -475,15 +508,12 @@ impl StatesDefragger<'_> {
             }
         }
 
-        let mut params = StateDefraggerExperimentalParams {
-            block_len: &mut Vec::new(),
-            blocks_with_len: &mut [(); 16].map(|_| Vec::new()),
-        };
+        params.clear();
         // num_written is either 1 or 2, both are < 16.
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
         for &p in idxs.iter() {
-            self.defrag_cache_friendly(&mut params, p);
+            self.defrag_cache_friendly(params, p);
         }
         self.num_written =
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
@@ -529,14 +559,17 @@ impl StatesDefragger<'_> {
         }
     }
 
+    // into ret, the builder's, emptied here
     #[inline]
     fn to_vec<const VARIANT: u8>(
         &self,
         build_content: BuildContent,
         dawg_start_state: u32,
         gaddag_start_state: u32,
-    ) -> Vec<u8> {
-        let mut ret = vec![0; (self.num_written as usize) * 4];
+        ret: &mut Vec<u8>,
+    ) {
+        ret.clear();
+        ret.resize((self.num_written as usize) * 4, 0);
         self.write_node::<VARIANT>(
             &mut ret[0..],
             dawg_start_state,
@@ -578,14 +611,15 @@ impl StatesDefragger<'_> {
                 dp += 4;
             }
         }
-        ret
     }
 }
 
+// each gen_* below fills its output, the builder's, emptied first
 #[inline]
-fn gen_head_indexes(states: &[State]) -> Vec<u32> {
+fn gen_head_indexes(states: &[State], head_indexes: &mut Vec<u32>) {
     let states_len = states.len();
-    let mut head_indexes = Vec::from_iter(0..states_len as u32);
+    head_indexes.clear();
+    head_indexes.extend(0..states_len as u32);
 
     // point to immediate prev.
     for p in (1..states_len).rev() {
@@ -597,14 +631,13 @@ fn gen_head_indexes(states: &[State]) -> Vec<u32> {
     for p in (1..states_len).rev() {
         head_indexes[p] = head_indexes[head_indexes[p] as usize];
     }
-
-    head_indexes
 }
 
 #[inline]
-fn gen_to_end_lens(states: &[State]) -> Vec<u32> {
+fn gen_to_end_lens(states: &[State], to_end_lens: &mut Vec<u32>) {
     let states_len = states.len();
-    let mut to_end_lens = vec![1u32; states_len];
+    to_end_lens.clear();
+    to_end_lens.resize(states_len, 1);
 
     for p in 1..states_len {
         let next = states[p].next_index;
@@ -612,8 +645,6 @@ fn gen_to_end_lens(states: &[State]) -> Vec<u32> {
             to_end_lens[p] += to_end_lens[next as usize];
         }
     }
-
-    to_end_lens
 }
 
 #[inline]
@@ -622,9 +653,11 @@ fn gen_num_ways(
     build_content: &BuildContent,
     dawg_start_state: u32,
     gaddag_start_state: u32,
-) -> Vec<u32> {
+    num_ways: &mut Vec<u32>,
+) {
     let states_len = states.len();
-    let mut num_ways = vec![0u32; states_len];
+    num_ways.clear();
+    num_ways.resize(states_len, 0);
 
     num_ways[dawg_start_state as usize] = 1;
     match build_content {
@@ -641,14 +674,13 @@ fn gen_num_ways(
             *v = v.saturating_add(this_num_ways);
         }
     }
-
-    num_ways
 }
 
 #[inline]
-fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
+fn gen_top_indexes(states: &[State], head_indexes: &[u32], top_indexes: &mut Vec<u32>) {
     let states_len = states.len();
-    let mut top_indexes = vec![0u32; states_len];
+    top_indexes.clear();
+    top_indexes.resize(states_len, 0);
 
     for (p, p_dest) in states
         .iter()
@@ -670,8 +702,6 @@ fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
     for p in (1..states_len).rev() {
         top_indexes[p] = head_indexes[top_indexes[top_indexes[p] as usize] as usize];
     }
-
-    top_indexes
 }
 
 #[inline]
@@ -699,22 +729,74 @@ fn is_sublist(states: &[State], mut a: u32, mut b: u32) -> bool {
     true
 }
 
+// what reorder_states fills, kept by the builder from one build to the next
+#[derive(Default)]
+struct ReorderBuffers {
+    new_states: Vec<State>,
+    to_end_lens: Vec<u32>,
+    is_head: Vec<bool>,
+    has_dawg: Vec<bool>,
+    in_dawg: Vec<bool>,
+    movable: Vec<u32>,
+    entry_indexes: fash::MyHashMap<u64, u32>,
+    entry_counts: Vec<u32>,
+    postings_starts: Vec<u32>,
+    postings: Vec<u32>,
+    postings_fill: Vec<u32>,
+    rarest_entries: Vec<u32>,
+    by_len: Vec<u32>,
+    tails: Vec<u32>,
+    tried: Vec<u32>,
+    path: Vec<(u32, u32, u32)>,
+    order_starts: Vec<u32>,
+    order_cells: Vec<u32>,
+    new_heads: Vec<u32>,
+}
+
+// the states reordered into buffers.new_states, with states_finder and
+// transitions, the builder's, emptied here; gives the new start states
 #[inline]
 fn reorder_states(
     states: &[State],
     build_content: &BuildContent,
     dawg_start_state: u32,
     gaddag_start_state: u32,
-) -> (Vec<State>, u32, u32) {
+    buffers: &mut ReorderBuffers,
+    states_finder: &mut fash::MyHashMap<State, u32>,
+    transitions: &mut Vec<Transition>,
+) -> (u32, u32) {
     #[inline(always)]
     fn entry_key(state: &State) -> u64 {
         ((state.arc_index as u64) << 9) | ((state.accepts as u64) << 8) | state.tile as u64
     }
 
-    let states_len = states.len();
-    let to_end_lens = gen_to_end_lens(states);
+    let ReorderBuffers {
+        new_states,
+        to_end_lens,
+        is_head,
+        has_dawg,
+        in_dawg,
+        movable,
+        entry_indexes,
+        entry_counts,
+        postings_starts,
+        postings,
+        postings_fill,
+        rarest_entries,
+        by_len,
+        tails,
+        tried,
+        path,
+        order_starts,
+        order_cells,
+        new_heads,
+    } = buffers;
 
-    let mut is_head = vec![false; states_len];
+    let states_len = states.len();
+    gen_to_end_lens(states, to_end_lens);
+
+    is_head.clear();
+    is_head.resize(states_len, false);
     for state in states.iter().skip(1) {
         is_head[state.arc_index as usize] = true;
     }
@@ -723,9 +805,11 @@ fn reorder_states(
     }
     is_head[0] = false;
 
-    let mut has_dawg = vec![false; states_len];
+    has_dawg.clear();
+    has_dawg.resize(states_len, false);
     if let BuildContent::Gaddawg = build_content {
-        let mut in_dawg = vec![false; states_len];
+        in_dawg.clear();
+        in_dawg.resize(states_len, false);
         in_dawg[dawg_start_state as usize] = true;
         for p in (1..states_len).rev() {
             if in_dawg[p] {
@@ -738,15 +822,15 @@ fn reorder_states(
         }
     }
 
-    let mut movable = Vec::new();
+    movable.clear();
     for p in 1..states_len {
         if is_head[p] && !has_dawg[p] {
             movable.push(p as u32);
         }
     }
 
-    let mut entry_indexes = fash::MyHashMap::<u64, u32>::default();
-    let mut entry_counts = Vec::<u32>::new();
+    entry_indexes.clear();
+    entry_counts.clear();
     for &head in movable.iter() {
         let mut p = head;
         while p != 0 {
@@ -761,16 +845,17 @@ fn reorder_states(
             p = states[p as usize].next_index;
         }
     }
-    let mut postings_starts = Vec::with_capacity(entry_counts.len() + 1);
+    postings_starts.clear();
     let mut num_postings = 0u32;
     for &entry_count in entry_counts.iter() {
         postings_starts.push(num_postings);
         num_postings += entry_count;
     }
     postings_starts.push(num_postings);
-    let mut postings = vec![0u32; num_postings as usize];
-    let mut postings_fill = postings_starts.clone();
-    let mut rarest_entries = Vec::with_capacity(movable.len());
+    postings.clear();
+    postings.resize(num_postings as usize, 0);
+    postings_fill.clone_from(postings_starts);
+    rarest_entries.clear();
     for (i, &head) in movable.iter().enumerate() {
         let mut rarest_entry = 0;
         let mut rarest_count = !0;
@@ -789,7 +874,8 @@ fn reorder_states(
         rarest_entries.push(rarest_entry);
     }
 
-    let mut by_len = Vec::from_iter(0..movable.len() as u32);
+    by_len.clear();
+    by_len.extend(0..movable.len() as u32);
     by_len.sort_unstable_by_key(|&i| {
         let head = movable[i as usize];
         (!to_end_lens[head as usize], head)
@@ -802,9 +888,9 @@ fn reorder_states(
         postings: &'a [u32],
         postings_starts: &'a [u32],
         rarest_entries: &'a [u32],
-        tried: Vec<u32>, // stamped with the list being placed
+        tried: &'a mut [u32], // stamped with the list being placed
         stamp: u32,
-        path: Vec<(u32, u32, u32)>, // list, next posting, host waited on
+        path: &'a mut Vec<(u32, u32, u32)>, // list, next posting, host waited on
     }
     impl Absorber<'_> {
         // finds list i a host whose tail is free, or one whose tail can move on
@@ -857,25 +943,30 @@ fn reorder_states(
             }
         }
     }
-    let mut tails = vec![!0u32; movable.len()];
+    tails.clear();
+    tails.resize(movable.len(), !0);
+    tried.clear();
+    tried.resize(movable.len(), !0);
     let mut absorber = Absorber {
         states,
-        movable: &movable,
-        to_end_lens: &to_end_lens,
-        postings: &postings,
-        postings_starts: &postings_starts,
-        rarest_entries: &rarest_entries,
-        tried: vec![!0u32; movable.len()],
+        movable,
+        to_end_lens,
+        postings,
+        postings_starts,
+        rarest_entries,
+        tried,
         stamp: 0,
-        path: Vec::new(),
+        path,
     };
     for &i in by_len.iter() {
         absorber.stamp = i;
-        absorber.absorb(&mut tails, i);
+        absorber.absorb(tails, i);
     }
 
-    let mut order_starts = vec![0u32; states_len]; // 0 = keep the order it has.
-    let mut order_cells = vec![0u32]; // index 0 stands for "no order of its own".
+    order_starts.clear();
+    order_starts.resize(states_len, 0); // 0 = keep the order it has.
+    order_cells.clear();
+    order_cells.push(0); // index 0 stands for "no order of its own".
     for &i in by_len.iter().rev() {
         let tail = tails[i as usize];
         if tail == !0 {
@@ -912,16 +1003,17 @@ fn reorder_states(
         }
     }
 
-    let mut new_states = Vec::with_capacity(states_len);
+    new_states.clear();
+    new_states.reserve(states_len);
     new_states.push(states[0].clone());
-    let mut states_finder = fash::MyHashMap::default();
+    states_finder.clear();
     states_finder.insert(states[0].clone(), 0);
     let mut state_maker = StateMaker {
-        states: &mut new_states,
-        states_finder: &mut states_finder,
+        states: new_states,
+        states_finder,
     };
-    let mut new_heads = vec![0u32; states_len];
-    let mut transitions = Vec::new();
+    new_heads.clear();
+    new_heads.resize(states_len, 0);
     for p in 1..states_len {
         if !is_head[p] {
             continue;
@@ -949,135 +1041,283 @@ fn reorder_states(
                 q = state.next_index;
             }
         }
-        new_heads[p] = state_maker.make_state(&transitions);
+        new_heads[p] = state_maker.make_state(transitions);
     }
 
     (
-        new_states,
         new_heads[dawg_start_state as usize],
         new_heads[gaddag_start_state as usize],
     )
 }
 
-// machine_words must be sorted and unique.
-#[inline]
-fn do_build<const VARIANT: u8>(
-    build_content: BuildContent,
-    build_layout: BuildLayout,
-    build_order: BuildOrder,
-    machine_words: &[bites::Bites],
-) -> error::Returns<bites::Bites> {
-    // a word ends on an accepting arc, so an empty word has nowhere to end;
-    // sorted, it can only come first
-    if machine_words.first().is_some_and(|word| word.is_empty()) {
-        return_error!("a word graph cannot hold an empty word".into());
+// a word graph builder: every buffer a build fills, kept from one build to the
+// next, so that a builder used again, as for a graph pruned for each board,
+// allocates only what a bigger graph needs. Each build gives the graph's
+// bytes, held until the next
+#[derive(Default)]
+pub struct Builder {
+    states: Vec<State>,
+    states_finder: fash::MyHashMap<State, u32>,
+    transitions: Vec<Transition>,
+    indexes: Vec<usize>,
+    machine_drowwords: Vec<bites::Bites>,
+    alphagrams: Vec<bites::Bites>,
+    word_buffer: Vec<u8>, // a word reversed or rearranged
+    reorder: ReorderBuffers,
+    head_indexes: Vec<u32>,
+    to_end_lens: Vec<u32>,
+    destination: Vec<u32>,
+    num_ways: Vec<u32>,
+    top_indexes: Vec<u32>,
+    used_in_dawg: Vec<bool>,
+    idxs: Vec<u32>,
+    stack: Vec<(u32, u32, u32)>,
+    block_len: Vec<u8>,
+    blocks_with_len: [Vec<u32>; 16],
+    out: Vec<u8>,
+}
+
+impl Builder {
+    #[inline(always)]
+    pub fn build(
+        &mut self,
+        build_content: BuildContent,
+        build_layout: BuildLayout,
+        build_order: BuildOrder,
+        machine_words: &[bites::Bites],
+    ) -> error::Returns<&[u8]> {
+        self.do_build::<1>(build_content, build_layout, build_order, machine_words)?;
+        Ok(&self.out)
     }
 
-    // The sink state always exists.
-    let mut states = vec![State {
-        tile: 0,
-        accepts: false,
-        arc_index: 0,
-        next_index: 0,
-    }];
+    #[inline(always)]
+    pub fn build_big(
+        &mut self,
+        build_content: BuildContent,
+        build_layout: BuildLayout,
+        build_order: BuildOrder,
+        machine_words: &[bites::Bites],
+    ) -> error::Returns<&[u8]> {
+        self.do_build::<2>(build_content, build_layout, build_order, machine_words)?;
+        Ok(&self.out)
+    }
 
-    let mut states_finder = fash::MyHashMap::default();
-    states_finder.insert(states[0].clone(), 0);
+    // as build_for_game
+    #[inline]
+    pub fn build_for_game(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        machine_words: &[bites::Bites],
+    ) -> error::Returns<&[u8]> {
+        match game_config.game_rules() {
+            game_config::GameRules::Classic => self.do_build::<2>(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                machine_words,
+            )?,
+            game_config::GameRules::Jumbled => {
+                // lent to the build, then put back for the next
+                let mut alphagrams = std::mem::take(&mut self.alphagrams);
+                fill_alphagrams(machine_words, &mut alphagrams, &mut self.word_buffer);
+                let built = self.do_build::<2>(
+                    BuildContent::DawgOnly,
+                    BuildLayout::Wolges,
+                    BuildOrder::Sorted,
+                    &alphagrams,
+                );
+                self.alphagrams = alphagrams;
+                built?
+            }
+        }
+        Ok(&self.out)
+    }
 
-    let mut state_maker = StateMaker {
-        states: &mut states,
-        states_finder: &mut states_finder,
-    };
-    let dawg_start_state = state_maker.make_dawg(machine_words, 0, false);
-    let gaddag_start_state = match build_content {
-        BuildContent::DawgOnly => 0,
-        BuildContent::Gaddawg => state_maker.make_dawg(
-            &gen_machine_drowwords(machine_words),
-            dawg_start_state,
-            true,
-        ),
-    };
+    // machine_words must be sorted and unique.
+    #[inline]
+    fn do_build<const VARIANT: u8>(
+        &mut self,
+        build_content: BuildContent,
+        build_layout: BuildLayout,
+        build_order: BuildOrder,
+        machine_words: &[bites::Bites],
+    ) -> error::Returns<()> {
+        // a word ends on an accepting arc, so an empty word has nowhere to
+        // end; sorted, it can only come first
+        if machine_words.first().is_some_and(|word| word.is_empty()) {
+            return_error!("a word graph cannot hold an empty word".into());
+        }
+        let Self {
+            states,
+            states_finder,
+            transitions,
+            indexes,
+            machine_drowwords,
+            alphagrams: _,
+            word_buffer,
+            reorder,
+            head_indexes,
+            to_end_lens,
+            destination,
+            num_ways,
+            top_indexes,
+            used_in_dawg,
+            idxs,
+            stack,
+            block_len,
+            blocks_with_len,
+            out,
+        } = self;
 
-    let (states, dawg_start_state, gaddag_start_state) = match build_order {
-        BuildOrder::Sorted => (states, dawg_start_state, gaddag_start_state),
-        BuildOrder::Reordered => reorder_states(
-            &states,
-            &build_content,
-            dawg_start_state,
-            gaddag_start_state,
-        ),
-    };
+        // The sink state always exists.
+        states.clear();
+        states.push(State {
+            tile: 0,
+            accepts: false,
+            arc_index: 0,
+            next_index: 0,
+        });
 
-    let mut states_defragger = StatesDefragger {
-        states: &states,
-        head_indexes: &match build_layout {
+        states_finder.clear();
+        states_finder.insert(states[0].clone(), 0);
+
+        let mut state_maker = StateMaker {
+            states,
+            states_finder,
+        };
+        let mut transition_stack = TransitionStack {
+            transitions,
+            indexes,
+        };
+        let dawg_start_state =
+            state_maker.make_dawg(&mut transition_stack, machine_words, 0, false);
+        let gaddag_start_state = match build_content {
+            BuildContent::DawgOnly => 0,
+            BuildContent::Gaddawg => {
+                gen_machine_drowwords(machine_words, machine_drowwords, word_buffer);
+                state_maker.make_dawg(
+                    &mut transition_stack,
+                    machine_drowwords,
+                    dawg_start_state,
+                    true,
+                )
+            }
+        };
+
+        let (states, dawg_start_state, gaddag_start_state) = match build_order {
+            BuildOrder::Sorted => (&states[..], dawg_start_state, gaddag_start_state),
+            BuildOrder::Reordered => {
+                let (dawg_start_state, gaddag_start_state) = reorder_states(
+                    states,
+                    &build_content,
+                    dawg_start_state,
+                    gaddag_start_state,
+                    reorder,
+                    states_finder,
+                    transitions,
+                );
+                (
+                    &reorder.new_states[..],
+                    dawg_start_state,
+                    gaddag_start_state,
+                )
+            }
+        };
+
+        match build_layout {
             BuildLayout::Legacy
             | BuildLayout::MagpieMerged
             | BuildLayout::Experimental
-            | BuildLayout::Wolges => gen_head_indexes(&states),
-            BuildLayout::Magpie => Vec::new(),
-        },
-        to_end_lens: &gen_to_end_lens(&states),
-        destination: &mut vec![0u32; states.len()],
-        num_written: match build_content {
-            BuildContent::DawgOnly => 1,
-            BuildContent::Gaddawg => 2,
-        },
-    };
-    states_defragger.destination[0] = !0; // useful for empty lexicon
-    match build_layout {
-        BuildLayout::Legacy => states_defragger.defrag_legacy(dawg_start_state),
-        BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
-        BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(dawg_start_state),
-        BuildLayout::Experimental => states_defragger.build_experimental(
-            &gen_num_ways(
-                &states,
-                &build_content,
-                dawg_start_state,
-                gaddag_start_state,
-            ),
-            &gen_top_indexes(&states, states_defragger.head_indexes),
-        ),
-        BuildLayout::Wolges => states_defragger.build_wolges(
-            &gen_num_ways(
-                &states,
-                &build_content,
-                dawg_start_state,
-                gaddag_start_state,
-            ),
-            &build_content,
-            dawg_start_state,
-        ),
-    }
-    match build_content {
-        BuildContent::DawgOnly => {}
-        BuildContent::Gaddawg => match build_layout {
-            BuildLayout::Legacy => states_defragger.defrag_legacy(gaddag_start_state),
-            BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
-            BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(gaddag_start_state),
-            BuildLayout::Experimental | BuildLayout::Wolges => {}
-        },
-    }
-    states_defragger.destination[0] = 0; // useful for empty lexicon
-
-    if states_defragger.num_written
-        > match VARIANT {
-            1 => 0x400000,
-            2 => 0x1000000,
-            _ => 0,
+            | BuildLayout::Wolges => gen_head_indexes(states, head_indexes),
+            BuildLayout::Magpie => head_indexes.clear(),
         }
-    {
-        // the format can only have 0x400000 elements, each has 4 bytes
-        return_error!(format!(
-            "this format cannot have {} nodes",
-            states_defragger.num_written
-        ));
-    }
+        gen_to_end_lens(states, to_end_lens);
+        destination.clear();
+        destination.resize(states.len(), 0);
+        let mut states_defragger = StatesDefragger {
+            states,
+            head_indexes,
+            to_end_lens,
+            destination,
+            num_written: match build_content {
+                BuildContent::DawgOnly => 1,
+                BuildContent::Gaddawg => 2,
+            },
+            stack,
+        };
+        let mut params = StateDefraggerExperimentalParams {
+            block_len,
+            blocks_with_len,
+        };
+        states_defragger.destination[0] = !0; // useful for empty lexicon
+        match build_layout {
+            BuildLayout::Legacy => states_defragger.defrag_legacy(dawg_start_state),
+            BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
+            BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(dawg_start_state),
+            BuildLayout::Experimental => {
+                gen_num_ways(
+                    states,
+                    &build_content,
+                    dawg_start_state,
+                    gaddag_start_state,
+                    num_ways,
+                );
+                gen_top_indexes(states, states_defragger.head_indexes, top_indexes);
+                states_defragger.build_experimental(num_ways, top_indexes, idxs, &mut params)
+            }
+            BuildLayout::Wolges => {
+                gen_num_ways(
+                    states,
+                    &build_content,
+                    dawg_start_state,
+                    gaddag_start_state,
+                    num_ways,
+                );
+                states_defragger.build_wolges(
+                    num_ways,
+                    &build_content,
+                    dawg_start_state,
+                    idxs,
+                    used_in_dawg,
+                    &mut params,
+                )
+            }
+        }
+        match build_content {
+            BuildContent::DawgOnly => {}
+            BuildContent::Gaddawg => match build_layout {
+                BuildLayout::Legacy => states_defragger.defrag_legacy(gaddag_start_state),
+                BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
+                BuildLayout::MagpieMerged => {
+                    states_defragger.defrag_magpie_merged(gaddag_start_state)
+                }
+                BuildLayout::Experimental | BuildLayout::Wolges => {}
+            },
+        }
+        states_defragger.destination[0] = 0; // useful for empty lexicon
 
-    Ok(
-        states_defragger.to_vec::<VARIANT>(build_content, dawg_start_state, gaddag_start_state)[..]
-            .into(),
-    )
+        if states_defragger.num_written
+            > match VARIANT {
+                1 => 0x400000,
+                2 => 0x1000000,
+                _ => 0,
+            }
+        {
+            // the format can only have 0x400000 elements, each has 4 bytes
+            return_error!(format!(
+                "this format cannot have {} nodes",
+                states_defragger.num_written
+            ));
+        }
+
+        states_defragger.to_vec::<VARIANT>(
+            build_content,
+            dawg_start_state,
+            gaddag_start_state,
+            out,
+        );
+        Ok(())
+    }
 }
 
 #[inline(always)]
@@ -1087,7 +1327,9 @@ pub fn build(
     build_order: BuildOrder,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
-    do_build::<1>(build_content, build_layout, build_order, machine_words)
+    Ok(Builder::default()
+        .build(build_content, build_layout, build_order, machine_words)?
+        .into())
 }
 
 #[inline(always)]
@@ -1097,7 +1339,9 @@ pub fn build_big(
     build_order: BuildOrder,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
-    do_build::<2>(build_content, build_layout, build_order, machine_words)
+    Ok(Builder::default()
+        .build_big(build_content, build_layout, build_order, machine_words)?
+        .into())
 }
 
 // the graph a game of this config generates on, of these words in ascending
@@ -1108,20 +1352,9 @@ pub fn build_for_game(
     game_config: &game_config::GameConfig,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
-    match game_config.game_rules() {
-        game_config::GameRules::Classic => build_big(
-            BuildContent::Gaddawg,
-            BuildLayout::Wolges,
-            BuildOrder::Sorted,
-            machine_words,
-        ),
-        game_config::GameRules::Jumbled => build_big(
-            BuildContent::DawgOnly,
-            BuildLayout::Wolges,
-            BuildOrder::Sorted,
-            &make_alphagrams(machine_words),
-        ),
-    }
+    Ok(Builder::default()
+        .build_for_game(game_config, machine_words)?
+        .into())
 }
 
 // a graph build_for_game made, loaded: its runs ascend (kwg::Kwg::runs_ascend)
