@@ -1453,7 +1453,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     out_skips: u64,        // the moves skipped so (OutReplies), over the solver's life
     out_checks: u32,       // the skips a debug build checked by a solve of the reply
     lane_pool: LanePool,
-    pool_walker: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // LanePool's walks
+    pool_walker: Option<(u32, movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>)>, // LanePool's walks, with its leaves' table bound, kept from solve to solve
     #[cfg(test)]
     copied: usize, // the lanes copied from an earlier reply's list
     table: Table,
@@ -1593,7 +1593,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             out_skips,
             out_checks,
             lane_pool: _,
-            pool_walker,
+            pool_walker: _,
             table: _,
             spare_table: _,
             can_grow,
@@ -1637,7 +1637,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         *key = 0;
         *out_skips = 0;
         *out_checks = 0;
-        *pool_walker = None;
         *can_grow = true;
         *max_depth = 0;
         *finished = 0;
@@ -3124,11 +3123,20 @@ impl<
                 let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
                 // its walks' rack is the whole pool, so its leaves' table is
                 // held to the pool's budget, and to the bound others keep
-                let budget = lane_pool.deal.budget;
-                let walker = (work_buffer.pool_walker).get_or_insert_with(|| {
-                    movegen::KurniaMoveGenerator::new_in_dense(
-                        self.game_config,
-                        (budget / klv::LEAVE_BYTES).min(klv::DENSE_LEAVES_MOST as usize) as u32,
+                let dense_most = (lane_pool.deal.budget / klv::LEAVE_BYTES)
+                    .min(klv::DENSE_LEAVES_MOST as usize) as u32;
+                // the walker kept, unless it was made for another bound
+                let pool_walker = &mut work_buffer.pool_walker;
+                if pool_walker
+                    .as_ref()
+                    .is_some_and(|&(made_for, _)| made_for != dense_most)
+                {
+                    *pool_walker = None;
+                }
+                let (_, walker) = pool_walker.get_or_insert_with(|| {
+                    (
+                        dense_most,
+                        movegen::KurniaMoveGenerator::new_in_dense(self.game_config, dense_most),
                     )
                 });
                 work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
