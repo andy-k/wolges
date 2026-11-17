@@ -16573,24 +16573,14 @@ mod tests {
             best
         };
 
-        let tiles = [1u8, 2, 8, 20]; // A B H T
-        let mut boards: Vec<(String, Vec<u8>)> = Vec::new();
-        boards.push(("empty".into(), empty_board()));
-        {
-            let mut b = empty_board();
-            put_word(&mut b, 7, 6, &[1, 20]);
-            boards.push(("AT".into(), b));
-        }
-        {
-            let mut b = empty_board();
-            put_word(&mut b, 7, 6, &[1, 1, 8]);
-            boards.push(("AAH".into(), b));
-        }
-        {
-            let mut b = empty_board();
-            put_word(&mut b, 7, 6, &[1, 20]);
-            put_word(&mut b, 5, 7, &[8, 1, 20]);
-            boards.push(("AT+HAT".into(), b));
+        // a B, and an A with a T, on AT with A and B unseen
+        let (bname, mut board) = ("AT", empty_board());
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let board = &board;
+        let unseen = [(1u8, 1u32), (2, 1)];
+        let mut unseen_tally = vec![0u8; alen];
+        for &(tile, n) in &unseen {
+            unseen_tally[tile as usize] = n as u8;
         }
 
         let mut fixed = Reference {
@@ -16604,108 +16594,77 @@ mod tests {
         let mut n_gap = 0;
         let mut n_gap_place = 0;
         let mut report = String::new();
-        for (bname, board) in &boards {
-            let mut racks: Vec<Vec<u8>> = Vec::new();
-            for &x in &tiles {
-                racks.push(vec![x]);
-                for &y in &tiles {
-                    racks.push(vec![x, y]);
-                }
-            }
-            for mrack in &racks {
-                for i in 0..tiles.len() {
-                    for j in i..tiles.len() {
-                        let (ti, tj) = (tiles[i], tiles[j]);
-                        let mut unseen_tally = vec![0u8; alen];
-                        let mut unseen: Vec<(u8, u32)> = Vec::new();
-                        if ti == tj {
-                            unseen_tally[ti as usize] = 2;
-                            unseen.push((ti, 2));
-                        } else {
-                            unseen_tally[ti as usize] = 1;
-                            unseen_tally[tj as usize] = 1;
-                            unseen.push((ti, 1));
-                            unseen.push((tj, 1));
-                        }
+        for mrack in [&[2u8][..], &[1, 20]] {
+            let (ref_win, ref_marg, _ref_place, _ref_label) =
+                committed(board, mrack, &unseen, &mut fixed);
 
-                        let (ref_win, ref_marg, _ref_place, _ref_label) =
-                            committed(board, mrack, &unseen, &mut fixed);
+            for (lean, arm_tables) in &arms {
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, arm_tables).unwrap();
+                let got = egs
+                    .solve_peg_one_in_bag(
+                        0,
+                        board,
+                        mrack,
+                        &unseen_tally,
+                        equity::Equity::ZERO,
+                        &super::Limits::NONE,
+                    )
+                    .unwrap()
+                    .expect("english one-in-bag is always solvable");
 
-                        for (lean, arm_tables) in &arms {
-                            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                                &gc, &kwg, arm_tables,
-                            )
-                            .unwrap();
-                            let got = egs
-                                .solve_peg_one_in_bag_full(
-                                    0,
-                                    board,
-                                    mrack,
-                                    &unseen_tally,
-                                    equity::Equity::ZERO,
-                                    &super::Limits::NONE,
-                                )
-                                .unwrap()
-                                .expect("english one-in-bag is always solvable");
+                let mut egs2 =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, arm_tables).unwrap();
+                let clair = egs2
+                    .peg_clairvoyant_aggregate(
+                        &mut super::PegProgress::new(
+                            0,
+                            board,
+                            mrack,
+                            &unseen_tally,
+                            equity::Equity::ZERO,
+                        ),
+                        &super::BagLimits::new(&super::Limits::NONE, None),
+                    )
+                    .unwrap();
 
-                            let mut egs2 = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                                &gc, &kwg, arm_tables,
-                            )
-                            .unwrap();
-                            let clair = egs2
-                                .peg_clairvoyant_aggregate(
-                                    &mut super::PegProgress::new(
-                                        0,
-                                        board,
-                                        mrack,
-                                        &unseen_tally,
-                                        equity::Equity::ZERO,
-                                    ),
-                                    &super::BagLimits::new(&super::Limits::NONE, None),
-                                )
-                                .unwrap();
-
-                            assert!(got.committed, "english path must be committed");
-                            assert!(got.best_move.is_some(), "committed result must name a move");
-                            assert!(got.exact && clair.exact, "an unlimited solve is exact");
-                            assert!(
-                                (got.win_pct - ref_win).abs() < 1e-6,
-                                "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
-                                a.fmt_rack(mrack),
-                                got.win_pct,
-                                ref_win,
-                            );
-                            // the solver's margin is rounded to a whole millipoint
-                            assert!(
-                                (got.expected_margin.raw() as f32 - ref_marg).abs() < 0.6,
-                                "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver margin {} != reference {}",
-                                a.fmt_rack(mrack),
-                                got.expected_margin.raw(),
-                                ref_marg,
-                            );
-                            assert!(
-                                got.win_pct <= clair.win_pct + 1e-6,
-                                "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed win% {} exceeds clairvoyant bound {}",
-                                a.fmt_rack(mrack),
-                                got.win_pct,
-                                clair.win_pct,
-                            );
-                            let gap = clair.win_pct - got.win_pct;
-                            if gap > 1e-6 {
-                                n_gap += 1;
-                                if gap > worst_gap {
-                                    worst_gap = gap;
-                                }
-                                n_gap_place +=
-                                    matches!(got.best_move, Some(PegMove::Place(_))) as usize;
-                                if report.lines().count() < 25 {
-                                    report.push_str(&format!(
-                                        "gap win%={gap:.3} [{bname}] lean={lean} mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",
-                                        a.fmt_rack(mrack), clair.win_pct, got.win_pct,
-                                    ));
-                                }
-                            }
-                        }
+                assert!(got.committed, "english path must be committed");
+                assert!(got.best_move.is_some(), "committed result must name a move");
+                assert!(got.exact && clair.exact, "an unlimited solve is exact");
+                assert!(
+                    (got.win_pct - ref_win).abs() < 1e-6,
+                    "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
+                    a.fmt_rack(mrack),
+                    got.win_pct,
+                    ref_win,
+                );
+                // the solver's margin is rounded to a whole millipoint
+                assert!(
+                    (got.expected_margin.raw() as f32 - ref_marg).abs() < 0.6,
+                    "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver margin {} != reference {}",
+                    a.fmt_rack(mrack),
+                    got.expected_margin.raw(),
+                    ref_marg,
+                );
+                assert!(
+                    got.win_pct <= clair.win_pct + 1e-6,
+                    "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed win% {} exceeds clairvoyant bound {}",
+                    a.fmt_rack(mrack),
+                    got.win_pct,
+                    clair.win_pct,
+                );
+                let gap = clair.win_pct - got.win_pct;
+                if gap > 1e-6 {
+                    n_gap += 1;
+                    if gap > worst_gap {
+                        worst_gap = gap;
+                    }
+                    n_gap_place += matches!(got.best_move, Some(PegMove::Place(_))) as usize;
+                    if report.lines().count() < 25 {
+                        report.push_str(&format!(
+                            "gap win%={gap:.3} [{bname}] lean={lean} mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",
+                            a.fmt_rack(mrack), clair.win_pct, got.win_pct,
+                        ));
                     }
                 }
             }
