@@ -1438,6 +1438,9 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     cadence: u64,        // the nodes between looks at the clock, 1 to LIMIT_CADENCE
     next_look: u64,      // the nodes this pass searches before the next look
     last_look: std::time::Duration, // the time at the last look, from the solve's start
+    threads: usize,      // the solve's threads, one lane each (1: the plain search)
+    verdicts: Vec<Option<(f32, bool)>>, // by root order: a lane's bound on a move failing low
+    helper_tables: Vec<Option<KeptTable>>, // each lane's table, kept from pass to pass
 }
 
 impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G, JUMPS, ANY_SIDE> {
@@ -1504,6 +1507,9 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             cadence: 1,
             next_look: 1,
             last_look: std::time::Duration::ZERO,
+            threads: 1,
+            verdicts: Vec::new(),
+            helper_tables: Vec::new(),
         }
     }
 
@@ -1567,6 +1573,9 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             cadence,
             next_look,
             last_look,
+            threads,
+            verdicts,
+            helper_tables,
             ..
         } = self;
         *clock = None;
@@ -1606,6 +1615,9 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         *cadence = 1;
         *next_look = 1;
         *last_look = std::time::Duration::ZERO;
+        *threads = 1;
+        verdicts.clear();
+        helper_tables.clear();
     }
 
     // store a value, growing the table once three quarters of it holds
@@ -3390,6 +3402,7 @@ impl<
     ) -> error::Returns<Searched> {
         self.reset_position();
         if !self.work_buffer.resumable {
+            self.work_buffer.verdicts.clear();
             self.work_buffer.at_root = true;
             return self.negamax_eval(0, player_idx, depth, alpha, beta, self.entering());
         }
@@ -3419,6 +3432,7 @@ impl<
         } else {
             self.work_buffer.frames.clear();
             self.work_buffer.pending = None;
+            self.work_buffer.verdicts.clear();
             self.work_buffer.at_root = true;
             let scoreless = self.entering();
             Some((
@@ -3504,6 +3518,18 @@ impl<
         self.run_id_loop(player_idx, true, limits, None, false)
     }
 
+    pub fn evaluate_on_threads(
+        &mut self,
+        player_idx: u8,
+        limits: &Limits,
+        threads: usize,
+    ) -> error::Returns<Solved> {
+        self.work_buffer.threads = threads;
+        let solved = self.evaluate(player_idx, limits);
+        self.work_buffer.threads = 1;
+        solved
+    }
+
     #[inline(always)]
     pub fn solve(&mut self, player_idx: u8) -> error::Returns<equity::Equity> {
         self.solve_within(player_idx, &Limits::NONE)?
@@ -3515,6 +3541,18 @@ impl<
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock(limits);
         self.run_id_loop(player_idx, false, limits, None, true)
+    }
+
+    pub fn solve_within_on_threads(
+        &mut self,
+        player_idx: u8,
+        limits: &Limits,
+        threads: usize,
+    ) -> error::Returns<Solved> {
+        self.work_buffer.threads = threads;
+        let solved = self.solve_within(player_idx, limits);
+        self.work_buffer.threads = 1;
+        solved
     }
 
     // a table of as many buckets as fit in this many bytes from the start, in
@@ -4041,6 +4079,17 @@ impl<
                         NO_PLAY,
                     );
                 }
+                if root
+                    && i == 1
+                    && work_buffer.threads > 1
+                    && work_buffer.in_bag.is_none()
+                    && work_buffer.time_limit.is_none()
+                    && work_buffer.state_limit.is_none()
+                    && work_buffer.verdicts.is_empty()
+                {
+                    self.root_verdicts(player_idx, depth);
+                }
+                let work_buffer = &mut self.work_buffer;
                 let found = work_buffer.orders[ply][i] as u32 as usize;
                 let candidate = &work_buffer.lists[ply][found];
                 let (index, plays_out, score) =
@@ -4052,6 +4101,11 @@ impl<
                     if self.take_value(i, index, score) {
                         break;
                     }
+                    continue;
+                }
+                if root && let Some(&Some((value, complete))) = work_buffer.verdicts.get(i) {
+                    work_buffer.frames[t].best.complete &= complete;
+                    self.take_value(i, index, value);
                     continue;
                 }
                 // the math goes like this:
@@ -4183,6 +4237,97 @@ impl<
         let frame = self.work_buffer.frames.pop().unwrap();
         self.finish(&frame);
         Advance::Done(frame.best)
+    }
+
+    // a move failing low at the first alpha never beats a later alpha, so its
+    // bound stands in for its search
+    fn root_verdicts(&mut self, player_idx: u8, depth: i8) {
+        let work_buffer = &self.work_buffer;
+        let alpha = work_buffer.frames[0].node.alpha;
+        let threads = work_buffer.threads;
+        let moves = (1..work_buffer.orders[0].len())
+            .filter_map(|i| {
+                let candidate = &work_buffer.lists[0][work_buffer.orders[0][i] as u32 as usize];
+                (!candidate.plays_out).then(|| (i, candidate.play.clone(), candidate.valuation))
+            })
+            .collect::<Vec<_>>();
+        let limits = Limits {
+            time: None,
+            states: None,
+            memory: work_buffer.memory_limit,
+            clock: None,
+        };
+        let room = work_buffer.table.buckets.len() * std::mem::size_of::<[u64; 8]>();
+        let mut kept = std::mem::take(&mut self.work_buffer.helper_tables);
+        kept.resize_with(threads, || None);
+        let mut helpers = std::mem::take(&mut self.helpers);
+        helpers.resize_with(threads, || None);
+        let (gc, kwg, arm_tables) = (self.game_config, self.kwg, self.arm_tables);
+        let run_letters = &self.run_letters;
+        let (board_tiles, racks, scoreless) = (&self.board_tiles, &self.racks, self.scoreless);
+        let (moves, limits) = (&moves, &limits);
+        // each lane's solver, made at its first pass and kept for the next
+        let lane = move |lane: usize, table: Option<KeptTable>, helper| {
+            let mut found = Vec::new();
+            let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper) else {
+                return (lane, found, table, None);
+            };
+            if let Some(table) = table {
+                let _ = own.give_table(table);
+            } else {
+                own.reserve_table(room);
+            }
+            own.board_tiles.clone_from(board_tiles);
+            own.racks.clone_from(racks);
+            own.scoreless = scoreless;
+            own.begin_search(limits);
+            own.reset_position();
+            own.generate(0, player_idx, false);
+            for (i, play, score) in moves.iter().skip(lane).step_by(threads) {
+                own.place(player_idx, play);
+                let child_beta = score - alpha;
+                let searched = own.negamax_eval(
+                    1,
+                    player_idx ^ 1,
+                    depth - 1,
+                    child_beta - LEAST_STEP,
+                    child_beta,
+                    Scoreless::Counted {
+                        passes: 0,
+                        zeros: 0,
+                    },
+                );
+                own.unplace(player_idx, play);
+                let Ok(searched) = searched else {
+                    break;
+                };
+                let value = score - searched.value;
+                if value <= alpha {
+                    found.push((*i, value, searched.complete));
+                }
+            }
+            let table = own.take_table();
+            (lane, found, Some(table), Some(own.into_helper()))
+        };
+        let helped = std::thread::scope(|s| {
+            let handles = (kept.into_iter().zip(helpers).enumerate())
+                .map(|(k, (table, helper))| s.spawn(move || lane(k, table, helper)))
+                .collect::<Vec<_>>();
+            (handles.into_iter())
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let work_buffer = &mut self.work_buffer;
+        work_buffer
+            .verdicts
+            .resize(work_buffer.orders[0].len(), None);
+        for (_, found, table, helper) in helped {
+            for (i, value, complete) in found {
+                work_buffer.verdicts[i] = Some((value, complete));
+            }
+            work_buffer.helper_tables.push(table);
+            self.helpers.push(helper);
+        }
     }
 
     // a node one ply from the depth with moves to search, searched in one go,
@@ -9470,6 +9615,35 @@ mod tests {
             0,
             table_play,
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_solve_on_threads_finds_one_threads_value() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let solved = |pos: &Position, mover: u8, threads: usize| {
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            (egs.solve_within_on_threads(mover, &super::Limits::NONE, threads))
+                .unwrap()
+                .value
+        };
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                let want = solved(&pos, mover, 1);
+                for threads in 2..4 {
+                    assert_eq!(
+                        solved(&pos, mover, threads),
+                        want,
+                        "[{name}] mover {mover} threads {threads}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
