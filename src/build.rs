@@ -49,11 +49,115 @@ struct State {
     next_index: u32, // Refers to states.
 }
 
+// a state and its index in states, or an empty slot (index !0)
+#[derive(Clone)]
+struct StateSlot {
+    state: State,
+    index: u32,
+}
+
+const EMPTY_STATE_SLOT: StateSlot = StateSlot {
+    state: State {
+        tile: 0,
+        accepts: false,
+        arc_index: 0,
+        next_index: 0,
+    },
+    index: !0,
+};
+
+// the states made so far, by their content: an open-addressing table, probed
+// linearly, of a power of two slots kept at most three quarters full, each
+// slot holding its state so that a probe reads no other memory
+#[derive(Default)]
+struct StatesFinder {
+    slots: Vec<StateSlot>,
+    spare: Vec<StateSlot>, // what a growth rehashes into
+    len: usize,
+    shift: u32, // a hash's top bits pick its slot: 64 - log2(slots.len())
+}
+
+impl StatesFinder {
+    // Fibonacci hashing's multiplier, 2^64 divided by the golden ratio
+    // (https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing)
+    const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
+    // the most of its slots it fills: a probe reads about 1 / (1 - load)
+    // slots, held in a cache line or two
+    const LOAD: (usize, usize) = (3, 4);
+
+    // empty, with room for this many states before it grows (len, until then,
+    // is the last fill's)
+    #[inline(always)]
+    fn clear(&mut self, expected_len: usize) {
+        let num_slots = (expected_len.max(1) * Self::LOAD.1)
+            .div_ceil(Self::LOAD.0)
+            .next_power_of_two();
+        self.slots.clear();
+        self.slots.resize(num_slots, EMPTY_STATE_SLOT);
+        self.len = 0;
+        self.shift = u64::BITS - num_slots.trailing_zeros();
+    }
+
+    #[inline(always)]
+    fn slot_of(shift: u32, state: &State) -> usize {
+        let key = ((state.arc_index as u64) | ((state.next_index as u64) << 32))
+            ^ (((state.tile as u64) << 1) | state.accepts as u64).rotate_right(8);
+        (key.wrapping_mul(Self::MULTIPLIER) >> shift) as usize
+    }
+
+    // the index of the state like this one, else new_index, now its index
+    #[inline(always)]
+    fn find_or_insert(&mut self, state: &State, new_index: u32) -> u32 {
+        let mask = self.slots.len() - 1;
+        let mut i = Self::slot_of(self.shift, state);
+        loop {
+            let slot = &self.slots[i];
+            if slot.index == !0 {
+                break;
+            }
+            if slot.state == *state {
+                return slot.index;
+            }
+            i = (i + 1) & mask;
+        }
+        self.slots[i] = StateSlot {
+            state: state.clone(),
+            index: new_index,
+        };
+        self.len += 1;
+        if self.len * Self::LOAD.1 > self.slots.len() * Self::LOAD.0 {
+            self.grow();
+        }
+        new_index
+    }
+
+    // twice the slots, every state rehashed into them
+    #[cold]
+    fn grow(&mut self) {
+        let num_slots = self.slots.len() * 2;
+        std::mem::swap(&mut self.slots, &mut self.spare);
+        self.slots.clear();
+        self.slots.resize(num_slots, EMPTY_STATE_SLOT);
+        self.shift -= 1;
+        let mask = num_slots - 1;
+        for slot in self.spare.drain(..) {
+            if slot.index == !0 {
+                continue;
+            }
+            let mut i = Self::slot_of(self.shift, &slot.state);
+            while self.slots[i].index != !0 {
+                i = (i + 1) & mask;
+            }
+            self.slots[i] = slot;
+        }
+    }
+}
+
 // for each i > 0, states[i].arc_index < i and states[i].next_index < i.
 // this ensures states is already a topologically sorted DAG.
 struct StateMaker<'a> {
     states: &'a mut Vec<State>,
-    states_finder: &'a mut fash::MyHashMap<State, u32>,
+    states_finder: &'a mut StatesFinder,
 }
 
 impl StateMaker<'_> {
@@ -68,7 +172,7 @@ impl StateMaker<'_> {
                 next_index: ret,
             };
             let new_ret = self.states.len() as u32;
-            ret = *self.states_finder.entry(state.clone()).or_insert(new_ret);
+            ret = self.states_finder.find_or_insert(&state, new_ret);
             if ret == new_ret {
                 self.states.push(state);
             }
@@ -762,7 +866,7 @@ fn reorder_states(
     dawg_start_state: u32,
     gaddag_start_state: u32,
     buffers: &mut ReorderBuffers,
-    states_finder: &mut fash::MyHashMap<State, u32>,
+    states_finder: &mut StatesFinder,
     transitions: &mut Vec<Transition>,
 ) -> (u32, u32) {
     #[inline(always)]
@@ -1006,8 +1110,8 @@ fn reorder_states(
     new_states.clear();
     new_states.reserve(states_len);
     new_states.push(states[0].clone());
-    states_finder.clear();
-    states_finder.insert(states[0].clone(), 0);
+    states_finder.clear(states_len);
+    states_finder.find_or_insert(&states[0], 0);
     let mut state_maker = StateMaker {
         states: new_states,
         states_finder,
@@ -1057,7 +1161,7 @@ fn reorder_states(
 #[derive(Default)]
 pub struct Builder {
     states: Vec<State>,
-    states_finder: fash::MyHashMap<State, u32>,
+    states_finder: StatesFinder,
     transitions: Vec<Transition>,
     indexes: Vec<usize>,
     machine_drowwords: Vec<bites::Bites>,
@@ -1178,8 +1282,9 @@ impl Builder {
             next_index: 0,
         });
 
-        states_finder.clear();
-        states_finder.insert(states[0].clone(), 0);
+        // room for a state a word, or for as many as the last build made
+        states_finder.clear(machine_words.len().max(states_finder.len));
+        states_finder.find_or_insert(&states[0], 0);
 
         let mut state_maker = StateMaker {
             states,
