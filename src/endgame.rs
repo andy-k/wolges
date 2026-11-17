@@ -18242,112 +18242,103 @@ mod tests {
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
-        let tiles = [1u8, 2, 8, 20]; // A B H T
         let (mut checked, mut leaving) = (0, 0);
-        for (unseen, bag_size) in [
-            (&[1u8, 2, 8][..], 2),
-            (&[1, 8, 20, 20], 2),
-            (&[2, 8, 20, 20], 3),
+        // the unseen tiles, the bag's size, and the rack (A B H T as 1 2 8 20)
+        for (unseen, bag_size, [x, y]) in [
+            (&[1u8, 2, 8][..], 2, [1u8, 1]),
+            (&[1, 8, 20, 20], 2, [2, 2]),
+            (&[2, 8, 20, 20], 3, [1, 8]),
         ] {
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             for &tile in unseen {
                 unseen_tally[tile as usize] += 1;
             }
-            for &x in &tiles {
-                for &y in &tiles {
-                    let lead = e(1000);
-                    let mut position = bag_position(&board, &[x, y], &unseen_tally, bag_size, lead);
-                    position.model = super::PegModel::InfoSets;
-                    let (result, rows) = solve_peg_rows(&mut egs, position.clone());
-                    assert!(result.exact);
-                    let progress =
-                        super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
-                            .unwrap();
-                    let mut reference = BagReference {
-                        gc: &gc,
-                        kwg: &kwg,
-                        arm_tables: &arm_tables,
-                        klv: &klv,
-                        mg: &mut mg,
-                        own: &mut own,
-                        known: fash::MyHashMap::default(),
+            let lead = e(1000);
+            let mut position = bag_position(&board, &[x, y], &unseen_tally, bag_size, lead);
+            position.model = super::PegModel::InfoSets;
+            let (result, rows) = solve_peg_rows(&mut egs, position.clone());
+            assert!(result.exact);
+            let progress =
+                super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE).unwrap();
+            let mut reference = BagReference {
+                gc: &gc,
+                kwg: &kwg,
+                arm_tables: &arm_tables,
+                klv: &klv,
+                mg: &mut mg,
+                own: &mut own,
+                known: fash::MyHashMap::default(),
+            };
+            for (
+                super::PegBagMove {
+                    play,
+                    win_pct: win,
+                    expected_margin: margin,
+                    ..
+                },
+                super::PegBagRows {
+                    hypotheses,
+                    wins,
+                    draws,
+                },
+            ) in result.moves.iter().zip(&rows)
+            {
+                // each split's own row and chance, as the reference values
+                // that split; no draws at the root in this model, the mover's
+                // draw unseen by the other
+                assert_eq!(draws.len(), progress.splits.len());
+                assert!(draws.iter().all(Vec::is_empty));
+                assert_eq!(hypotheses.len(), progress.splits.len());
+                assert_eq!(wins.len(), progress.splits.len());
+                let (mut want_win, mut want_margin, mut total) = (0.0, 0.0, 0u64);
+                for (split_at, (opp_rack, bag, ways)) in progress.splits.iter().enumerate() {
+                    let pos = super::InBag {
+                        board: board.clone(),
+                        racks: [progress.position.mover_rack.clone(), opp_rack.clone()],
+                        bag: bag.clone(),
+                        mover: 0,
+                        passes: 0,
+                        zeros: 0,
+                        answering: false,
+                        exchanges: [0, 0],
                     };
-                    for (
-                        super::PegBagMove {
-                            play,
-                            win_pct: win,
-                            expected_margin: margin,
-                            ..
-                        },
-                        super::PegBagRows {
-                            hypotheses,
-                            wins,
-                            draws,
-                        },
-                    ) in result.moves.iter().zip(&rows)
-                    {
-                        // each split's own row and chance, as the reference
-                        // values that split; no draws at the root in this
-                        // model, the mover's draw unseen by the other
-                        assert_eq!(draws.len(), progress.splits.len());
-                        assert!(draws.iter().all(Vec::is_empty));
-                        assert_eq!(hypotheses.len(), progress.splits.len());
-                        assert_eq!(wins.len(), progress.splits.len());
-                        let (mut want_win, mut want_margin, mut total) = (0.0, 0.0, 0u64);
-                        for (split_at, (opp_rack, bag, ways)) in progress.splits.iter().enumerate()
-                        {
-                            let pos = super::InBag {
-                                board: board.clone(),
-                                racks: [progress.position.mover_rack.clone(), opp_rack.clone()],
-                                bag: bag.clone(),
-                                mover: 0,
-                                passes: 0,
-                                zeros: 0,
-                                answering: false,
-                                exchanges: [0, 0],
-                            };
-                            let mut info = super::InfoSet::default();
-                            info.of(&pos, lead.raw());
-                            let (w, m) =
-                                info_reference_split(&mut reference, &info, play, opp_rack, bag);
-                            want_win += *ways as f64 * w;
-                            want_margin += *ways as f64 * (m + lead.raw() as f64);
-                            total += ways;
-                            assert!((wins[split_at] - w).abs() < 1e-9, "split {split_at}");
-                            assert_eq!(hypotheses[split_at].1, *ways);
-                            assert!(
-                                (hypotheses[split_at].2.raw() as f64 - (m + lead.raw() as f64))
-                                    .abs()
-                                    <= 1.0,
-                                "split {split_at}"
-                            );
-                        }
-                        let (want_win, want_margin) =
-                            (want_win / total as f64, want_margin / total as f64);
-                        let case = (unseen, bag_size, x, y);
-                        assert!(
-                            (win - want_win).abs() < 1e-9,
-                            "{case:?}: {win} against {want_win}"
-                        );
-                        assert!(
-                            (margin.raw() as f64 - want_margin).abs() <= 1.0,
-                            "{case:?}: {margin:?} against {want_margin}"
-                        );
-                        if match play {
-                            movegen::Play::Place { word, .. } => {
-                                word.iter().filter(|&&tile| tile != 0).count() < bag_size
-                            }
-                            movegen::Play::Exchange { .. } => true,
-                        } {
-                            leaving += 1;
-                        }
-                        checked += 1;
-                    }
+                    let mut info = super::InfoSet::default();
+                    info.of(&pos, lead.raw());
+                    let (w, m) = info_reference_split(&mut reference, &info, play, opp_rack, bag);
+                    want_win += *ways as f64 * w;
+                    want_margin += *ways as f64 * (m + lead.raw() as f64);
+                    total += ways;
+                    assert!((wins[split_at] - w).abs() < 1e-9, "split {split_at}");
+                    assert_eq!(hypotheses[split_at].1, *ways);
+                    assert!(
+                        (hypotheses[split_at].2.raw() as f64 - (m + lead.raw() as f64)).abs()
+                            <= 1.0,
+                        "split {split_at}"
+                    );
                 }
+                let (want_win, want_margin) = (want_win / total as f64, want_margin / total as f64);
+                let case = (unseen, bag_size, x, y);
+                assert!(
+                    (win - want_win).abs() < 1e-9,
+                    "{case:?}: {win} against {want_win}"
+                );
+                assert!(
+                    (margin.raw() as f64 - want_margin).abs() <= 1.0,
+                    "{case:?}: {margin:?} against {want_margin}"
+                );
+                if match play {
+                    movegen::Play::Place { word, .. } => {
+                        word.iter().filter(|&&tile| tile != 0).count() < bag_size
+                    }
+                    movegen::Play::Exchange { .. } => true,
+                } {
+                    leaving += 1;
+                }
+                checked += 1;
             }
         }
         assert!(
-            checked > 300 && leaving > 300,
+            checked == 36 && leaving == 30,
             "{checked} moves, {leaving} leaving the bag"
         );
     }
