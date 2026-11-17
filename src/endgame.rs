@@ -5299,6 +5299,7 @@ impl<
             limits,
             exact: true,
             line: None,
+            placed: &mut Default::default(),
         };
         // where the game's last turn was a pass, the mover's pass answers it
         let [passes, zeros] = self.scoreless;
@@ -5416,8 +5417,16 @@ impl<
                 if place <= start {
                     continue;
                 }
-                let mut nb = board.to_vec();
-                let mut nr = racks.clone();
+                let Placed {
+                    board: nb,
+                    racks: nr,
+                } = &mut *search.placed;
+                nb.clear();
+                nb.extend_from_slice(board);
+                for (to, from) in nr.iter_mut().zip(racks) {
+                    to.clear();
+                    to.extend_from_slice(from);
+                }
                 {
                     let rack = &mut nr[mover as usize];
                     let strider = search.gc.board_layout().dim().lane(*down, *lane);
@@ -5433,7 +5442,7 @@ impl<
                     rack.push(drawn);
                 }
 
-                search.sub.init(&nb, [&nr[0], &nr[1]]);
+                search.sub.init(nb, [&nr[0], &nr[1]]);
                 let v = match search
                     .sub
                     .solve_in_bag(opp, search.limits, &mut search.exact)
@@ -6960,72 +6969,72 @@ impl<
         if !deepens && sub.work_buffer.threads > 1 && state.next == 0 {
             ready = Self::peg_places_on_threads(sub, position, score_diff, limits, &state.moves);
         }
-        // the tile's opponent rack, the pass's racks, and its memo, made once
-        // and refilled for each tile
-        let mut opp_rack = Vec::new();
-        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        // the pass's memo, made once and renewed for each tile
         let mut pass_memo = BagTable::default();
-        let mut value_move = |cand: &PegMove, line: &mut PassLine| -> error::Returns<PegValue> {
-            peg_value(
-                unseen,
-                score_diff,
-                &mut opp_rack,
-                |t, drawn, opp_rack, exact| {
-                    Ok(match cand {
-                        PegMove::Place(play) => Self::peg_place_endgame(
-                            sub, position, play, drawn, opp_rack, limits, exact,
-                        )?,
-                        // the pass ends the game at once when it brings the
-                        // scoreless turns to the config's count, each losing
-                        // their rack
-                        PegMove::Pass if pass_ends_the_game => {
-                            (alphabet.scaled_rack_score(opp_rack)
-                                - alphabet.scaled_rack_score(mover_rack))
-                                as f32
-                        }
-                        PegMove::Pass => {
-                            // PEG2-7: with two or more in the bag, draw every
-                            // tile from the same end -- pop, the back -- and
-                            // store a scenario reversed to match. Do NOT reuse
-                            // Bag::replenish for the enumeration: it pops for
-                            // even players and shifts for odd ones, which on a
-                            // reversed bag hands p1 the leftover instead of
-                            // the next popped tile.
-                            r2[mover as usize].clear();
-                            r2[mover as usize].extend_from_slice(mover_rack);
-                            r2[opp as usize].clear();
-                            r2[opp as usize].extend_from_slice(opp_rack);
-                            pass_memo.renew();
-                            let mut search = OneInBag {
-                                gc,
-                                kwg,
-                                arm_tables,
-                                klv,
-                                sub: &mut *sub,
-                                mg: &mut *mg,
-                                memo: &mut pass_memo,
-                                limits,
-                                exact: true,
-                                line: Some(&mut *line),
-                            };
-                            let v = -Self::one_in_bag_minimax(
-                                &mut search,
-                                board,
-                                &r2,
-                                OneInBagTurn {
-                                    mover: opp,
-                                    bag_tile: t,
-                                    passes: pass_passes,
-                                    zeros: pass_zeros,
-                                    answering: true,
-                                },
-                            )?;
-                            *exact &= search.exact;
-                            v
-                        }
-                    })
-                },
-            )
+        let mut value_move = |cand: &PegMove,
+                              line: &mut PassLine,
+                              kept: &mut PassKept|
+         -> error::Returns<PegValue> {
+            let PassKept {
+                opp_rack,
+                r2,
+                placed,
+            } = kept;
+            peg_value(unseen, score_diff, opp_rack, |t, drawn, opp_rack, exact| {
+                Ok(match cand {
+                    PegMove::Place(play) => Self::peg_place_endgame(
+                        sub, position, play, drawn, opp_rack, limits, exact,
+                    )?,
+                    // the pass ends the game at once when it brings the
+                    // scoreless turns to the config's count, each losing their
+                    // rack
+                    PegMove::Pass if pass_ends_the_game => {
+                        (alphabet.scaled_rack_score(opp_rack)
+                            - alphabet.scaled_rack_score(mover_rack)) as f32
+                    }
+                    PegMove::Pass => {
+                        // PEG2-7: with two or more in the bag, draw every tile
+                        // from the same end -- pop, the back -- and store a
+                        // scenario reversed to match. Do NOT reuse
+                        // Bag::replenish for the enumeration: it pops for even
+                        // players and shifts for odd ones, which on a reversed
+                        // bag hands p1 the leftover instead of the next popped
+                        // tile.
+                        r2[mover as usize].clear();
+                        r2[mover as usize].extend_from_slice(mover_rack);
+                        r2[opp as usize].clear();
+                        r2[opp as usize].extend_from_slice(opp_rack);
+                        pass_memo.renew();
+                        let mut search = OneInBag {
+                            gc,
+                            kwg,
+                            arm_tables,
+                            klv,
+                            sub: &mut *sub,
+                            mg: &mut *mg,
+                            memo: &mut pass_memo,
+                            limits,
+                            exact: true,
+                            line: Some(&mut *line),
+                            placed: &mut *placed,
+                        };
+                        let v = -Self::one_in_bag_minimax(
+                            &mut search,
+                            board,
+                            r2,
+                            OneInBagTurn {
+                                mover: opp,
+                                bag_tile: t,
+                                passes: pass_passes,
+                                zeros: pass_zeros,
+                                answering: true,
+                            },
+                        )?;
+                        *exact &= search.exact;
+                        v
+                    }
+                })
+            })
         };
 
         while !state.done {
@@ -7038,7 +7047,7 @@ impl<
                     .set(deepens && (state.answer.is_some() || !state.reached.is_empty()));
                 let valued = match ready.get_mut(i).and_then(Option::take) {
                     Some(value) => Ok(value),
-                    None => value_move(&state.moves[i], &mut state.passing),
+                    None => value_move(&state.moves[i], &mut state.passing, &mut state.kept),
                 };
                 match valued {
                     Ok(value) => {
@@ -7325,6 +7334,18 @@ struct PegCommitted {
     done: bool,
     ranked: Vec<usize>,
     places: Vec<usize>,
+    kept: PassKept,
+}
+
+// what valuing a move of the committed model refills for each tile, kept from
+// solve to solve: the tile's opponent rack, the pass's racks, and the board
+// and racks after each of its places (not its memo, which a solve lets go of
+// as it ends, so it holds no room while later solves grow the table)
+#[derive(Default)]
+struct PassKept {
+    opp_rack: Vec<u8>,
+    r2: [Vec<u8>; 2],
+    placed: Placed,
 }
 
 impl PegCommitted {
@@ -8002,6 +8023,16 @@ struct OneInBag<
     limits: &'s BagLimits,
     exact: bool, // cleared by an endgame a limit cut short
     line: Option<&'s mut PassLine>,
+    placed: &'s mut Placed, // the caller's, refilled for each place
+}
+
+// the board and racks after a place of the one-in-bag search, refilled for
+// each place it values (none is valued while another is, as the search goes
+// down only after its places), kept by the caller from call to call
+#[derive(Default)]
+struct Placed {
+    board: Vec<u8>,
+    racks: [Vec<u8>; 2],
 }
 
 // a deepening pass's search after the committed model's pass, kept across
@@ -14600,6 +14631,7 @@ mod tests {
                             limits: &limits,
                             exact: true,
                             line,
+                            placed: &mut Default::default(),
                         };
                         let got = EndgameSolver::one_in_bag_minimax(
                             &mut search,
@@ -17561,6 +17593,7 @@ mod tests {
                             limits: &limits,
                             exact: true,
                             line: None,
+                            placed: &mut Default::default(),
                         };
                         values[i] = EndgameSolver::one_in_bag_minimax_ex(
                             &mut search,
