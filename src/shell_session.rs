@@ -3627,11 +3627,15 @@ impl Replay {
         let shown = turn.shown();
         self.type_racks(&shown)?;
         let state = &self.state;
+        if turn.loser().is_none()
+            && !turn.ended()
+            && !out
+            && !state.scoreless_turns_ended(game_config)
+        {
+            return Ok(None);
+        }
         let mut final_scores = state.players.iter().map(|p| p.score).collect::<Vec<_>>();
         if turn.loser().is_none() {
-            if !turn.ended() && !out && !state.scoreless_turns_ended(game_config) {
-                return Ok(None);
-            }
             let set_none = |seat| shown.iter().any(|(s, t)| *s == seat && t.is_empty());
             let none = (0..state.players.len()).find(|&seat| {
                 state.players[seat].rack.is_empty() && (!self.given[seat] || set_none(seat))
