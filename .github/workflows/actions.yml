@@ -2,6 +2,7 @@ name: Rust
 'on':
   push:
   pull_request:
+  workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
 jobs:
@@ -87,13 +88,10 @@ jobs:
         fi
   build:
     needs: merge
-    if: "!cancelled() && needs.merge.outputs.passed != 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository)"
+    if: "!cancelled() && needs.merge.outputs.passed != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name != github.repository)"
     strategy:
       matrix:
-        os:
-        - ubuntu-26.04
-        - windows-latest
-        - macos-latest
+        os: '${{ fromJSON(github.event_name == ''workflow_dispatch'' && ''["macos-latest"]'' || ''["ubuntu-26.04", "windows-latest"]'') }}'
     runs-on: "${{ matrix.os }}"
     steps:
     - uses: actions/checkout@v7
