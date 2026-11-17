@@ -5799,6 +5799,7 @@ impl<
                 hand_overs: &[],
                 hand_over: None,
                 ply: 0,
+                arena: &mut BagArena::new(gc.alphabet().len() as usize, position.bag_size),
             };
             let mut found = PegBagRows::default();
             for split in splits {
@@ -5929,6 +5930,7 @@ impl<
                 )?
             } else {
                 let mut stopped = false;
+                let arena = &mut BagArena::new(gc.alphabet().len() as usize, position.bag_size);
                 while let Some(&i) = state.order.get(state.next) {
                     limits.moves.set(Some((state.next, state.order.len())));
                     limits.may_stop.set(deepens);
@@ -5946,6 +5948,7 @@ impl<
                         hand_overs: &[],
                         hand_over: None,
                         ply: 0,
+                        arena: &mut *arena,
                     };
                     match value_root_move(&mut search, splits, &at, &state.moves[i], score_diff) {
                         Ok(value) => {
@@ -6054,6 +6057,12 @@ impl<
         let base = state.next;
         let rest = state.order.len() - base;
         let num_splits = splits.len();
+        // each thread's room to draw in (BagArena): the tiles of the game and
+        // of the bag
+        let tiles = gc.alphabet().len() as usize;
+        let bag_len = (splits.first()).map_or(0, |(_, bag, _)| {
+            bag.iter().map(|&count| count as usize).sum()
+        });
         let tasks = rest * num_splits;
         // the tasks' order, what each found, and their hand-overs; the moves'
         // splits not yet valued
@@ -6235,6 +6244,7 @@ impl<
                             hand_overs,
                             hand_over: None,
                             ply: 0,
+                            arena: &mut BagArena::new(tiles, bag_len),
                         };
                         let share = work(&mut search, &limits);
                         own.kept_mg = Some(mg);
@@ -6258,6 +6268,7 @@ impl<
                 hand_overs,
                 hand_over: None,
                 ply: 0,
+                arena: &mut BagArena::new(tiles, bag_len),
             };
             let mine = work(&mut search, limits);
             let (mut shares, mut kept, mut pools, mut helpers) =
@@ -8081,14 +8092,87 @@ fn beats(v: f64, t: f64) -> f64 {
     }
 }
 
-// the draws of n tiles a bag (a count per tile) allows, each with the deals
-// that give it
-fn draws_of(bag: &[u8], n: usize) -> Vec<(Vec<u8>, u64)> {
-    let mut draws = Vec::new();
-    each_split(bag, n, &mut |drawn, _, ways| {
-        draws.push((drawn.to_vec(), ways))
-    });
-    draws
+// the first draw of n tiles a pool (a count per tile) allows, in the order
+// each_split gives them (each tile's count rising, the first tile's slowest),
+// written into drawn; false if the pool holds fewer than n
+fn first_draw(pool: &[u8], n: usize, drawn: &mut [u8]) -> bool {
+    let mut left = n;
+    for (d, &count) in drawn.iter_mut().zip(pool).rev() {
+        let take = left.min(count as usize);
+        *d = take as u8;
+        left -= take;
+    }
+    left == 0
+}
+
+// the draw after drawn in first_draw's order, written over it; false after the
+// last
+fn next_draw(pool: &[u8], drawn: &mut [u8]) -> bool {
+    let mut after = 0usize; // the tiles drawn past t
+    for t in (0..drawn.len()).rev() {
+        if after > 0 && drawn[t] < pool[t] {
+            drawn[t] += 1;
+            first_draw(&pool[t + 1..], after - 1, &mut drawn[t + 1..]);
+            return true;
+        }
+        after += drawn[t] as usize;
+    }
+    false
+}
+
+// how many deals give a draw from a pool, as each_split counts them
+#[inline(always)]
+fn draw_ways(pool: &[u8], drawn: &[u8]) -> u64 {
+    (pool.iter().zip(drawn)).fold(1u64, |ways, (&p, &d)| ways * binom(p as usize, d as usize))
+}
+
+// the room the search with tiles in the bag draws in, made once for a search
+// and kept across its root moves: for each ply, a count per tile for each of
+// the bag a draw is made from, the draw, and one more tally (the tiles an
+// exchange throws back, or the whole bag a placement draws), each lent out on
+// its own. Sized at setup for as many plies as the bag has tiles and one more,
+// each placement drawing at least one; a line of scoreless turns past that
+// adds a ply's room once, kept from then on
+struct BagArena {
+    tiles: usize,
+    plies: Vec<[Vec<u8>; 3]>,
+}
+
+// which of a ply's tallies (BagArena)
+const DRAW_POOL: usize = 0;
+const DRAW: usize = 1;
+const TALLY: usize = 2;
+
+impl BagArena {
+    fn new(tiles: usize, bag_len: usize) -> Self {
+        Self {
+            tiles,
+            plies: (0..=bag_len).map(|_| Self::room(tiles)).collect(),
+        }
+    }
+
+    #[inline(always)]
+    fn room(tiles: usize) -> [Vec<u8>; 3] {
+        [vec![0u8; tiles], vec![0u8; tiles], vec![0u8; tiles]]
+    }
+
+    // one of a ply's tallies, lent out until given back (one an error kept is
+    // made again)
+    #[inline(always)]
+    fn take(&mut self, ply: usize, which: usize) -> Vec<u8> {
+        if ply >= self.plies.len() {
+            let tiles = self.tiles;
+            self.plies.resize_with(ply + 1, || Self::room(tiles));
+        }
+        let mut tally = std::mem::take(&mut self.plies[ply][which]);
+        tally.resize(self.tiles, 0);
+        tally
+    }
+
+    #[inline(always)]
+    fn give(&mut self, ply: usize, which: usize, tally: Vec<u8>) {
+        self.plies[ply][which] = tally;
+    }
 }
 
 // what the search with tiles in the bag has valued, one for all its threads:
@@ -8480,6 +8564,7 @@ struct BagSearch<
     hand_overs: &'s [HandOver],
     hand_over: Option<usize>,
     ply: usize, // the moves made from the root's position to the one valued
+    arena: &'s mut BagArena,
 }
 
 impl<
@@ -8537,6 +8622,47 @@ impl<
         let value = f(self);
         self.ply -= 1;
         value
+    }
+
+    // the tiles an exchange throws back, a count per tile, in this ply's room
+    // (BagArena), to be given back
+    #[inline(always)]
+    fn thrown(&mut self, tiles: &[u8]) -> Vec<u8> {
+        let mut put = self.arena.take(self.ply, TALLY);
+        put.fill(0);
+        for &tile in tiles {
+            put[tile as usize] += 1;
+        }
+        put
+    }
+
+    // each draw of n tiles from bag (a count per tile) with its deals, to f,
+    // until f says to stop (false), walked in this ply's room (BagArena)
+    fn each_draw(
+        &mut self,
+        bag: &[u8],
+        n: usize,
+        mut f: impl FnMut(&mut Self, &[u8], u64) -> error::Returns<bool>,
+    ) -> error::Returns<()> {
+        let ply = self.ply;
+        let mut pool = self.arena.take(ply, DRAW_POOL);
+        pool.copy_from_slice(bag);
+        let mut drawn = self.arena.take(ply, DRAW);
+        let mut walked = Ok(());
+        let mut more = first_draw(&pool, n, &mut drawn);
+        while more {
+            more = match f(self, &drawn, draw_ways(&pool, &drawn)) {
+                Ok(true) => next_draw(&pool, &mut drawn),
+                Ok(false) => false,
+                Err(e) => {
+                    walked = Err(e);
+                    false
+                }
+            };
+        }
+        self.arena.give(ply, DRAW, drawn);
+        self.arena.give(ply, DRAW_POOL, pool);
+        walked
     }
 
     // a position's value to its mover: the most any move gets them, a tie going
@@ -8674,16 +8800,21 @@ impl<
             movegen::Play::Place { word, score, .. } => {
                 let placed = pos.placed(self.gc, play);
                 let n = word.iter().filter(|&&tile| tile != 0).count();
-                let (mut sum, mut total) = (0.0, 0u64);
-                for (drawn, ways) in draws_of(&pos.bag, n.min(pos.bag_len())) {
+                let (mut sum, mut total, mut bounded) = (0.0, 0u64, true);
+                self.each_draw(&pos.bag, n.min(pos.bag_len()), |this, drawn, ways| {
                     let mut next = placed.clone();
-                    next.draw(&drawn);
+                    next.draw(drawn);
                     next.next_turn();
-                    let Some(least) = self.least(&next)? else {
+                    let Some(least) = this.least(&next)? else {
+                        bounded = false;
                         return Ok(false);
                     };
                     sum += ways as f64 * least;
                     total += ways;
+                    Ok(true)
+                })?;
+                if !bounded {
+                    return Ok(false);
                 }
                 *score as f64 - sum / total as f64
             }
@@ -8834,11 +8965,13 @@ impl<
     // each draw of n tiles from pos's bag with its deals, to f, at the root
     // alone: the root's draws are told (move_value_each), and a move valued by
     // its equity below it makes none
-    fn each_draw_at_root(&self, pos: &InBag, n: usize, mut f: impl FnMut(&[u8], u64)) {
+    fn each_draw_at_root(&mut self, pos: &InBag, n: usize, mut f: impl FnMut(&[u8], u64)) {
         if self.ply == 0 {
-            for (drawn, ways) in draws_of(&pos.bag, n) {
-                f(&drawn, ways);
-            }
+            // f makes no error
+            let _ = self.each_draw(&pos.bag, n, |_, drawn, ways| {
+                f(drawn, ways);
+                Ok(true)
+            });
         }
     }
 
@@ -8869,15 +9002,16 @@ impl<
                     return Ok(value);
                 }
                 let (mut sum, mut total) = (0.0, 0u64);
-                for (drawn, ways) in draws_of(&pos.bag, n.min(pos.bag_len())) {
+                self.each_draw(&pos.bag, n.min(pos.bag_len()), |this, drawn, ways| {
                     let mut next = placed.clone();
-                    next.draw(&drawn);
+                    next.draw(drawn);
                     next.next_turn();
-                    let theirs = self.deeper(|this| this.next_value(&next))?;
-                    each(&drawn, ways, *score as f64 - theirs);
+                    let theirs = this.deeper(|this| this.next_value(&next))?;
+                    each(drawn, ways, *score as f64 - theirs);
                     sum += ways as f64 * theirs;
                     total += ways;
-                }
+                    Ok(true)
+                })?;
                 Ok(*score as f64 - sum / total as f64)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
@@ -8900,10 +9034,6 @@ impl<
                 // over the draws of as many tiles from the bag, made before the
                 // tiles go back as GameState::play makes them: the game's end
                 // where the turn ends it, else the next mover's value
-                let mut put = vec![0u8; pos.bag.len()];
-                for &tile in tiles.iter() {
-                    put[tile as usize] += 1;
-                }
                 let zeros = if self.gc.exchanges_are_zeros() {
                     pos.zeros.saturating_add(1)
                 } else {
@@ -8917,25 +9047,29 @@ impl<
                     });
                     return Ok(value);
                 }
+                let put = self.thrown(tiles);
                 let (mut sum, mut total) = (0.0, 0u64);
-                for (drawn, ways) in draws_of(&pos.bag, tiles.len()) {
+                let walked = self.each_draw(&pos.bag, tiles.len(), |this, drawn, ways| {
                     let mut next = pos.clone();
-                    next.draw(&drawn);
+                    next.draw(drawn);
                     next.put_back(&put);
                     next.passes = 0;
                     next.zeros = zeros;
                     next.answering = false;
                     next.exchanges[pos.mover as usize] += 1;
                     let value = if ends {
-                        next.racks_lost(self.gc)
+                        next.racks_lost(this.gc)
                     } else {
                         next.next_turn();
-                        -self.deeper(|this| this.node(&next))?
+                        -this.deeper(|this| this.node(&next))?
                     };
-                    each(&drawn, ways, value);
+                    each(drawn, ways, value);
                     sum += ways as f64 * value;
                     total += ways;
-                }
+                    Ok(true)
+                });
+                self.arena.give(self.ply, TALLY, put);
+                walked?;
                 Ok(sum / total as f64)
             }
         }
@@ -8969,20 +9103,21 @@ impl<
                     return Ok(win);
                 }
                 let (mut sum, mut total) = (0.0, 0u64);
-                for (drawn, ways) in draws_of(&pos.bag, n.min(pos.bag_len())) {
+                self.each_draw(&pos.bag, n.min(pos.bag_len()), |this, drawn, ways| {
                     let mut next = placed.clone();
-                    next.draw(&drawn);
+                    next.draw(drawn);
                     next.next_turn();
                     // the mover's spread is the score less the next mover's
                     let win = if next.bag_len() == 0 {
-                        beats(score - self.endgame(&next)?, t)
+                        beats(score - this.endgame(&next)?, t)
                     } else {
-                        1.0 - self.deeper(|this| this.node_win(&next, score - t))?
+                        1.0 - this.deeper(|this| this.node_win(&next, score - t))?
                     };
-                    each(&drawn, ways, win);
+                    each(drawn, ways, win);
                     sum += ways as f64 * win;
                     total += ways;
-                }
+                    Ok(true)
+                })?;
                 Ok(sum / total as f64)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
@@ -8998,10 +9133,6 @@ impl<
                 Ok(1.0 - self.deeper(|this| this.node_win(&next, -t))?)
             }
             movegen::Play::Exchange { tiles } => {
-                let mut put = vec![0u8; pos.bag.len()];
-                for &tile in tiles.iter() {
-                    put[tile as usize] += 1;
-                }
                 let zeros = if self.gc.exchanges_are_zeros() {
                     pos.zeros.saturating_add(1)
                 } else {
@@ -9014,25 +9145,29 @@ impl<
                     self.each_draw_at_root(pos, tiles.len(), |drawn, ways| each(drawn, ways, win));
                     return Ok(win);
                 }
+                let put = self.thrown(tiles);
                 let (mut sum, mut total) = (0.0, 0u64);
-                for (drawn, ways) in draws_of(&pos.bag, tiles.len()) {
+                let walked = self.each_draw(&pos.bag, tiles.len(), |this, drawn, ways| {
                     let mut next = pos.clone();
-                    next.draw(&drawn);
+                    next.draw(drawn);
                     next.put_back(&put);
                     next.passes = 0;
                     next.zeros = zeros;
                     next.answering = false;
                     next.exchanges[pos.mover as usize] += 1;
                     let win = if ends {
-                        beats(next.racks_lost(self.gc), t)
+                        beats(next.racks_lost(this.gc), t)
                     } else {
                         next.next_turn();
-                        1.0 - self.deeper(|this| this.node_win(&next, -t))?
+                        1.0 - this.deeper(|this| this.node_win(&next, -t))?
                     };
-                    each(&drawn, ways, win);
+                    each(drawn, ways, win);
                     sum += ways as f64 * win;
                     total += ways;
-                }
+                    Ok(true)
+                });
+                self.arena.give(self.ply, TALLY, put);
+                walked?;
                 Ok(sum / total as f64)
             }
         }
@@ -9333,20 +9468,20 @@ impl<
                 if scoreless_turns_end(self.gc, Some(&info.board), 0, zeros) {
                     // the game ends with the mover holding what they drew in
                     // place of the tiles: the mean over the draws
-                    let mut put = vec![0u8; bag.len()];
-                    for &tile in tiles.iter() {
-                        put[tile as usize] += 1;
-                    }
+                    let put = self.thrown(tiles);
                     let (mut win, mut margin, mut total) = (0.0, 0.0, 0u64);
-                    for (drawn, ways) in draws_of(bag, tiles.len()) {
+                    let walked = self.each_draw(bag, tiles.len(), |this, drawn, ways| {
                         let mut pos = info.at(other, bag);
-                        pos.draw(&drawn);
+                        pos.draw(drawn);
                         pos.put_back(&put);
-                        let lost = pos.racks_lost(self.gc);
+                        let lost = pos.racks_lost(this.gc);
                         win += ways as f64 * beats(lead + lost, 0.0);
                         margin += ways as f64 * lost;
                         total += ways;
-                    }
+                        Ok(true)
+                    });
+                    self.arena.give(self.ply, TALLY, put);
+                    walked?;
                     return Ok((win / total as f64, margin / total as f64));
                 }
                 if self.at_horizon() {
@@ -16227,6 +16362,7 @@ mod tests {
             hand_overs: &[],
             hand_over: None,
             ply: 0,
+            arena: &mut super::BagArena::new(gc.alphabet().len() as usize, 2),
         };
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -16986,6 +17122,29 @@ mod tests {
         value
     }
 
+    // first_draw and next_draw walk every draw each_split gives, in its order
+    // and with its deals, for pools with gaps, repeats, and too few tiles
+    #[test]
+    fn draws_walk_as_each_split_splits() {
+        let pools: [&[u8]; 6] = [&[], &[0, 0], &[1], &[2, 0, 3, 1], &[0, 4, 1, 0, 2], &[1, 1]];
+        for pool in pools {
+            for n in 0..=pool.iter().map(|&count| count as usize).sum::<usize>() + 1 {
+                let mut split = Vec::new();
+                super::each_split(pool, n, &mut |drawn, _, ways| {
+                    split.push((drawn.to_vec(), ways))
+                });
+                let mut walked = Vec::new();
+                let mut drawn = vec![0u8; pool.len()];
+                let mut more = super::first_draw(pool, n, &mut drawn);
+                while more {
+                    walked.push((drawn.clone(), super::draw_ways(pool, &drawn)));
+                    more = super::next_draw(pool, &mut drawn);
+                }
+                assert_eq!(walked, split, "pool {pool:?}, n {n}");
+            }
+        }
+    }
+
     // a move's value to its mover, as bag_reference finds it: a placement's
     // score less the next mover's value over each draw, weighed by the deals; a
     // pass the game's end or less the next mover's value
@@ -17000,7 +17159,11 @@ mod tests {
                 let placed = pos.placed(gc, play);
                 let n = (word.iter().filter(|&&tile| tile != 0).count()).min(pos.bag_len());
                 let (mut sum, mut total) = (0.0, 0u64);
-                for (drawn, ways) in super::draws_of(&pos.bag, n) {
+                let mut draws = Vec::new();
+                super::each_split(&pos.bag, n, &mut |drawn, _, ways| {
+                    draws.push((drawn.to_vec(), ways))
+                });
+                for (drawn, ways) in draws {
                     let mut next = placed.clone();
                     next.draw(&drawn);
                     next.next_turn();
