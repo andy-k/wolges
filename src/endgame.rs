@@ -7192,6 +7192,16 @@ impl PegBagProgress {
             })
             .collect()
     }
+
+    // where the last solve's answer lists this move, best first (the place
+    // answer_moves gives it); none if the answer did not value it
+    pub fn answer_place(&self, play: &movegen::Play) -> Option<usize> {
+        let state = &self.state;
+        let valued = state.answer_values();
+        let at =
+            (0..state.moves.len()).find(|&i| valued[i].is_some() && state.moves[i] == *play)?;
+        Some(state.places[at])
+    }
 }
 
 // a move's value with tiles in the bag over the splits, and its chance to win,
@@ -7299,7 +7309,8 @@ struct PegBagRoot<'r, At: Fn(&[u8], &[u8]) -> InBag + Sync> {
 // left; the best move of the deepest pass that valued every move, with that
 // depth, that pass's values, and what it had valued below the moves as it
 // ended (none where the memory limit refused the room); whether that answer is
-// final; and the answer's valued moves best first
+// final; and the answer's valued moves best first, with each move's place
+// among them
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -7318,6 +7329,7 @@ struct PegBagState {
     answered_searched: Option<BagValued>,
     done: bool,
     ranked: Vec<usize>,
+    places: Vec<usize>,
 }
 
 impl PegBagState {
@@ -7332,8 +7344,9 @@ impl PegBagState {
         }
     }
 
-    // rank the answer's valued moves, best first: made when an answer is
-    // swapped in, and after a solve while the pass under way is the answer
+    // rank the answer's valued moves, best first, and note each one's place:
+    // made when an answer is swapped in, and after a solve while the pass
+    // under way is the answer
     #[inline]
     fn rank_answer(&mut self) {
         let valued = if self.answer.is_some() {
@@ -7344,6 +7357,11 @@ impl PegBagState {
         self.ranked.clear();
         (self.ranked).extend((0..valued.len()).filter(|&i| valued[i].is_some()));
         (self.ranked).sort_unstable_by(|&a, &b| peg_bag_ranks(valued, a, b));
+        self.places.clear();
+        self.places.resize(valued.len(), 0);
+        for (place, &i) in self.ranked.iter().enumerate() {
+            self.places[i] = place;
+        }
     }
 }
 
@@ -17514,6 +17532,9 @@ mod tests {
                     }));
                     ranged += (to - from > 1 && to - from < all.len()) as usize;
                 }
+            }
+            for (place, listed) in all.iter().enumerate() {
+                assert_eq!(progress.answer_place(&listed.play), Some(place));
             }
         }
         assert!(cut > 0 && later > 0 && ranged > 0, "{cut} {later} {ranged}");
