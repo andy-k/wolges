@@ -6794,29 +6794,83 @@ impl<
 
         let deepens = limits.deepens();
         if state.moves.is_empty() {
-            gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-                &mut *mg,
-                &movegen::BoardSnapshot {
+            // the root's lists, made once a search at their full lengths, so
+            // no pass grows them, as peg_bag_by's: the moves generated under
+            // the memory limit, if any, and each list taken only where it has
+            // room. Where it has none the search stops before it starts,
+            // nothing kept, and the next step tries again
+            let lists = (|| -> error::Returns<_> {
+                let snapshot = movegen::BoardSnapshot {
                     board_tiles: board,
                     game_config: gc,
                     kwg,
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv,
-                },
-                mover_rack,
-                0,
-                movegen::PassPolicy::AsACandidate,
-            );
-            state.moves.reserve(mg.plays.len() + 1);
-            state.moves.push(PegMove::Pass);
-            for vm in &mg.plays {
-                if matches!(vm.play, movegen::Play::Place { .. }) {
-                    state.moves.push(PegMove::Place(vm.play.clone()));
+                };
+                let pass = movegen::PassPolicy::AsACandidate;
+                let cut = match limits.memory {
+                    None => {
+                        gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                            &mut *mg, &snapshot, mover_rack, 0, pass,
+                        );
+                        false
+                    }
+                    Some(memory) => mg.gen_moves_raw_all_unsorted_held(
+                        &snapshot,
+                        mover_rack,
+                        0,
+                        pass,
+                        movegen::HeldBytes {
+                            held: memory.held,
+                            bytes: memory.bytes,
+                            kept: 0,
+                        },
+                    ),
+                };
+                if cut {
+                    return Err(limits.stop_refused());
                 }
-            }
+                let places = (mg.plays.iter())
+                    .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+                    .count();
+                let n = 1 + places;
+                let mut moves = list_in_room::<PegMove>(limits, n)?;
+                moves.push(PegMove::Pass);
+                for vm in &mg.plays {
+                    if matches!(vm.play, movegen::Play::Place { .. }) {
+                        moves.push(PegMove::Place(vm.play.clone()));
+                    }
+                }
+                Ok((
+                    moves,
+                    list_in_room(limits, n)?,
+                    list_in_room(limits, n)?,
+                    list_in_room(limits, n)?,
+                    list_in_room(limits, n)?,
+                ))
+            })();
+            let (moves, order, valued, reached, answered) = match lists {
+                Ok(lists) => lists,
+                Err(_) if limits.stopped.get() => {
+                    return Ok(PegResult {
+                        win_pct: 0.0,
+                        expected_margin: equity::Equity::ZERO,
+                        hypotheses: Vec::new(),
+                        best_move: None,
+                        moves: Vec::new(),
+                        committed: true,
+                        exact: false,
+                        depth: 0,
+                        out_of_memory: false,
+                    });
+                }
+                Err(e) => return Err(e),
+            };
+            (state.moves, state.order, state.valued) = (moves, order, valued);
+            (state.reached, state.answered) = (reached, answered);
             // the order the first pass values the moves in
-            state.order = (0..state.moves.len()).collect();
+            state.order.extend(0..state.moves.len());
             if deepens {
                 state.order.sort_unstable_by_key(|&i| {
                     let score = match &state.moves[i] {
@@ -6826,7 +6880,7 @@ impl<
                     (std::cmp::Reverse(score), i)
                 });
             }
-            state.valued = state.moves.iter().map(|_| None).collect();
+            state.valued.extend(state.moves.iter().map(|_| None));
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
@@ -6964,8 +7018,10 @@ impl<
                 state.done = true;
                 break;
             }
-            // the next pass values the moves best first by this one
-            state.order = std::mem::take(&mut state.reached);
+            // the next pass values the moves best first by this one; the
+            // order's list goes on as the moves reached, so neither grows
+            std::mem::swap(&mut state.order, &mut state.reached);
+            state.reached.clear();
             let valued = &state.valued;
             state.order.sort_unstable_by(|&a, &b| {
                 let (x, y) = (valued[a].as_ref().unwrap(), valued[b].as_ref().unwrap());
@@ -14170,12 +14226,14 @@ mod tests {
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let gc = game_config::make_english_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        // a limit no solve reaches, its pool's share too small for any list
+        // a limit no solve reaches, with room for the root's lists (a pass and
+        // some places, each list a word a move) but its pool's share (one over
+        // POOL_SHARE) a sliver of it
         let no_room = super::Limits {
             time: None,
             states: None,
             memory: Some(super::MemoryLimit {
-                bytes: super::POOL_SHARE,
+                bytes: super::POOL_SHARE << 13,
                 held: || 0,
             }),
             clock: None,
