@@ -230,6 +230,27 @@ impl<N: Node> RunGraph<N> {
         Self { kwg, bits }
     }
 
+    // a graph of no nodes, to be read only once refill_ascending has filled it
+    #[inline]
+    pub(crate) fn empty() -> Self {
+        let kwg = Kwg::<N>(Vec::new());
+        let bits = RunBits {
+            bits: None,
+            nodes: kwg.0.as_ptr().addr(),
+        };
+        Self { kwg, bits }
+    }
+
+    // the graph made again in place from buf (Kwg::refill_from_bytes), a graph
+    // whose runs ascend by how it was built, and its run letters found again
+    // for it with no scan
+    #[inline]
+    pub(crate) fn refill_ascending(&mut self, buf: &[u8]) -> error::Returns<()> {
+        let refilled = self.kwg.refill_from_bytes(buf);
+        self.bits = self.kwg.run_bits_ascending();
+        refilled
+    }
+
     #[inline(always)]
     pub fn kwg(&self) -> &Kwg<N> {
         &self.kwg

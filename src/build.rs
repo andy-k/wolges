@@ -1379,6 +1379,30 @@ impl GameGraph {
     }
 }
 
+impl Default for GameGraph {
+    // no nodes, to be read only once refill_graph_for_game has filled it
+    #[inline(always)]
+    fn default() -> Self {
+        Self {
+            graph: kwg::RunGraph::empty(),
+        }
+    }
+}
+
+impl Builder {
+    // graph made again in place as build_for_game's graph, its nodes where
+    // they were (kwg::Kwg::refill_from_bytes), and its run letters found again
+    #[inline]
+    pub fn refill_graph_for_game(
+        &mut self,
+        graph: &mut GameGraph,
+        game_config: &game_config::GameConfig,
+        machine_words: &[bites::Bites],
+    ) -> error::Returns<()> {
+        (graph.graph).refill_ascending(self.build_for_game(game_config, machine_words)?)
+    }
+}
+
 // build_for_game's graph, loaded
 #[inline]
 pub fn graph_for_game(

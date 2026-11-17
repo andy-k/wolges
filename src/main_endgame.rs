@@ -401,8 +401,11 @@ fn run_batch<N: kwg::Node>(
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     let mut rack0 = Vec::new();
     let mut rack1 = Vec::new();
-    // each line's words, kept for the next
+    // each line's prune: its words, the builder of its graph, and the graph,
+    // kept from line to line (the graph is refilled before it is read)
     let mut vec_of_words = Vec::<bites::Bites>::new();
+    let mut builder = build::Builder::default();
+    let mut smaller_graph = build::GameGraph::default();
     let file_contents = std::fs::read_to_string(path)?;
     for (line_index, line) in text::lines(&file_contents).enumerate() {
         let t0 = std::time::Instant::now();
@@ -468,7 +471,7 @@ fn run_batch<N: kwg::Node>(
             },
             |word: &[u8]| vec_of_words.push(word.into()),
         );
-        let smaller_graph = build::graph_for_game(&game_config, &vec_of_words)?;
+        builder.refill_graph_for_game(&mut smaller_graph, &game_config, &vec_of_words)?;
         let smaller_kwg = smaller_graph.kwg();
         let arm_tables = solver_tables(smaller_kwg, &game_config, solving.lean)?;
 
