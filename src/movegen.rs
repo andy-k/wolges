@@ -13135,13 +13135,15 @@ struct PruneLine<'a, N: kwg::Node> {
     available: &'a mut [u8], // the tiles not on the board, a blank at 0
     letters: &'a mut [u8],   // the line's letters as the walk placed them
     seen: &'a mut [u64],     // by square, the letters of the words found on it
-    found: &'a mut Vec<u8>,  // each word found: its length, then its letters
+    found: &'a mut FoundWords,
+    bits: &'a mut Vec<u64>, // by word of found, whether this walk found it
 }
 
 // every word the line can take that holds one of its tiles at least, its empty
 // squares filled from the tiles not on the board, a blank as any letter, each
-// with a letter the square takes: each place a word fits adds it to found, and
-// its letters on the empty squares to seen
+// with a letter the square takes: each place a word fits adds it to found
+// (once for all the places it fits), marks it in bits, and adds its letters on
+// the empty squares to seen
 fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
     for (letter, &tile) in line.letters.iter_mut().zip(line.tiles) {
         *letter = tile & 0x7f;
@@ -13160,8 +13162,8 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
     fn record<N: kwg::Node>(env: &mut Env<'_, '_, N>, idx_left: i8, idx_right: i8) {
         let line = &mut *env.line;
         let span = idx_left as usize..idx_right as usize;
-        line.found.push(span.len() as u8);
-        line.found.extend_from_slice(&line.letters[span.clone()]);
+        let index = line.found.insert(&line.letters[span.clone()]);
+        mark(line.bits, index);
         for idx in span {
             if line.tiles[idx] == 0 {
                 line.seen[idx] |= 1 << line.letters[idx];
@@ -13377,7 +13379,8 @@ struct LoneWalk<'a, N: kwg::Node> {
     longest: usize,
     active: &'a mut [u64], // by depth, the shapes the word so far fits
     word: &'a mut Vec<u8>,
-    found: &'a mut Vec<u8>, // the words found, each its length then its letters
+    found: &'a mut FoundWords,
+    bits: &'a mut Vec<u64>, // by word of found, whether it is a lone word
 }
 
 fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: usize) {
@@ -13399,8 +13402,8 @@ fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: 
                 walk.available[from] -= 1;
                 walk.word.push(tile as u8);
                 if depth > 0 && node.accepts() {
-                    walk.found.push(walk.word.len() as u8);
-                    walk.found.extend_from_slice(walk.word);
+                    let index = walk.found.insert(walk.word);
+                    mark(walk.bits, index);
                 }
                 let next_p = node.arc_index();
                 if next_p != 0 && depth + 1 < walk.longest {
@@ -13420,14 +13423,15 @@ fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: 
 // the words of two letters or more the tiles not on the board spell alone, a
 // blank as any letter, that fit a shape from its first square on: a shape is a
 // run of squares of takes, (first, len), and the longest comes first. Each word
-// is added to found once, in ascending order. The walk's tables are kept in
-// buffers from one prune to the next
+// is added to found and marked in bits. The walk's tables are kept in buffers
+// from one prune to the next
 fn lone_words<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     available: &mut [u8],
     takes: &[u64],
     shapes: &[(usize, usize)],
-    found: &mut Vec<u8>,
+    found: &mut FoundWords,
+    bits: &mut Vec<u64>,
     buffers: &mut LoneBuffers,
 ) {
     let root = kwg[0].arc_index();
@@ -13469,6 +13473,7 @@ fn lone_words<N: kwg::Node>(
             active,
             word,
             found,
+            bits,
         },
         root,
         0,
@@ -13488,31 +13493,159 @@ struct LoneBuffers {
 // prune to the next
 #[derive(Clone, Default)]
 struct PruneBuffers {
-    found: Vec<u8>,       // the words found, each its length then its letters
-    lone_found: Vec<u8>,  // the same of a jumbled prune's lone words
-    starts: Vec<u32>,     // by word of found, where it starts
+    found: FoundWords,
+    kept: Vec<u64>,       // by word of found, whether the prune keeps it
+    order: Vec<u32>,      // the words kept, by index in found, as they ascend
     required: Vec<u8>,    // a jumbled run's tiles still to place
     lone_takes: Vec<u64>, // what a jumbled lone word's squares take
     takes: Vec<u64>,
     has_tiles: Vec<bool>,
     to_walk: Vec<bool>,
-    words: Vec<Vec<u8>>,
+    words: Vec<Vec<u64>>, // by line, the words of found its last walk found
     letters: Vec<u8>,
     seen: Vec<u64>,
     shapes: Vec<(usize, usize)>,
-    kept: Vec<(usize, usize)>,
+    kept_shapes: Vec<(usize, usize)>,
     lone: LoneBuffers,
 }
 
-// the words of found, each its length then its letters
+// bit index of bits set, bits grown to hold it
 #[inline(always)]
-fn words_in(mut found: &[u8]) -> impl Iterator<Item = &[u8]> {
-    std::iter::from_fn(move || {
-        let (&len, rest) = found.split_first()?;
-        let (word, rest) = rest.split_at(len as usize);
-        found = rest;
-        Some(word)
-    })
+fn mark(bits: &mut Vec<u64>, index: usize) {
+    if index / 64 >= bits.len() {
+        bits.resize(index / 64 + 1, 0);
+    }
+    bits[index / 64] |= 1 << (index % 64);
+}
+
+// the words a prune finds, each kept once however often it is found: their
+// tiles one after another, each word its length then its letters; by word,
+// where it starts; and an open-addressing table, probed linearly, of a power
+// of two slots kept at most three quarters full, each a word's index plus one
+// with its hash's top half above it (0 for an empty slot), so that a probe
+// compares a word's tiles only when their halves match
+#[derive(Clone, Default)]
+struct FoundWords {
+    tiles: Vec<u8>,
+    starts: Vec<u32>,
+    slots: Vec<u64>,
+    shift: u32, // a hash's top bits pick its slot: 64 - log2(slots.len())
+}
+
+impl FoundWords {
+    // Fibonacci hashing's multiplier, 2^64 divided by the golden ratio
+    // (https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing), as the
+    // graph builder's table takes it
+    const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
+    // the most of its slots it fills
+    const LOAD: (usize, usize) = (3, 4);
+
+    // empty, its slots kept
+    #[inline(always)]
+    fn clear(&mut self) {
+        self.tiles.clear();
+        self.starts.clear();
+        self.slots.fill(0);
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    #[inline(always)]
+    fn word(&self, index: usize) -> &[u8] {
+        let start = self.starts[index] as usize;
+        &self.tiles[start + 1..start + 1 + self.tiles[start] as usize]
+    }
+
+    // a word's hash: its tiles eight at a time, each folded in and mixed
+    #[inline(always)]
+    fn hash(word: &[u8]) -> u64 {
+        let (chunks, rest) = word.as_chunks::<8>();
+        let mut last = [0u8; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        (chunks.iter().chain(std::iter::once(&last))).fold(word.len() as u64, |hash, chunk| {
+            (hash ^ u64::from_le_bytes(*chunk))
+                .wrapping_mul(Self::MULTIPLIER)
+                .rotate_left(u64::BITS / 2)
+        })
+    }
+
+    // the index of the word found, added if it is new
+    #[inline(always)]
+    fn insert(&mut self, word: &[u8]) -> usize {
+        if self.slots.is_empty() {
+            self.grow();
+        }
+        let hash = Self::hash(word);
+        let tag = hash >> u32::BITS << u32::BITS;
+        let mask = self.slots.len() - 1;
+        let mut i = (hash.wrapping_mul(Self::MULTIPLIER) >> self.shift) as usize;
+        loop {
+            let slot = self.slots[i];
+            if slot == 0 {
+                break;
+            }
+            if slot & !(u32::MAX as u64) == tag {
+                let index = (slot as u32 - 1) as usize;
+                if self.word(index) == word {
+                    return index;
+                }
+            }
+            i = (i + 1) & mask;
+        }
+        let index = self.starts.len();
+        self.starts.push(self.tiles.len() as u32);
+        self.tiles.push(word.len() as u8);
+        self.tiles.extend_from_slice(word);
+        self.slots[i] = tag | (index as u64 + 1);
+        if self.starts.len() * Self::LOAD.1 > self.slots.len() * Self::LOAD.0 {
+            self.grow();
+        }
+        index
+    }
+
+    // twice the slots (or four, the first time), every word's put in them
+    // again
+    #[cold]
+    fn grow(&mut self) {
+        let num_slots = (self.slots.len() * 2).max(Self::LOAD.1);
+        self.slots.clear();
+        self.slots.resize(num_slots, 0);
+        self.shift = u64::BITS - num_slots.trailing_zeros();
+        let mask = num_slots - 1;
+        for index in 0..self.starts.len() {
+            let hash = Self::hash(self.word(index));
+            let mut i = (hash.wrapping_mul(Self::MULTIPLIER) >> self.shift) as usize;
+            while self.slots[i] != 0 {
+                i = (i + 1) & mask;
+            }
+            self.slots[i] = hash >> u32::BITS << u32::BITS | (index as u64 + 1);
+        }
+    }
+
+    // the words keep says, by index, to found_word, in ascending order; order
+    // is kept from one prune to the next
+    #[inline(always)]
+    fn each_kept(
+        &self,
+        keep: impl Fn(usize) -> bool,
+        order: &mut Vec<u32>,
+        found_word: impl FnMut(&[u8]),
+    ) {
+        order.clear();
+        order.extend(
+            (0..self.len())
+                .filter(|&index| keep(index))
+                .map(|i| i as u32),
+        );
+        order.sort_unstable_by(|&a, &b| self.word(a as usize).cmp(self.word(b as usize)));
+        order
+            .iter()
+            .map(|&index| self.word(index as usize))
+            .for_each(found_word);
+    }
 }
 
 // under jumbled rules a word's tiles lie on the board in any order, and the
@@ -13521,11 +13654,10 @@ fn words_in(mut found: &[u8]) -> impl Iterator<Item = &[u8]> {
 // it holds every tile of the board in its run, and the rest of its tiles, at
 // least one, come from those not on the board. So, for each such run, each
 // alphagram as long as the run that holds its board tiles; and the words of the
-// tiles not on the board alone. found_word may be called multiple times for the
-// same word
+// tiles not on the board alone. Each is added to found (the prune's), once
+// however many runs take it
 fn gen_remaining_jumbled_words<
     'a,
-    FoundWord: 'a + FnMut(&[u8]),
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -13534,24 +13666,18 @@ fn gen_remaining_jumbled_words<
 >(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
-    mut found_word: FoundWord,
 ) {
-    struct Env<'a, FoundWord: FnMut(&[u8]), N: kwg::Node> {
+    struct Env<'a, N: kwg::Node> {
         kwg: &'a kwg::Kwg<N>,
         available: &'a mut [u8], // the tiles not on the board, a blank at 0
         required: &'a mut [u8],  // the run's tiles still to place
         word: &'a mut Vec<u8>,
-        found_word: &'a mut FoundWord,
+        found: &'a mut FoundWords,
     }
 
     // the alphagrams of left more tiles from the node list at p that place
     // every required tile, owed of them still to place
-    fn walk<FoundWord: FnMut(&[u8]), N: kwg::Node>(
-        env: &mut Env<'_, FoundWord, N>,
-        mut p: i32,
-        left: usize,
-        owed: usize,
-    ) {
+    fn walk<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32, left: usize, owed: usize) {
         // a required tile is placed before any tile above it, or never
         let lowest_owed = if owed > 0 {
             env.required.iter().position(|&count| count > 0)
@@ -13585,7 +13711,7 @@ fn gen_remaining_jumbled_words<
                 let owed = owed - required as usize;
                 if left == 1 {
                     if owed == 0 && node.accepts() {
-                        (env.found_word)(env.word);
+                        env.found.insert(env.word);
                     }
                 } else if owed < left {
                     let next = node.arc_index();
@@ -13611,7 +13737,8 @@ fn gen_remaining_jumbled_words<
     let game_config = &board_snapshot.game_config;
     let dim = game_config.board_layout().dim();
     let PruneBuffers {
-        lone_found,
+        found,
+        kept,
         required,
         lone_takes,
         lone,
@@ -13651,7 +13778,7 @@ fn gen_remaining_jumbled_words<
                                 available: &mut working_buffer.used_letters_tally,
                                 required,
                                 word: &mut working_buffer.exchange_buffer,
-                                found_word: &mut found_word,
+                                found,
                             },
                             root,
                             run,
@@ -13665,35 +13792,16 @@ fn gen_remaining_jumbled_words<
     let longest = dim.rows.max(dim.cols) as usize;
     lone_takes.clear();
     lone_takes.resize(longest, !1);
-    lone_found.clear();
+    kept.clear();
     lone_words(
         board_snapshot.kwg,
         &mut working_buffer.used_letters_tally,
         lone_takes,
         &[(0, longest)],
-        lone_found,
+        found,
+        kept,
         lone,
     );
-    words_in(lone_found).for_each(found_word);
-}
-
-// each word of found (each its length then its letters) once, in ascending
-// order; starts is kept from one prune to the next
-#[inline(always)]
-fn each_word_once(found: &[u8], starts: &mut Vec<u32>, mut found_word: impl FnMut(&[u8])) {
-    let word_at = |start: u32| {
-        let start = start as usize;
-        &found[start + 1..start + 1 + found[start] as usize]
-    };
-    starts.clear();
-    let mut start = 0;
-    while start < found.len() {
-        starts.push(start as u32);
-        start += 1 + found[start] as usize;
-    }
-    starts.sort_unstable_by(|&a, &b| word_at(a).cmp(word_at(b)));
-    starts.dedup_by(|a, b| word_at(*a) == word_at(*b));
-    starts.iter().for_each(|&start| found_word(word_at(start)));
 }
 
 // each word the board can still take: the tiles on it stay, and those not on
@@ -13740,16 +13848,11 @@ fn gen_remaining_words<
             }
         }
     }
+    working_buffer.prune.found.clear();
     if let game_config::GameRules::Jumbled = game_config.game_rules() {
-        // lent to the walk, then put back for the next prune
-        let mut found = std::mem::take(&mut working_buffer.prune.found);
-        found.clear();
-        gen_remaining_jumbled_words(board_snapshot, working_buffer, |word: &[u8]| {
-            found.push(word.len() as u8);
-            found.extend_from_slice(word);
-        });
-        each_word_once(&found, &mut working_buffer.prune.starts, found_word);
-        working_buffer.prune.found = found;
+        gen_remaining_jumbled_words(board_snapshot, working_buffer);
+        let PruneBuffers { found, order, .. } = &mut working_buffer.prune;
+        found.each_kept(|_| true, order, found_word);
         return;
     }
     let rows = dim.rows as usize;
@@ -13760,7 +13863,8 @@ fn gen_remaining_words<
     let available = &mut working_buffer.used_letters_tally[..];
     let PruneBuffers {
         found,
-        starts,
+        kept,
+        order,
         takes,
         has_tiles,
         to_walk,
@@ -13768,7 +13872,7 @@ fn gen_remaining_words<
         letters,
         seen,
         shapes,
-        kept,
+        kept_shapes,
         lone,
         ..
     } = &mut working_buffer.prune;
@@ -13800,9 +13904,9 @@ fn gen_remaining_words<
         tiles_at(start, len).iter().any(|&tile| tile != 0)
     }));
     to_walk.clone_from(has_tiles);
-    // by line, the words of its last walk, each its length then its letters;
-    // each line's is emptied as the line is walked, a line never walked has
-    // none, and lines past these are never read
+    // by line, the words of found its last walk found; each line's is emptied
+    // as the line is walked, a line never walked has none, and lines past
+    // these are never read
     if words.len() < lines {
         words.resize_with(lines, Vec::new);
     }
@@ -13859,7 +13963,8 @@ fn gen_remaining_words<
             walked = true;
             let (start, len) = line_at(line);
             let tiles = tiles_at(start, len);
-            words[line].clear();
+            let bits = &mut words[line];
+            bits.clear();
             prune_line(&mut PruneLine {
                 kwg: board_snapshot.kwg,
                 tiles,
@@ -13867,7 +13972,8 @@ fn gen_remaining_words<
                 available,
                 letters: &mut letters[..len],
                 seen: &mut seen[..len],
-                found: &mut words[line],
+                found,
+                bits,
             });
             for (idx, &letters_seen) in seen[..len].iter().enumerate() {
                 if !beside(tiles, idx) {
@@ -13909,22 +14015,37 @@ fn gen_remaining_words<
         }
     }
     shapes.sort_unstable_by_key(|&(_, len)| std::cmp::Reverse(len));
-    kept.clear();
+    kept_shapes.clear();
     for &(first, len) in shapes.iter() {
         let shape = &takes[first..first + len];
-        if !kept.iter().any(|&(other, _)| {
+        if !kept_shapes.iter().any(|&(other, _)| {
             (shape.iter().zip(&takes[other..])).all(|(&letters, &others)| letters & !others == 0)
         }) {
-            kept.push((first, len));
+            kept_shapes.push((first, len));
         }
     }
-    // every line's words, then the lone words after them
-    found.clear();
-    words[..lines]
-        .iter()
-        .for_each(|words| found.extend_from_slice(words));
-    lone_words(board_snapshot.kwg, available, takes, kept, found, lone);
-    each_word_once(found, starts, found_word);
+    // the lone words, then every line's last walk's words
+    kept.clear();
+    lone_words(
+        board_snapshot.kwg,
+        available,
+        takes,
+        kept_shapes,
+        found,
+        kept,
+        lone,
+    );
+    kept.resize(found.len().div_ceil(64), 0);
+    for bits in &words[..lines] {
+        kept.iter_mut()
+            .zip(bits)
+            .for_each(|(kept, &bits)| *kept |= bits);
+    }
+    found.each_kept(
+        |index| kept[index / 64] & (1 << (index % 64)) != 0,
+        order,
+        found_word,
+    );
 }
 
 // a frozen corpus of every arm's generations, asked every way
