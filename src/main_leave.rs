@@ -5111,8 +5111,18 @@ struct Losses {
     racks: Vec<Vec<bites::Bites>>, // the racks of each tied top play
     tied_keys: Vec<Vec<bites::Bites>>, // the racks of each tied top play
     tied_best: Vec<Option<equity::Equity>>, // best forming none, if exact
-    solved: fash::MyHashMap<Vec<bites::Bites>, equity::Equity>, // by the racks avoided
+    solved: Vec<(usize, equity::Equity)>, // by racks avoided: first tied top play
     move_loss: fash::MyHashMap<bites::Bites, f64>,
+    spare: Vec<Vec<bites::Bites>>, // lists emptied, their memory kept
+}
+
+// a copy of a list, in the memory of a spare one if any
+#[inline(always)]
+fn spare_copy(spare: &mut Vec<Vec<bites::Bites>>, list: &[bites::Bites]) -> Vec<bites::Bites> {
+    let mut copy = spare.pop().unwrap_or_default();
+    copy.clear();
+    copy.extend_from_slice(list);
+    copy
 }
 
 impl Losses {
@@ -5133,8 +5143,9 @@ impl Losses {
             racks: Vec::new(),
             tied_keys: Vec::new(),
             tied_best: Vec::new(),
-            solved: Default::default(),
+            solved: Vec::new(),
             move_loss: Default::default(),
+            spare: Vec::new(),
         }
     }
 
@@ -5157,26 +5168,28 @@ impl Losses {
             top,
             tied: formed,
             tied_best,
+            spare,
             ..
         } = self;
         let top = *top;
-        racks.clear();
+        spare.append(racks);
         for words in formed.iter() {
-            let mut keys = words
-                .iter()
-                .map(|word| {
-                    sorted.clear();
-                    sorted.extend_from_slice(word);
-                    sorted.sort_unstable();
-                    bites::Bites::from(&sorted[..])
-                })
-                .collect::<Vec<_>>();
+            let mut keys = spare.pop().unwrap_or_default();
+            keys.clear();
+            keys.extend(words.iter().map(|word| {
+                sorted.clear();
+                sorted.extend_from_slice(word);
+                sorted.sort_unstable();
+                bites::Bites::from(&sorted[..])
+            }));
             keys.sort_unstable();
             keys.dedup();
             racks.push(keys);
         }
         solved.clear();
-        for ((words, keys), known) in formed.iter().zip(racks.iter()).zip(tied_best.iter()) {
+        for (at, ((words, keys), known)) in
+            (formed.iter().zip(racks.iter()).zip(tied_best.iter())).enumerate()
+        {
             if words.is_empty() {
                 continue;
             }
@@ -5188,8 +5201,8 @@ impl Losses {
             } else if let Some(best) = known.filter(|best| best.is_finite()) {
                 top.raw() as i64 - best.raw() as i64
             } else {
-                let best = match solved.get(keys) {
-                    Some(&best) => best,
+                let best = match solved.iter().find(|&&(other, _)| racks[other] == *keys) {
+                    Some(&(_, best)) => best,
                     None => {
                         let mut shuns = |word: &[u8]| {
                             sorted.clear();
@@ -5215,7 +5228,7 @@ impl Losses {
                             movegen::EquityPredicate::AcceptAll,
                         );
                         let best = seeker.plays[0].equity;
-                        solved.insert(keys.clone(), best);
+                        solved.push((at, best));
                         best
                     }
                 };
@@ -5258,12 +5271,13 @@ impl Losses {
             tied,
             tied_keys,
             tied_best,
+            spare,
             ..
         } = self;
         let jumbled = *jumbled;
         targets.clear();
-        tied.clear();
-        tied_keys.clear();
+        spare.append(tied);
+        spare.append(tied_keys);
         tied_best.clear();
         *top = equity::Equity::NEG_INFINITY;
         let mut floor = *top;
@@ -5354,10 +5368,10 @@ impl Losses {
                         .then_some(*top);
                         *top = equity;
                         first = Some(play.clone());
-                        tied.clear();
-                        tied.push(formed.clone());
-                        tied_keys.clear();
-                        tied_keys.push(keys.clone());
+                        spare.append(tied);
+                        tied.push(spare_copy(spare, formed));
+                        spare.append(tied_keys);
+                        tied_keys.push(spare_copy(spare, keys));
                         tied_best.clear();
                         tied_best.push(best);
                     }
@@ -5373,8 +5387,8 @@ impl Losses {
                             .iter()
                             .any(|other| other.iter().all(|key| !keys.contains(key)))
                             .then_some(*top);
-                        tied.push(formed.clone());
-                        tied_keys.push(keys.clone());
+                        tied.push(spare_copy(spare, formed));
+                        tied_keys.push(spare_copy(spare, keys));
                         tied_best.push(best);
                         for target in targets.iter_mut() {
                             if !forms(target) {
