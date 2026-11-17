@@ -6929,7 +6929,7 @@ fn end_picker<'a, N: kwg::Node, L: kwg::Node>(
 ) -> move_picker::MovePicker<'a, N, L> {
     match endgame {
         EndPicker::Hasty => move_picker::MovePicker::Hasty,
-        EndPicker::Deft => move_picker::MovePicker::Deft(window),
+        EndPicker::Deft => move_picker::MovePicker::Deft(move_picker::Deft::new(window)),
     }
 }
 
@@ -9899,7 +9899,7 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
 ) -> move_picker::MovePicker<'a, N, L> {
     match picker {
         SeatPicker::Hasty => move_picker::MovePicker::Hasty,
-        SeatPicker::Deft => move_picker::MovePicker::Deft(deft_window),
+        SeatPicker::Deft => move_picker::MovePicker::Deft(move_picker::Deft::new(deft_window)),
         SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
         // reseeded before each of its turns, so its first generator is fixed
         // rather than drawn from the system
@@ -11148,10 +11148,10 @@ WCMP_P1_SCORE 402.000000
         ));
         assert!(matches!(
             seat_driver(&mut own, &mut end, true),
-            move_picker::MovePicker::Deft(7)
+            move_picker::MovePicker::Deft(deft) if deft.window() == 7
         ));
         let mut end = Some(end_picker(EndPicker::Hasty, 7));
-        let mut own: Picker = move_picker::MovePicker::Deft(3);
+        let mut own: Picker = move_picker::MovePicker::Deft(move_picker::Deft::new(3));
         assert!(matches!(
             seat_driver(&mut own, &mut end, true),
             move_picker::MovePicker::Hasty
@@ -11159,7 +11159,7 @@ WCMP_P1_SCORE 402.000000
         let mut none: Option<Picker> = None;
         assert!(matches!(
             seat_driver(&mut own, &mut none, true),
-            move_picker::MovePicker::Deft(3)
+            move_picker::MovePicker::Deft(deft) if deft.window() == 3
         ));
     }
 
