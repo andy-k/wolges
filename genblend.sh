@@ -22,6 +22,9 @@ usage 5: (jumbled rules, whose word graph is a .kad)
 options:
   --recipe LIST     board counts for the census, comma separated, each N or KxN
                     (K generations of N boards). Default 3x256,2048.
+  --completion-weights  weight the census by draws after setting aside the
+                    leave.
+  --per-board-centering  center leaves on their own board in the census.
   --weight W        how much of the self-play table to take in the blend: 0 is
                     the census alone, 1 self-play alone. Default 0.5.
   --census-seed S   fix the census's seed. Omitted means the census picks one
@@ -54,6 +57,8 @@ preset="english"
 tiles=""
 jumbled=""
 game_options=()
+completion_weights=false
+per_board_centering=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --)
@@ -63,6 +68,14 @@ while [ "$#" -gt 0 ]; do
     --recipe)
       recipe="${2:?--recipe needs a board count list}"
       shift 2
+      ;;
+    --completion-weights)
+      completion_weights=true
+      shift
+      ;;
+    --per-board-centering)
+      per_board_centering=true
+      shift
       ;;
     --weight)
       weight="${2:?--weight needs a number}"
@@ -188,10 +201,18 @@ generate_subcommand="generate"
 buildlex_subcommand="klv"
 blend_subcommand="blend"
 
+census_options=()
+if [ "$completion_weights" = true ]; then
+  census_options+=(--completion-weights)
+fi
+if [ "$per_board_centering" = true ]; then
+  census_options+=(--per-board-centering)
+fi
+
 # the census stamps its output with the run; copy it to a fixed name
 if [ ! -e census.klv2 ]; then
   time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} \
-    "$census_subcommand" "$kwg" - - "$recipe" ${census_seed:+"$census_seed"}
+    "$census_subcommand" "${census_options[@]}" "$kwg" - - "$recipe" ${census_seed:+"$census_seed"}
   census_file="$(ls -1td census-leaves-*.klv2 2>/dev/null | head -1)"
   if [ ! "$census_file" ]; then
     echo "the census wrote no leave table" >&2
