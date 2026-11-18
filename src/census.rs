@@ -499,6 +499,11 @@ pub trait ApportionSum: Copy {
 
     fn add(&mut self, other: Self);
 
+    fn add_times(&mut self, other: Self, times: u64);
+
+    // this sum over by, which divides it
+    fn divided_exactly(self, by: u64) -> Self;
+
     // the mean, this sum over den, rounded half away from zero
     fn mean(self, den: u64) -> i32;
 }
@@ -514,6 +519,17 @@ impl ApportionSum for i64 {
     #[inline(always)]
     fn add(&mut self, other: Self) {
         *self += other;
+    }
+
+    #[inline(always)]
+    fn add_times(&mut self, other: Self, times: u64) {
+        *self += other * times as i64;
+    }
+
+    #[inline(always)]
+    fn divided_exactly(self, by: u64) -> Self {
+        debug_assert_eq!(self % by as i64, 0);
+        self / by as i64
     }
 
     #[inline(always)]
@@ -533,6 +549,17 @@ impl ApportionSum for i128 {
     #[inline(always)]
     fn add(&mut self, other: Self) {
         *self += other;
+    }
+
+    #[inline(always)]
+    fn add_times(&mut self, other: Self, times: u64) {
+        *self += other * i128::from(times);
+    }
+
+    #[inline(always)]
+    fn divided_exactly(self, by: u64) -> Self {
+        debug_assert_eq!(self % i128::from(by), 0);
+        self / i128::from(by)
     }
 
     #[inline(always)]
@@ -1109,6 +1136,33 @@ pub fn apportion_fused<T: ApportionSum>(
     maxsheet: &mut [i32],
     mode: ApportionMode,
 ) -> bool {
+    apportion_fused_with::<T, false>(lat, add, board, out, maxsheet, mode)
+}
+
+// the shorter leaves' means use the draws conditioned on those tiles being
+// held already. A positive denominator marks a leave some full rack drawn from
+// the pool holds
+#[inline]
+pub fn apportion_fused_completions<T: ApportionSum>(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    board: &ApportionBoard,
+    out: ApportionOut<T>,
+    maxsheet: &mut [i32],
+    mode: ApportionMode,
+) -> bool {
+    apportion_fused_with::<T, true>(lat, add, board, out, maxsheet, mode)
+}
+
+#[inline]
+fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    board: &ApportionBoard,
+    out: ApportionOut<T>,
+    maxsheet: &mut [i32],
+    mode: ApportionMode,
+) -> bool {
     let ApportionBoard {
         sheet,
         leave,
@@ -1191,7 +1245,13 @@ pub fn apportion_fused<T: ApportionSum>(
             }
         }
 
-        fn apportion_rec(&mut self, i: usize, s_idx: usize, w: u64, best: i32) {
+        fn apportion_rec<const COMPLETIONS: bool>(
+            &mut self,
+            i: usize,
+            s_idx: usize,
+            w: u64,
+            best: i32,
+        ) {
             if i == 0 {
                 // the full rack itself keeps its share as its deals (ways)
                 if s_idx < self.lo {
@@ -1202,10 +1262,17 @@ pub fn apportion_fused<T: ApportionSum>(
             }
             let (t, cnt) = self.nz[i - 1];
             let mut idx = s_idx;
+            let mut binom = 1u64;
             for cs in 0..=cnt {
-                self.apportion_rec(i - 1, idx, w, best);
+                // cs physical copies of this letter are kept, so the total
+                // weight at a leave S differs from its completion draw count
+                // only by the fixed number of ways to set S aside
+                self.apportion_rec::<COMPLETIONS>(i - 1, idx, w * binom, best);
                 if cs < cnt {
                     idx = self.add.add(idx, t);
+                    if COMPLETIONS {
+                        binom = binom * (cnt - cs) as u64 / (cs + 1) as u64;
+                    }
                 }
             }
         }
@@ -1213,7 +1280,7 @@ pub fn apportion_fused<T: ApportionSum>(
         // each full rack the pool can draw, its draw ways w: SUM false finds
         // its best (into maxsheet) and its ways, SUM true sums them into its
         // subracks (apportion_rec)
-        fn enum_drawable<const SUM: bool>(
+        fn enum_drawable<const SUM: bool, const COMPLETIONS: bool>(
             &mut self,
             t: usize,
             remaining: usize,
@@ -1224,7 +1291,7 @@ pub fn apportion_fused<T: ApportionSum>(
             if remaining == 0 {
                 if SUM {
                     let best = self.maxsheet[idx];
-                    self.apportion_rec(m, 0, w, best);
+                    self.apportion_rec::<COMPLETIONS>(m, 0, w, best);
                     return;
                 }
                 let best = if self.best_from_maxsheet {
@@ -1248,7 +1315,7 @@ pub fn apportion_fused<T: ApportionSum>(
                 return;
             }
 
-            self.enum_drawable::<SUM>(t + 1, remaining, w, idx, m);
+            self.enum_drawable::<SUM, COMPLETIONS>(t + 1, remaining, w, idx, m);
 
             let nt = self.unseen[t] as u64;
             let cap = nt.min(remaining as u64);
@@ -1258,7 +1325,13 @@ pub fn apportion_fused<T: ApportionSum>(
                 binom = binom * (nt - c + 1) / c;
                 idx_c = self.add.add(idx_c, t);
                 self.nz[m] = (t, c as u8);
-                self.enum_drawable::<SUM>(t + 1, remaining - c as usize, w * binom, idx_c, m + 1);
+                self.enum_drawable::<SUM, COMPLETIONS>(
+                    t + 1,
+                    remaining - c as usize,
+                    w * binom,
+                    idx_c,
+                    m + 1,
+                );
             }
         }
 
@@ -1328,17 +1401,80 @@ pub fn apportion_fused<T: ApportionSum>(
         nz: &mut nz,
         most: 0,
     };
-    ctx.enum_drawable::<false>(0, rack_size, 1, 0, 0);
+    ctx.enum_drawable::<false, COMPLETIONS>(0, rack_size, 1, 0, 0);
     let pool = unseen.iter().map(|&c| c as u64).sum();
-    if !sums_fit::<T>(pool, rack_size, ctx.most, 1) {
+    // how much more than its draw ways a full rack's weight at a leave can be:
+    // the ways to set the leave aside within the rack (apportion_rec), or the
+    // tiles left to complete it, which the zeta sums are divided by
+    // (fill_completion_sums)
+    let factor = if !COMPLETIONS {
+        1
+    } else if zeta {
+        rack_size as u64
+    } else {
+        n_choose_k(rack_size as u64, rack_size as u64 / 2)
+    };
+    if !sums_fit::<T>(pool, rack_size, ctx.most, factor) {
         return false;
     }
-    if zeta {
+    if !zeta {
+        ctx.enum_drawable::<true, COMPLETIONS>(0, rack_size, 1, 0, 0);
+    } else if !COMPLETIONS {
         ctx.fold_zeta(lat.size_start(rack_size.saturating_sub(1)));
-    } else {
-        ctx.enum_drawable::<true>(0, rack_size, 1, 0, 0);
+    } else if suffix_cap[0] as usize >= rack_size {
+        fill_completion_sums(lat, add, ctx.maxsheet, unseen, ctx.num, ctx.den);
     }
     true
+}
+
+// each shorter leave S's sums over its completions, for a pool that can fill a
+// full rack: den the ways to draw the rack's other tiles from the pool less S,
+// C(pool - |S|, rack_size - |S|), and num those ways times each full rack's
+// best (bests). Worked from longer leaves to shorter ones: each next tile t,
+// one of the pool's u_t - s_t left, leads to S + t, and their sums count each
+// completion of S rack_size - |S| times, a factor divided out exactly. A leave
+// the pool cannot hold keeps 0 in both
+#[inline]
+fn fill_completion_sums<T: ApportionSum>(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    bests: &[i32],
+    pool: &[u8],
+    num: &mut [T],
+    den: &mut [u64],
+) {
+    let full_start = lat.full_rack_start();
+    let rack_size = lat.rack_size();
+    assert!(
+        num.len() == full_start
+            && den.len() == full_start
+            && bests.len() == lat.len()
+            && pool.len() == lat.num_letters()
+            && add.made_for(lat)
+    );
+    let pool_size: u64 = pool.iter().map(|&c| u64::from(c)).sum();
+    let mut tally = vec![0u8; lat.num_letters()];
+    for idx in (0..full_start).rev() {
+        lat.unrank_into(idx, &mut tally);
+        if tally.iter().zip(pool).any(|(&s, &p)| s > p) {
+            continue;
+        }
+        let kept: usize = tally.iter().map(|&c| c as usize).sum();
+        for (t, (&p, &s)) in pool.iter().zip(&tally).enumerate() {
+            let count = u64::from(p - s);
+            if count != 0 {
+                let next = add.add(idx, t);
+                if next >= full_start {
+                    num[idx].add_ways_times(count, bests[next]);
+                } else {
+                    let sums = num[next];
+                    num[idx].add_times(sums, count);
+                }
+            }
+        }
+        num[idx] = num[idx].divided_exactly((rack_size - kept) as u64);
+        den[idx] = n_choose_k(pool_size - kept as u64, (rack_size - kept) as u64);
+    }
 }
 
 struct DrawCtx<'a> {
@@ -2102,6 +2238,75 @@ mod tests {
                                 assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn apportion_completions_matches_drawing_the_missing_tiles() {
+        let lat = MultisetLattice::new(3, 3).unwrap();
+        let add = AddTable::new_with_threads(&lat, 1);
+        let full_start = lat.full_rack_start();
+        let leave = vec![0; lat.len()];
+        let mut sheet = vec![UNPLAYABLE.raw(); lat.len()];
+        for (idx, score) in sheet.iter_mut().enumerate().skip(full_start) {
+            *score = (idx as i32 * 101) - 1100;
+        }
+        let tallies: Vec<_> = (0..lat.len()).map(|idx| lat.tally(idx)).collect();
+
+        for pool in [[4, 3, 2], [1, 2, 0], [0, 1, 1]] {
+            for zeta in [false, true] {
+                let mut num = vec![0i64; full_start];
+                let mut den = vec![0u64; full_start];
+                let mut ways = vec![0u64; lat.len() - full_start];
+                let mut best = vec![UNPLAYABLE.raw(); lat.len()];
+                assert!(apportion_fused_completions(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        leave_max: &leave,
+                        unseen: &pool,
+                    },
+                    ApportionOut {
+                        num: &mut num,
+                        den: &mut den,
+                        ways: &mut ways,
+                    },
+                    &mut best,
+                    ApportionMode {
+                        zeta,
+                        null_leave: false,
+                        scatter: false,
+                    },
+                ));
+                for (idx, kept) in tallies.iter().enumerate().take(full_start) {
+                    let mut sum = 0.0;
+                    let mut weight = 0;
+                    for (ridx, rack) in tallies.iter().enumerate().skip(full_start) {
+                        if (0..pool.len()).any(|t| kept[t] > rack[t] || rack[t] > pool[t]) {
+                            continue;
+                        }
+                        let ways: u64 = (0..pool.len())
+                            .map(|t| {
+                                n_choose_k((pool[t] - kept[t]) as u64, (rack[t] - kept[t]) as u64)
+                            })
+                            .product();
+                        sum += ways as f64 * sheet[ridx] as f64;
+                        weight += ways;
+                    }
+                    if weight == 0 {
+                        assert_eq!(den[idx], 0, "{pool:?} {kept:?} zeta={zeta}");
+                    } else {
+                        assert!(den[idx] > 0, "{pool:?} {kept:?} zeta={zeta}");
+                        assert!(
+                            (num[idx] as f64 / den[idx] as f64 - sum / weight as f64).abs() < 1e-9,
+                            "{pool:?} {kept:?} zeta={zeta}",
+                        );
                     }
                 }
             }
