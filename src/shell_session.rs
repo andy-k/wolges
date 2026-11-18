@@ -4975,7 +4975,11 @@ mod tests {
             assert_eq!(second.gcg_text().unwrap(), text);
             second
         };
-        assert!(log_of(&loads_back(&text, &first)).iter().any(|i| i == "end"));
+        assert!(
+            log_of(&loads_back(&text, &first))
+                .iter()
+                .any(|i| i == "end")
+        );
         // with both shown, each rack counts against its player
         run(&mut first, "rack 2 EE").unwrap();
         let text = first.gcg_text().unwrap();
