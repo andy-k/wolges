@@ -63,16 +63,40 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
     field: FieldShape,
     scratch: &mut Vec<movegen::ValuedMove>,
 ) {
-    let max_gen = field.max_gen;
+    gen_simmer_field(
+        filtered_movegen,
+        move_generator,
+        &movegen::GenMovesParams {
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            max_gen: field.max_gen,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        },
+        field.nonplacing_quota,
+        scratch,
+    );
+}
+
+#[inline]
+fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
+    filtered_movegen: &mut move_filter::GenMoves<'_>,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    params: &movegen::GenMovesParams<'_, N, L>,
+    nonplacing_quota: usize,
+    scratch: &mut Vec<movegen::ValuedMove>,
+) {
+    let max_gen = params.max_gen;
     filtered_movegen.gen_moves(
         move_generator,
-        board_snapshot,
-        rack,
-        num_exchanges_by_this_player,
+        params.board_snapshot,
+        params.rack,
+        params.num_exchanges_by_this_player,
         max_gen,
-        None,
+        params.dynamic_leaves,
     );
-    let quota = field.nonplacing_quota.min(max_gen);
+    let quota = nonplacing_quota.min(max_gen);
     let mut held = move_generator
         .plays
         .iter()
@@ -81,20 +105,21 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
     if held >= quota {
         return;
     }
-    let pass_policy =
-        if move_generator.num_tiles_in_bag() < board_snapshot.game_config.exchange_tile_limit() {
-            movegen::PassPolicy::AsACandidate
-        } else {
-            movegen::PassPolicy::OnlyWhenForced
-        };
+    let pass_policy = if move_generator.num_tiles_in_bag()
+        < params.board_snapshot.game_config.exchange_tile_limit()
+    {
+        movegen::PassPolicy::AsACandidate
+    } else {
+        movegen::PassPolicy::OnlyWhenForced
+    };
     std::mem::swap(&mut move_generator.plays, scratch);
-    filtered_movegen.gen_nonplacing_moves(
+    filtered_movegen.gen_nonplacing_moves_with(
         move_generator,
-        board_snapshot,
-        rack,
-        num_exchanges_by_this_player,
-        quota,
-        pass_policy,
+        &movegen::GenMovesParams {
+            max_gen: quota,
+            pass_policy,
+            ..*params
+        },
     );
     let mut held_any = false;
     for candidate in move_generator.plays.drain(..) {
@@ -435,6 +460,7 @@ pub struct Simmer<
     sim_threads: usize,
     decision_seed: u64,
     candidate_scratch: Vec<movegen::ValuedMove>,
+    dynamic_root: Option<klv::DynamicLeavesRef<'a>>,
     prepared_pristine: game_state::GameState,
     quiet: bool,
     decision_t0: Option<std::time::Instant>, // set only when not quiet
@@ -658,6 +684,7 @@ impl<
             sim_threads: params.sim_threads,
             decision_seed,
             candidate_scratch: Vec::new(),
+            dynamic_root: None,
             prepared_pristine: game_state::GameState::new(game_config),
             quiet: params.quiet,
             decision_t0: None,
@@ -678,6 +705,13 @@ impl<
             thread_kept: Vec::new(),
             spare_plays: Vec::new(),
         }
+    }
+
+    // the root's field ranked by exact dynamic leave values; the rollouts keep
+    // the static leaves
+    pub fn with_dynamic_root(mut self, dynamic_leaves: klv::DynamicLeavesRef<'a>) -> Self {
+        self.dynamic_root = Some(dynamic_leaves);
+        self
     }
 
     #[inline(always)]
@@ -2624,13 +2658,18 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
             MovePicker::Simmer(simmer) => {
                 let t0 = (!simmer.quiet).then(std::time::Instant::now);
                 let mut scratch = std::mem::take(&mut simmer.candidate_scratch);
-                gen_simmer_candidates(
+                gen_simmer_field(
                     filtered_movegen,
                     move_generator,
-                    board_snapshot,
-                    rack,
-                    game_state.current_player().num_exchanges,
-                    SIMMER_FIELD,
+                    &movegen::GenMovesParams {
+                        board_snapshot,
+                        rack,
+                        num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                        max_gen: SIMMER_FIELD.max_gen,
+                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: simmer.dynamic_root,
+                    },
+                    SIMMER_FIELD.nonplacing_quota,
                     &mut scratch,
                 );
                 simmer.candidate_scratch = scratch;

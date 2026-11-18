@@ -260,18 +260,29 @@ impl GenMoves<'_> {
         max_gen: usize,
         pass_policy: movegen::PassPolicy,
     ) {
-        let params = movegen::GenMovesParams {
-            board_snapshot,
-            rack,
-            max_gen,
-            num_exchanges_by_this_player,
-            pass_policy,
-            dynamic_leaves: None,
-        };
+        self.gen_nonplacing_moves_with(
+            move_generator,
+            &movegen::GenMovesParams {
+                board_snapshot,
+                rack,
+                max_gen,
+                num_exchanges_by_this_player,
+                pass_policy,
+                dynamic_leaves: None,
+            },
+        );
+    }
+
+    #[inline(always)]
+    pub(crate) fn gen_nonplacing_moves_with<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        move_generator: &mut movegen::KurniaMoveGenerator,
+        params: &movegen::GenMovesParams<'_, N, L>,
+    ) {
         match self {
             Self::Unfiltered => {
                 move_generator.gen_moves_filtered(
-                    &params,
+                    params,
                     movegen::PlacePredicate::RejectAll,
                     klv::AdjustLeave::Identity,
                     movegen::EquityPredicate::AcceptAll,
@@ -280,7 +291,7 @@ impl GenMoves<'_> {
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
                 move_generator.gen_moves_filtered(
-                    &params,
+                    params,
                     movegen::PlacePredicate::RejectAll,
                     klv::AdjustLeave::Scaled {
                         scale: leave_scale,
