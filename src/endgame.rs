@@ -5069,6 +5069,7 @@ impl<
             &limits,
             &mut exact,
             &mut BagTable::default(),
+            self.scoreless,
         );
         self.progress = limits.progress.take();
         value
@@ -5273,6 +5274,7 @@ impl<
         limits: &BagLimits,
         exact: &mut bool,
         memo: &mut BagTable<f32>,
+        scoreless: [u8; 2],
     ) -> error::Returns<equity::Equity> {
         let gc = self.game_config;
         let kwg = self.kwg;
@@ -5302,7 +5304,7 @@ impl<
             placed: &mut Default::default(),
         };
         // where the game's last turn was a pass, the mover's pass answers it
-        let [passes, zeros] = self.scoreless;
+        let [passes, zeros] = scoreless;
         let turn = OneInBagTurn {
             mover: player_idx,
             bag_tile,
@@ -5629,7 +5631,7 @@ impl<
             best = pass_val;
         }
 
-        let exch_zeros = zeros + 1;
+        let exch_zeros = zeros.saturating_add(1);
         let mut seen: u64 = 0; // bitset over rack tile values 0..=63
         for i in 0..racks[mover as usize].len() {
             let r = racks[mover as usize][i];
@@ -6579,6 +6581,7 @@ impl<
         let exchange_memo = &mut progress.exchange_memo;
         // each tile's value to the pass's depth, from the positions the pass
         // has valued already
+        let scoreless = self.scoreless;
         let mut pass = |this: &mut Self| -> error::Returns<(PegResult, Vec<equity::Equity>)> {
             if exchange_memo.0 != limits.depth.get() {
                 *exchange_memo = (limits.depth.get(), BagTable::default());
@@ -6605,7 +6608,7 @@ impl<
                 racks[(mover ^ 1) as usize] = &opp_rack;
                 this.init(board, racks);
                 let v = this
-                    .one_in_bag(mover, bag_tile, limits, &mut exact, memo)?
+                    .one_in_bag(mover, bag_tile, limits, &mut exact, memo, scoreless)?
                     .raw() as f32
                     + score_diff;
                 hypotheses.push((bag_tile, count as u32, to_equity(v)));
@@ -16255,6 +16258,45 @@ mod tests {
             solvev > pass_only,
             "exchange should beat passing: solve={solvev} pass_only={pass_only}"
         );
+    }
+
+    #[test]
+    fn a_clairvoyant_peg_keeps_the_positions_scoreless_turns() {
+        let mut gc = game_config::make_exchange_test_game_config();
+        let game_config::GameConfig::Static(rules) = &mut gc;
+        rules.zeros_can_end_empty_board = true;
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut unseen = vec![0; gc.alphabet().len() as usize];
+        for tile in [0, 8, 20] {
+            // blank, H, and T
+            unseen[tile] = 1;
+        }
+        // the next pass or exchange ends the game. With a blank in the bag we
+        // exchange B for it and win by two against HT.
+        for zeros in [2, u16::MAX] {
+            solver.set_scoreless_turns(0, zeros);
+            let result = solver
+                .solve_peg_one_in_bag_full(
+                    0,
+                    &empty_board(),
+                    &[2, 2], // BB
+                    &unseen,
+                    equity::Equity::ZERO,
+                    &super::Limits::NONE,
+                )
+                .unwrap()
+                .unwrap();
+            let e = equity::Equity::new;
+            assert_eq!(
+                result.hypotheses,
+                [(0, 1, e(2000)), (8, 1, e(-5000)), (20, 1, e(0))]
+            );
+            assert_eq!(result.expected_margin, e(-1000));
+            assert_eq!(result.win_pct, 0.5);
+        }
     }
 
     #[test]
