@@ -2909,7 +2909,7 @@ impl<
         }
     }
 
-    // the cap on player_idx's move from ply, placed, scoring score: by the
+    // the cap on player_idx's move from ply before it is placed: by the
     // highest-scoring play out the node keeps that the move filled no square of
     // the zone of (fills), its score minus that play's score minus twice the
     // rack the mover keeps; with its slot, when no higher than alpha
@@ -2921,17 +2921,27 @@ impl<
         score: f32,
         alpha: f32,
         fills: &zone::Squares,
+        play: &movegen::Play,
     ) -> Option<(usize, f32)> {
         let work_buffer = &self.work_buffer;
         let outs = work_buffer.outs.get(ply)?;
         if outs.of != work_buffer.serials[ply] {
             return None;
         }
-        let kept = 2 * work_buffer.rack_scores[player_idx as usize];
         let k = (outs.slots[..outs.len])
             .iter()
             .position(|out| !out.zone.meets(fills))?;
-        let cap = score - (outs.slots[k].score + kept) as f32;
+        let movegen::Play::Place { word, .. } = play else {
+            return None;
+        };
+        let alphabet = self.game_config.alphabet();
+        let spent: i32 = word
+            .iter()
+            .filter(|&&tile| tile != 0)
+            .map(|&tile| alphabet.scaled_score(held_tile(tile)))
+            .sum();
+        let kept = work_buffer.rack_scores[player_idx as usize] - spent;
+        let cap = score - (outs.slots[k].score + 2 * kept) as f32;
         (cap <= alpha).then_some((k, cap))
     }
 
@@ -4342,25 +4352,24 @@ impl<
                 // since child_alpha <= v <= child_beta,
                 // we set child_alpha = (score - beta)
                 // and child_beta = (score - alpha).
-                let play = self.work_buffer.lists[ply][found].play.clone();
+                let play = &self.work_buffer.lists[ply][found].play;
                 let skip_outs = ply > 0 && depth >= 2;
                 let mut fills = zone::Squares::NONE;
                 // read by the next two plies when they generate
                 if depth >= 2 {
                     if skip_outs {
                         let dim = self.game_config.board_layout().dim();
-                        let fp = zone::footprint(dim, &self.work_buffer.board_tiles, &play);
+                        let fp = zone::footprint(dim, &self.work_buffer.board_tiles, play);
                         self.work_buffer.zones[ply] = zone::zone_lanes(dim, &fp.zone);
                         fills = fp.fills;
                     } else {
-                        self.work_buffer.zones[ply] = self.zone_lanes(&play);
+                        self.work_buffer.zones[ply] = self.zone_lanes(play);
                     }
-                    if let movegen::Play::Place { word, .. } = &play {
+                    if let movegen::Play::Place { word, .. } = play {
                         self.work_buffer.spent[ply] =
                             rack_places(&self.work_buffer.racks[player_idx as usize], word, true);
                     }
                 }
-                self.place(player_idx, &play);
                 // for a move that brings its player to a last tile, its score
                 // plus one_tile_bound caps its value; a cap no higher than
                 // alpha is used as the value in place of the reply's search (an
@@ -4371,16 +4380,24 @@ impl<
                 // reply's search would take that play at that value; a cap no
                 // higher than alpha is used as one_tile_bound's is
                 if skip_outs
-                    && let Some((k, cap)) = self.out_cap(ply, player_idx, score, alpha, &fills)
+                    && let Some((k, cap)) =
+                        self.out_cap(ply, player_idx, score, alpha, &fills, play)
                 {
-                    debug_assert!(self.check_out_skip(ply, player_idx, k, score, cap));
+                    debug_assert!({
+                        let play = play.clone();
+                        self.place(player_idx, &play);
+                        let checked = self.check_out_skip(ply, player_idx, k, score, cap);
+                        self.unplace(player_idx, &play);
+                        checked
+                    });
                     self.work_buffer.out_skips += 1;
-                    self.unplace(player_idx, &play);
                     if self.take_value(i, index, cap) {
                         break;
                     }
                     continue;
                 }
+                let play = play.clone();
+                self.place(player_idx, &play);
                 let bound = if ply > 0
                     && depth >= 2
                     && self.work_buffer.racks[player_idx as usize].len() == 1
