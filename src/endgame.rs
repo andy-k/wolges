@@ -5948,6 +5948,9 @@ impl<
         limits: &Limits,
     ) -> error::Returns<Result<PegResult, PegUnsupported>> {
         let gc = self.game_config;
+        if progress.root_moves.is_some() && one_in_bag_exchange_legal(gc) {
+            return Ok(Err(PegUnsupported::RootMovesNeedCommitted));
+        }
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
@@ -6203,6 +6206,7 @@ impl<
             moves_at,
             part: _,
             estimates: _,
+            root_moves: selected,
             state,
             endgames: _,
             nodes: _,
@@ -6231,9 +6235,18 @@ impl<
             let lists = (|| -> error::Returns<_> {
                 let mut pos = InBag::default();
                 at(opp_rack, bag, &mut pos);
-                let moves = root_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-                    gc, kwg, arm_tables, klv, &mut *mg, &pos, limits,
-                )?;
+                let moves = if let Some(selected) = selected {
+                    let mut moves = list_in_room(limits, selected.plays.len())?;
+                    for play in &selected.plays {
+                        limits.refuse(play_word_len(play))?;
+                        moves.push(play.clone());
+                    }
+                    moves
+                } else {
+                    root_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                        gc, kwg, arm_tables, klv, &mut *mg, &pos, limits,
+                    )?
+                };
                 let n = moves.len();
                 Ok((
                     moves,
@@ -6863,6 +6876,7 @@ impl<
                 unseen: &unseen,
                 tiles: progress.unseen_tally.len(),
                 scoreless: progress.scoreless,
+                root_moves: progress.root_moves.as_ref(),
             },
             progress.score_diff.raw() as f32,
             limits,
@@ -7039,6 +7053,7 @@ impl<
             unseen,
             tiles,
             scoreless,
+            root_moves,
         } = *position;
         let gc = sub.game_config;
         let kwg = sub.kwg;
@@ -7059,48 +7074,66 @@ impl<
             // room. Where it has none the search stops before it starts,
             // nothing kept, and the next step tries again
             let lists = (|| -> error::Returns<_> {
-                let snapshot = movegen::BoardSnapshot {
-                    board_tiles: board,
-                    game_config: gc,
-                    kwg,
-                    anagrams: arm_tables.anagrams(),
-                    rack_lengths: arm_tables.rack_lengths(),
-                    klv,
-                };
-                let pass = movegen::PassPolicy::AsACandidate;
-                let cut = match limits.memory {
-                    None => {
-                        gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-                            &mut *mg, &snapshot, mover_rack, 0, pass,
-                        );
-                        false
+                let moves = if let Some(root_moves) = root_moves {
+                    let mut moves = list_in_room(limits, root_moves.plays.len())?;
+                    for play in &root_moves.plays {
+                        let chosen = match play {
+                            movegen::Play::Exchange { tiles } if tiles.is_empty() => PegMove::Pass,
+                            movegen::Play::Place { word, .. } => {
+                                limits.refuse(word.len())?;
+                                PegMove::Place(play.clone())
+                            }
+                            _ => return Err("root_moves: exchange is unavailable".into()),
+                        };
+                        moves.push(chosen);
                     }
-                    Some(memory) => mg.gen_moves_raw_all_unsorted_held(
-                        &snapshot,
-                        mover_rack,
-                        0,
-                        pass,
-                        movegen::HeldBytes {
-                            held: memory.held,
-                            bytes: memory.bytes,
-                            kept: 0,
-                        },
-                    ),
-                };
-                if cut {
-                    return Err(limits.stop_refused());
-                }
-                let places = (mg.plays.iter())
-                    .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
-                    .count();
-                let n = 1 + places;
-                let mut moves = list_in_room::<PegMove>(limits, n)?;
-                moves.push(PegMove::Pass);
-                for vm in &mg.plays {
-                    if matches!(vm.play, movegen::Play::Place { .. }) {
-                        moves.push(PegMove::Place(vm.play.clone()));
+                    moves
+                } else {
+                    let snapshot = movegen::BoardSnapshot {
+                        board_tiles: board,
+                        game_config: gc,
+                        kwg,
+                        anagrams: arm_tables.anagrams(),
+                        rack_lengths: arm_tables.rack_lengths(),
+                        klv,
+                    };
+                    let pass = movegen::PassPolicy::AsACandidate;
+                    let cut = match limits.memory {
+                        None => {
+                            gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+                                &mut *mg, &snapshot, mover_rack, 0, pass,
+                            );
+                            false
+                        }
+                        Some(memory) => mg.gen_moves_raw_all_unsorted_held(
+                            &snapshot,
+                            mover_rack,
+                            0,
+                            pass,
+                            movegen::HeldBytes {
+                                held: memory.held,
+                                bytes: memory.bytes,
+                                kept: 0,
+                            },
+                        ),
+                    };
+                    if cut {
+                        return Err(limits.stop_refused());
                     }
-                }
+                    let places = (mg.plays.iter())
+                        .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+                        .count();
+                    let n = 1 + places;
+                    let mut moves = list_in_room::<PegMove>(limits, n)?;
+                    moves.push(PegMove::Pass);
+                    for vm in &mg.plays {
+                        if matches!(vm.play, movegen::Play::Place { .. }) {
+                            moves.push(PegMove::Place(vm.play.clone()));
+                        }
+                    }
+                    moves
+                };
+                let n = moves.len();
                 // a run of margins a move, one a tile of the alphabet, for the
                 // pass under way and for the answer
                 let runs = n.saturating_mul(tiles);
@@ -7421,6 +7454,7 @@ pub struct PegProgress {
     unseen_tally: Vec<u8>,
     score_diff: equity::Equity,
     scoreless: [u8; 2],
+    root_moves: Option<RootMoves>,
     committed: PegCommitted,
     clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
     clairvoyant_margins: Vec<equity::Equity>, // its margin a tile, by tile
@@ -7451,6 +7485,7 @@ impl PegProgress {
             unseen_tally: unseen_tally.to_vec(),
             score_diff,
             scoreless: scoreless_counts(scoreless),
+            root_moves: None,
             committed: Default::default(),
             clairvoyant: None,
             clairvoyant_margins: Vec::new(),
@@ -7459,6 +7494,12 @@ impl PegProgress {
             nodes: 0,
             lanes: LanePool::new(),
         }
+    }
+
+    // select the first plays checked for this committed position
+    pub fn with_root_moves(mut self, root_moves: Option<RootMoves>) -> Self {
+        self.root_moves = root_moves;
+        self
     }
 
     // the endgames every solve of the search has searched, and their nodes
@@ -7695,6 +7736,7 @@ impl Iterator for PegHypotheses<'_> {
 pub enum PegUnsupported {
     ExchangeWithoutForcedEnd,
     PassWithoutForcedEnd,
+    RootMovesNeedCommitted,
 }
 
 impl std::fmt::Display for PegUnsupported {
@@ -7709,6 +7751,9 @@ impl std::fmt::Display for PegUnsupported {
                 "no count of scoreless turns ends the game, so passes could go on \
                  for good and this position is not solvable",
             ),
+            PegUnsupported::RootMovesNeedCommitted => {
+                f.write_str("root_moves: choose a committed bag search when exchanges are legal")
+            }
         }
     }
 }
@@ -7790,6 +7835,7 @@ pub struct PegBagProgress {
     moves_at: (Vec<u8>, Vec<u8>), // the whole's first split, the moves made at it
     part: (usize, usize),
     estimates: bool,
+    root_moves: Option<RootMoves>,
     state: PegBagState,
     endgames: u64,
     nodes: u64,
@@ -7874,6 +7920,7 @@ impl PegBagProgress {
             moves_at,
             part: choices.part,
             estimates: choices.estimates,
+            root_moves: None,
             state: Default::default(),
             endgames: 0,
             nodes: 0,
@@ -7886,6 +7933,12 @@ impl PegBagProgress {
     #[inline(always)]
     pub fn part_of(&self) -> (usize, usize) {
         self.part
+    }
+
+    // select the first plays checked for this position
+    pub fn with_root_moves(mut self, root_moves: Option<RootMoves>) -> Self {
+        self.root_moves = root_moves;
+        self
     }
 
     // the endgames its solves searched on the thread solving it, and their
@@ -8328,6 +8381,7 @@ struct PegPosition<'a> {
     unseen: &'a [(u8, u32)],
     tiles: usize,
     scoreless: [u8; 2],
+    root_moves: Option<&'a RootMoves>,
 }
 
 #[inline(always)]
@@ -8957,6 +9011,13 @@ fn each_exchange(
             found(&thrown[..len]);
             more = next_draw(tally, drawn);
         }
+    }
+}
+
+fn play_word_len(play: &movegen::Play) -> usize {
+    match play {
+        movegen::Play::Exchange { tiles } => tiles.len(),
+        movegen::Play::Place { word, .. } => word.len(),
     }
 }
 
@@ -16857,6 +16918,61 @@ mod tests {
             .unwrap();
         let rows = moves_rows(egs, &mut progress, &result, &super::Limits::NONE);
         (result, rows)
+    }
+
+    #[test]
+    fn a_bag_search_can_restrict_only_its_first_play() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mover_rack = [1, 20]; // AT
+        let mut unseen_tally = vec![0; gc.alphabet().len() as usize];
+        for tile in [5, 8, 19, 20] {
+            unseen_tally[tile] += 1;
+        }
+        let position = bag_position(&board, &mover_rack, &unseen_tally, 2, equity::Equity::ZERO);
+        let (whole, _) = solve_peg_rows(&mut egs, position.clone());
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        assert!(whole.exact);
+        assert!(whole.best_move.as_ref().is_some_and(|play| play != &pass));
+        let expected = whole.moves.iter().find(|move_| move_.play == pass).unwrap();
+
+        let mut state = crate::game_state::GameState::new(&gc);
+        state.board_tiles.copy_from_slice(&board);
+        state.players[0].rack.extend_from_slice(&mover_rack);
+        let klv = crate::klv::Klv::<kwg::Node24>::empty().unwrap();
+        let roots = super::RootMoves::checked(
+            &movegen::BoardSnapshot {
+                board_tiles: &board,
+                game_config: &gc,
+                kwg: &kwg,
+                klv: &klv,
+                anagrams: None,
+                rack_lengths: None,
+            },
+            &state,
+            vec![pass.clone()],
+        )
+        .unwrap();
+        let mut progress = super::PegBagProgress::new(position, super::PegBagChoices::WHOLE)
+            .unwrap()
+            .with_root_moves(Some(roots));
+        let selected = egs
+            .resume_peg(&mut progress, &super::Limits::NONE, 1)
+            .unwrap()
+            .unwrap();
+        assert!(selected.exact);
+        assert!(selected.best_move == Some(pass.clone()));
+        assert_eq!(selected.moves.len(), 1);
+        assert!(selected.moves[0].play == pass);
+        assert_eq!(selected.expected_margin, expected.expected_margin);
+        assert_eq!(selected.win_pct, expected.win_pct);
     }
 
     // cells for a bag search's moves and splits that cannot be held (a count
