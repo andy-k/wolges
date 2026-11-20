@@ -4230,19 +4230,39 @@ impl<
             NO_PLAY,
         );
         let mut plays = (work_buffer.lists[0].iter())
-            .map(|candidate| candidate.play.clone())
+            .map(|candidate| {
+                (
+                    candidate.play.clone(),
+                    candidate.valuation,
+                    candidate.plays_out,
+                )
+            })
             .collect::<Vec<_>>();
         if self.allows_pass(true) {
-            plays.push(movegen::Play::Exchange {
-                tiles: [][..].into(),
-            });
+            let last_pass = self.pass_ends_the_line(self.entering());
+            let valuation = if last_pass {
+                self.both_pass_value(player_idx)
+            } else {
+                equity::Equity::ZERO
+            };
+            plays.push((
+                movegen::Play::Exchange {
+                    tiles: [][..].into(),
+                },
+                valuation,
+                last_pass,
+            ));
         }
         prioritize(&mut plays, self.root_priority, |candidate, play| {
-            candidate == play
+            candidate.0 == *play
         });
         let mut valued = Vec::with_capacity(plays.len());
-        for play in plays {
-            let (value, exact) = self.first_move_value(player_idx, &play, limits)?;
+        for (play, valuation, ends) in plays {
+            let (value, exact) = if ends {
+                (Some(valuation), true)
+            } else {
+                self.first_move_value(player_idx, &play, valuation, limits)?
+            };
             valued.push(FirstMove { play, value, exact });
         }
         // a sort that keeps the root's order among equals
@@ -4257,39 +4277,18 @@ impl<
         &mut self,
         player_idx: u8,
         play: &movegen::Play,
+        valuation: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<(Option<equity::Equity>, bool)> {
         self.reset_position();
-        let scoreless = self.entering();
-        // this list keeps no rack places, so two plies down generates whole
-        self.generate_root(player_idx, false);
-        if self.work_buffer.movegen_cut {
-            return Ok((None, false));
-        }
-        let (valuation, after) = match play {
-            movegen::Play::Exchange { .. } => {
-                if self.pass_ends_the_line(scoreless) {
-                    return Ok((Some(self.both_pass_value(player_idx)), true));
-                }
-                (equity::Equity::ZERO, Scoreless::Answering)
-            }
-            movegen::Play::Place { .. } => {
-                let Some(candidate) = self.work_buffer.lists[0]
-                    .iter()
-                    .find(|candidate| candidate.play == *play)
-                else {
-                    return Ok((None, false));
-                };
-                if candidate.plays_out {
-                    return Ok((Some(candidate.valuation), true));
-                }
-                let counted = Scoreless::Counted {
-                    passes: 0,
-                    zeros: 0,
-                };
-                (candidate.valuation, counted)
-            }
+        let after = match play {
+            movegen::Play::Exchange { .. } => Scoreless::Answering,
+            movegen::Play::Place { .. } => Scoreless::Counted {
+                passes: 0,
+                zeros: 0,
+            },
         };
+        self.work_buffer.at_root = false;
         self.place(player_idx, play);
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
