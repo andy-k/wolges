@@ -5,7 +5,7 @@ use super::{equity, error, game_config, movegen};
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "action")]
 pub enum JsonPlay {
     #[serde(rename = "exchange")]
