@@ -4690,13 +4690,16 @@ impl<
     fn root_verdicts(&mut self, player_idx: u8, depth: i8) {
         let work_buffer = &self.work_buffer;
         let alpha = work_buffer.frames[0].node.alpha;
-        let threads = work_buffer.threads;
         let moves = (1..work_buffer.orders[0].len())
             .filter_map(|i| {
                 let candidate = &work_buffer.lists[0][work_buffer.orders[0][i] as u32 as usize];
                 (!candidate.plays_out).then(|| (i, candidate.play.clone(), candidate.valuation))
             })
             .collect::<Vec<_>>();
+        let threads = work_buffer.threads.min(moves.len());
+        if threads < 2 {
+            return;
+        }
         let limits = Limits {
             time: None,
             states: None,
@@ -11594,9 +11597,14 @@ mod tests {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            (egs.solve_within_on_threads(mover, &super::Limits::NONE, threads))
-                .unwrap()
-                .value
+            let solved = egs
+                .solve_within_on_threads(mover, &super::Limits::NONE, threads)
+                .unwrap();
+            assert!(
+                egs.work_buffer.helper_tables.len()
+                    <= egs.work_buffer.orders[0].len().saturating_sub(1)
+            );
+            solved.value
         };
         // and one where a root move beats the first tried by under a point
         let close = random_positions(1100).pop();
