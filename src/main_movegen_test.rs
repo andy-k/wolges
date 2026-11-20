@@ -3,6 +3,7 @@
 use wolges::{alphabet, display, error, fash, game_config, klv, kwg, movegen, return_error};
 
 mod game_args;
+mod movegen_replay;
 
 const LEXICON_LINES: usize = 2;
 
@@ -307,6 +308,7 @@ enum Task {
         about = "generate every case's moves on every arm, every way, and write them as the baseline"
     )]
     Write(Files),
+    Replay(movegen_replay::ReplayArgs),
 }
 
 #[derive(clap::Parser)]
@@ -328,6 +330,7 @@ fn main() -> error::Returns<()> {
     let (check_mode, files) = match &cli.task {
         Task::Check(files) => (true, files),
         Task::Write(files) => (false, files),
+        Task::Replay(args) => return movegen_replay::replay(&cli.game, cli.kbwg, args),
     };
     let kwg_bytes = std::fs::read(&files.kwg)?;
     let klv_bytes = std::fs::read(&files.klv)?;
