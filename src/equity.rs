@@ -63,9 +63,120 @@ impl std::fmt::Debug for Equity {
     }
 }
 
+// a score in whole points, as a play, a rack, or a player has it
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Points(i32);
+
+impl Points {
+    pub const ZERO: Self = Self(0);
+
+    #[inline(always)]
+    pub const fn new(v: i32) -> Self {
+        Self(v)
+    }
+
+    #[inline(always)]
+    pub const fn raw(self) -> i32 {
+        self.0
+    }
+
+    #[inline(always)]
+    pub const fn scaled(self) -> Equity {
+        Equity(self.0 * SCALE)
+    }
+}
+
+impl std::ops::Add for Points {
+    type Output = Self;
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+}
+
+impl std::ops::Sub for Points {
+    type Output = Self;
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+}
+
+impl std::ops::Neg for Points {
+    type Output = Self;
+
+    #[inline(always)]
+    fn neg(self) -> Self {
+        Self(-self.0)
+    }
+}
+
+impl std::ops::Mul<i32> for Points {
+    type Output = Self;
+
+    #[inline(always)]
+    fn mul(self, times: i32) -> Self {
+        Self(self.0 * times)
+    }
+}
+
+impl std::ops::AddAssign for Points {
+    #[inline(always)]
+    fn add_assign(&mut self, other: Self) {
+        self.0 += other.0;
+    }
+}
+
+impl std::ops::SubAssign for Points {
+    #[inline(always)]
+    fn sub_assign(&mut self, other: Self) {
+        self.0 -= other.0;
+    }
+}
+
+impl std::iter::Sum for Points {
+    #[inline(always)]
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        Self(iter.map(|p| p.0).sum())
+    }
+}
+
+impl std::fmt::Display for Points {
+    #[inline(always)]
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, fmt)
+    }
+}
+
+impl std::fmt::Debug for Points {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Equity;
+    use super::{Equity, Points};
+
+    #[test]
+    #[inline]
+    fn points_count_and_print_as_their_integer() {
+        let p = Points::new;
+        assert_eq!(p(7) + p(5), p(12));
+        assert_eq!(p(7) - p(12), p(-5));
+        assert_eq!(-p(3), p(-3));
+        assert_eq!(p(4) * 2, p(8));
+        let mut q = p(1);
+        q += p(9);
+        q -= p(3);
+        assert_eq!(q, p(7));
+        assert_eq!([p(1), p(2), p(3)].into_iter().sum::<Points>(), p(6));
+        assert_eq!(p(32).scaled(), Equity::new(32000));
+        assert_eq!(p(-5).scaled(), Equity::new(-5000));
+        assert_eq!(format!("{} {:4} {:?}", p(-7), p(32), p(0)), "-7   32 0");
+    }
 
     #[test]
     #[inline]
