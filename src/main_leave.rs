@@ -6,9 +6,9 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::glance::{Glance, board_after, glance_at};
 use wolges::infer::{
-    BoardPhase, InferSheet, LnBinom, MoveTiles, SpellPool, SpellTables, WeighScratch, bag_size,
-    build_sheet_spell_once, each_tally_of_size, equity_fuzz, fuzz_ln_weight, infer_sheet_for,
-    move_tiles_and_value, weigh_by_fuzz, weigh_racks,
+    BoardPhase, Carried, Held, InferSheet, LnBinom, MoveTiles, SpellPool, SpellTables,
+    WeighScratch, bag_size, build_sheet_spell_once, each_tally_of_size, equity_fuzz,
+    fuzz_ln_weight, infer_sheet_for, move_tiles_and_value, weigh_by_fuzz, weigh_racks,
 };
 use wolges::simmer::CopyState;
 use wolges::{
@@ -10465,6 +10465,12 @@ fn compare_seats<
                 // the board before the last move, for a sim to infer from
                 // (hasty seats alone read neither it nor the move)
                 let mut last_board = vec![0u8; game_state.board_tiles.len()];
+                // each seat's inference of its opponent, carried to its next,
+                // and the tiles it has put back since, with the next carry's
+                // buffer: emptied at the start of each game
+                let mut carried = vec![Carried::default(); game_config.num_players() as usize];
+                let mut put_back = vec![Vec::new(); game_config.num_players() as usize];
+                let mut next_carried = Carried::default();
 
                 loop {
                     let pair_idx = claimed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -10498,6 +10504,8 @@ fn compare_seats<
                             let seat_swapped = game_in_pair != 0;
                             let mut num_turns = 0u32;
                             let mut last_play: Option<movegen::Play> = None;
+                            carried.iter_mut().for_each(Carried::clear);
+                            put_back.iter_mut().for_each(Vec::clear);
                             if !seat_swapped {
                                 first_game_moves.clear();
                             }
@@ -10534,6 +10542,7 @@ fn compare_seats<
                                         )),
                                     ));
                                 }
+                                let seat = game_state.turn as usize;
                                 let play = if matches!(driver, move_picker::MovePicker::Hasty) {
                                     let params = compare_hasty_params(
                                         &board_snapshot,
@@ -10547,13 +10556,22 @@ fn compare_seats<
                                         &board_snapshot,
                                         &game_state,
                                         &game_state.current_player().rack,
-                                        last_play.as_ref().map(|play| move_picker::LastMove {
-                                            board_before: &last_board,
-                                            play,
-                                        }),
+                                        (
+                                            last_play.as_ref().map(|play| move_picker::LastMove {
+                                                board_before: &last_board,
+                                                play,
+                                                held: Held::Kept(&carried[seat], &put_back[seat]),
+                                            }),
+                                            &mut next_carried,
+                                        ),
                                     )?;
+                                    std::mem::swap(&mut carried[seat], &mut next_carried);
                                     &generator.general.plays[0].play
                                 };
+                                put_back[seat].clear();
+                                if let movegen::Play::Exchange { tiles } = play {
+                                    put_back[seat].extend_from_slice(tiles);
+                                }
                                 last_board.copy_from_slice(&game_state.board_tiles);
                                 last_play = Some(play.clone());
                                 if seat_swapped {
