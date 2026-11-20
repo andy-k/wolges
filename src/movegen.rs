@@ -12638,7 +12638,7 @@ fn rcs_placements<
         } else {
             None
         };
-        let mut kept = std::mem::take(&mut working_buffer.rcs_lanes[at]);
+        let kept = &mut working_buffer.rcs_lanes[at];
         let tiles = if down {
             &working_buffer.transposed_board_tiles[start..end]
         } else {
@@ -12701,7 +12701,7 @@ fn rcs_placements<
             kept.spans.clear();
             kept.multipliers.clear();
             RcsGeometry {
-                kept: &mut kept,
+                kept,
                 multi_jumps: &jumps,
                 tiles,
                 allowed,
@@ -12743,7 +12743,7 @@ fn rcs_placements<
             min_played,
         });
         rcs_lane_placements(
-            &kept,
+            kept,
             allowed,
             rack_bits,
             rack_tiles,
@@ -12757,7 +12757,6 @@ fn rcs_placements<
             lane,
             found_placements,
         );
-        working_buffer.rcs_lanes[at] = kept;
     }
     // a lane this turn passed by keeps its mark for the turn that walks it
     working_buffer.rcs_stale_rows = stale_rows;
