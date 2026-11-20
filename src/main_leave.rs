@@ -1191,8 +1191,9 @@ fn run(
                             "--racks reads one table, for seats with the same leaves".to_string()
                         );
                     }
-                    let klv = read_klv(&game_config, &a.klv0)?
-                        .with_racks(racks::RackTable::read(&game_config, &read_input(racks)?)?);
+                    let klv = read_klv(&game_config, &a.klv0)?.with_racks(
+                        racks::RackTable::from_bytes_alloc(&game_config, read_input(racks)?)?,
+                    );
                     let klv = std::sync::Arc::new(klv);
                     (std::sync::Arc::clone(&klv), klv)
                 }
