@@ -899,6 +899,8 @@ pub struct InferTables {
     weigh: WeighScratch,
     ways: Vec<u64>,
     keeps: KeepScratch,
+    held: HeldScratch,
+    carry: CarryScratch,
 }
 
 // the scratch an exchange's keeps are summed in: a rack, a keep, the tiles
@@ -941,6 +943,8 @@ impl InferTables {
             weigh: WeighScratch::new(),
             ways: Vec::new(),
             keeps: KeepScratch::default(),
+            held: HeldScratch::default(),
+            carry: CarryScratch::default(),
         })
     }
 }
@@ -1073,6 +1077,606 @@ impl PackedLeaves {
     }
 }
 
+// what the watcher knew of the mover's rack before its move: nothing, so that
+// it is any rack the unseen tiles could make, or what the inference of the
+// mover's last move carried, with the tiles the watcher has put back in the
+// bag since (those it exchanged)
+#[derive(Clone, Copy)]
+pub enum Held<'a> {
+    Any,
+    Kept(&'a Carried, &'a [u8]),
+}
+
+// what the inference of a move carries to the mover's next: the tiles unseen
+// just after the move, as a tally, and a weight for each set of size tiles, by
+// its place among those sets, the weights summing to 1, a rack's chance then
+// being, over each set it holds, its weight times the chance the rest is drawn
+// from the pool less it. A placement or a pass carries the leaves the mover
+// may have kept; an exchange, each rack the mover may hold after its draw,
+// which came from a bag without the tiles thrown back. Nothing is carried
+// where nothing was weighed
+#[derive(Clone, Default)]
+pub struct Carried {
+    pool: Vec<u8>,
+    size: usize,
+    weights: Vec<f64>,
+}
+
+impl Carried {
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.weights.is_empty()
+    }
+
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.pool.clear();
+        self.size = 0;
+        self.weights.clear();
+    }
+}
+
+// the scratch a carried prior is taken in: what the watcher has drawn since
+// the mover's last move, a rack, its letters with their counts, a set's count
+// of each, and the terms of the sum
+#[derive(Default)]
+struct HeldScratch {
+    drawn: Vec<u8>,
+    rack: Vec<u8>,
+    items: Vec<(u8, u8)>,
+    kept: Vec<u8>,
+    terms: Vec<f64>,
+}
+
+// set the scratch up for the racks to be weighed from what was carried: false,
+// leaving it unread, where nothing was carried or what is unseen now could not
+// have come from the carried pool (the watcher's draws since are that pool
+// with the tiles put back, less what is unseen now), so that each rack is
+// weighed as any the unseen tiles could make
+#[inline]
+fn hold((carried, put_back): (&Carried, &[u8]), unseen: &[u8], held: &mut HeldScratch) -> bool {
+    if carried.weights.is_empty() || carried.pool.len() != unseen.len() {
+        return false;
+    }
+    held.drawn.clear();
+    held.drawn.extend_from_slice(&carried.pool);
+    for &tile in put_back {
+        match held.drawn.get_mut(tile as usize) {
+            Some(count) => *count += 1,
+            None => return false,
+        }
+    }
+    for (drawn, &now) in held.drawn.iter_mut().zip(unseen) {
+        match drawn.checked_sub(now) {
+            Some(left) => *drawn = left,
+            None => return false,
+        }
+    }
+    held.rack.clear();
+    held.rack.resize(unseen.len(), 0);
+    true
+}
+
+// the log of the chance the mover holds this rack (a tally, the lattice's rank
+// of it given): over each carried set of size it holds, its weight times the
+// chance the rest was drawn from the carried pool less that set, all times the
+// chance the watcher then drew what it drew from what the rack and those draws
+// left; minus infinity where none could be
+#[inline]
+fn held_ln_prior(
+    lat: &census::MultisetLattice,
+    ln_binom: &LnBinom,
+    carried: &Carried,
+    held: &mut HeldScratch,
+    rank: u32,
+) -> f64 {
+    let HeldScratch {
+        drawn,
+        rack,
+        items,
+        kept,
+        terms,
+    } = held;
+    let (pool, size) = (&carried.pool, carried.size);
+    lat.unrank_into(rank as usize, rack);
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let rack_size: usize = rack.iter().map(|&c| c as usize).sum();
+    let drawn_size: usize = drawn.iter().map(|&c| c as usize).sum();
+    if rack_size < size || rack_size + drawn_size > pool_size {
+        return f64::NEG_INFINITY;
+    }
+    let mut ln_drawn = -ln_binom.ln_binom(pool_size - rack_size, drawn_size);
+    for ((&r, &d), &u) in rack.iter().zip(drawn.iter()).zip(pool.iter()) {
+        if r + d > u {
+            return f64::NEG_INFINITY;
+        }
+        if d > 0 {
+            ln_drawn += ln_binom.ln_binom((u - r) as usize, d as usize);
+        }
+    }
+    items.clear();
+    items.extend(
+        (0u8..)
+            .zip(rack.iter())
+            .filter(|&(_, &count)| count > 0)
+            .map(|(letter, &count)| (letter, count)),
+    );
+    let ln_draws = ln_binom.ln_binom(pool_size - size, rack_size - size);
+    let start = lat.size_start(size);
+    kept.clear();
+    kept.resize(items.len(), 0);
+    terms.clear();
+    each_sub_tally(items, 0, size, kept, &mut |kept| {
+        let weight = carried.weights[lat.rank_sparse_iter(
+            size,
+            (items.iter().zip(kept))
+                .filter(|&(_, &k)| k > 0)
+                .map(|(&(letter, _), &k)| (letter, k)),
+        ) as usize
+            - start];
+        if weight <= 0.0 {
+            return;
+        }
+        let ln_drew = (items.iter().zip(kept))
+            .map(|(&(letter, r), &k)| {
+                ln_binom.ln_binom((pool[letter as usize] - k) as usize, (r - k) as usize)
+            })
+            .sum::<f64>();
+        terms.push(weight.ln() + ln_drew - ln_draws);
+    });
+    let top = terms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if top == f64::NEG_INFINITY {
+        return top;
+    }
+    top + terms
+        .iter()
+        .map(|&term| (term - top).exp())
+        .sum::<f64>()
+        .ln()
+        + ln_drawn
+}
+
+// every sub-tally of left tiles of the items (letter, count) from the one at i
+// on, to f as the count kept of each item, in the items' order
+#[inline]
+fn each_sub_tally(
+    items: &[(u8, u8)],
+    i: usize,
+    left: usize,
+    kept: &mut [u8],
+    f: &mut impl FnMut(&[u8]),
+) {
+    if i == items.len() {
+        if left == 0 {
+            f(kept);
+        }
+        return;
+    }
+    let rest = items[i + 1..]
+        .iter()
+        .map(|&(_, c)| c as usize)
+        .sum::<usize>();
+    for c in left.saturating_sub(rest)..=(items[i].1 as usize).min(left) {
+        kept[i] = c as u8;
+        each_sub_tally(items, i + 1, left - c, kept, f);
+    }
+    kept[i] = 0;
+}
+
+// every keep of left tiles inside a set of a rack's tiles, from item i of the
+// rack's items (letter, count) on, the set given as its count of each item
+// with what the counts after each come to, in each_sub_tally's order: f(the
+// keep's place by the strides, the ways to pick the rest of the set out of the
+// rack less the keep). Made an item at a time, the ways multiplied in the
+// items' order, as a product of them all would be
+#[inline]
+fn each_keep_in(
+    (items, set, after): (&[(u8, u8)], &[u8], &[usize]),
+    (strides, binoms, ways_of): (&[usize], &[f64], usize),
+    i: usize,
+    left: usize,
+    (place, ways): (usize, f64),
+    f: &mut impl FnMut(usize, f64),
+) {
+    if i == items.len() {
+        if left == 0 {
+            f(place, ways);
+        }
+        return;
+    }
+    let (r, w) = (items[i].1 as usize, set[i] as usize);
+    for k in left.saturating_sub(after[i + 1])..=w.min(left) {
+        each_keep_in(
+            (items, set, after),
+            (strides, binoms, ways_of),
+            i + 1,
+            left - k,
+            (
+                place + k * strides[i],
+                ways * binoms[(r - k) * ways_of + (w - k)],
+            ),
+            f,
+        );
+    }
+}
+
+// the scratch an exchange's carry is made in: the ways to pick a few of a few,
+// how many tiles the pool holds from each letter on, and a tally
+#[derive(Default)]
+struct CarryScratch {
+    binoms: Vec<f64>,
+    cap: Vec<usize>,
+    cur: Vec<u8>,
+}
+
+// what one chunk of an exchange's racks adds to its carry (carry_exchange says
+// what): each set's signed sum by its rank, in rank order, each sum's terms
+// added in the order of the racks and of each rack's sets; and the sum of the
+// chunk's keeps' weights
+#[inline]
+fn carry_chunk(
+    lat: &census::MultisetLattice,
+    (leave, binoms): (&[i32], &[f64]),
+    racks: &[(u32, i32, f64)],
+    (keep, g0, fuzz): (usize, i32, f64),
+    parts: &mut Vec<(u32, f64)>,
+    spare: &mut Vec<(u32, f64)>,
+) -> f64 {
+    let rack_size = lat.rack_size();
+    let ways_of = rack_size + 1;
+    let mut rack = vec![0u8; lat.num_letters()];
+    let (mut items, mut strides, mut by_place) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut set, mut after, mut kept) = (Vec::new(), Vec::new(), Vec::new());
+    let mut total = 0.0;
+    parts.clear();
+    for &(rank, best, ln_prior) in racks {
+        lat.unrank_into(rank as usize, &mut rack);
+        items.clear();
+        items.extend(
+            (0u8..)
+                .zip(rack.iter())
+                .filter(|&(_, &count)| count > 0)
+                .map(|(letter, &count)| (letter, count)),
+        );
+        strides.clear();
+        let mut places = 1;
+        for &(_, count) in items.iter() {
+            strides.push(places);
+            places *= count as usize + 1;
+        }
+        by_place.clear();
+        by_place.resize(places, 0.0);
+        let place = |counts: &[u8]| -> usize {
+            (counts.iter().zip(strides.iter()))
+                .map(|(&count, &stride)| count as usize * stride)
+                .sum()
+        };
+        let prior = ln_prior.exp();
+        kept.clear();
+        kept.resize(items.len(), 0);
+        each_sub_tally(&items, 0, keep, &mut kept, &mut |kept| {
+            let rank = lat.rank_sparse_iter(
+                keep,
+                (items.iter().zip(kept))
+                    .filter(|&(_, &k)| k > 0)
+                    .map(|(&(letter, _), &k)| (letter, k)),
+            );
+            let weight = prior * fuzz_ln_weight(best - leave[rank as usize], g0, fuzz).exp();
+            by_place[place(kept)] = weight;
+            total += weight;
+        });
+        set.clear();
+        set.resize(items.len(), 0);
+        for size in keep..=rack_size {
+            let away = (size - keep) % 2 == 1;
+            each_sub_tally(&items, 0, size, &mut set, &mut |set| {
+                after.clear();
+                after.resize(set.len() + 1, 0);
+                for i in (0..set.len()).rev() {
+                    after[i] = after[i + 1] + set[i] as usize;
+                }
+                let mut sum = 0.0;
+                each_keep_in(
+                    (&items, set, &after),
+                    (&strides, binoms, ways_of),
+                    0,
+                    keep,
+                    (0, 1.0),
+                    &mut |place, ways| sum += by_place[place] * ways,
+                );
+                if sum != 0.0 {
+                    let rank = lat.rank_sparse_iter(
+                        size,
+                        (items.iter().zip(set))
+                            .filter(|&(_, &w)| w > 0)
+                            .map(|(&(letter, _), &w)| (letter, w)),
+                    );
+                    parts.push((rank, if away { -sum } else { sum }));
+                }
+            });
+        }
+    }
+    sort_by_rank(lat, keep, parts, spare);
+    parts.dedup_by(|later, earlier| {
+        if later.0 == earlier.0 {
+            earlier.1 += later.1;
+            true
+        } else {
+            false
+        }
+    });
+    total
+}
+
+// the parts in rank order, those of one rank in the order they came: a stable
+// sort by the rank less the first of the keep's size, in two passes, each over
+// half the bits the ranks from there to the full racks' take, the low half
+// first: each pass counts its digit's values, then deals the parts out in
+// order
+#[inline]
+fn sort_by_rank(
+    lat: &census::MultisetLattice,
+    keep: usize,
+    parts: &mut Vec<(u32, f64)>,
+    spare: &mut Vec<(u32, f64)>,
+) {
+    let start = lat.size_start(keep);
+    let span = lat.size_start(lat.rack_size() + 1) - start;
+    let bits = usize::BITS - span.saturating_sub(1).leading_zeros();
+    let low = bits / 2;
+    let mut counts = Vec::new();
+    for (shift, width) in [(0, low), (low, bits - low)] {
+        let mask = (1usize << width) - 1;
+        counts.clear();
+        counts.resize(1 << width, 0usize);
+        for &(rank, _) in parts.iter() {
+            counts[((rank as usize - start) >> shift) & mask] += 1;
+        }
+        let mut at = 0;
+        for count in &mut counts {
+            let n = *count;
+            *count = at;
+            at += n;
+        }
+        spare.resize(parts.len(), (0, 0.0));
+        for &part in parts.iter() {
+            let next = &mut counts[((part.0 as usize - start) >> shift) & mask];
+            spare[*next] = part;
+            *next += 1;
+        }
+        std::mem::swap(parts, spare);
+    }
+}
+
+// a round's parts (carry_chunk's, in the chunks' order) added into weights,
+// whose first is the rank start: on the threads, each a span of the ranks of
+// its own, so that every weight takes its values in the parts' order on any
+// number of threads
+#[inline]
+fn add_parts(weights: &mut [f64], start: usize, parts: &[Vec<(u32, f64)>], threads: usize) {
+    if threads <= 1 || parts.len() <= 1 {
+        for part in parts {
+            for &(rank, value) in part {
+                weights[rank as usize - start] += value;
+            }
+        }
+        return;
+    }
+    let span = weights.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        for (lo, slice) in (start..).step_by(span).zip(weights.chunks_mut(span)) {
+            s.spawn(move || {
+                let hi = lo + slice.len();
+                for part in parts {
+                    let from = part.partition_point(|&(rank, _)| (rank as usize) < lo);
+                    let to = part.partition_point(|&(rank, _)| (rank as usize) < hi);
+                    for &(rank, value) in &part[from..to] {
+                        slice[rank as usize - lo] += value;
+                    }
+                }
+            });
+        }
+    });
+}
+
+// what an exchange keeping keep tiles carries, from the racks it weighed (as
+// weights_by_keep takes them) and the tiles unseen before it: the chance of
+// each rack after the draw, which came before the tiles thrown back went in.
+// Each set from the keep's size to the rack's takes, over every rack holding
+// it and every keep of that rack inside it, the keep's weight times the ways
+// to pick the rest of the set out of the tiles thrown back, taken away where
+// that rest is of an odd count, all times the ways to draw up a rack from the
+// pool less the set over those to draw the thrown tiles' count from the bag;
+// then each set is drawn up to a rack a tile at a time. Made on this many
+// threads
+#[inline]
+fn carry_exchange(
+    lat: &census::MultisetLattice,
+    (leave, ln_binom): (&[i32], &LnBinom),
+    racks: &[(u32, i32, f64)],
+    (keep, g0, fuzz): (usize, i32, f64),
+    (pool, threads): (&[u8], usize),
+    scratch: &mut CarryScratch,
+    carried: &mut Carried,
+) {
+    // a wasm build has no threads
+    let threads = if cfg!(target_family = "wasm") {
+        1
+    } else {
+        threads.max(1)
+    };
+    let CarryScratch { binoms, cap, cur } = scratch;
+    let rack_size = lat.rack_size();
+    let num_letters = lat.num_letters();
+    let start = lat.size_start(keep);
+    let weights = &mut carried.weights;
+    weights.clear();
+    weights.resize(lat.size_start(rack_size + 1) - start, 0.0);
+    let ways_of = rack_size + 1;
+    binoms.clear();
+    binoms.extend((0..ways_of * ways_of).map(|i| binom(i / ways_of, i % ways_of) as f64));
+    let binoms = &binoms[..];
+    // the racks in chunks of as many as weigh_racks first spreads over
+    // threads, each made into its parts on whichever thread, and the parts
+    // added in the chunks' order, so that the carry is the same on any number
+    // of threads
+    let mut total = 0.0;
+    let (mut lists, mut spares, mut sums) = (
+        vec![Vec::new(); threads],
+        vec![Vec::new(); threads],
+        vec![0.0; threads],
+    );
+    let chunks = racks.chunks(WEIGH_ACROSS_THREADS_FROM).collect::<Vec<_>>();
+    for round in chunks.chunks(threads) {
+        if let [chunk] = round {
+            sums[0] = carry_chunk(
+                lat,
+                (leave, binoms),
+                chunk,
+                (keep, g0, fuzz),
+                &mut lists[0],
+                &mut spares[0],
+            );
+        } else {
+            std::thread::scope(|s| {
+                let each = round.iter().zip(lists.iter_mut().zip(spares.iter_mut()));
+                for ((chunk, (list, spare)), sum) in each.zip(sums.iter_mut()) {
+                    s.spawn(move || {
+                        // the lists grow on this thread's own stack: they lie
+                        // side by side, and a push to one would take the cache
+                        // line its neighbors' threads push through
+                        let (mut taken, mut taken_spare) =
+                            (std::mem::take(list), std::mem::take(spare));
+                        *sum = carry_chunk(
+                            lat,
+                            (leave, binoms),
+                            chunk,
+                            (keep, g0, fuzz),
+                            &mut taken,
+                            &mut taken_spare,
+                        );
+                        (*list, *spare) = (taken, taken_spare);
+                    });
+                }
+            });
+        }
+        add_parts(weights, start, &lists[..round.len()], threads);
+        for sum in &sums[..round.len()] {
+            total += sum;
+        }
+    }
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let ln_bag = ln_binom.ln_binom(pool_size - rack_size, rack_size - keep);
+    for size in keep..=rack_size {
+        let scale = (ln_binom.ln_binom(pool_size - size, rack_size - size) - ln_bag).exp() / total;
+        let (from, to) = (
+            lat.size_start(size) - start,
+            lat.size_start(size + 1) - start,
+        );
+        for weight in &mut weights[from..to] {
+            *weight *= scale;
+        }
+    }
+    // what reaches a set of one more tile is its own weight and, over each
+    // tile it holds, what reached the set without it times the chance that
+    // tile was drawn next; a size's sets on the threads, cut by the counts of
+    // their first letters as weigh_racks cuts its racks, each set's sum its
+    // own whichever thread makes it. The lattice orders a size's sets by the
+    // count of each letter in turn, so the sets of a prefix are a span of
+    // ranks, from the one with the rest of the tiles in the last letter to the
+    // one with them in the letter after the prefix: each prefix writes its own
+    // span in place, from the sizes below it, which are made
+    cap.clear();
+    cap.resize(num_letters + 1, 0);
+    for t in (0..num_letters).rev() {
+        cap[t] = cap[t + 1] + pool[t] as usize;
+    }
+    let cap = &cap[..];
+    cur.clear();
+    cur.resize(num_letters, 0);
+    let mut prefixes: Vec<(Vec<u8>, usize)> = Vec::new();
+    for size in keep + 1..=rack_size {
+        let left = (pool_size - (size - 1)) as f64;
+        let mut k = 1;
+        loop {
+            prefixes.clear();
+            each_prefix_of_size(pool, cap, 0, k, size, cur, &mut |prefix, rest| {
+                prefixes.push((prefix.to_vec(), rest));
+            });
+            if prefixes.len() >= threads * CHUNKS_A_THREAD || k >= num_letters {
+                break;
+            }
+            k += 1;
+        }
+        let from = lat.size_start(size);
+        let (below, above) = weights.split_at_mut(from - start);
+        let below = &*below;
+        let mut rest_of = &mut above[..lat.size_start(size + 1) - from];
+        let mut at = from;
+        let mut jobs = Vec::with_capacity(prefixes.len());
+        for one in &prefixes {
+            let (prefix, rest) = one;
+            let held = (0u8..)
+                .zip(prefix.iter().copied())
+                .filter(|&(_, count)| count > 0);
+            let first = lat.rank_sparse_iter(size, held.clone()) as usize;
+            let last = if *rest > 0 && k < num_letters {
+                lat.rank_sparse_iter(size, held.chain([(k as u8, *rest as u8)])) as usize
+            } else {
+                first
+            };
+            let (_, tail) = std::mem::take(&mut rest_of).split_at_mut(first - at);
+            let (span, tail) = tail.split_at_mut(last + 1 - first);
+            rest_of = tail;
+            at = last + 1;
+            jobs.push((one, first, span));
+        }
+        let walk = |job: &mut (&(Vec<u8>, usize), usize, &mut [f64])| {
+            let ((prefix, rest), first, span) = job;
+            let mut tally = vec![0u8; num_letters];
+            tally[..k].copy_from_slice(prefix);
+            let mut items = Vec::new();
+            each_tally_of_size(pool, cap, k, *rest, &mut tally, &mut |set| {
+                items.clear();
+                items.extend(
+                    (0u8..)
+                        .zip(set)
+                        .filter(|&(_, &count)| count > 0)
+                        .map(|(letter, &count)| (letter, count)),
+                );
+                let mut sum = 0.0;
+                for (i, &(letter, count)) in items.iter().enumerate() {
+                    let without = (items.iter().enumerate())
+                        .map(|(j, &(l, c))| (l, if j == i { c - 1 } else { c }))
+                        .filter(|&(_, c)| c > 0);
+                    sum += below[lat.rank_sparse_iter(size - 1, without) as usize - start]
+                        * (pool[letter as usize] - count + 1) as f64;
+                }
+                span[lat.rank_sparse_iter(size, items.iter().copied()) as usize - *first] +=
+                    sum / left;
+            });
+        };
+        for round in jobs.chunks_mut(threads) {
+            if let [one] = round {
+                walk(one);
+            } else {
+                let walk = &walk;
+                std::thread::scope(|s| {
+                    for job in round.iter_mut() {
+                        s.spawn(move || walk(job));
+                    }
+                });
+            }
+        }
+    }
+    let full = lat.size_start(rack_size) - start;
+    weights.copy_within(full.., 0);
+    weights.truncate(weights.len() - full);
+    carried.pool.clear();
+    carried.pool.extend_from_slice(pool);
+    carried.size = rack_size;
+}
+
 // the leaves the mover could have kept, inferred from their move, each with its
 // weight (not normalized). The board is the one before the move, and the pool
 // is what the watcher could not see then: the tiles not on that board, less the
@@ -1163,9 +1767,9 @@ fn kept_leaves_impl<
         move_generator,
         board_snapshot,
         watcher_rack,
-        play,
+        (play, Held::Any),
         InferOptions { fuzz, threads },
-        &mut leaves,
+        (&mut leaves, None),
     )?;
     Ok((0..leaves.len())
         .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
@@ -1195,9 +1799,9 @@ pub fn kept_leaves_packed<
         move_generator,
         board_snapshot,
         watcher_rack,
-        play,
+        (play, Held::Any),
         InferOptions { fuzz, threads },
-        &mut leaves,
+        (&mut leaves, None),
     )?;
     Ok(leaves)
 }
@@ -1230,9 +1834,39 @@ pub fn kept_leaves_packed_into<
         move_generator,
         board_snapshot,
         watcher_rack,
-        play,
+        (play, Held::Any),
         options,
-        leaves,
+        (leaves, None),
+    )
+}
+
+// as kept_leaves_packed_into, each rack weighed from what the watcher knew
+// before the move, and where carried is given, what the mover's next inference
+// is to start from left in it
+#[inline]
+pub fn kept_leaves_carried_into<
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    tables: &mut InferTables,
+    move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    watcher_rack: &[u8],
+    (play, held): (&movegen::Play, Held<'_>),
+    options: InferOptions,
+    (leaves, carried): (&mut PackedLeaves, Option<&mut Carried>),
+) -> error::Returns<()> {
+    kept_leaves_packed_impl::<false, _, _, _, JUMPS, ANY_SIDE>(
+        tables,
+        move_generator,
+        board_snapshot,
+        watcher_rack,
+        (play, held),
+        options,
+        (leaves, carried),
     )
 }
 
@@ -1259,9 +1893,9 @@ pub fn kept_leaves_packed_lean<
         move_generator,
         board_snapshot,
         watcher_rack,
-        play,
+        (play, Held::Any),
         InferOptions { fuzz, threads },
-        &mut leaves,
+        (&mut leaves, None),
     )?;
     Ok(leaves)
 }
@@ -1279,11 +1913,14 @@ fn kept_leaves_packed_impl<
     move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
-    play: &movegen::Play,
+    (play, held): (&movegen::Play, Held<'_>),
     InferOptions { fuzz, threads }: InferOptions,
-    leaves: &mut PackedLeaves,
+    (leaves, mut carried): (&mut PackedLeaves, Option<&mut Carried>),
 ) -> error::Returns<()> {
     leaves.clear();
+    if let Some(carried) = carried.as_deref_mut() {
+        carried.clear();
+    }
     let game_config = board_snapshot.game_config;
     let board_tiles = board_snapshot.board_tiles;
     let num_letters = game_config.alphabet().len() as usize;
@@ -1305,6 +1942,8 @@ fn kept_leaves_packed_impl<
         tiles: leave_tiles,
         weigh,
         keeps,
+        held: held_scratch,
+        carry: carry_scratch,
         ..
     } = tables;
     game_config.tiles_off_board_into(board_tiles, pool)?;
@@ -1349,6 +1988,22 @@ fn kept_leaves_packed_impl<
             racks.push((rank, gap + leave[kept as usize], ln_prior));
         }
         None => racks.push((kept, gap, ln_prior)),
+    };
+    // where the watcher carried what it knew from the mover's last move, each
+    // rack's chance is taken from that in place of its chance as any rack the
+    // unseen tiles could make, and a rack that could not be held is dropped
+    let carried_from = match held {
+        Held::Kept(from, put_back) if hold((from, put_back), pool, held_scratch) => Some(from),
+        _ => None,
+    };
+    let mut add = |rank: u32, ln_prior: f64, gap: i32, kept: u32| {
+        let ln_prior = match carried_from {
+            Some(from) => held_ln_prior(lat, ln_binom, from, held_scratch, rank),
+            None => ln_prior,
+        };
+        if ln_prior != f64::NEG_INFINITY {
+            add(rank, ln_prior, gap, kept);
+        }
     };
     // the racks the move could have come from: few, when it leaves few tiles
     // unseen, and then each is generated on the board in place of the sheet
@@ -1432,6 +2087,41 @@ fn kept_leaves_packed_impl<
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
         );
         leaves.push(leave_tiles, weight)?;
+    }
+    // a placement or a pass carries its leaves on, with the tiles unseen after
+    // it, which the mover's draw came from; an exchange, whose draw came
+    // before the tiles thrown back went in, carries what carry_exchange makes
+    // of its racks (but the lean arm's, which weighs one keep a rack)
+    if let Some(carried) = carried
+        && !weighed.is_empty()
+    {
+        match (exchanged, keep) {
+            (None, _) => {
+                let total = weighed.iter().map(|&(_, _, weight)| weight).sum::<f64>();
+                carried
+                    .pool
+                    .extend(pool.iter().zip(placed.iter()).map(|(&u, &p)| u - p));
+                let size = rack_size - placed.iter().map(|&c| c as usize).sum::<usize>();
+                let start = lat.size_start(size);
+                carried.size = size;
+                carried
+                    .weights
+                    .resize(lat.size_start(size + 1) - start, 0.0);
+                for &(rank, _, weight) in weighed.iter() {
+                    carried.weights[rank as usize - start] += weight / total;
+                }
+            }
+            (Some(n), Some(keep)) if bag >= n => carry_exchange(
+                lat,
+                (leave, ln_binom),
+                racks,
+                (keep, g0, fuzz),
+                (pool, threads),
+                carry_scratch,
+                carried,
+            ),
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -2203,6 +2893,616 @@ mod tests {
             tiles: [][..].into(),
         };
         assert!(!leaves_after(91, &pass, 3.0).is_empty());
+    }
+
+    // a board holding the first tiles in alphabet order, this many (a blank as
+    // an A), and that board with tiles placed
+    #[inline]
+    fn board_of(game_config: &game_config::GameConfig, on_board: usize) -> Vec<u8> {
+        let alphabet = game_config.alphabet();
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let mut square = 0;
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                if square < on_board {
+                    board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+                    square += 1;
+                }
+            }
+        }
+        board_tiles
+    }
+
+    #[inline]
+    fn board_with(board_tiles: &[u8], placed: &[(usize, u8)]) -> Vec<u8> {
+        let mut board_tiles = board_tiles.to_vec();
+        for &(square, tile) in placed {
+            board_tiles[square] = tile;
+        }
+        board_tiles
+    }
+
+    // one tile across the square at (lane, lane)
+    #[inline]
+    fn one_tile(lane: i8, tile: u8) -> movegen::Play {
+        movegen::Play::Place {
+            down: false,
+            lane,
+            idx: lane,
+            word: [tile][..].into(),
+            score: equity::Equity::ZERO,
+        }
+    }
+
+    #[inline]
+    fn exchange_of(n: usize) -> movegen::Play {
+        movegen::Play::Exchange {
+            tiles: vec![0u8; n][..].into(),
+        }
+    }
+
+    // one inference of a move on a board by the watcher holding a rack, from
+    // what it held before, on the tiny words with the empty klv: the leaves,
+    // and what the inference carries on
+    #[inline]
+    fn infer_held(
+        game_config: &game_config::GameConfig,
+        (board_tiles, watcher_rack): (&[u8], &[u8]),
+        play: &movegen::Play,
+        held: Held<'_>,
+    ) -> (Vec<(Vec<u8>, f64)>, Carried) {
+        let kwg = tiny_kwg();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut leaves = PackedLeaves::new();
+        let mut carried = Carried::default();
+        kept_leaves_carried_into(
+            &mut InferTables::new(game_config, &klv).unwrap(),
+            &mut movegen::KurniaMoveGenerator::new(game_config),
+            &movegen::BoardSnapshot {
+                board_tiles,
+                game_config,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            },
+            watcher_rack,
+            (play, held),
+            InferOptions {
+                fuzz: FUZZ,
+                threads: 1,
+            },
+            (&mut leaves, Some(&mut carried)),
+        )
+        .unwrap();
+        let leaves = (0..leaves.len())
+            .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
+            .collect();
+        (leaves, carried)
+    }
+
+    // the weights made to sum to 1, by leave
+    #[inline]
+    fn normalized(
+        leaves: impl IntoIterator<Item = (Vec<u8>, f64)>,
+    ) -> std::collections::BTreeMap<Vec<u8>, f64> {
+        let mut by_leave = std::collections::BTreeMap::<Vec<u8>, f64>::new();
+        for (leave, weight) in leaves {
+            *by_leave.entry(leave).or_default() += weight;
+        }
+        by_leave.retain(|_, weight| *weight > 0.0);
+        let total = by_leave.values().sum::<f64>();
+        by_leave.values_mut().for_each(|weight| *weight /= total);
+        by_leave
+    }
+
+    #[inline]
+    fn assert_same_leaves(
+        chained: &[(Vec<u8>, f64)],
+        reference: &std::collections::BTreeMap<Vec<u8>, f64>,
+    ) {
+        let chained = normalized(chained.iter().cloned());
+        assert!(!chained.is_empty());
+        assert_eq!(
+            chained.keys().collect::<Vec<_>>(),
+            reference.keys().collect::<Vec<_>>()
+        );
+        for (leave, weight) in &chained {
+            let want = reference[leave];
+            assert!(
+                (weight / want - 1.0).abs() < 1e-12,
+                "{leave:?} {weight} {want}"
+            );
+        }
+    }
+
+    // the tiny words, the empty klv, their lattice and leave table, and a
+    // generator, for the references below
+    struct Tiny {
+        kwg: kwg::Kwg<kwg::Node24>,
+        klv: klv::Klv<kwg::Node24>,
+        tables: InferTables,
+        move_generator: movegen::KurniaMoveGenerator,
+    }
+
+    #[inline]
+    fn tiny(game_config: &game_config::GameConfig) -> Tiny {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        Tiny {
+            kwg: tiny_kwg(),
+            tables: InferTables::new(game_config, &klv).unwrap(),
+            klv,
+            move_generator: movegen::KurniaMoveGenerator::new(game_config),
+        }
+    }
+
+    // what a rack (a tally) gives up making a move on a board (the kernel
+    // every inference weighs a rack by, for the references below to hold
+    // fixed): its best on the board, by its own generation (the best play or
+    // exchange, a pass only when forced, and for a pass the rack kept whole
+    // too), less the move's value and what it keeps; each keep of an exchange
+    // with its own
+    #[inline]
+    fn gaps_of(
+        tiny: &mut Tiny,
+        game_config: &game_config::GameConfig,
+        (board_tiles, rack): (&[u8], &[u8]),
+        play: &movegen::Play,
+    ) -> Vec<(Vec<u8>, i32)> {
+        let (lat, leave) = (&tiny.tables.lat, &tiny.tables.leave);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles,
+            game_config,
+            kwg: &tiny.kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &tiny.klv,
+        };
+        let rack_tiles = tiles_of(rack);
+        tiny.move_generator
+            .gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack_tiles,
+                max_gen: 1,
+                num_exchanges_by_this_player: 0,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+        let top = &tiny.move_generator.plays[0];
+        let mut best = match &top.play {
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                i32::MIN / 4
+                    + (0..=rack_tiles.len())
+                        .map(|keep| census::best_keep_of(lat, leave, rack, keep).0)
+                        .max()
+                        .unwrap()
+                        .raw()
+            }
+            _ => top.equity.raw(),
+        };
+        let mut placed = vec![0u8; rack.len()];
+        let (exchanged, value) = move_tiles_and_value(&board_snapshot, play, &mut placed);
+        let worth = |kept: &[u8]| leave[lat.rank(kept) as usize];
+        match exchanged {
+            Some(n) => tallies_of(rack, rack_tiles.len() - n)
+                .into_iter()
+                .map(|kept| {
+                    let gap = best - worth(&kept);
+                    (kept, gap)
+                })
+                .collect(),
+            None => {
+                if placed.iter().all(|&c| c == 0) {
+                    best = best.max(worth(rack));
+                }
+                let kept = less(rack, &placed);
+                let gap = best - (value + worth(&kept));
+                vec![(kept, gap)]
+            }
+        }
+    }
+
+    // the ways to draw these of each letter out of these
+    #[inline]
+    fn ways(from: &[u8], drawn: &[u8]) -> f64 {
+        (from.iter().zip(drawn))
+            .map(|(&f, &d)| {
+                if d > f {
+                    0.0
+                } else {
+                    binom(f as usize, d as usize) as f64
+                }
+            })
+            .product()
+    }
+
+    #[inline]
+    fn less(a: &[u8], b: &[u8]) -> Vec<u8> {
+        a.iter().zip(b).map(|(&x, &y)| x - y).collect()
+    }
+
+    #[inline]
+    fn plus(a: &[u8], b: &[u8]) -> Vec<u8> {
+        a.iter().zip(b).map(|(&x, &y)| x + y).collect()
+    }
+
+    #[inline]
+    fn tally_of(num_letters: usize, tiles: &[u8]) -> Vec<u8> {
+        let mut tally = vec![0u8; num_letters];
+        for &tile in tiles {
+            tally[tile as usize] += 1;
+        }
+        tally
+    }
+
+    #[inline]
+    fn tiles_of(tally: &[u8]) -> Vec<u8> {
+        (0u8..)
+            .zip(tally)
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
+            .collect()
+    }
+
+    // every tally of this many tiles out of these
+    #[inline]
+    fn tallies_of(from: &[u8], size: usize) -> Vec<Vec<u8>> {
+        let mut cap = vec![0usize; from.len() + 1];
+        for t in (0..from.len()).rev() {
+            cap[t] = cap[t + 1] + from[t] as usize;
+        }
+        let mut all = Vec::new();
+        each_tally_of_size(from, &cap, 0, size, &mut vec![0u8; from.len()], &mut |t| {
+            all.push(t.to_vec())
+        });
+        all
+    }
+
+    // the posterior of each leave the mover kept, by every hidden history
+    // through its moves (a placement, a pass, an exchange, a placement), its
+    // draws after the first placement and the exchange (drawn before the tiles
+    // thrown back went in), and the watcher's own placements and draws
+    // between, the watcher's draws read as evidence; given the watcher's view
+    // alone, each inference carried from the last weighs every leave as it
+    // does
+    #[test]
+    #[inline]
+    fn a_chain_of_inferences_weighs_each_leave_as_its_whole_history_does() {
+        let game_config = game_config::make_exchange_test_game_config();
+        let num_letters = game_config.alphabet().len() as usize;
+        let fuzz = equity_fuzz(FUZZ).unwrap();
+        let kernel = |gap: i32| (-(gap.max(0) as f64) / fuzz).exp();
+        // 83 on the board: unseen are five T, four U, two V, two W, two Y, an
+        // X, and the Z the watcher holds
+        let board1 = board_of(&game_config, 83);
+        let (t, u, v, y, z) = (20u8, 21u8, 22u8, 25u8, 26u8);
+        let first = one_tile(7, y);
+        let board2 = board_with(&board1, &[(7 * 15 + 7, y)]);
+        // the watcher plays its Z and draws a U, then plays that and draws a
+        // V, then plays that and draws a T
+        let board3 = board_with(&board2, &[(9 * 15 + 9, z)]);
+        let board4 = board_with(&board3, &[(11 * 15 + 11, u)]);
+        let board5 = board_with(&board4, &[(13 * 15 + 13, v)]);
+        let pass = exchange_of(0);
+        let exchange = exchange_of(2);
+        let fourth = one_tile(12, t);
+        let (leaves1, carried1) = infer_held(&game_config, (&board1, &[z]), &first, Held::Any);
+        let (leaves2, carried2) = infer_held(
+            &game_config,
+            (&board3, &[u]),
+            &pass,
+            Held::Kept(&carried1, &[]),
+        );
+        let (leaves3, carried3) = infer_held(
+            &game_config,
+            (&board4, &[v]),
+            &exchange,
+            Held::Kept(&carried2, &[]),
+        );
+        let (leaves4, _) = infer_held(
+            &game_config,
+            (&board5, &[t]),
+            &fourth,
+            Held::Kept(&carried3, &[]),
+        );
+        let mut pool1 = game_config.tiles_off_board(&board1).unwrap();
+        game_config.take_rack(&mut pool1, &[z]).unwrap();
+        let size1 = pool1.iter().map(|&c| c as usize).sum::<usize>();
+        let one = |tile| tally_of(num_letters, &[tile]);
+        let mut tiny = tiny(&game_config);
+        let mut fourth_gaps = std::collections::HashMap::<Vec<u8>, (Vec<u8>, i32)>::new();
+        let mut posts = [(); 4].map(|_| std::collections::BTreeMap::<Vec<u8>, f64>::new());
+        for rack1 in tallies_of(&pool1, 7) {
+            if rack1[y as usize] == 0 {
+                continue;
+            }
+            let prior = ways(&pool1, &rack1) / binom(size1, 7) as f64;
+            let (kept1, gap1) =
+                gaps_of(&mut tiny, &game_config, (&board1, &rack1), &first).remove(0);
+            let w1 = prior * kernel(gap1);
+            *posts[0].entry(tiles_of(&kept1)).or_default() += w1;
+            let bag1 = less(&pool1, &rack1);
+            for drew in tallies_of(&bag1, 1) {
+                let w = w1 * ways(&bag1, &drew) / binom(size1 - 7, 1) as f64;
+                // the watcher's U, drawn from what was left
+                let left = less(&bag1, &drew);
+                let w = w * ways(&left, &one(u)) / binom(size1 - 8, 1) as f64;
+                if w == 0.0 {
+                    continue;
+                }
+                let rack2 = plus(&kept1, &drew);
+                let (_, gap2) =
+                    gaps_of(&mut tiny, &game_config, (&board3, &rack2), &pass).remove(0);
+                let w2 = w * kernel(gap2);
+                *posts[1].entry(tiles_of(&rack2)).or_default() += w2;
+                // the watcher's V, drawn from the rest
+                let rest = less(&left, &one(u));
+                let w = w2 * ways(&rest, &one(v)) / binom(size1 - 9, 1) as f64;
+                if w == 0.0 {
+                    continue;
+                }
+                let bag3 = less(&rest, &one(v));
+                for (kept3, gap3) in gaps_of(&mut tiny, &game_config, (&board4, &rack2), &exchange)
+                {
+                    let w3 = w * kernel(gap3);
+                    *posts[2].entry(tiles_of(&kept3)).or_default() += w3;
+                    // the mover draws two, then throws back what it did not
+                    // keep; the watcher plays its V and draws a T, and the
+                    // mover places a T
+                    let thrown = less(&rack2, &kept3);
+                    for drew3 in tallies_of(&bag3, 2) {
+                        let w = w3 * ways(&bag3, &drew3) / binom(size1 - 10, 2) as f64;
+                        let rack3 = plus(&kept3, &drew3);
+                        let bag4 = plus(&less(&bag3, &drew3), &thrown);
+                        let w = w * ways(&bag4, &one(t)) / binom(size1 - 10, 1) as f64;
+                        if w == 0.0 || rack3[t as usize] == 0 {
+                            continue;
+                        }
+                        let (kept4, gap4) = fourth_gaps
+                            .entry(rack3.clone())
+                            .or_insert_with(|| {
+                                gaps_of(&mut tiny, &game_config, (&board5, &rack3), &fourth)
+                                    .remove(0)
+                            })
+                            .clone();
+                        *posts[3].entry(tiles_of(&kept4)).or_default() += w * kernel(gap4);
+                    }
+                }
+            }
+        }
+        let reference = posts.map(normalized);
+        assert_same_leaves(&leaves1, &reference[0]);
+        assert_same_leaves(&leaves2, &reference[1]);
+        assert_same_leaves(&leaves3, &reference[2]);
+        assert_same_leaves(&leaves4, &reference[3]);
+        // past the exchange, the move weighed from any rack the unseen tiles
+        // could make, or from the keeps alone as if their draw had come from
+        // the bag with the tiles thrown back, is off by more than a hundredth
+        // somewhere
+        let off = |leaves: Vec<(Vec<u8>, f64)>| {
+            normalized(leaves).iter().any(|(leave, weight)| {
+                reference[3]
+                    .get(leave)
+                    .is_none_or(|want| (weight / want - 1.0).abs() > 0.01)
+            })
+        };
+        let any = infer_held(&game_config, (&board5, &[t]), &fourth, Held::Any).0;
+        assert!(off(any));
+        let lat = census::MultisetLattice::new(num_letters, 7).unwrap();
+        let start = lat.size_start(5);
+        let mut weights = vec![0.0; lat.size_start(6) - start];
+        for (leave, weight) in normalized(leaves3.iter().cloned()) {
+            weights[lat.rank_bytes(&leave) as usize - start] += weight;
+        }
+        let keeps = Carried {
+            pool: carried3.pool.clone(),
+            size: 5,
+            weights,
+        };
+        let alone = infer_held(
+            &game_config,
+            (&board5, &[t]),
+            &fourth,
+            Held::Kept(&keeps, &[]),
+        )
+        .0;
+        assert!(off(alone));
+        // the watcher's draw is evidence: the pass weighed with the mover's
+        // draw out of what is unseen now and none of the watcher's, as if it
+        // had drawn nothing, is off by more than a hundredth somewhere
+        let mut blind = carried1.clone();
+        blind.pool = less(&carried1.pool, &one(u));
+        let (blinded, _) = infer_held(
+            &game_config,
+            (&board3, &[u]),
+            &pass,
+            Held::Kept(&blind, &[]),
+        );
+        assert!(normalized(blinded).iter().any(|(leave, weight)| {
+            reference[1]
+                .get(leave)
+                .is_none_or(|want| (weight / want - 1.0).abs() > 0.01)
+        }));
+    }
+
+    // the watcher's exchange puts its tiles back after it draws, so the
+    // mover's draw before could not hold them, and the watcher's draw is
+    // evidence
+    #[test]
+    #[inline]
+    fn a_chain_reads_the_watchers_exchange_and_draw_as_its_history_does() {
+        let game_config = game_config::make_exchange_test_game_config();
+        let num_letters = game_config.alphabet().len() as usize;
+        let fuzz = equity_fuzz(FUZZ).unwrap();
+        let kernel = |gap: i32| (-(gap.max(0) as f64) / fuzz).exp();
+        let board1 = board_of(&game_config, 83);
+        let (t, u, y, z) = (20u8, 21u8, 25u8, 26u8);
+        let first = one_tile(7, y);
+        let board2 = board_with(&board1, &[(7 * 15 + 7, y)]);
+        let second = one_tile(8, t);
+        let (leaves1, carried1) = infer_held(&game_config, (&board1, &[z]), &first, Held::Any);
+        // the watcher throws its Z back for a U
+        let (leaves2, carried2) = infer_held(
+            &game_config,
+            (&board2, &[u]),
+            &second,
+            Held::Kept(&carried1, &[z]),
+        );
+        assert!(!carried2.is_empty());
+        let mut pool1 = game_config.tiles_off_board(&board1).unwrap();
+        game_config.take_rack(&mut pool1, &[z]).unwrap();
+        let size1 = pool1.iter().map(|&c| c as usize).sum::<usize>();
+        let one = |tile| tally_of(num_letters, &[tile]);
+        let mut tiny = tiny(&game_config);
+        let mut posts = [(); 2].map(|_| std::collections::BTreeMap::<Vec<u8>, f64>::new());
+        for rack1 in tallies_of(&pool1, 7) {
+            if rack1[y as usize] == 0 {
+                continue;
+            }
+            let prior = ways(&pool1, &rack1) / binom(size1, 7) as f64;
+            let (kept1, gap1) =
+                gaps_of(&mut tiny, &game_config, (&board1, &rack1), &first).remove(0);
+            let w1 = prior * kernel(gap1);
+            *posts[0].entry(tiles_of(&kept1)).or_default() += w1;
+            let bag1 = less(&pool1, &rack1);
+            for drew in tallies_of(&bag1, 1) {
+                let w = w1 * ways(&bag1, &drew) / binom(size1 - 7, 1) as f64;
+                let left = less(&bag1, &drew);
+                let w = w * ways(&left, &one(u)) / binom(size1 - 8, 1) as f64;
+                let rack2 = plus(&kept1, &drew);
+                if w == 0.0 || rack2[t as usize] == 0 {
+                    continue;
+                }
+                let (kept2, gap2) =
+                    gaps_of(&mut tiny, &game_config, (&board2, &rack2), &second).remove(0);
+                *posts[1].entry(tiles_of(&kept2)).or_default() += w * kernel(gap2);
+            }
+        }
+        let reference = posts.map(normalized);
+        assert_same_leaves(&leaves1, &reference[0]);
+        assert_same_leaves(&leaves2, &reference[1]);
+        // no leave holds the Z, which was in the watcher's hand at the draw
+        assert!(leaves2.iter().all(|(leave, _)| !leave.contains(&z)));
+    }
+
+    // a carried leave of nothing, weighing 1, out of what is unseen now,
+    // weighs each rack as any rack the unseen tiles could make does, bit for
+    // bit, on a board whose racks the sheet values (70 on it) and on one where
+    // each is generated (85)
+    #[test]
+    #[inline]
+    fn a_carried_leave_of_nothing_weighs_each_rack_as_any_rack_does() {
+        let english = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let racks_on = |on_board| {
+            let mut pool = english
+                .tiles_off_board(&board_of(&english, on_board))
+                .unwrap();
+            english.take_rack(&mut pool, &[26]).unwrap();
+            count_tallies_of_size(&pool, 7)
+        };
+        assert!(racks_on(70) > GENERATE_EACH_RACK_UPTO);
+        assert!(racks_on(85) <= GENERATE_EACH_RACK_UPTO_LEAN);
+        for (on_board, play) in [
+            (70, exchange_of(0)),
+            (70, exchange_of(3)),
+            (70, one_tile(7, 25)),
+            (85, exchange_of(0)),
+            (85, exchange_of(3)),
+            (85, one_tile(7, 25)),
+        ] {
+            let board_tiles = board_of(&english, on_board);
+            let mut unseen = english.tiles_off_board(&board_tiles).unwrap();
+            english.take_rack(&mut unseen, &[26]).unwrap();
+            let nothing = Carried {
+                pool: unseen,
+                size: 0,
+                weights: vec![1.0],
+            };
+            let infer = |held| {
+                let mut leaves = PackedLeaves::new();
+                kept_leaves_carried_into(
+                    &mut InferTables::new(&english, &klv).unwrap(),
+                    &mut movegen::KurniaMoveGenerator::new(&english),
+                    &movegen::BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &english,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    },
+                    &[26],
+                    (&play, held),
+                    InferOptions {
+                        fuzz: FUZZ,
+                        threads: 2,
+                    },
+                    (&mut leaves, None),
+                )
+                .unwrap();
+                (0..leaves.len())
+                    .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i).to_bits()))
+                    .collect::<Vec<_>>()
+            };
+            let any = infer(Held::Any);
+            assert!(!any.is_empty());
+            assert_eq!(infer(Held::Kept(&nothing, &[])), any);
+        }
+    }
+
+    // an exchange's carry is the same, to the bit, on one thread, on two, and
+    // on eight: its racks are cut into chunks of one size whatever the
+    // threads, and the chunks' sums are added in their order (the racks here
+    // fill more than two chunks)
+    #[test]
+    #[inline]
+    fn an_exchanges_carry_is_the_same_on_any_number_of_threads() {
+        let english = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let board_tiles = board_of(&english, 70);
+        let mut pool = english.tiles_off_board(&board_tiles).unwrap();
+        english.take_rack(&mut pool, &[26]).unwrap();
+        assert!(count_tallies_of_size(&pool, 7) > 2 * WEIGH_ACROSS_THREADS_FROM);
+        let carry_on = |threads| {
+            let mut leaves = PackedLeaves::new();
+            let mut carried = Carried::default();
+            kept_leaves_carried_into(
+                &mut InferTables::new(&english, &klv).unwrap(),
+                &mut movegen::KurniaMoveGenerator::new(&english),
+                &movegen::BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &english,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                &[26],
+                (&exchange_of(3), Held::Any),
+                InferOptions {
+                    fuzz: FUZZ,
+                    threads,
+                },
+                (&mut leaves, Some(&mut carried)),
+            )
+            .unwrap();
+            assert!(!carried.is_empty());
+            (
+                (0..leaves.len())
+                    .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i).to_bits()))
+                    .collect::<Vec<_>>(),
+                carried.pool,
+                carried.size,
+                (carried.weights.iter())
+                    .map(|weight| weight.to_bits())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let one = carry_on(1);
+        assert_eq!(carry_on(2), one);
+        assert_eq!(carry_on(8), one);
     }
 
     #[test]
