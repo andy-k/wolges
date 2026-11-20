@@ -1277,6 +1277,15 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         } else {
             None
         };
+        let saved_shape = setup.and_then(|(_, order)| {
+            let rack_size = self.num_tiles_on_rack as usize;
+            if (1..=RACK_SHAPE_MAX).contains(&rack_size) && board_snapshot.anagrams.is_some() {
+                let shape = rack_shape(&self.rack_tally, self.rack_bits, rack_size);
+                (shape.leave_indices.len() == order.len()).then_some(shape)
+            } else {
+                None
+            }
+        });
         if self.num_tiles_in_bag <= 0 {
             if !LEAVES {
                 // no leave is read: the digits alone, and no table
@@ -1326,56 +1335,75 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     }
                 })
             });
-            match setup {
-                Some((leaves, _)) => self.multi_leaves.init_from_leaves(
+            let saved_bounds = saved_shape.filter(|_| bag_terms.clone().all(|term| term == 0));
+            if let (Some((leaves, order)), Some(shape)) = (setup, saved_bounds) {
+                self.multi_leaves.init_from_saved_leaves::<false>(
                     &self.rack_tally,
                     leaves,
                     dense_most,
                     bag_terms,
-                ),
-                None => self.multi_leaves.init(
-                    &self.rack_tally,
-                    board_snapshot.klv,
-                    true,
-                    adjust_leave_value,
-                    dense_most,
-                    bag_terms,
-                ),
-            }
-            if self.multi_leaves.is_dense() {
-                if let Some(dyn_ref) = dynamic_leaves {
-                    let n = dyn_ref.lat.num_letters();
-                    let mut live_pool = [0u8; MAX_ALPHABET_LEN];
-                    live_pool_into(
-                        &mut live_pool[..n],
-                        alphabet,
-                        board_snapshot.board_tiles,
-                        &self.rack_tally,
-                    );
-                    self.multi_leaves.apply_dynamic_leaves(
-                        &dyn_ref,
-                        &live_pool[..n],
-                        self.num_tiles_in_bag.max(0) as usize,
-                    );
-                }
-                // each placement's leave with its bag term, so every bound read
-                // from the leaves has it too
-                if BAG_TERM {
-                    self.multi_leaves.add_bag_terms();
-                }
-                self.multi_leaves
-                    .extract_raw_best_leave_values(&mut self.best_leave_values);
-            } else {
-                klv::MultiLeaves::extract_best_leave_values_from_klv(
-                    &mut self.rack_tally,
-                    board_snapshot.klv,
-                    self.num_tiles_on_rack,
-                    adjust_leave_value,
-                    &mut self.best_leave_values,
                 );
-                if BAG_TERM {
-                    for (num_played, v) in self.best_leave_values.iter_mut().enumerate() {
-                        *v += self.multi_leaves.bag_term(num_played);
+                self.best_leave_values.clear();
+                let values = self.multi_leaves.leave_values();
+                self.best_leave_values.extend(
+                    shape.by_played[..=self.num_tiles_on_rack as usize]
+                        .iter()
+                        .map(|&start| {
+                            values[shape.leave_indices[order[start as usize] as usize] as usize]
+                        }),
+                );
+            } else {
+                match setup {
+                    Some((leaves, _)) => self.multi_leaves.init_from_leaves(
+                        &self.rack_tally,
+                        leaves,
+                        dense_most,
+                        bag_terms,
+                    ),
+                    None => self.multi_leaves.init(
+                        &self.rack_tally,
+                        board_snapshot.klv,
+                        true,
+                        adjust_leave_value,
+                        dense_most,
+                        bag_terms,
+                    ),
+                }
+                if self.multi_leaves.is_dense() {
+                    if let Some(dyn_ref) = dynamic_leaves {
+                        let n = dyn_ref.lat.num_letters();
+                        let mut live_pool = [0u8; MAX_ALPHABET_LEN];
+                        live_pool_into(
+                            &mut live_pool[..n],
+                            alphabet,
+                            board_snapshot.board_tiles,
+                            &self.rack_tally,
+                        );
+                        self.multi_leaves.apply_dynamic_leaves(
+                            &dyn_ref,
+                            &live_pool[..n],
+                            self.num_tiles_in_bag.max(0) as usize,
+                        );
+                    }
+                    // each placement's leave with its bag term, so every bound read
+                    // from the leaves has it too
+                    if BAG_TERM {
+                        self.multi_leaves.add_bag_terms();
+                    }
+                    self.multi_leaves
+                        .extract_raw_best_leave_values(&mut self.best_leave_values);
+                } else {
+                    klv::MultiLeaves::extract_best_leave_values_from_klv(
+                        &mut self.rack_tally,
+                        board_snapshot.klv,
+                        self.num_tiles_on_rack,
+                        adjust_leave_value,
+                        &mut self.best_leave_values,
+                    );
+                    if BAG_TERM {
+                        for (num_played, v) in self.best_leave_values.iter_mut().enumerate() {
+                            *v += self.multi_leaves.bag_term(num_played);
+                        }
                     }
                 }
             }
@@ -1395,7 +1423,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 &mut self.subracks,
                 &mut self.subracks_by_played,
                 (&mut self.subrack_order, &mut self.subracks_spare),
-                setup.map(|(_, order)| order),
+                (setup.map(|(_, order)| order), saved_shape),
             );
         } else {
             self.subracks.clear();
@@ -4765,6 +4793,123 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
     }
 }
 
+#[derive(Clone, Copy)]
+struct RackShape<'a> {
+    by_played: &'a [u32],
+    leave_indices: &'a [u8],
+}
+
+const RACK_SHAPE_MAX: usize = crate::racks::MAX_RACK_SIZE as usize;
+
+#[derive(Clone, Copy)]
+struct RackShapeEntry {
+    by_played: [u32; RACK_SHAPE_MAX + 2],
+    leave_start: usize,
+}
+
+const fn rack_shape_leave_count() -> usize {
+    let mut totals = [0; RACK_SHAPE_MAX + 1];
+    totals[0] = 1;
+    let mut count = 0;
+    let mut size = 1;
+    while size <= RACK_SHAPE_MAX {
+        let mut first = 1;
+        while first <= size {
+            totals[size] += (first + 1) * totals[size - first];
+            first += 1;
+        }
+        count += totals[size];
+        size += 1;
+    }
+    count
+}
+
+struct RackShapes {
+    entries: [RackShapeEntry; 1 << RACK_SHAPE_MAX],
+    leave_indices: [u8; rack_shape_leave_count()],
+}
+
+static RACK_SHAPES: RackShapes = {
+    let mut shapes = RackShapes {
+        entries: [RackShapeEntry {
+            by_played: [0; RACK_SHAPE_MAX + 2],
+            leave_start: 0,
+        }; 1 << RACK_SHAPE_MAX],
+        leave_indices: [0; rack_shape_leave_count()],
+    };
+    let mut start = 0;
+    let mut gaps = 1usize;
+    while gaps < shapes.entries.len() {
+        let rack_size = gaps.ilog2() as usize + 1;
+        let shape = &mut shapes.entries[gaps];
+        shape.leave_start = start;
+        let mut counts = [0usize; RACK_SHAPE_MAX];
+        let mut places = [1usize; RACK_SHAPE_MAX];
+        let mut leaves = 1;
+        let mut num_digits = 0;
+        let mut first = 0;
+        let mut end = 1;
+        while end <= rack_size {
+            if gaps & (1 << (end - 1)) != 0 {
+                counts[num_digits] = end - first;
+                places[num_digits] = leaves;
+                leaves *= counts[num_digits] + 1;
+                num_digits += 1;
+                first = end;
+            }
+            end += 1;
+        }
+
+        // the walk takes the last digit fastest, and leave indices take the
+        // first digit fastest. record each walk step's leave index.
+        let mut walked = 0;
+        while walked < leaves {
+            let mut rest = walked;
+            let mut leave = 0;
+            let mut played = rack_size;
+            let mut digit = num_digits;
+            while digit != 0 {
+                digit -= 1;
+                let radix = counts[digit] + 1;
+                let kept = rest % radix;
+                rest /= radix;
+                leave += kept * places[digit];
+                played -= kept;
+            }
+            shapes.leave_indices[start + walked] = leave as u8;
+            shape.by_played[played + 1] += 1;
+            walked += 1;
+        }
+        let mut played = 1;
+        while played <= rack_size + 1 {
+            shape.by_played[played] += shape.by_played[played - 1];
+            played += 1;
+        }
+        start += leaves;
+        gaps += 1;
+    }
+    assert!(start == shapes.leave_indices.len());
+    shapes
+};
+
+#[inline(always)]
+fn rack_shape(rack_tally: &[u8], mut rack_bits: u64, rack_size: usize) -> RackShape<'static> {
+    let mut end = 0;
+    let mut gaps = 0;
+    while rack_bits != 0 {
+        let tile = rack_bits.trailing_zeros() as usize;
+        rack_bits &= rack_bits - 1;
+        end += rack_tally[tile] as usize;
+        gaps |= 1 << (end - 1);
+    }
+    let entry = &RACK_SHAPES.entries[gaps];
+    let count = entry.by_played[rack_size + 1] as usize;
+    RackShape {
+        by_played: &entry.by_played[..rack_size + 2],
+        leave_indices: &RACK_SHAPES.leave_indices[entry.leave_start..entry.leave_start + count],
+    }
+}
+
 // a rack's subracks in sort_subracks's order, by played their starts: sorted,
 // or taken in the order a rack table gives (given, positions in the walk)
 #[inline]
@@ -4775,7 +4920,7 @@ fn build_subracks<P: alphagram::KeyPlaces>(
     subracks: &mut Vec<Subrack>,
     by_played: &mut Vec<u32>,
     (order, spare): (&mut Vec<u64>, &mut Vec<Subrack>),
-    given: Option<&[u8]>,
+    (given, saved_shape): (Option<&[u8]>, Option<RackShape<'_>>),
 ) {
     // walked into spare and copied over in order, so neither vector trades its
     // capacity for the other's
@@ -4789,6 +4934,10 @@ fn build_subracks<P: alphagram::KeyPlaces>(
         }
     }
     by_played.clear();
+    if let Some(shape) = saved_shape {
+        by_played.extend_from_slice(shape.by_played);
+        return;
+    }
     by_played.resize(num_tiles_on_rack as usize + 2, subracks.len() as u32);
     for (i, s) in subracks.iter().enumerate().rev() {
         by_played[s.num_played as usize] = i as u32;
@@ -14227,6 +14376,50 @@ mod corpus;
 mod tests {
     use super::*;
     use crate::{alphabet, bites, board_layout, build, display, game_config, klv, kwg};
+
+    #[test]
+    fn every_rack_shape_agrees_with_the_subrack_walk() {
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut leaves = klv::MultiLeaves::new();
+        let mut walked = Vec::new();
+        for rack_size in 1..=RACK_SHAPE_MAX {
+            for gaps in 0..1 << (rack_size - 1) {
+                let mut rack = [0u8; MAX_ALPHABET_LEN];
+                let mut tile = 0;
+                let mut bits = 0u64;
+                for pos in 0..rack_size {
+                    rack[tile] += 1;
+                    bits |= 1 << tile;
+                    tile += usize::from(gaps & (1 << pos) != 0);
+                }
+                leaves.init(
+                    &rack,
+                    &klv,
+                    false,
+                    klv::AdjustLeave::Identity,
+                    leaves.dense_most(),
+                    std::iter::empty(),
+                );
+                walk_subracks(
+                    &leaves,
+                    alphagram::Nibble,
+                    &rack,
+                    &[0; MAX_ALPHABET_LEN],
+                    &mut walked,
+                );
+                let shape = rack_shape(&rack, bits, rack_size);
+                let mut starts = vec![0u32; rack_size + 2];
+                for (i, subrack) in walked.iter().enumerate() {
+                    assert_eq!(shape.leave_indices[i] as u32, subrack.leave_idx, "{gaps}");
+                    starts[subrack.num_played as usize + 1] += 1;
+                }
+                for i in 1..starts.len() {
+                    starts[i] += starts[i - 1];
+                }
+                assert_eq!(shape.by_played, starts, "{gaps}");
+            }
+        }
+    }
 
     static TEST_WORDS: &[&str] = &[
         "AS", "AT", "EAST", "EAT", "EATS", "ETA", "ETAS", "SAT", "SEA", "SEAT", "SEATS", "SET",
