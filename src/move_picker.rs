@@ -990,11 +990,11 @@ fn winning_out(
     let mover = game_state.turn as usize;
     let rack_len = game_state.players[mover].rack.len();
     let other = &game_state.players[1 - mover];
-    let ending = game_state.players[mover].score as i64 + twice(game_config, &other.rack);
+    let ending = game_state.players[mover].score.raw() as i64 + twice(game_config, &other.rack);
     plays.iter().position(|m| {
         matches!(m.play, movegen::Play::Place { .. })
             && tiles_placed(&m.play) == rack_len
-            && ending + play_score(&m.play) > other.score as i64
+            && ending + play_score(&m.play) > other.score.raw() as i64
     })
 }
 
@@ -1355,8 +1355,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         Some(Self {
             board_snapshot,
             game_state,
-            lead: game_state.players[mover].score as i64
-                - game_state.players[1 - mover].score as i64,
+            lead: game_state.players[mover].score.raw() as i64
+                - game_state.players[1 - mover].score.raw() as i64,
             other_twice: twice(game_config, other_rack),
             replies,
             by_score,
@@ -3893,15 +3893,16 @@ mod tests {
             place(20_000, false, 7, 7, &[1, 20], 8),
         ];
         for (behind, want) in [(9, Some(1)), (10, None), (11, None)] {
-            game_state.players[mover].score = 100 * equity::SCALE;
-            game_state.players[1 - mover].score = (100 + behind) * equity::SCALE;
+            game_state.players[mover].score = equity::Equity::new(100 * equity::SCALE);
+            game_state.players[1 - mover].score =
+                equity::Equity::new((100 + behind) * equity::SCALE);
             assert_eq!(
                 winning_out(&game_config, &game_state, &plays),
                 want,
                 "{behind} behind",
             );
         }
-        game_state.players[1 - mover].score = 0;
+        game_state.players[1 - mover].score = equity::Equity::ZERO;
         game_state.bag.set_from_iter([5u8]);
         assert_eq!(
             winning_out(&game_config, &game_state, &plays),
@@ -4064,8 +4065,8 @@ mod tests {
         let mover = game_state.turn as usize;
         game_state.players[mover].rack = vec![20, 20]; // TT
         game_state.players[1 - mover].rack = vec![5]; // E
-        game_state.players[mover].score = (100 + lead) * equity::SCALE;
-        game_state.players[1 - mover].score = 100 * equity::SCALE;
+        game_state.players[mover].score = equity::Equity::new((100 + lead) * equity::SCALE);
+        game_state.players[1 - mover].score = equity::Equity::new(100 * equity::SCALE);
         game_state
             .board_tiles
             .copy_from_slice(&board_with(game_config, row, 0));
@@ -4676,8 +4677,8 @@ mod tests {
         rack_reader
             .set_word("AT", &mut game_state.players[1 - mover].rack)
             .unwrap();
-        game_state.players[mover].score = 170 * equity::SCALE;
-        game_state.players[1 - mover].score = 200 * equity::SCALE;
+        game_state.players[mover].score = equity::Equity::new(170 * equity::SCALE);
+        game_state.players[1 - mover].score = equity::Equity::new(200 * equity::SCALE);
         assert_eq!(deft_picks(&board_snapshot, &game_state), "H10 E(A)RS 7");
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;

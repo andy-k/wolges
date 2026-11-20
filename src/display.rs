@@ -449,7 +449,7 @@ impl GameStatePrinter<'_> {
                 f,
                 "Player {}: {:>4} {}",
                 i + 1,
-                equity::descale_score(player.score),
+                equity::descale_score(player.score.raw()),
                 self.game_config.alphabet().fmt_rack(&player.rack)
             )?;
             if let Some(game_timers) = self.optional_game_timers {
@@ -636,9 +636,9 @@ mod tests {
     fn the_players_scores_and_clocks_line_up() {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
-        game_state.players[0].score = equity::scale_score(5);
+        game_state.players[0].score = equity::Points::new(5).scaled();
         game_state.players[0].rack = vec![1, 5, 9, 14, 18, 19, 20];
-        game_state.players[1].score = equity::scale_score(412);
+        game_state.players[1].score = equity::Points::new(412).scaled();
         game_state.players[1].rack = vec![5, 5];
         let mut game_timers = game_timers::GameTimers::new(2);
         game_timers.clocks_ms[0] = 1_234_567;

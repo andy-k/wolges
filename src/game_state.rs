@@ -26,7 +26,7 @@ pub fn use_tiles<II: IntoIterator<Item = u8>>(
 }
 
 pub struct GamePlayer {
-    pub score: i32,
+    pub score: equity::Equity,
     pub rack: Vec<u8>,
     pub num_exchanges: i16, // lifetime
 }
@@ -92,7 +92,7 @@ impl GameState {
         Self {
             players: (0..game_config.num_players())
                 .map(|_| GamePlayer {
-                    score: 0,
+                    score: equity::Equity::ZERO,
                     rack: Vec::with_capacity(rack_size),
                     num_exchanges: 0,
                 })
@@ -107,7 +107,7 @@ impl GameState {
 
     pub fn reset(&mut self) {
         for player in self.players.iter_mut() {
-            player.score = 0;
+            player.score = equity::Equity::ZERO;
             player.rack.clear();
             player.num_exchanges = 0;
         }
@@ -226,7 +226,7 @@ impl GameState {
                 // nothing but the rack's order
                 let new_score = current_player
                     .score
-                    .checked_add(score.raw())
+                    .checked_add(*score)
                     .ok_or("score overflow")?;
                 use_tiles(
                     &mut current_player.rack,
@@ -300,7 +300,7 @@ impl GameState {
     ) -> error::Returns<CheckGameEnded> {
         if self.current_player().rack.is_empty() {
             for (i, player) in self.players.iter().enumerate() {
-                final_scores[i] = player.score;
+                final_scores[i] = player.score.raw();
             }
             if self.players.len() == 2 {
                 final_scores[self.turn as usize] = (2 * equity::SCALE)
@@ -330,8 +330,9 @@ impl GameState {
             for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] = player
                     .score
-                    .checked_sub(game_config.alphabet().scaled_rack_score(&player.rack).raw())
-                    .ok_or("score overflow")?;
+                    .checked_sub(game_config.alphabet().scaled_rack_score(&player.rack))
+                    .ok_or("score overflow")?
+                    .raw();
             }
             Ok(CheckGameEnded::ZeroScores)
         } else {
@@ -372,7 +373,7 @@ mod tests {
         };
         assert!(game_state.play(&game_config, &mut rng, &play).is_err());
         assert!(game_state.board_tiles.iter().all(|&tile| tile == 0));
-        assert_eq!(game_state.players[0].score, 0);
+        assert_eq!(game_state.players[0].score, equity::Equity::ZERO);
         assert_eq!(game_state.zero_turns, 3);
         let mut rack = game_state.players[0].rack.clone();
         rack.sort_unstable();
