@@ -1018,7 +1018,8 @@ impl GameConfig {
                 "the leaves have tiles past this game's {alphabet_len}"
             ));
         }
-        self.check_leaves(klv.leave_range())
+        let (lo, hi) = klv.leave_range();
+        self.check_leaves((lo.raw(), hi.raw()))
     }
 
     // the tiles not on a board, by tile: what the game has, less what the board

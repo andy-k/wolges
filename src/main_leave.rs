@@ -4045,7 +4045,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 tally_buf[tile as usize] += 1;
             }
             let idx = lat.rank(&tally_buf) as usize;
-            leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf);
+            leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf).raw();
             ever[idx] = true;
         }
         // and its means before their rounding, beside it, where the run that
@@ -9267,7 +9267,7 @@ fn print_rack_keeps<L: kwg::Node>(
         }
         let s_ridx = lat.rank(&kept_tally);
         if s_ridx != !0 {
-            let static_value = klv.leave_value_from_tally(&kept_tally);
+            let static_value = klv.leave_value_from_tally(&kept_tally).raw();
             let draw = (rack_size - size).min(pool_size);
             let dynamic =
                 census::dynamic_leave_value(lat, add, full_v, pool, s_ridx as usize, draw);

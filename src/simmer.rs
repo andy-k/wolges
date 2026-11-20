@@ -816,7 +816,7 @@ impl<
                 &next_play,
             );
             self.last_seen_leave_values[self.game_state.turn as usize] =
-                klv.leave_value_from_tally(&self.rack_tally);
+                klv.leave_value_from_tally(&self.rack_tally).raw();
             let rng = rollout_rng.get_or_insert_with(|| self.rng.copy_state());
             if ply == 0 && challenged_off {
                 self.game_state.challenged_off(game_config);

@@ -3715,7 +3715,7 @@ fn leave_value_of<const BAG_TERM: bool, L: kwg::Node>(
     alphabet: &alphabet::Alphabet,
 ) -> i32 {
     if multi_leaves.is_dense() {
-        multi_leaves.leave_value(leave_idx)
+        multi_leaves.leave_value(leave_idx).raw()
     } else if num_tiles_in_bag <= 0 {
         let is_played_out = rack_tally.iter().all(|&count| count == 0);
         if is_played_out {
@@ -3728,7 +3728,7 @@ fn leave_value_of<const BAG_TERM: bool, L: kwg::Node>(
             -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
         }
     } else {
-        let leave_value = klv.leave_value_from_tally(rack_tally);
+        let leave_value = klv.leave_value_from_tally(rack_tally).raw();
         if BAG_TERM {
             leave_value + multi_leaves.bag_term_of_kept(rack_tally)
         } else {
@@ -4668,7 +4668,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
             key,
             part,
             leave_idx: idx,
-            leave_value: multi_leaves.leave_value(idx),
+            leave_value: multi_leaves.leave_value(idx).raw(),
             places: taken_at,
             num_played: played,
             blanks,
@@ -8932,12 +8932,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 &threshold,
                 max_gen,
                 equity::Equity::new(if multi_leaves.is_dense() {
-                    multi_leaves.pass_leave_value()
+                    multi_leaves.pass_leave_value().raw()
                 } else {
                     params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
+                        .raw()
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -10025,12 +10026,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 &threshold,
                 max_gen,
                 equity::Equity::new(if multi_leaves.is_dense() {
-                    multi_leaves.pass_leave_value()
+                    multi_leaves.pass_leave_value().raw()
                 } else {
                     params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
+                        .raw()
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -10297,12 +10299,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 &threshold,
                 max_gen,
                 equity::Equity::new(if multi_leaves.is_dense() {
-                    multi_leaves.pass_leave_value()
+                    multi_leaves.pass_leave_value().raw()
                 } else {
                     params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
+                        .raw()
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -10711,12 +10714,13 @@ fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool, S: 
     }
     if params.pass_policy.emits_unconditionally() {
         sure.push(equity::Equity::new(if multi_leaves.is_dense() {
-            multi_leaves.pass_leave_value()
+            multi_leaves.pass_leave_value().raw()
         } else {
             params
                 .board_snapshot
                 .klv
                 .leave_value_from_tally(&working_buffer.rack_tally)
+                .raw()
         }));
     }
     let floor = (max_gen != 0 && max_gen <= sure.len()).then(|| {

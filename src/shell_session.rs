@@ -4683,10 +4683,16 @@ mod tests {
         session.klv = Box::leak(Box::new(std::sync::Arc::new(
             klv::Klv::<kwg::Node24>::from_bytes_alloc(&bytes).unwrap(),
         )));
-        assert_eq!(session.klv.leave_range(), (0, 1500));
+        assert_eq!(
+            session.klv.leave_range(),
+            (equity::Equity::ZERO, equity::Equity::new(1500))
+        );
         run(&mut session, "rules english").unwrap();
         assert!(session.kwg.is_none());
-        assert_eq!(session.klv.leave_range(), (0, 0));
+        assert_eq!(
+            session.klv.leave_range(),
+            (equity::Equity::ZERO, equity::Equity::ZERO)
+        );
     }
 
     #[test]
