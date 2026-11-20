@@ -3,6 +3,7 @@
 use crate::{game_args, parse_rack};
 use rand::SeedableRng;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use wolges::{anagrams, display, error, game_config, game_state, klv, kwg, movegen, return_error};
 
@@ -236,54 +237,162 @@ pub(crate) struct CaptureArgs {
     seed: u64,
 }
 
+fn play_game(
+    engine: &Engine,
+    generator: &mut movegen::InlineGenerator<225>,
+    state: &mut game_state::GameState,
+    rng: &mut rand_xoshiro::Xoshiro256PlusPlus,
+    mut on_turn: impl FnMut(
+        u32,
+        &game_state::GameState,
+        &movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
+        &movegen::ValuedMove,
+    ) -> error::Returns<()>,
+) -> error::Returns<u32> {
+    let gc = &engine.game;
+    state.reset_and_draw_tiles(gc, rng);
+    let mut scores = [0; 2];
+    for ply in 0.. {
+        let mover = state.current_player();
+        let snapshot = engine.snapshot(&state.board_tiles);
+        generate(generator, &snapshot, &mover.rack, mover.num_exchanges);
+        let chosen = &generator.plays[0];
+        on_turn(ply, state, &snapshot, chosen)?;
+        state.play(gc, rng, &chosen.play)?;
+        match state.check_game_ended(gc, &mut scores)? {
+            game_state::CheckGameEnded::NotEnded => state.next_turn(),
+            _ => return Ok(ply + 1),
+        }
+    }
+    unreachable!()
+}
+
+fn check_game_ends(game: &game_config::GameConfig) -> error::Returns<()> {
+    if game.num_passes_to_end() == 0 && game.num_zeros_to_end() == 0 {
+        return_error!("self-play needs a scoreless-turn rule that ends each game".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn capture(
     options: &game_args::GameArgs,
     kbwg: bool,
     args: &CaptureArgs,
 ) -> error::Returns<()> {
     let engine = Engine::load(options, kbwg, &args.kwg, &args.klv)?;
-    if engine.game.num_passes_to_end() == 0 && engine.game.num_zeros_to_end() == 0 {
-        return_error!("trace capture needs a scoreless-turn rule that ends each game".to_string());
-    }
     let gc = &engine.game;
+    check_game_ends(gc)?;
     let alphabet = gc.alphabet();
     let mut state = game_state::GameState::new(gc);
     let mut generator = movegen::InlineGenerator::<225>::try_new(gc)?;
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(args.seed);
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
-    let mut scores = [0; 2];
     for game in 0..args.games.get() {
-        state.reset_and_draw_tiles(gc, &mut rng);
-        for ply in 0.. {
-            let mover = state.current_player();
-            let snapshot = engine.snapshot(&state.board_tiles);
-            generate(&mut generator, &snapshot, &mover.rack, mover.num_exchanges);
-            let chosen = &generator.plays[0];
-            serde_json::to_writer(
-                &mut out,
-                &Position {
-                    game,
-                    ply,
-                    fen: display::BoardFenner::new(alphabet, gc.board_layout(), &state.board_tiles)
+        play_game(
+            &engine,
+            &mut generator,
+            &mut state,
+            &mut rng,
+            |ply, state, snapshot, chosen| {
+                serde_json::to_writer(
+                    &mut out,
+                    &Position {
+                        game,
+                        ply,
+                        fen: display::BoardFenner::new(
+                            alphabet,
+                            gc.board_layout(),
+                            &state.board_tiles,
+                        )
                         .to_string(),
-                    racks: std::array::from_fn(|seat| {
-                        alphabet.fmt_rack(&state.players[seat].rack).to_string()
-                    }),
-                    turn: state.turn,
-                    bag: state.bag.len(),
-                    exchanges: mover.num_exchanges,
-                    reference: chosen.play.fmt(&snapshot).to_string(),
-                    equity: chosen.equity.raw(),
-                },
-            )?;
-            writeln!(out)?;
-            state.play(gc, &mut rng, &chosen.play)?;
-            match state.check_game_ended(gc, &mut scores)? {
-                game_state::CheckGameEnded::NotEnded => state.next_turn(),
-                _ => break,
-            }
-        }
+                        racks: std::array::from_fn(|seat| {
+                            alphabet.fmt_rack(&state.players[seat].rack).to_string()
+                        }),
+                        turn: state.turn,
+                        bag: state.bag.len(),
+                        exchanges: state.current_player().num_exchanges,
+                        reference: chosen.play.fmt(snapshot).to_string(),
+                        equity: chosen.equity.raw(),
+                    },
+                )?;
+                writeln!(out)?;
+                Ok(())
+            },
+        )?;
     }
     out.flush()?;
+    Ok(())
+}
+
+#[derive(clap::Args)]
+#[command(about = "time independent games played with top-one static move generation")]
+pub(crate) struct ThroughputArgs {
+    kwg: String,
+    klv: String,
+    #[arg(long)]
+    games: std::num::NonZeroUsize,
+    #[arg(long)]
+    seed: u64,
+    #[arg(long)]
+    threads: std::num::NonZeroUsize,
+}
+
+pub(crate) fn throughput(
+    options: &game_args::GameArgs,
+    kbwg: bool,
+    args: &ThroughputArgs,
+) -> error::Returns<()> {
+    let started = Instant::now();
+    let engine = Engine::load(options, kbwg, &args.kwg, &args.klv)?;
+    let setup = started.elapsed();
+    check_game_ends(&engine.game)?;
+    let begun = Instant::now();
+    let games = args.games.get();
+    let threads = args.threads.get().min(games);
+    let next_game = AtomicUsize::new(0);
+    let turns = std::thread::scope(|scope| -> error::Returns<u64> {
+        let engine = &engine;
+        let workers = (0..threads)
+            .map(|_| {
+                let next_game = &next_game;
+                scope.spawn(move || -> error::Returns<u64> {
+                    let mut state = game_state::GameState::new(&engine.game);
+                    let mut generator = movegen::InlineGenerator::<225>::try_new(&engine.game)?;
+                    let mut turns = 0;
+                    while let Ok(game) =
+                        next_game.try_update(Ordering::Relaxed, Ordering::Relaxed, |game| {
+                            (game < games).then(|| game + 1)
+                        })
+                    {
+                        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(
+                            args.seed.wrapping_add(game as u64),
+                        );
+                        turns += play_game(
+                            engine,
+                            &mut generator,
+                            &mut state,
+                            &mut rng,
+                            |_, _, _, _| Ok(()),
+                        )? as u64;
+                    }
+                    Ok(turns)
+                })
+            })
+            .collect::<Vec<_>>();
+        workers.into_iter().try_fold(0, |turns, worker| {
+            Ok(turns + worker.join().map_err(|_| "a self-play worker panicked")??)
+        })
+    })?;
+    writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        serde_json::json!({
+            "games": games,
+            "turns": turns,
+            "threads": threads,
+            "setup_ns": setup.as_nanos(),
+            "play_ns": begun.elapsed().as_nanos(),
+        }),
+    )?;
     Ok(())
 }

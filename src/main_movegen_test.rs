@@ -310,6 +310,7 @@ enum Task {
     Write(Files),
     Replay(movegen_replay::ReplayArgs),
     Capture(movegen_replay::CaptureArgs),
+    Throughput(movegen_replay::ThroughputArgs),
 }
 
 #[derive(clap::Parser)]
@@ -333,6 +334,7 @@ fn main() -> error::Returns<()> {
         Task::Write(files) => (false, files),
         Task::Replay(args) => return movegen_replay::replay(&cli.game, cli.kbwg, args),
         Task::Capture(args) => return movegen_replay::capture(&cli.game, cli.kbwg, args),
+        Task::Throughput(args) => return movegen_replay::throughput(&cli.game, cli.kbwg, args),
     };
     let kwg_bytes = std::fs::read(&files.kwg)?;
     let klv_bytes = std::fs::read(&files.klv)?;
