@@ -920,7 +920,7 @@ fn play_score(play: &movegen::Play) -> i64 {
 // side holding the rack is gone out on
 #[inline(always)]
 fn twice(game_config: &game_config::GameConfig, rack: &[u8]) -> i64 {
-    2 * equity::SCALE as i64 * game_config.alphabet().rack_score(rack) as i64
+    2 * equity::SCALE as i64 * game_config.alphabet().rack_score(rack).raw() as i64
 }
 
 // the tiles a play takes from its rack, a blank as 0, sorted

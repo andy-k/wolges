@@ -307,14 +307,15 @@ impl GameState {
                     .checked_mul(
                         game_config
                             .alphabet()
-                            .rack_score(&self.players[(1 - self.turn) as usize].rack),
+                            .rack_score(&self.players[(1 - self.turn) as usize].rack)
+                            .raw(),
                     )
                     .and_then(|bonus| final_scores[self.turn as usize].checked_add(bonus))
                     .ok_or("score overflow")?;
             } else {
                 let mut earned = 0i32;
                 for (i, player) in self.players.iter().enumerate() {
-                    let this_rack = game_config.alphabet().scaled_rack_score(&player.rack);
+                    let this_rack = game_config.alphabet().scaled_rack_score(&player.rack).raw();
                     final_scores[i] = final_scores[i]
                         .checked_sub(this_rack)
                         .ok_or("score overflow")?;
@@ -329,7 +330,7 @@ impl GameState {
             for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] = player
                     .score
-                    .checked_sub(game_config.alphabet().scaled_rack_score(&player.rack))
+                    .checked_sub(game_config.alphabet().scaled_rack_score(&player.rack).raw())
                     .ok_or("score overflow")?;
             }
             Ok(CheckGameEnded::ZeroScores)

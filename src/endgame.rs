@@ -2737,7 +2737,7 @@ impl<
                 let count = rack[..i].iter().rev().take_while(|&&t| t == tile).count();
                 work_buffer.key ^= rack_step(player as u8, tile, count);
             }
-            work_buffer.rack_scores[player] = alphabet.scaled_rack_score(rack);
+            work_buffer.rack_scores[player] = alphabet.scaled_rack_score(rack).raw();
         }
         if !work_buffer.lane_pool.deal.pool.is_empty() {
             let dim = self.game_config.board_layout().dim();
@@ -2808,7 +2808,8 @@ impl<
                     let count = rack[at..].iter().take_while(|&&t| t == held).count();
                     work_buffer.key ^= rack_step(player_idx, held, count - 1);
                     rack.remove(at);
-                    work_buffer.rack_scores[player_idx as usize] -= alphabet.scaled_score(held);
+                    work_buffer.rack_scores[player_idx as usize] -=
+                        alphabet.scaled_score(held).raw();
                 }
             }
         }
@@ -2839,7 +2840,8 @@ impl<
                     let count = rack[at..].iter().take_while(|&&t| t == held).count();
                     work_buffer.key ^= rack_step(player_idx, held, count);
                     rack.insert(at, held);
-                    work_buffer.rack_scores[player_idx as usize] += alphabet.scaled_score(held);
+                    work_buffer.rack_scores[player_idx as usize] +=
+                        alphabet.scaled_score(held).raw();
                 }
             }
             if !work_buffer.lane_pool.deal.pool.is_empty() {
@@ -2864,7 +2866,7 @@ impl<
         let mut mover = rack_scores[player_idx as usize];
         if let movegen::Play::Place { word, .. } = &self.work_buffer.lists[ply][found].play {
             for &tile in word.iter().filter(|&&t| t != 0) {
-                mover -= alphabet.scaled_score(held_tile(tile));
+                mover -= alphabet.scaled_score(held_tile(tile)).raw();
             }
         }
         equity::Equity::new(mover - rack_scores[player_idx as usize ^ 1])
@@ -3088,7 +3090,7 @@ impl<
         let spent: i32 = word
             .iter()
             .filter(|&&tile| tile != 0)
-            .map(|&tile| alphabet.scaled_score(held_tile(tile)))
+            .map(|&tile| alphabet.scaled_score(held_tile(tile)).raw())
             .sum();
         let kept = work_buffer.rack_scores[player_idx as usize] - spent;
         let cap = score - equity::Equity::new(outs.slots[k].score + 2 * kept);
@@ -5659,10 +5661,8 @@ impl<
         let pass_zeros = zeros.saturating_add(1);
         let pass_val =
             if answering != 0 || scoreless_turns_end(search.gc, None, pass_passes, pass_zeros) {
-                equity::Equity::new(
-                    alphabet.scaled_rack_score(&racks[opp as usize])
-                        - alphabet.scaled_rack_score(&racks[mover as usize]),
-                )
+                alphabet.scaled_rack_score(&racks[opp as usize])
+                    - alphabet.scaled_rack_score(&racks[mover as usize])
             } else {
                 match Self::one_in_bag_minimax(
                     search,
@@ -5808,10 +5808,8 @@ impl<
         let pass_zeros = zeros.saturating_add(1);
         let pass_val = if answering || scoreless_turns_end(search.gc, None, pass_passes, pass_zeros)
         {
-            equity::Equity::new(
-                alphabet.scaled_rack_score(&racks[opp as usize])
-                    - alphabet.scaled_rack_score(&racks[mover as usize]),
-            )
+            alphabet.scaled_rack_score(&racks[opp as usize])
+                - alphabet.scaled_rack_score(&racks[mover as usize])
         } else {
             -Self::one_in_bag_minimax_ex(
                 search,
@@ -5850,10 +5848,8 @@ impl<
                 rack[p] = drawn;
             }
             let exch_val = if scoreless_turns_end(search.gc, None, 0, exch_zeros) {
-                equity::Equity::new(
-                    alphabet.scaled_rack_score(&nr[opp as usize])
-                        - alphabet.scaled_rack_score(&nr[mover as usize]),
-                )
+                alphabet.scaled_rack_score(&nr[opp as usize])
+                    - alphabet.scaled_rack_score(&nr[mover as usize])
             } else {
                 -Self::one_in_bag_minimax_ex(
                     search,
@@ -7249,10 +7245,10 @@ impl<
                         // the pass ends the game at once when it brings the
                         // scoreless turns to the config's count, each losing
                         // their rack
-                        PegMove::Pass if pass_ends_the_game => equity::Equity::new(
+                        PegMove::Pass if pass_ends_the_game => {
                             alphabet.scaled_rack_score(opp_rack)
-                                - alphabet.scaled_rack_score(mover_rack),
-                        ),
+                                - alphabet.scaled_rack_score(mover_rack)
+                        }
                         PegMove::Pass => {
                             // PEG2-7: with two or more in the bag, draw every
                             // tile from the same end -- pop, the back -- and
@@ -8764,7 +8760,8 @@ impl InBag {
     fn racks_lost(&self, gc: &game_config::GameConfig) -> f64 {
         let alphabet = gc.alphabet();
         (alphabet.scaled_rack_score(&self.racks[(self.mover ^ 1) as usize])
-            - alphabet.scaled_rack_score(&self.racks[self.mover as usize])) as f64
+            - alphabet.scaled_rack_score(&self.racks[self.mover as usize]))
+        .raw() as f64
     }
 }
 
@@ -10726,7 +10723,7 @@ impl<
                     let alphabet = self.gc.alphabet();
                     let lost = (alphabet.scaled_rack_score(other)
                         - alphabet.scaled_rack_score(&info.rack))
-                        as f64;
+                    .raw() as f64;
                     return Ok((beats(lead + lost, 0.0), lost));
                 }
                 if self.at_horizon() {
@@ -11035,7 +11032,7 @@ mod tests {
             {
                 let placed = word.iter().filter(|&&t| t != 0).count();
                 let val = if placed == racks[mover].len() {
-                    (*score + 2 * alphabet.scaled_rack_score(&racks[opp])) as f32
+                    (*score + 2 * alphabet.scaled_rack_score(&racks[opp]).raw()) as f32
                 } else {
                     let mut nb = board.to_vec();
                     let mut nr = racks.clone();
@@ -11053,8 +11050,8 @@ mod tests {
         let pass_val = if answering
             || super::scoreless_turns_end(fixed.gc, Some(board), pass_passes, pass_zeros)
         {
-            (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
-                as f32
+            (alphabet.scaled_rack_score(&racks[opp]).raw()
+                - alphabet.scaled_rack_score(&racks[mover]).raw()) as f32
         } else {
             -reference(fixed, board, racks, opp, pass_passes, pass_zeros, false)
         };
@@ -11147,8 +11144,8 @@ mod tests {
         let pass_zeros = zeros.saturating_add(1);
         let pass_val =
             if answering || super::scoreless_turns_end(fixed.gc, None, pass_passes, pass_zeros) {
-                (alphabet.scaled_rack_score(&racks[opp])
-                    - alphabet.scaled_rack_score(&racks[mover])) as f32
+                (alphabet.scaled_rack_score(&racks[opp]).raw()
+                    - alphabet.scaled_rack_score(&racks[mover]).raw()) as f32
             } else {
                 -reference_one_in_bag(
                     fixed,
@@ -11249,8 +11246,8 @@ mod tests {
         let pass_zeros = zeros + 1;
         let pass_val =
             if answering || super::scoreless_turns_end(fixed.gc, None, pass_passes, pass_zeros) {
-                (alphabet.scaled_rack_score(&racks[opp])
-                    - alphabet.scaled_rack_score(&racks[mover])) as f32
+                (alphabet.scaled_rack_score(&racks[opp]).raw()
+                    - alphabet.scaled_rack_score(&racks[mover]).raw()) as f32
             } else {
                 -reference_one_in_bag_ex(
                     fixed,
@@ -11288,8 +11285,8 @@ mod tests {
                 rack[p] = drawn;
             }
             let exch_val = if super::scoreless_turns_end(fixed.gc, None, 0, exch_zeros) {
-                (alphabet.scaled_rack_score(&nr[opp]) - alphabet.scaled_rack_score(&nr[mover]))
-                    as f32
+                (alphabet.scaled_rack_score(&nr[opp]).raw()
+                    - alphabet.scaled_rack_score(&nr[mover]).raw()) as f32
             } else {
                 -reference_one_in_bag_ex(
                     fixed,
@@ -12011,7 +12008,7 @@ mod tests {
                     let placed = word.iter().filter(|&&tile| tile != 0).count();
                     let out = placed == racks[mover].len();
                     let got = if out {
-                        (*score + 2 * alphabet.scaled_rack_score(&racks[opp])) as f32
+                        (*score + 2 * alphabet.scaled_rack_score(&racks[opp]).raw()) as f32
                     } else {
                         let mut next_board = board.clone();
                         let mut next_racks = racks.clone();
@@ -12040,8 +12037,8 @@ mod tests {
                         pass_passes,
                         pass_zeros,
                     ) {
-                        (alphabet.scaled_rack_score(&racks[opp])
-                            - alphabet.scaled_rack_score(&racks[mover]))
+                        (alphabet.scaled_rack_score(&racks[opp]).raw()
+                            - alphabet.scaled_rack_score(&racks[mover]).raw())
                             as f32
                     } else {
                         -reference(fixed, &board, &racks, opp, pass_passes, pass_zeros, false)
@@ -15475,8 +15472,8 @@ mod tests {
                                 word,
                             );
                             if racks[mover].is_empty() {
-                                realized +=
-                                    sign * (2 * a.scaled_rack_score(&racks[mover ^ 1])) as f32;
+                                realized += sign
+                                    * (2 * a.scaled_rack_score(&racks[mover ^ 1]).raw()) as f32;
                                 ended = true;
                             }
                             prev_pass = false;
@@ -15484,8 +15481,8 @@ mod tests {
                         movegen::Play::Exchange { .. } => {
                             if prev_pass {
                                 realized += sign
-                                    * (a.scaled_rack_score(&racks[mover ^ 1])
-                                        - a.scaled_rack_score(&racks[mover]))
+                                    * (a.scaled_rack_score(&racks[mover ^ 1]).raw()
+                                        - a.scaled_rack_score(&racks[mover]).raw())
                                         as f32;
                                 ended = true;
                             }
@@ -15536,9 +15533,9 @@ mod tests {
                 egs.collect_pv(0, &mut pv);
 
                 let a = gc.alphabet();
-                let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t)).sum();
-                let rack_pts =
-                    a.scaled_rack_score(&pos.racks[0]) + a.scaled_rack_score(&pos.racks[1]);
+                let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t).raw()).sum();
+                let rack_pts = a.scaled_rack_score(&pos.racks[0]).raw()
+                    + a.scaled_rack_score(&pos.racks[1]).raw();
                 let cap = 4 * (board_pts + rack_pts) + 10000;
                 if v.raw().abs() > cap {
                     oob += 1;
@@ -16525,7 +16522,7 @@ mod tests {
 
             let a = gc.alphabet();
             let pass_only = equity::Equity::new(
-                a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0]),
+                a.scaled_rack_score(&racks[1]).raw() - a.scaled_rack_score(&racks[0]).raw(),
             );
             assert!(
                 solvev >= pass_only,
@@ -16662,8 +16659,9 @@ mod tests {
         let solvev = egs.solve_one_in_bag(0, bag).unwrap();
 
         let a = gc.alphabet();
-        let pass_only =
-            equity::Equity::new(a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])); // -9000
+        let pass_only = equity::Equity::new(
+            a.scaled_rack_score(&racks[1]).raw() - a.scaled_rack_score(&racks[0]).raw(),
+        ); // -9000
         assert_eq!(
             solvev,
             equity::Equity::ZERO,

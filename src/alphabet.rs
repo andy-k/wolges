@@ -212,10 +212,10 @@ impl Alphabet {
     }
 
     #[inline(always)]
-    pub fn scaled_score(&self, idx: u8) -> i32 {
+    pub fn scaled_score(&self, idx: u8) -> equity::Equity {
         debug_assert!(idx & 0x80 != 0 || idx < self.len());
         match self {
-            Alphabet::Static(x) => x.scaled_scores[idx as usize],
+            Alphabet::Static(x) => equity::Equity::new(x.scaled_scores[idx as usize]),
         }
     }
 
@@ -271,13 +271,17 @@ impl Alphabet {
     }
 
     #[inline(always)]
-    pub fn rack_score(&self, rack: &[u8]) -> i32 {
-        rack.iter().map(|&t| self.score(t) as i32).sum::<i32>()
+    pub fn rack_score(&self, rack: &[u8]) -> equity::Points {
+        equity::Points::new(rack.iter().map(|&t| self.score(t) as i32).sum::<i32>())
     }
 
     #[inline(always)]
-    pub fn scaled_rack_score(&self, rack: &[u8]) -> i32 {
-        rack.iter().map(|&t| self.scaled_score(t)).sum::<i32>()
+    pub fn scaled_rack_score(&self, rack: &[u8]) -> equity::Equity {
+        equity::Equity::new(
+            rack.iter()
+                .map(|&t| self.scaled_score(t).raw())
+                .sum::<i32>(),
+        )
     }
 }
 

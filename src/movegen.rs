@@ -332,7 +332,7 @@ fn fill_multi_jumps<const D: usize>(
     for j in (0..strider_len).rev() {
         let b = board_strip[j];
         if b != 0 {
-            score += alphabet.scaled_score(b);
+            score += alphabet.scaled_score(b).raw();
         } else {
             score = 0; // cumulative face-value score (millipoints)
             last_empty = j as i8; // last seen empty square
@@ -344,7 +344,7 @@ fn fill_multi_jumps<const D: usize>(
     last_empty = -1i8;
     for (j, &b) in board_strip.iter().enumerate() {
         if b != 0 {
-            score += alphabet.scaled_score(b);
+            score += alphabet.scaled_score(b).raw();
         } else {
             score = 0; // cumulative face-value score (millipoints)
             last_empty = j as i8; // last seen empty square
@@ -1205,10 +1205,10 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     self.face_value_scores_for_down_plays[transposed_idx] = 0;
                 } else {
                     self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                    self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b);
+                    self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b).raw();
                     self.remaining_word_multipliers_for_down_plays[transposed_idx] = 1; // needed for the HashMap
                     self.face_value_scores_for_down_plays[transposed_idx] =
-                        alphabet.scaled_score(b);
+                        alphabet.scaled_score(b).raw();
                 }
             }
             base = end;
@@ -1273,7 +1273,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             let count = self.rack_tally[tile as usize];
             if count != 0 {
                 first_places[tile as usize] = self.descending_scores.len() as u8;
-                let score = alphabet.scaled_score(tile);
+                let score = alphabet.scaled_score(tile).raw();
                 for _ in 0..count {
                     self.descending_scores.push(score);
                 }
@@ -1696,7 +1696,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 } else {
                     chain_valid = false;
                     p = kwg.seek(p, b_letter);
-                    score += alphabet.scaled_score(b);
+                    score += alphabet.scaled_score(b).raw();
                     cross_set_buffer[j as usize] = CrossSetComputation {
                         score,
                         b_letter: b,
@@ -1903,7 +1903,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     break;
                 }
                 j -= 1;
-                score += alphabet.scaled_score(b);
+                score += alphabet.scaled_score(b).raw();
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             let mut k = i + 1;
@@ -1913,7 +1913,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     break;
                 }
                 k += 1;
-                score += alphabet.scaled_score(b);
+                score += alphabet.scaled_score(b).raw();
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             if k == j + 1 {
@@ -2629,7 +2629,7 @@ fn gen_place_placements_impl<
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    let tile_score = env.params.alphabet.scaled_score(tile);
+                    let tile_score = env.params.alphabet.scaled_score(tile).raw();
                     env.params
                         .used_tile_scores_shadowr
                         .insert_sorted(tile_score);
@@ -2649,7 +2649,8 @@ fn gen_place_placements_impl<
                     while remaining != 0 {
                         let t = remaining.trailing_zeros() as u8;
                         remaining &= remaining - 1;
-                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                        admissible_max =
+                            admissible_max.max(env.params.alphabet.scaled_score(t).raw());
                     }
                     acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
                     deferred |= 1u128 << (idx as u32);
@@ -2784,7 +2785,7 @@ fn gen_place_placements_impl<
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    let tile_score = env.params.alphabet.scaled_score(tile);
+                    let tile_score = env.params.alphabet.scaled_score(tile).raw();
                     env.params
                         .used_tile_scores_shadowl
                         .insert_sorted(tile_score);
@@ -2804,7 +2805,8 @@ fn gen_place_placements_impl<
                     while remaining != 0 {
                         let t = remaining.trailing_zeros() as u8;
                         remaining &= remaining - 1;
-                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                        admissible_max =
+                            admissible_max.max(env.params.alphabet.scaled_score(t).raw());
                     }
                     acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
                     deferred |= 1u128 << (idx as u32);
@@ -3228,7 +3230,7 @@ fn $name<
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    let tile_score = env.params.alphabet.scaled_score(tile);
+                    let tile_score = env.params.alphabet.scaled_score(tile).raw();
                     env.params
                         .used_tile_scores_shadowr
                         .insert_sorted(tile_score);
@@ -3248,7 +3250,8 @@ fn $name<
                     while remaining != 0 {
                         let t = remaining.trailing_zeros() as u8;
                         remaining &= remaining - 1;
-                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                        admissible_max =
+                            admissible_max.max(env.params.alphabet.scaled_score(t).raw());
                     }
                     acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
                     deferred |= $one << (idx as u32);
@@ -3383,7 +3386,7 @@ fn $name<
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    let tile_score = env.params.alphabet.scaled_score(tile);
+                    let tile_score = env.params.alphabet.scaled_score(tile).raw();
                     env.params
                         .used_tile_scores_shadowl
                         .insert_sorted(tile_score);
@@ -3403,7 +3406,8 @@ fn $name<
                     while remaining != 0 {
                         let t = remaining.trailing_zeros() as u8;
                         remaining &= remaining - 1;
-                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                        admissible_max =
+                            admissible_max.max(env.params.alphabet.scaled_score(t).raw());
                     }
                     acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
                     deferred |= $one << (idx as u32);
@@ -3962,7 +3966,7 @@ fn gen_classic_place_moves_lean<
                         leave_idx: 0,
                     }
                 } else {
-                    let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
+                    let tile_value = env.alphabet.scaled_score(0).raw() * tile_multiplier as i32;
                     Accumulator {
                         main_score: acc.main_score + tile_value,
                         perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -4220,7 +4224,7 @@ fn gen_classic_place_moves_lean<
                     leave_idx: 0,
                 }
             } else {
-                let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
+                let tile_value = env.alphabet.scaled_score(0).raw() * tile_multiplier as i32;
                 Accumulator {
                     main_score: acc.main_score + tile_value,
                     perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -4967,7 +4971,7 @@ fn gen_classic_place_moves<
                 );
                 continue 'word;
             }
-            let blank_value = env.alphabet.scaled_score(0);
+            let blank_value = env.alphabet.scaled_score(0).raw();
             let real_value = env.alphabet.score(blank_letter) as i32 * equity::SCALE;
             if first_blank == 0 {
                 for (i, &c) in word.iter().enumerate() {
@@ -5530,7 +5534,7 @@ fn gen_classic_place_moves<
             0
         };
         let left = env.left as usize;
-        let blank_value = env.alphabet.scaled_score(0);
+        let blank_value = env.alphabet.scaled_score(0).raw();
         let real_value = env.alphabet.score(letter) as i32 * equity::SCALE;
         for (j, &c) in word.iter().enumerate().skip(start) {
             let pos = left + j;
@@ -5788,14 +5792,14 @@ impl JumbledSplits {
         (self.letter_values).extend(
             self.letters
                 .iter()
-                .map(|&letter| alphabet.scaled_score(letter)),
+                .map(|&letter| alphabet.scaled_score(letter).raw()),
         );
         self.by_value.clear();
         self.by_value.extend(0..self.letters.len() as u8);
         let letter_values = &self.letter_values;
         (self.by_value)
             .sort_unstable_by(|&a, &b| letter_values[b as usize].cmp(&letter_values[a as usize]));
-        self.blank_value = alphabet.scaled_score(0);
+        self.blank_value = alphabet.scaled_score(0).raw();
     }
 
     // from plus the tiles' scores highest first, each by its weight: merged
@@ -6700,7 +6704,7 @@ fn gen_jumbled_place_moves_walk<
                     scores[m] = if k < real {
                         env.alphabet.score(tile) as i32 * equity::SCALE
                     } else {
-                        env.alphabet.scaled_score(0)
+                        env.alphabet.scaled_score(0).raw()
                     };
                     m += 1;
                 }
@@ -6729,7 +6733,7 @@ fn gen_jumbled_place_moves_walk<
             env.params.perpendicular_word_multipliers_strip[idx as usize];
         let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
         let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
-            let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
+            let tile_value = env.alphabet.scaled_score(0).raw() * tile_multiplier as i32;
             Accumulator {
                 main_score: acc.main_score + tile_value,
                 perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -7058,7 +7062,7 @@ fn gen_jumbled_place_moves_walk<
                                 scores[i] = if run_len <= env.params.rack_tally[tile as usize] {
                                     alphabet.score(tile) as i32 * equity::SCALE
                                 } else {
-                                    alphabet.scaled_score(0)
+                                    alphabet.scaled_score(0).raw()
                                 };
                             }
                             let scores = &mut scores[..num_played as usize];
@@ -11302,7 +11306,7 @@ fn gen_empty_board_place_moves_made<
                 if env.rack_tally[0] > 0 && (!SPELL_ONCE || env.rack_tally[tile as usize] == 0) {
                     env.rack_tally[0] -= 1;
                     env.word[depth] = tile | 0x80;
-                    env.tile_values[depth] = env.alphabet.scaled_score(0);
+                    env.tile_values[depth] = env.alphabet.scaled_score(0).raw();
                     let leave_idx = leave_idx.wrapping_sub(env.multi_leaves.place_value(0));
                     if len >= 2 && node.accepts() {
                         lay::<SPELL_ONCE, BAG_TERM, _, _, _>(env, len, leave_idx);
@@ -11914,7 +11918,7 @@ fn kurnia_gen_one_tile_moves<
     let (letters, value, blank_bit) = if tile == 0 {
         (
             (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
-            alphabet.scaled_score(0),
+            alphabet.scaled_score(0).raw(),
             0x80,
         )
     } else {
@@ -12505,7 +12509,7 @@ fn rcs_placements<
     while bits != 0 {
         let tile = bits.trailing_zeros() as u8;
         bits &= bits - 1;
-        rack_tiles[num_rack_tiles] = (1 << tile, alphabet.scaled_score(tile));
+        rack_tiles[num_rack_tiles] = (1 << tile, alphabet.scaled_score(tile).raw());
         num_rack_tiles += 1;
     }
     let rack_tiles = &rack_tiles[..num_rack_tiles];
@@ -15024,7 +15028,7 @@ mod tests {
                 let face = if tile & 0x80 != 0 {
                     0
                 } else {
-                    alphabet.scaled_score(tile)
+                    alphabet.scaled_score(tile).raw()
                 };
                 if board_tiles[sq] == 0 {
                     sum += face * premiums[sq].tile_multiplier as i32;
@@ -15760,7 +15764,7 @@ mod tests {
 
         let natural_a = 1u8; // 'A' is letter index 1 in the English alphabet.
         let blank_a = natural_a | 0x80; // a blank tile played as 'A'.
-        let natural_a_score = alphabet.scaled_score(natural_a);
+        let natural_a_score = alphabet.scaled_score(natural_a).raw();
         assert!(
             natural_a_score > 0,
             "the test needs a natural tile that actually scores points"
