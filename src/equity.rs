@@ -27,12 +27,12 @@ impl Equity {
     pub const ZERO: Self = Self(0);
 
     #[inline(always)]
-    pub fn new(v: i32) -> Self {
+    pub const fn new(v: i32) -> Self {
         Self(v)
     }
 
     #[inline(always)]
-    pub fn raw(self) -> i32 {
+    pub const fn raw(self) -> i32 {
         self.0
     }
 

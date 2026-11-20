@@ -159,7 +159,7 @@ const COMPLETE: i8 = i8::MAX;
 // the least two values can differ by: every endgame value is a whole number of
 // millipoints, so a window from a value less this to the value holds none
 // strictly inside it
-const LEAST_STEP: f32 = 1.0;
+const LEAST_STEP: equity::Equity = equity::Equity::new(1);
 
 // the best move as stored: its place among the moves the generator gives for
 // the position, or a pass, or none
@@ -169,7 +169,7 @@ const NO_PLAY: u16 = u16::MAX;
 // what the table knows of a position
 #[derive(Clone, Copy)]
 struct Entry {
-    value: f32,
+    value: equity::Equity,
     play: u16,
     depth: i8,
     bound: Bound,
@@ -313,7 +313,7 @@ impl Table {
 
     #[inline(always)]
     fn word(&self, entry: Entry) -> u64 {
-        entry.value.to_bits() as u64
+        entry.value.raw() as u32 as u64
             | (entry.play as u64) << 32
             | (entry.depth as u8 as u64) << 48
             | (match entry.bound {
@@ -333,7 +333,7 @@ impl Table {
             _ => return None,
         };
         Some(Entry {
-            value: f32::from_bits(word as u32),
+            value: equity::Equity::new(word as u32 as i32),
             play: (word >> 32) as u16,
             depth: (word >> 48) as u8 as i8,
             bound,
@@ -521,7 +521,7 @@ impl Table {
 // short by the depth
 #[derive(Clone, Copy)]
 struct Searched {
-    value: f32,
+    value: equity::Equity,
     complete: bool,
 }
 
@@ -531,8 +531,8 @@ struct Enter {
     ply: usize,
     player_idx: u8,
     depth: i8,
-    alpha: f32,
-    beta: f32,
+    alpha: equity::Equity,
+    beta: equity::Equity,
     scoreless: Scoreless,
 }
 
@@ -543,7 +543,7 @@ struct Frame {
     node: Enter,
     root: bool,
     key: u64,
-    alpha_searched: f32,
+    alpha_searched: equity::Equity,
     table_first: bool,
     best: Searched,
     best_play: u16,
@@ -566,7 +566,7 @@ impl Frame {
             alpha_searched: node.alpha,
             table_first,
             best: Searched {
-                value: f32::NEG_INFINITY,
+                value: equity::Equity::NEG_INFINITY,
                 complete: true,
             },
             best_play: NO_PLAY,
@@ -581,10 +581,10 @@ impl Frame {
     #[inline(always)]
     fn take_value(
         &mut self,
-        proven: &mut Option<(u16, f32)>,
+        proven: &mut Option<(u16, equity::Equity)>,
         i: usize,
         index: u16,
-        value: f32,
+        value: equity::Equity,
     ) -> bool {
         if value > self.best.value {
             if i > 0 && self.first_is_best && value > self.alpha_searched && value < self.node.beta
@@ -605,7 +605,11 @@ impl Frame {
 
     // the pass's value taken, as a move's is
     #[inline(always)]
-    fn take_pass_value(&mut self, proven: &mut Option<(u16, f32)>, value: f32) {
+    fn take_pass_value(
+        &mut self,
+        proven: &mut Option<(u16, equity::Equity)>,
+        value: equity::Equity,
+    ) {
         if value > self.best.value {
             if self.first_is_best && value > self.alpha_searched && value < self.node.beta {
                 *proven = Some((PASS_PLAY, value));
@@ -621,7 +625,7 @@ enum Child {
     Moves, // none yet, its moves not done
     Move {
         index: u16,
-        score: f32,
+        score: equity::Equity,
         play: movegen::Play,
         scout: bool, // searched with a zero-width window, to be searched again past it
     }, // a move, placed
@@ -644,8 +648,8 @@ enum Advance {
 struct Stopped {
     frames: Vec<Frame>,
     pending: (Enter, bool),
-    pass: (u64, u8, i8, u32, u32),
-    proven: Option<(u16, f32)>,
+    pass: (u64, u8, i8, equity::Equity, equity::Equity),
+    proven: Option<(u16, equity::Equity)>,
     lists: Vec<Vec<Candidate>>,
     orders: Vec<Vec<u128>>,
     zones: Vec<(u128, u128)>,
@@ -663,7 +667,7 @@ struct Stopped {
 // replace
 struct Line {
     of: (u64, u8, i8),
-    start: Option<(u16, u32)>,
+    start: Option<(u16, equity::Equity)>,
     plies: Vec<(equity::Equity, movegen::Play)>,
 }
 
@@ -734,9 +738,9 @@ impl RootMoves {
 // a move generated for a position, as the search orders it
 struct Candidate {
     play: movegen::Play,
-    uses: u32,      // its rack places (first slots), set when its list keeps them
-    index: u16,     // its place in the sorted list, NO_PLAY past what fits
-    valuation: f32, // a play out's whole value, else its score
+    uses: u32,  // its rack places (first slots), set when its list keeps them
+    index: u16, // its place in the sorted list, NO_PLAY past what fits
+    valuation: equity::Equity, // a play out's whole value, else its score
     plays_out: bool,
     placed: u8, // the tiles it places
 }
@@ -766,7 +770,7 @@ fn add_placement(
             play: play.clone(),
             uses,
             index: NO_PLAY,
-            valuation: valuation as f32,
+            valuation: equity::Equity::new(valuation),
             plays_out,
             placed: placed as u8,
         });
@@ -1594,20 +1598,20 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     at_root: bool,       // the next node searched is the root of a pass
     pass_best: u16,      // the root's best move in the last finished root search
     root_best: u16,      // the root's best move in the deepest finished pass
-    proven: Option<(u16, f32)>, // a move this pass found worth more than its first, and its value
-    answer: Option<(u16, f32)>, // the move and value a solve stopped partway answers with
-    frames: Vec<Frame>,  // the search's stack, root first
+    proven: Option<(u16, equity::Equity)>, // a move this pass found worth more than its first, and its value
+    answer: Option<(u16, equity::Equity)>, // the move and value a solve stopped partway answers with
+    frames: Vec<Frame>,                    // the search's stack, root first
     pending: Option<(Enter, bool)>, // the node a limit stopped the search at, and whether the root
-    resumable: bool,     // a timed solve's pass, which a limit stops without unwinding
-    stopped: Option<(u64, u8, i8, u32, u32)>, // which pass the frames are, when one stopped
-    resumed: u64,        // the passes this solver went on with from a step before
+    resumable: bool,                // a timed solve's pass, which a limit stops without unwinding
+    stopped: Option<(u64, u8, i8, equity::Equity, equity::Equity)>, // which pass the frames are, when one stopped
+    resumed: u64,            // the passes this solver went on with from a step before
     line: Option<Box<Line>>, // the line collect_pv read last
-    cadence: u64,        // the nodes between looks at the clock, 1 to LIMIT_CADENCE
-    next_look: u64,      // the nodes this pass searches before the next look
+    cadence: u64,            // the nodes between looks at the clock, 1 to LIMIT_CADENCE
+    next_look: u64,          // the nodes this pass searches before the next look
     last_look: std::time::Duration, // the time at the last look, from the solve's start
-    threads: usize,      // the solve's threads, one lane each (1: the plain search)
-    verdicts: Vec<Option<(f32, bool)>>, // by root order: a lane's bound on a move failing low
-    helper_tables: Vec<Option<KeptTable>>, // each lane's table, kept from pass to pass
+    threads: usize,          // the solve's threads, one lane each (1: the plain search)
+    verdicts: Vec<Option<(equity::Equity, bool)>>, // by root order: a lane's bound on a move failing low
+    helper_tables: Vec<Option<KeptTable>>,         // each lane's table, kept from pass to pass
 }
 
 impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G, JUMPS, ANY_SIDE> {
@@ -2159,17 +2163,26 @@ struct OnOneClock {
     estimates: bool,
 }
 
-// the solver counts millipoints in f32, which holds whole ones exactly; an
-// average, such as the peg's margin, rounds to the nearest
+// an average of values in millipoints, such as the peg's margin, kept in f32,
+// which holds whole ones exactly, and rounded to the nearest
 #[inline(always)]
 fn to_equity(v: f32) -> equity::Equity {
     debug_assert!(v.abs() <= (1u32 << f32::MANTISSA_DIGITS) as f32, "{v}");
     equity::Equity::new(v.round() as i32)
 }
 
+// a bound in f64 as an endgame's beta: a whole value is below it when it is
+// below the bound rounded up
 #[inline(always)]
-fn to_known_equity(v: f32) -> Option<equity::Equity> {
-    (!v.is_nan()).then(|| to_equity(v))
+fn beta_equity(beta: f64) -> equity::Equity {
+    let beta = beta as f32;
+    if beta == f32::INFINITY {
+        equity::Equity::INFINITY
+    } else if beta == f32::NEG_INFINITY {
+        equity::Equity::NEG_INFINITY
+    } else {
+        to_equity(beta.ceil())
+    }
 }
 
 // a solve's answer: exact, or the value of the deepest search that finished
@@ -2837,15 +2850,15 @@ impl<
 
     // the value for player_idx if both players pass now, each losing their rack
     #[inline(always)]
-    fn both_pass_value(&self, player_idx: u8) -> f32 {
+    fn both_pass_value(&self, player_idx: u8) -> equity::Equity {
         let rack_scores = &self.work_buffer.rack_scores;
-        (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
+        equity::Equity::new(rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize])
     }
 
     // both_pass_value for the other player after player_idx plays the move at
     // place found of ply's list, as placing it would leave the rack scores
     #[inline(always)]
-    fn both_pass_value_after(&self, player_idx: u8, ply: usize, found: usize) -> f32 {
+    fn both_pass_value_after(&self, player_idx: u8, ply: usize, found: usize) -> equity::Equity {
         let alphabet = self.game_config.alphabet();
         let rack_scores = &self.work_buffer.rack_scores;
         let mut mover = rack_scores[player_idx as usize];
@@ -2854,7 +2867,7 @@ impl<
                 mover -= alphabet.scaled_score(held_tile(tile));
             }
         }
-        (mover - rack_scores[player_idx as usize ^ 1]) as f32
+        equity::Equity::new(mover - rack_scores[player_idx as usize ^ 1])
     }
 
     // the ceiling on what player_idx's last tile adds after their move from
@@ -2864,7 +2877,12 @@ impl<
     // made before the move; zone lanes are generated only when the best found
     // so far, the both-pass value included, is at or under need
     #[inline(always)]
-    fn one_tile_bound(&mut self, ply: usize, player_idx: u8, need: f32) -> f32 {
+    fn one_tile_bound(
+        &mut self,
+        ply: usize,
+        player_idx: u8,
+        need: equity::Equity,
+    ) -> equity::Equity {
         let (rows, cols) = self.work_buffer.zones[ply];
         let work_buffer = &mut self.work_buffer;
         let left = work_buffer.racks[player_idx as usize][0];
@@ -2911,8 +2929,8 @@ impl<
                 break;
             }
         }
-        if best as f32 > need {
-            return best as f32;
+        if equity::Equity::new(best) > need {
+            return equity::Equity::new(best);
         }
         // timed only while something listens
         let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
@@ -2940,7 +2958,7 @@ impl<
                 best = best.max(score + out_bonus);
             }
         }
-        best as f32
+        equity::Equity::new(best)
     }
 
     // the rows and columns whose moves a move can change, on the position
@@ -3050,11 +3068,11 @@ impl<
         &self,
         ply: usize,
         player_idx: u8,
-        score: f32,
-        alpha: f32,
+        score: equity::Equity,
+        alpha: equity::Equity,
         fills: &zone::Squares,
         play: &movegen::Play,
-    ) -> Option<(usize, f32)> {
+    ) -> Option<(usize, equity::Equity)> {
         let work_buffer = &self.work_buffer;
         let outs = work_buffer.outs.get(ply)?;
         if outs.of != work_buffer.serials[ply] {
@@ -3073,7 +3091,7 @@ impl<
             .map(|&tile| alphabet.scaled_score(held_tile(tile)))
             .sum();
         let kept = work_buffer.rack_scores[player_idx as usize] - spent;
-        let cap = score - (outs.slots[k].score + 2 * kept) as f32;
+        let cap = score - equity::Equity::new(outs.slots[k].score + 2 * kept);
         (cap <= alpha).then_some((k, cap))
     }
 
@@ -3087,8 +3105,8 @@ impl<
         ply: usize,
         player_idx: u8,
         k: usize,
-        score: f32,
-        cap: f32,
+        score: equity::Equity,
+        cap: equity::Equity,
     ) -> bool {
         let out = self.work_buffer.outs[ply].slots[k];
         let other = player_idx ^ 1;
@@ -3140,7 +3158,7 @@ impl<
             &work_buffer.board_tiles,
             [&work_buffer.racks[0], &work_buffer.racks[1]],
         );
-        let replied = reply.solve(other).unwrap().raw() as f32;
+        let replied = reply.solve(other).unwrap();
         assert!(
             score - replied <= cap,
             "a skipped move is worth {} past its cap {cap}",
@@ -3606,7 +3624,13 @@ impl<
     ) -> error::Returns<Solved> {
         let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         self.work_buffer.resumable = resumable && limited;
-        let solved = self.run_id_loop_below(player_idx, verbose, limits, finished, f32::INFINITY);
+        let solved = self.run_id_loop_below(
+            player_idx,
+            verbose,
+            limits,
+            finished,
+            equity::Equity::INFINITY,
+        );
         self.work_buffer.resumable = false;
         solved
     }
@@ -3621,9 +3645,9 @@ impl<
         verbose: bool,
         limits: &Limits,
         finished: Option<(i8, equity::Equity)>,
-        beta: f32,
+        beta: equity::Equity,
     ) -> error::Returns<Solved> {
-        let mut last_valuation = f32::NAN;
+        let mut last_valuation = None;
         let longest = self.longest_line(player_idx);
         self.begin_search(limits);
         // under a time or state limit, every depth is searched, so a stopped
@@ -3639,7 +3663,7 @@ impl<
         if let Some((depth, value)) = finished {
             max_depth = depth.clamp(0, longest as i8 - 1);
             self.work_buffer.finished = max_depth;
-            last_valuation = value.raw() as f32;
+            last_valuation = Some(value);
         }
         // a deepening search with a tile in the bag asks no deeper than its pass
         let cap = self.work_buffer.depth_cap;
@@ -3647,7 +3671,7 @@ impl<
             if max_depth >= cap {
                 // short of the end, the deepest pass asked for answers
                 return Ok(Solved {
-                    value: to_known_equity(last_valuation),
+                    value: last_valuation,
                     depth: max_depth,
                     exact: false,
                     partway: None,
@@ -3673,12 +3697,19 @@ impl<
             {
                 self.work_buffer.proven = None;
             }
-            let searched = if beta < f32::INFINITY {
-                self.root_search(player_idx, max_depth, f32::NEG_INFINITY, beta)
-            } else if max_depth == 1 {
-                self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
-            } else {
+            let searched = if beta < equity::Equity::INFINITY {
+                self.root_search(player_idx, max_depth, equity::Equity::NEG_INFINITY, beta)
+            } else if let Some(last_valuation) = last_valuation
+                && max_depth > 1
+            {
                 self.aspiration_search(player_idx, max_depth, last_valuation)
+            } else {
+                self.root_search(
+                    player_idx,
+                    max_depth,
+                    equity::Equity::NEG_INFINITY,
+                    equity::Equity::INFINITY,
+                )
             };
             let searched = match searched {
                 Ok(searched) => searched,
@@ -3690,12 +3721,11 @@ impl<
                 Err(_) if self.work_buffer.cut_short => {
                     let work_buffer = &mut self.work_buffer;
                     let best = (work_buffer.root_best != NO_PLAY)
-                        .then_some((work_buffer.root_best, last_valuation));
+                        .then_some(work_buffer.root_best)
+                        .zip(last_valuation);
                     work_buffer.answer = work_buffer.proven.or(best);
                     return Ok(Solved {
-                        value: to_known_equity(
-                            work_buffer.answer.map_or(last_valuation, |(_, v)| v),
-                        ),
+                        value: work_buffer.answer.map(|(_, v)| v).or(last_valuation),
                         depth: work_buffer.finished,
                         exact: false,
                         partway: work_buffer.proven.map(|_| max_depth),
@@ -3706,11 +3736,11 @@ impl<
                 }
                 Err(e) => return Err(e),
             };
-            last_valuation = searched.value;
+            last_valuation = Some(searched.value);
             self.work_buffer.finished = max_depth;
             self.work_buffer.root_best = self.work_buffer.pass_best;
             if self.work_buffer.in_bag.is_none() {
-                self.report(Some(to_equity(searched.value)))?;
+                self.report(Some(searched.value))?;
             }
             if verbose {
                 self.print_best_line(player_idx)?;
@@ -3724,7 +3754,7 @@ impl<
             // a pass that ended past a limit is the last
             if (max_depth as usize) < longest && self.past_a_limit() {
                 return Ok(Solved {
-                    value: Some(to_equity(searched.value)),
+                    value: Some(searched.value),
                     depth: max_depth,
                     exact: false,
                     partway: None,
@@ -3734,7 +3764,7 @@ impl<
             }
         }
         Ok(Solved {
-            value: to_known_equity(last_valuation),
+            value: last_valuation,
             depth: self.work_buffer.max_depth,
             exact: true,
             partway: None,
@@ -3765,8 +3795,8 @@ impl<
         &mut self,
         player_idx: u8,
         depth: i8,
-        alpha: f32,
-        beta: f32,
+        alpha: equity::Equity,
+        beta: equity::Equity,
     ) -> error::Returns<Searched> {
         self.reset_position();
         if !self.work_buffer.resumable {
@@ -3781,8 +3811,8 @@ impl<
             self.root_key(player_idx, self.entering()),
             player_idx,
             depth,
-            alpha.to_bits(),
-            beta.to_bits(),
+            alpha,
+            beta,
         );
         let enter = if self.work_buffer.stopped == Some(pass) && self.work_buffer.pending.is_some()
         {
@@ -3830,9 +3860,9 @@ impl<
         &mut self,
         player_idx: u8,
         max_depth: i8,
-        last_valuation: f32,
+        last_valuation: equity::Equity,
     ) -> error::Returns<Searched> {
-        const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
+        const ASPIRATION_WINDOW: equity::Equity = equity::Equity::new(3 * super::equity::SCALE);
         let lo = last_valuation - ASPIRATION_WINDOW;
         let hi = last_valuation + ASPIRATION_WINDOW;
         // a stopped search with the full window goes on as that, the narrow one
@@ -3840,8 +3870,8 @@ impl<
         let full = (self.work_buffer.stopped).is_some_and(|(_, mover, depth, alpha, beta)| {
             mover == player_idx
                 && depth == max_depth
-                && alpha == f32::NEG_INFINITY.to_bits()
-                && beta == f32::INFINITY.to_bits()
+                && alpha == equity::Equity::NEG_INFINITY
+                && beta == equity::Equity::INFINITY
         });
         if !(self.work_buffer.resumable && full) {
             let searched = self.root_search(player_idx, max_depth, lo, hi)?;
@@ -3849,7 +3879,12 @@ impl<
                 return Ok(searched);
             }
         }
-        self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
+        self.root_search(
+            player_idx,
+            max_depth,
+            equity::Equity::NEG_INFINITY,
+            equity::Equity::INFINITY,
+        )
     }
 
     // the nodes the last solve searched, every one its listener heard of
@@ -3970,7 +4005,7 @@ impl<
         limits: &Limits,
     ) -> error::Returns<Option<movegen::Play>> {
         self.start_clock(limits);
-        let margin = -lead.raw() as f32;
+        let margin = -lead;
         let share = |part: u32, whole: u32| Limits {
             time: limits.time.map(|time| time * part / whole),
             states: limits
@@ -4016,13 +4051,13 @@ impl<
     fn ask_margin(
         &mut self,
         player_idx: u8,
-        margin: f32,
+        margin: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<Option<u16>> {
         let longest = self.longest_line(player_idx);
         self.begin_search(limits);
         let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
-        let point = equity::SCALE as f32;
+        let point = equity::Equity::new(equity::SCALE);
         for max_depth in 1..=longest as i8 {
             self.work_buffer.max_depth = max_depth;
             self.work_buffer.check_limits = max_depth > 1 && limited;
@@ -4076,7 +4111,7 @@ impl<
         &mut self,
         player_idx: u8,
         play: &movegen::Play,
-        margin: f32,
+        margin: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<bool> {
         self.reset_position();
@@ -4091,7 +4126,7 @@ impl<
                 if self.pass_ends_the_line(scoreless) {
                     return Ok(self.both_pass_value(player_idx) > margin);
                 }
-                (0.0, Scoreless::Answering)
+                (equity::Equity::ZERO, Scoreless::Answering)
             }
             movegen::Play::Place { .. } => {
                 let Some(candidate) = self.work_buffer.lists[0]
@@ -4119,7 +4154,7 @@ impl<
             limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         // the move wins when its reply is worth less than valuation - margin
         let beta = valuation - margin;
-        let point = equity::SCALE as f32;
+        let point = equity::Equity::new(equity::SCALE);
         let mut wins = Ok(false);
         for depth in 1..COMPLETE {
             self.work_buffer.cut_short = false;
@@ -4176,11 +4211,7 @@ impl<
         let mut valued = Vec::with_capacity(plays.len());
         for play in plays {
             let (value, exact) = self.first_move_value(player_idx, &play, limits)?;
-            valued.push(FirstMove {
-                play,
-                value: value.map(to_equity),
-                exact,
-            });
+            valued.push(FirstMove { play, value, exact });
         }
         // a sort that keeps the root's order among equals
         valued.sort_by_key(|first| std::cmp::Reverse(first.value));
@@ -4195,7 +4226,7 @@ impl<
         player_idx: u8,
         play: &movegen::Play,
         limits: &Limits,
-    ) -> error::Returns<(Option<f32>, bool)> {
+    ) -> error::Returns<(Option<equity::Equity>, bool)> {
         self.reset_position();
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
@@ -4208,7 +4239,7 @@ impl<
                 if self.pass_ends_the_line(scoreless) {
                     return Ok((Some(self.both_pass_value(player_idx)), true));
                 }
-                (0.0, Scoreless::Answering)
+                (equity::Equity::ZERO, Scoreless::Answering)
             }
             movegen::Play::Place { .. } => {
                 let Some(candidate) = self.work_buffer.lists[0]
@@ -4241,8 +4272,8 @@ impl<
                 1,
                 player_idx ^ 1,
                 depth,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
+                equity::Equity::NEG_INFINITY,
+                equity::Equity::INFINITY,
                 after,
             ) {
                 Ok(searched) => {
@@ -4272,8 +4303,8 @@ impl<
         ply: usize,
         player_idx: u8,
         depth: i8,
-        alpha: f32,
-        beta: f32,
+        alpha: equity::Equity,
+        beta: equity::Equity,
         scoreless: Scoreless,
     ) -> error::Returns<Searched> {
         let base = self.work_buffer.frames.len();
@@ -4546,7 +4577,7 @@ impl<
                 {
                     score + self.one_tile_bound(ply, player_idx, alpha - score)
                 } else {
-                    f32::INFINITY
+                    equity::Equity::INFINITY
                 };
                 if bound <= alpha {
                     self.unplace(player_idx, &play);
@@ -4671,7 +4702,7 @@ impl<
             own.generate(0, player_idx, false);
             for (i, play, score) in moves.iter().skip(lane).step_by(threads) {
                 own.place(player_idx, play);
-                let child_beta = score - alpha;
+                let child_beta = *score - alpha;
                 let searched = own.negamax_eval(
                     1,
                     player_idx ^ 1,
@@ -4687,7 +4718,7 @@ impl<
                 let Ok(searched) = searched else {
                     break;
                 };
-                let value = score - searched.value;
+                let value = *score - searched.value;
                 if value <= alpha {
                     found.push((*i, value, searched.complete));
                 }
@@ -4734,7 +4765,7 @@ impl<
             ply, player_idx, ..
         } = node;
         for i in 0..self.work_buffer.orders[ply].len() {
-            if i == 1 && !frame.table_first && frame.node.beta == f32::INFINITY {
+            if i == 1 && !frame.table_first && frame.node.beta == equity::Equity::INFINITY {
                 // nothing can cut: the best of the rest found by a scan, named
                 // as the sort would have named it
                 self.take_best_of_rest(&mut frame, player_idx, ply);
@@ -4797,7 +4828,7 @@ impl<
                     )
                     .is_lt()
         };
-        let mut best: Option<(f32, u128)> = None;
+        let mut best: Option<(equity::Equity, u128)> = None;
         for &key in &ordered[1..] {
             let candidate = &list[key as u32 as usize];
             let value = if candidate.plays_out {
@@ -4913,7 +4944,7 @@ impl<
 
     // the top frame takes a move's value (Frame::take_value)
     #[inline(always)]
-    fn take_value(&mut self, i: usize, index: u16, value: f32) -> bool {
+    fn take_value(&mut self, i: usize, index: u16, value: equity::Equity) -> bool {
         let work_buffer = &mut self.work_buffer;
         let frame = work_buffer.frames.last_mut().unwrap();
         frame.take_value(&mut work_buffer.proven, i, index, value)
@@ -4921,7 +4952,7 @@ impl<
 
     // the top frame takes the pass's value
     #[inline(always)]
-    fn take_pass_value(&mut self, value: f32) {
+    fn take_pass_value(&mut self, value: equity::Equity) {
         let work_buffer = &mut self.work_buffer;
         let frame = work_buffer.frames.last_mut().unwrap();
         frame.take_pass_value(&mut work_buffer.proven, value);
@@ -4952,7 +4983,7 @@ impl<
         let stopped = self.set_aside();
         let search = stopped.is_none();
         let of = self.line_of(player_idx);
-        let start = (self.work_buffer.answer).map(|(play, value)| (play, value.to_bits()));
+        let start = self.work_buffer.answer;
         if !(self.work_buffer.line.as_ref()).is_some_and(|line| {
             line.of == of && start.is_none_or(|start| line.start == Some(start))
         }) {
@@ -4979,11 +5010,7 @@ impl<
     fn keep_line(&mut self, of: (u64, u8, i8), player_idx: u8, search: bool) {
         let mut plies = (self.work_buffer.line.take()).map_or_else(Vec::new, |line| line.plies);
         let start = self.collect_pv_of(player_idx, &mut plies, search);
-        self.work_buffer.line = Some(Box::new(Line {
-            of,
-            start: start.map(|(play, value)| (play, value.to_bits())),
-            plies,
-        }));
+        self.work_buffer.line = Some(Box::new(Line { of, start, plies }));
     }
 
     // the line, and the move and value it starts with
@@ -4993,7 +5020,7 @@ impl<
         player_idx: u8,
         out: &mut Vec<(equity::Equity, movegen::Play)>,
         search: bool,
-    ) -> Option<(u16, f32)> {
+    ) -> Option<(u16, equity::Equity)> {
         out.clear();
         let mut start = None;
         let check_limits = std::mem::replace(&mut self.work_buffer.check_limits, false);
@@ -5031,8 +5058,8 @@ impl<
                                 0,
                                 player_idx,
                                 depth,
-                                f32::NEG_INFINITY,
-                                f32::INFINITY,
+                                equity::Equity::NEG_INFINITY,
+                                equity::Equity::INFINITY,
                                 scoreless,
                             )
                             .is_err()
@@ -5049,7 +5076,7 @@ impl<
             if start.is_none() {
                 start = Some((entry.play, entry.value));
             }
-            let value = to_equity(entry.value);
+            let value = entry.value;
             // a ply of depth, none for a forced pass, as in the search
             let mut cost = 1;
             if entry.play == PASS_PLAY {
@@ -5254,8 +5281,8 @@ impl<
         player_idx: u8,
         limits: &BagLimits,
         exact: &mut bool,
-    ) -> error::Returns<f32> {
-        self.solve_in_bag_below(player_idx, f32::INFINITY, limits, exact)
+    ) -> error::Returns<equity::Equity> {
+        self.solve_in_bag_below(player_idx, equity::Equity::INFINITY, limits, exact)
     }
 
     // as solve_in_bag, searched below beta alone (run_id_loop_below): a value
@@ -5264,10 +5291,10 @@ impl<
     fn solve_in_bag_below(
         &mut self,
         player_idx: u8,
-        beta: f32,
+        beta: equity::Equity,
         limits: &BagLimits,
         exact: &mut bool,
-    ) -> error::Returns<f32> {
+    ) -> error::Returns<equity::Equity> {
         let may_stop = limits.may_stop.get();
         if may_stop && limits.passed(&self.work_buffer.table) {
             limits.stopped.set(true);
@@ -5311,7 +5338,7 @@ impl<
         }
         *exact &= solved.exact;
         match solved.value {
-            Some(value) => Ok(value.raw() as f32),
+            Some(value) => Ok(value),
             None => {
                 limits.stopped.set(true);
                 Err(Box::new(LimitStopped))
@@ -5441,7 +5468,7 @@ impl<
         bag_tile: u8,
         limits: &BagLimits,
         exact: &mut bool,
-        memo: &mut BagTable<f32>,
+        memo: &mut BagTable<equity::Equity>,
         scoreless: [u8; 2],
     ) -> error::Returns<equity::Equity> {
         let gc = self.game_config;
@@ -5492,7 +5519,7 @@ impl<
         }
         self.keep_sub(sub);
         self.kept_mg = Some(mg);
-        Ok(to_equity(value?))
+        value
     }
 
     // the one-in-bag value for the turn's mover, who places and draws the tile,
@@ -5505,7 +5532,7 @@ impl<
         board: &[u8],
         racks: &[Vec<u8>; 2],
         turn: OneInBagTurn,
-    ) -> error::Returns<f32> {
+    ) -> error::Returns<equity::Equity> {
         let OneInBagTurn {
             mover,
             bag_tile,
@@ -5520,7 +5547,7 @@ impl<
         }
         let (start, mut best, exact_so_far) = (search.line.as_mut())
             .and_then(|line| line.partway.remove(&key))
-            .unwrap_or((0, f32::NEG_INFINITY, true));
+            .unwrap_or((0, equity::Equity::NEG_INFINITY, true));
         // the position's own exactness, apart from that of the line before it
         let exact_before = std::mem::replace(&mut search.exact, exact_so_far);
         let value = Self::one_in_bag_minimax_from(search, board, racks, key, start, &mut best);
@@ -5549,8 +5576,8 @@ impl<
         racks: &[Vec<u8>; 2],
         key: [u8; 5],
         start: usize,
-        best: &mut f32,
-    ) -> error::Returns<f32> {
+        best: &mut equity::Equity,
+    ) -> error::Returns<equity::Equity> {
         let [bag_tile, mover, passes, zeros, answering] = key;
         let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
@@ -5621,7 +5648,7 @@ impl<
                     Err(e) => return Err(Self::stopped_at(search, key, place - 1, *best, e)),
                 };
 
-                let val = *score as f32 - v;
+                let val = equity::Equity::new(*score) - v;
                 if val > *best {
                     *best = val;
                 }
@@ -5632,8 +5659,10 @@ impl<
         let pass_zeros = zeros.saturating_add(1);
         let pass_val =
             if answering != 0 || scoreless_turns_end(search.gc, None, pass_passes, pass_zeros) {
-                (alphabet.scaled_rack_score(&racks[opp as usize])
-                    - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
+                equity::Equity::new(
+                    alphabet.scaled_rack_score(&racks[opp as usize])
+                        - alphabet.scaled_rack_score(&racks[mover as usize]),
+                )
             } else {
                 match Self::one_in_bag_minimax(
                     search,
@@ -5665,7 +5694,7 @@ impl<
         search: &mut OneInBag<'_, 'a, N, L, LEAN, G, JUMPS, ANY_SIDE>,
         key: [u8; 5],
         valued: usize,
-        best: f32,
+        best: equity::Equity,
         e: error::BoxAnyError,
     ) -> error::BoxAnyError {
         if search.limits.stopped.get()
@@ -5681,7 +5710,7 @@ impl<
         board: &[u8],
         racks: &[Vec<u8>; 2],
         turn: OneInBagTurn,
-    ) -> error::Returns<f32> {
+    ) -> error::Returns<equity::Equity> {
         // a line of exchanges starts no endgame, the one other place a limit
         // is read, so the limits are read at each position, valued or not
         if search.limits.may_stop.get() && search.limits.passed(&search.sub.work_buffer.table) {
@@ -5737,7 +5766,7 @@ impl<
 
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
-        let mut best = f32::NEG_INFINITY;
+        let mut best = equity::Equity::NEG_INFINITY;
 
         for play in &places {
             if let movegen::Play::Place {
@@ -5768,7 +5797,7 @@ impl<
                 let v = search
                     .sub
                     .solve_in_bag(opp, search.limits, &mut search.exact)?;
-                let val = *score as f32 - v;
+                let val = equity::Equity::new(*score) - v;
                 if val > best {
                     best = val;
                 }
@@ -5779,8 +5808,10 @@ impl<
         let pass_zeros = zeros.saturating_add(1);
         let pass_val = if answering || scoreless_turns_end(search.gc, None, pass_passes, pass_zeros)
         {
-            (alphabet.scaled_rack_score(&racks[opp as usize])
-                - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
+            equity::Equity::new(
+                alphabet.scaled_rack_score(&racks[opp as usize])
+                    - alphabet.scaled_rack_score(&racks[mover as usize]),
+            )
         } else {
             -Self::one_in_bag_minimax_ex(
                 search,
@@ -5819,8 +5850,10 @@ impl<
                 rack[p] = drawn;
             }
             let exch_val = if scoreless_turns_end(search.gc, None, 0, exch_zeros) {
-                (alphabet.scaled_rack_score(&nr[opp as usize])
-                    - alphabet.scaled_rack_score(&nr[mover as usize])) as f32
+                equity::Equity::new(
+                    alphabet.scaled_rack_score(&nr[opp as usize])
+                        - alphabet.scaled_rack_score(&nr[mover as usize]),
+                )
             } else {
                 -Self::one_in_bag_minimax_ex(
                     search,
@@ -6753,7 +6786,7 @@ impl<
         let board = &progress.board[..];
         let mover_rack = &progress.mover_rack[..];
         let unseen_tally = &progress.unseen_tally[..];
-        let score_diff = progress.score_diff.raw() as f32;
+        let score_diff = i64::from(progress.score_diff.raw());
         let exchange_memo = &mut progress.exchange_memo;
         // each tile's value to the pass's depth, from the positions the pass
         // has valued already
@@ -6763,7 +6796,7 @@ impl<
                 *exchange_memo = (limits.depth.get(), BagTable::default());
             }
             let memo = &mut exchange_memo.1;
-            let mut hypotheses: Vec<(u8, u32, equity::Equity)> = Vec::new();
+            let mut outcomes = PegOutcomes::default();
             let mut run = vec![equity::Equity::ZERO; unseen_tally.len()];
             let mut exact = true;
 
@@ -6783,16 +6816,14 @@ impl<
                 racks[mover as usize] = mover_rack;
                 racks[(mover ^ 1) as usize] = &opp_rack;
                 this.init(board, racks);
-                let v = this
-                    .one_in_bag(mover, bag_tile, limits, &mut exact, memo, scoreless)?
-                    .raw() as f32
-                    + score_diff;
-                hypotheses.push((bag_tile, count as u32, to_equity(v)));
-                run[t] = to_equity(v);
+                let value =
+                    this.one_in_bag(mover, bag_tile, limits, &mut exact, memo, scoreless)?;
+                let margin = i64::from(value.raw()) + score_diff;
+                outcomes.record(count as u32, margin);
+                run[t] = equity::Equity::new(margin.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
             }
-            let weighted: Vec<(u32, equity::Equity)> =
-                hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
-            let (win_pct, expected_margin) = peg_aggregate(&weighted);
+            let (win_pct, margin) = outcomes.averages();
+            let expected_margin = equity::Equity::new(margin.round() as i32);
             let result = PegResult {
                 win_pct,
                 expected_margin,
@@ -6878,7 +6909,7 @@ impl<
                 scoreless: progress.scoreless,
                 root_moves: progress.root_moves.as_ref(),
             },
-            progress.score_diff.raw() as f32,
+            progress.score_diff,
             limits,
             &mut progress.committed,
         );
@@ -6899,7 +6930,7 @@ impl<
         opp_rack: &[u8],
         limits: &BagLimits,
         exact: &mut bool,
-    ) -> error::Returns<f32> {
+    ) -> error::Returns<equity::Equity> {
         let movegen::Play::Place {
             down,
             lane,
@@ -6939,14 +6970,14 @@ impl<
         or.clear();
         or.extend_from_slice(opp_rack);
         sub.scoreless = [0, 0];
-        Ok(*score as f32 - sub.solve_in_bag(mover ^ 1, limits, exact)?)
+        Ok(equity::Equity::new(*score) - sub.solve_in_bag(mover ^ 1, limits, exact)?)
     }
 
     // a place a limit stopped is left none
     fn peg_places_on_threads(
         sub: &mut Self,
         position: &PegPosition<'_>,
-        score_diff: f32,
+        score_diff: equity::Equity,
         limits: &BagLimits,
         moves: &[PegMove],
     ) -> (Vec<Option<PegValue>>, Vec<equity::Equity>) {
@@ -7042,7 +7073,7 @@ impl<
         klv: &klv::Klv<L>,
         mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         position: &PegPosition<'_>,
-        score_diff: f32,
+        score_diff: equity::Equity,
         limits: &BagLimits,
         state: &mut PegCommitted,
     ) -> error::Returns<PegResult> {
@@ -7218,11 +7249,10 @@ impl<
                         // the pass ends the game at once when it brings the
                         // scoreless turns to the config's count, each losing
                         // their rack
-                        PegMove::Pass if pass_ends_the_game => {
-                            (alphabet.scaled_rack_score(opp_rack)
-                                - alphabet.scaled_rack_score(mover_rack))
-                                as f32
-                        }
+                        PegMove::Pass if pass_ends_the_game => equity::Equity::new(
+                            alphabet.scaled_rack_score(opp_rack)
+                                - alphabet.scaled_rack_score(mover_rack),
+                        ),
                         PegMove::Pass => {
                             // PEG2-7: with two or more in the bag, draw every
                             // tile from the same end -- pop, the back -- and
@@ -7359,15 +7389,14 @@ impl<
 
 fn peg_value(
     unseen: &[(u8, u32)],
-    score_diff: f32,
+    score_diff: equity::Equity,
     opp_rack: &mut Vec<u8>,         // the caller's, refilled for each tile
     margins: &mut [equity::Equity], // the move's run, a margin a tile, by tile
-    mut endgame: impl FnMut(u8, u8, &[u8], &mut bool) -> error::Returns<f32>,
+    mut endgame: impl FnMut(u8, u8, &[u8], &mut bool) -> error::Returns<equity::Equity>,
 ) -> error::Returns<PegValue> {
-    let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
+    let mut outcomes = PegOutcomes::default();
     let mut exact = true;
-    let mut win = 0.0f32;
-    let mut marg = 0.0f32;
+    let lead = i64::from(score_diff.raw());
     // the opponent's rack for each tile in the bag, in the caller's buffer:
     // every tile unseen but the one drawn
     for &(t, w) in unseen {
@@ -7381,20 +7410,12 @@ fn peg_value(
             }
         }
         let v = endgame(t, drawn, opp_rack, &mut exact)?;
-        let vv = v + score_diff;
-        marg += w as f32 * vv;
-        win += w as f32
-            * if vv > 0.0 {
-                1.0
-            } else if vv == 0.0 {
-                0.5
-            } else {
-                0.0
-            };
-        margins[t as usize] = to_equity(vv);
+        let margin = i64::from(v.raw()) + lead;
+        outcomes.record(w, margin);
+        margins[t as usize] =
+            equity::Equity::new(margin.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
     }
-    win /= total;
-    marg /= total;
+    let (win, marg) = outcomes.averages();
     Ok(PegValue { win, marg, exact })
 }
 
@@ -7432,7 +7453,7 @@ fn peg_result(
 ) -> PegResult {
     PegResult {
         win_pct: value.win,
-        expected_margin: to_equity(value.marg),
+        expected_margin: equity::Equity::new(value.marg.round() as i32),
         row: Some(best),
         best_move: Some(moves[best].clone()),
         moves: Vec::new(),
@@ -7460,7 +7481,7 @@ pub struct PegProgress {
     clairvoyant_margins: Vec<equity::Equity>, // its margin a tile, by tile
     // with exchanges legal, the positions the pass under way has valued (and
     // its depth), kept so a solve a limit stopped goes on from them
-    exchange_memo: (i8, BagTable<f32>),
+    exchange_memo: (i8, BagTable<equity::Equity>),
     endgames: u64,   // the endgames its solves searched
     nodes: u64,      // their nodes
     lanes: LanePool, // its endgames' lane pool
@@ -7537,7 +7558,7 @@ impl PegProgress {
                 PegMoveValue {
                     play: committed.moves[i].clone(),
                     win_pct: value.win,
-                    expected_margin: to_equity(value.marg),
+                    expected_margin: equity::Equity::new(value.marg.round() as i32),
                     row: i,
                     exact: value.exact,
                 }
@@ -7694,7 +7715,7 @@ pub struct PegResult {
 #[derive(Clone)]
 struct PegValue {
     win: f32,
-    marg: f32,
+    marg: f64,
     exact: bool,
 }
 
@@ -8342,7 +8363,7 @@ struct OneInBag<
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>,
     mg: &'s mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
-    memo: &'s mut BagTable<f32>, // the caller's, kept from call to call
+    memo: &'s mut BagTable<equity::Equity>, // the caller's, kept from call to call
     limits: &'s BagLimits,
     exact: bool, // cleared by an endgame a limit cut short
     line: Option<&'s mut PassLine>,
@@ -8365,8 +8386,8 @@ struct Placed {
 // whether those were exact
 #[derive(Default)]
 struct PassLine {
-    valued: fash::MyHashMap<[u8; 5], (f32, bool)>,
-    partway: fash::MyHashMap<[u8; 5], (usize, f32, bool)>,
+    valued: fash::MyHashMap<[u8; 5], (equity::Equity, bool)>,
+    partway: fash::MyHashMap<[u8; 5], (usize, equity::Equity, bool)>,
 }
 
 // a position with a tile in the bag as the peg model searches it: the mover,
@@ -8422,27 +8443,47 @@ fn scoreless_turns_end(
             }))
 }
 
+// count the one-in-bag win and mean before clamping the reported margins to i32
+#[derive(Default)]
+struct PegOutcomes {
+    deals: u64,
+    wins: f64,
+    margin: f64,
+}
+
+impl PegOutcomes {
+    #[inline]
+    fn record(&mut self, weight: u32, margin: i64) {
+        self.deals += u64::from(weight);
+        let weight = f64::from(weight);
+        self.wins += weight
+            * match margin.cmp(&0) {
+                std::cmp::Ordering::Greater => 1.0,
+                std::cmp::Ordering::Equal => 0.5,
+                std::cmp::Ordering::Less => 0.0,
+            };
+        self.margin += weight * margin as f64;
+    }
+
+    #[inline]
+    fn averages(&self) -> (f32, f64) {
+        if self.deals == 0 {
+            (0.0, 0.0)
+        } else {
+            let deals = self.deals as f64;
+            ((self.wins / deals) as f32, self.margin / deals)
+        }
+    }
+}
+
 #[inline]
 pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f32, equity::Equity) {
-    let mut total = 0.0f32;
-    let mut win_sum = 0.0f32;
-    let mut margin_sum = 0.0f32;
+    let mut outcomes = PegOutcomes::default();
     for &(weight, value) in hypotheses {
-        let w = weight as f32;
-        let win_score = match value.cmp(&equity::Equity::ZERO) {
-            std::cmp::Ordering::Greater => 1.0,
-            std::cmp::Ordering::Equal => 0.5,
-            std::cmp::Ordering::Less => 0.0,
-        };
-        total += w;
-        win_sum += win_score * w;
-        margin_sum += value.raw() as f32 * w;
+        outcomes.record(weight, i64::from(value.raw()));
     }
-    if total == 0.0 {
-        (0.0, equity::Equity::ZERO)
-    } else {
-        (win_sum / total, to_equity(margin_sum / total))
-    }
+    let (win, margin) = outcomes.averages();
+    (win, equity::Equity::new(margin.round() as i32))
 }
 
 // how many ways there are to choose k of n alike tiles, a deal telling them
@@ -10098,7 +10139,10 @@ impl<
             pos.zeros as u16,
         );
         let mut exact = true;
-        let value = self.sub.solve_in_bag(pos.mover, self.limits, &mut exact)? as f64;
+        let value = self
+            .sub
+            .solve_in_bag(pos.mover, self.limits, &mut exact)?
+            .raw() as f64;
         self.exact &= exact;
         self.keep_endgame(key, value, exact);
         Ok(value)
@@ -10133,8 +10177,9 @@ impl<
             pos.zeros as u16,
         );
         let mut exact = true;
-        let value =
-            (self.sub).solve_in_bag_below(pos.mover, beta as f32, self.limits, &mut exact)? as f64;
+        let value = (self.sub)
+            .solve_in_bag_below(pos.mover, beta_equity(beta), self.limits, &mut exact)?
+            .raw() as f64;
         self.exact &= exact;
         if value < beta {
             self.keep_endgame(key, value, exact);
@@ -12382,7 +12427,7 @@ mod tests {
                     );
                 }
                 for pair in moves.windows(2) {
-                    let by_valuation = pair[1].valuation.total_cmp(&pair[0].valuation);
+                    let by_valuation = pair[1].valuation.cmp(&pair[0].valuation);
                     if by_valuation.is_eq() {
                         ties += 1;
                         assert!(
@@ -12417,7 +12462,7 @@ mod tests {
                             else {
                                 unreachable!("a candidate places tiles");
                             };
-                            super::order_key(candidate.valuation as i32, down, lane, idx, found)
+                            super::order_key(candidate.valuation.raw(), down, lane, idx, found)
                         })
                         .collect::<Vec<_>>();
                     super::order(&mut again, &mut keys, 0, super::NO_PLAY);
@@ -12749,7 +12794,7 @@ mod tests {
                         }
                         egs.work_buffer.zones[0] = egs.zone_lanes(&play);
                         egs.place(mover, &play);
-                        let bound = egs.one_tile_bound(0, mover, f32::INFINITY);
+                        let bound = egs.one_tile_bound(0, mover, equity::Equity::INFINITY);
                         afresh.init(
                             &egs.work_buffer.board_tiles,
                             [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
@@ -12765,7 +12810,7 @@ mod tests {
                             bound, whole,
                             "[{name}] lean={lean} the bound after move {i}"
                         );
-                        let unreached = egs.one_tile_bound(0, mover, f32::NEG_INFINITY);
+                        let unreached = egs.one_tile_bound(0, mover, equity::Equity::NEG_INFINITY);
                         zoned += (unreached < whole) as usize;
                         checked += 1;
                         egs.unplace(mover, &play);
@@ -13859,8 +13904,8 @@ mod tests {
     #[test]
     #[inline]
     fn the_table_keeps_what_it_is_given_and_the_deeper_of_two() {
-        let entry = |value: f32, depth: i8, bound: super::Bound| super::Entry {
-            value,
+        let entry = |value: i32, depth: i8, bound: super::Bound| super::Entry {
+            value: equity::Equity::new(value),
             play: 7,
             depth,
             bound,
@@ -13868,26 +13913,26 @@ mod tests {
         let mut table = super::Table::new();
         table.generation = 1;
         assert!(table.probe(1).is_none(), "an empty table knows nothing");
-        assert!(table.store(1, entry(-2.5, 3, super::Bound::Lower)));
+        assert!(table.store(1, entry(-2500, 3, super::Bound::Lower)));
         let found = table.probe(1).unwrap();
         assert_eq!(
             (found.value, found.play, found.depth),
-            (-2.5, 7, 3),
+            (equity::Equity::new(-2500), 7, 3),
             "an entry comes back as it went in"
         );
         assert!(found.bound == super::Bound::Lower);
         // a shallower bound leaves the deeper value; an exact one takes its
         // place
-        assert!(!table.store(1, entry(9.0, 2, super::Bound::Upper)));
-        assert_eq!(table.probe(1).unwrap().value, -2.5);
-        assert!(!table.store(1, entry(4.0, 1, super::Bound::Exact)));
-        assert_eq!(table.probe(1).unwrap().value, 4.0);
+        assert!(!table.store(1, entry(9000, 2, super::Bound::Upper)));
+        assert_eq!(table.probe(1).unwrap().value, equity::Equity::new(-2500));
+        assert!(!table.store(1, entry(4000, 1, super::Bound::Exact)));
+        assert_eq!(table.probe(1).unwrap().value, equity::Equity::new(4000));
         assert_eq!(table.held, 1);
         // a full bucket gives up its shallowest entry
         for key in 2..=4 {
-            assert!(table.store(key, entry(0.0, 5, super::Bound::Exact)));
+            assert!(table.store(key, entry(0, 5, super::Bound::Exact)));
         }
-        assert!(!table.store(5, entry(0.0, 5, super::Bound::Exact)));
+        assert!(!table.store(5, entry(0, 5, super::Bound::Exact)));
         assert!(table.probe(1).is_none(), "the shallowest entry made room");
         assert!((2..=5).all(|key| table.probe(key).is_some()));
         // a table twice as big keeps every entry
@@ -13909,8 +13954,8 @@ mod tests {
     #[test]
     #[inline]
     fn a_table_growing_a_piece_at_a_time_keeps_each_position_once() {
-        let entry = |value: f32, depth: i8, bound: super::Bound| super::Entry {
-            value,
+        let entry = |value: i32, depth: i8, bound: super::Bound| super::Entry {
+            value: equity::Equity::new(value),
             play: 7,
             depth,
             bound,
@@ -13925,7 +13970,7 @@ mod tests {
         table.finish();
         let positions = 8 * super::MOVE_PIECE as u64;
         for i in 0..positions {
-            table.store(key(i), entry(i as f32, 5, super::Bound::Exact));
+            table.store(key(i), entry(i as i32, 5, super::Bound::Exact));
         }
         let held = table.held;
         assert!(held > 7 * super::MOVE_PIECE, "few positions were dropped");
@@ -13944,9 +13989,12 @@ mod tests {
         // while they move: a stored position not yet moved keeps its deeper
         // value, another is read where it is, and a new one is stored
         let last = *kept.last().unwrap();
-        assert!(!table.store(key(last), entry(-1.0, 3, super::Bound::Lower)));
-        assert_eq!(table.probe(key(kept[0])).unwrap().value, kept[0] as f32);
-        assert!(table.store(key(positions), entry(-2.0, 1, super::Bound::Upper)));
+        assert!(!table.store(key(last), entry(-1000, 3, super::Bound::Lower)));
+        assert_eq!(
+            table.probe(key(kept[0])).unwrap().value,
+            equity::Equity::new(kept[0] as i32)
+        );
+        assert!(table.store(key(positions), entry(-2000, 1, super::Bound::Upper)));
         table.advance();
         assert!(table.growing(), "the old buckets moved in one store");
         table.finish();
@@ -13954,9 +14002,15 @@ mod tests {
         assert_eq!(table.buckets.len(), 4 * super::EMPTY_PIECE);
         assert_eq!(table.held, held + 1);
         for &i in &kept {
-            assert_eq!(table.probe(key(i)).unwrap().value, i as f32);
+            assert_eq!(
+                table.probe(key(i)).unwrap().value,
+                equity::Equity::new(i as i32)
+            );
         }
-        assert_eq!(table.probe(key(positions)).unwrap().value, -2.0);
+        assert_eq!(
+            table.probe(key(positions)).unwrap().value,
+            equity::Equity::new(-2000)
+        );
         let mut keys = table
             .buckets
             .iter()
@@ -13982,7 +14036,7 @@ mod tests {
         let mut work_buffer = super::WorkBuffer::new(movegen::KurniaMoveGenerator::new(&gc), None);
         work_buffer.table.generation = 1;
         let entry = super::Entry {
-            value: 0.0,
+            value: equity::Equity::ZERO,
             play: 7,
             depth: 5,
             bound: super::Bound::Exact,
@@ -14046,7 +14100,7 @@ mod tests {
             (table.buckets.capacity() + table.next.capacity() + table.old.capacity()) * size
         };
         let entry = super::Entry {
-            value: 0.0,
+            value: equity::Equity::ZERO,
             play: 7,
             depth: 5,
             bound: super::Bound::Exact,
@@ -14128,7 +14182,7 @@ mod tests {
     #[inline]
     fn an_entry_a_later_solve_reads_is_kept_before_one_it_does_not() {
         let entry = |depth: i8| super::Entry {
-            value: 0.0,
+            value: equity::Equity::ZERO,
             play: 7,
             depth,
             bound: super::Bound::Exact,
@@ -14380,6 +14434,30 @@ mod tests {
         assert_eq!(result.hypotheses, vec![(8, 1, e(1000)), (20, 1, e(4000))]);
         assert_eq!(result.win_pct, 1.0);
         assert_eq!(result.expected_margin, e(2500));
+
+        let lead = 2_147_483_000;
+        for (lead, outcomes, win) in [
+            (lead, [lead - 2000, i32::MAX], 1.0),
+            (-lead, [i32::MIN, -lead + 1000], 0.0),
+        ] {
+            let result = egs
+                .solve_peg_one_in_bag_full(
+                    0,
+                    &board,
+                    &mover_rack,
+                    &unseen_tally,
+                    e(lead),
+                    &super::Limits::NONE,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                result.hypotheses,
+                vec![(8, 1, e(outcomes[0])), (20, 1, e(outcomes[1]))]
+            );
+            assert_eq!(result.win_pct, win);
+            assert_eq!(result.expected_margin, e(lead - 500));
+        }
     }
 
     #[test]
@@ -15695,10 +15773,10 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         fresh.init(&board, racks);
         let two = fresh
-            .root_search(0, 2, f32::NEG_INFINITY, f32::INFINITY)
+            .root_search(0, 2, equity::Equity::NEG_INFINITY, equity::Equity::INFINITY)
             .unwrap();
         assert!(two.complete, "a line was cut short at two plies");
-        assert_eq!(super::to_equity(two.value), whole);
+        assert_eq!(two.value, whole);
         // the principal variation goes past the pass to the play out
         let mut line = Vec::new();
         fresh.work_buffer.finished = 2;
@@ -15916,8 +15994,8 @@ mod tests {
                     1,
                     mover ^ 1,
                     1,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
+                    equity::Equity::NEG_INFINITY,
+                    equity::Equity::INFINITY,
                     super::Scoreless::Counted {
                         passes: 0,
                         zeros: 0,
@@ -16028,7 +16106,7 @@ mod tests {
                     {
                         let proven = at_two(&pos, mover, &play);
                         assert_eq!(
-                            Some(super::to_equity(proven)),
+                            Some(proven),
                             solved.value,
                             "[{name}] cap {cap}: the move's value at two plies"
                         );
@@ -16039,11 +16117,17 @@ mod tests {
                         // with the window's floor at that value, the move is
                         // only bounded there, so not proved
                         let mut egs = fresh(&pos);
-                        egs.root_search(mover, 1, f32::NEG_INFINITY, f32::INFINITY)
-                            .unwrap();
+                        egs.root_search(
+                            mover,
+                            1,
+                            equity::Equity::NEG_INFINITY,
+                            equity::Equity::INFINITY,
+                        )
+                        .unwrap();
                         egs.work_buffer.root_best = egs.work_buffer.pass_best;
                         egs.work_buffer.proven = None;
-                        egs.root_search(mover, 2, proven, f32::INFINITY).unwrap();
+                        egs.root_search(mover, 2, proven, equity::Equity::INFINITY)
+                            .unwrap();
                         assert!(
                             (egs.work_buffer.proven).is_none_or(|(_, value)| value > proven),
                             "[{name}] cap {cap}: a bound proved"
@@ -16071,12 +16155,21 @@ mod tests {
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         // the second pass, at two plies after a first, with the first pass's
         // best as given (or as found), in a window; what the pass recorded
-        let second_pass = |pos: &Position, mover: u8, best: Option<u16>, alpha: f32, beta: f32| {
+        let second_pass = |pos: &Position,
+                           mover: u8,
+                           best: Option<u16>,
+                           alpha: equity::Equity,
+                           beta: equity::Equity| {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            egs.root_search(mover, 1, f32::NEG_INFINITY, f32::INFINITY)
-                .unwrap();
+            egs.root_search(
+                mover,
+                1,
+                equity::Equity::NEG_INFINITY,
+                equity::Equity::INFINITY,
+            )
+            .unwrap();
             let found = egs.work_buffer.pass_best;
             egs.work_buffer.root_best = best.unwrap_or(found);
             egs.work_buffer.proven = None;
@@ -16086,8 +16179,13 @@ mod tests {
         let mut tried = 0usize;
         for (name, pos) in all_positions() {
             for mover in 0..2u8 {
-                let (found, open) =
-                    second_pass(&pos, mover, None, f32::NEG_INFINITY, f32::INFINITY);
+                let (found, open) = second_pass(
+                    &pos,
+                    mover,
+                    None,
+                    equity::Equity::NEG_INFINITY,
+                    equity::Equity::INFINITY,
+                );
                 let Some((later, value)) = open else {
                     continue;
                 };
@@ -16097,8 +16195,13 @@ mod tests {
                 let mut egs =
                     EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                egs.root_search(mover, 1, f32::NEG_INFINITY, f32::INFINITY)
-                    .unwrap();
+                egs.root_search(
+                    mover,
+                    1,
+                    equity::Equity::NEG_INFINITY,
+                    equity::Equity::INFINITY,
+                )
+                .unwrap();
                 egs.work_buffer.root_best = super::NO_PLAY;
                 let first = {
                     egs.reset_position();
@@ -16122,8 +16225,8 @@ mod tests {
                                 1,
                                 mover ^ 1,
                                 1,
-                                f32::NEG_INFINITY,
-                                f32::INFINITY,
+                                equity::Equity::NEG_INFINITY,
+                                equity::Equity::INFINITY,
                                 super::Scoreless::Counted {
                                     passes: 0,
                                     zeros: 0,
@@ -16142,22 +16245,35 @@ mod tests {
                         &pos,
                         mover,
                         Some(super::NO_PLAY),
-                        f32::NEG_INFINITY,
-                        f32::INFINITY
+                        equity::Equity::NEG_INFINITY,
+                        equity::Equity::INFINITY
                     )
                     .1,
                     None,
                     "[{name}] the first move searched is not the first pass's best"
                 );
                 assert_eq!(
-                    second_pass(&pos, mover, None, first - 1.0, first + 1.0).1,
+                    second_pass(
+                        &pos,
+                        mover,
+                        None,
+                        first - super::LEAST_STEP,
+                        first + super::LEAST_STEP
+                    )
+                    .1,
                     None,
                     "[{name}] the later move fails high in a window closing above the first"
                 );
                 assert!(
-                    second_pass(&pos, mover, None, first - 1.0, f32::INFINITY)
-                        .1
-                        .is_some_and(|(_, v)| v > first),
+                    second_pass(
+                        &pos,
+                        mover,
+                        None,
+                        first - super::LEAST_STEP,
+                        equity::Equity::INFINITY
+                    )
+                    .1
+                    .is_some_and(|(_, v)| v > first),
                     "[{name}] the window open above records a later move"
                 );
                 tried += 1;
@@ -16174,11 +16290,11 @@ mod tests {
         egs: &mut EndgameSolver<'_, kwg::Node24, kwg::Node24>,
         mover: u8,
         play: &movegen::Play,
-    ) -> f32 {
+    ) -> equity::Equity {
         egs.reset_position();
         egs.generate(0, mover, false);
         let (valuation, after) = match play {
-            movegen::Play::Exchange { .. } => (0.0, super::Scoreless::Answering),
+            movegen::Play::Exchange { .. } => (equity::Equity::ZERO, super::Scoreless::Answering),
             movegen::Play::Place { .. } => {
                 let candidate = egs.work_buffer.lists[0]
                     .iter()
@@ -16196,7 +16312,14 @@ mod tests {
         };
         egs.place(mover, play);
         let reply = egs
-            .negamax_eval(1, mover ^ 1, 20, f32::NEG_INFINITY, f32::INFINITY, after)
+            .negamax_eval(
+                1,
+                mover ^ 1,
+                20,
+                equity::Equity::NEG_INFINITY,
+                equity::Equity::INFINITY,
+                after,
+            )
             .unwrap();
         assert!(reply.complete, "a line was cut short");
         egs.unplace(mover, play);
@@ -16213,7 +16336,7 @@ mod tests {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let point = equity::SCALE as f32;
+        let point = equity::Equity::new(equity::SCALE);
         let mut asked = 0usize;
         for (name, pos) in all_positions() {
             for mover in 0..2u8 {
@@ -16231,7 +16354,7 @@ mod tests {
                 });
                 for play in &plays {
                     let value = move_value(&mut egs, mover, play);
-                    for (below, wins) in [(point, true), (0.0, false)] {
+                    for (below, wins) in [(point, true), (equity::Equity::ZERO, false)] {
                         assert_eq!(
                             egs.move_wins(mover, play, value - below, &super::Limits::NONE)
                                 .unwrap(),
@@ -16261,7 +16384,7 @@ mod tests {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let point = equity::SCALE as f32;
+        let point = equity::Equity::new(equity::SCALE);
         let fresh = |pos: &Position| {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -16284,7 +16407,7 @@ mod tests {
         {
             for mover in 0..2u8 {
                 let mut egs = fresh(&pos);
-                let exact = egs.solve(mover).unwrap().raw() as f32;
+                let exact = egs.solve(mover).unwrap();
                 let held = egs.work_buffer.table.held;
                 let mut egs = fresh(&pos);
                 let play = egs
@@ -16296,9 +16419,9 @@ mod tests {
                     exact,
                     "[{name}] with no limit, a best move"
                 );
-                for k in [-3.0, -1.0, 0.0] {
-                    let margin = exact + k * point;
-                    let lead = equity::Equity::new(-margin as i32);
+                for k in [-3, -1, 0] {
+                    let margin = exact + equity::Equity::new(k * point.raw());
+                    let lead = -margin;
                     let mut asking = fresh(&pos);
                     asking.start_clock(&super::Limits::NONE);
                     let won = asking
@@ -16306,7 +16429,7 @@ mod tests {
                         .unwrap();
                     assert_eq!(
                         won.is_some(),
-                        k < 0.0,
+                        k < 0,
                         "[{name}] with no limit, a win found exactly where one exists"
                     );
                     if let Some(index) = won {
@@ -16321,7 +16444,7 @@ mod tests {
                         asking.start_clock(&super::Limits::NONE);
                         let won = asking.ask_margin(mover, margin, &states(cap / 4)).unwrap();
                         assert!(
-                            won.is_none() || k < 0.0,
+                            won.is_none() || k < 0,
                             "[{name}] a win found where none exists"
                         );
                         let mut egs = fresh(&pos);
@@ -17758,7 +17881,7 @@ mod tests {
             time: None,
             states: None,
             memory: Some(super::MemoryLimit {
-                bytes: 4 * std::mem::size_of::<Option<(u64, f32)>>() + 1,
+                bytes: 4 * std::mem::size_of::<Option<(u64, equity::Equity)>>() + 1,
                 held: none_held,
             }),
             clock: None,
@@ -17775,7 +17898,7 @@ mod tests {
             .unwrap();
         let (bag_tile, mover) = (1u8, 0u8);
         let mut kept = [0; 2];
-        let mut values = [0.0; 2];
+        let mut values = [equity::Equity::ZERO; 2];
         for (i, limits) in [&super::Limits::NONE, &four].into_iter().enumerate() {
             let limits = super::BagLimits::new(limits, None);
             let mut search = super::OneInBag {
