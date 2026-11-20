@@ -347,6 +347,52 @@ impl std::hash::Hash for KeyBytes {
     }
 }
 
+fn compare_blank_pairs(a: &(KeyBytes, u32, u8), b: &(KeyBytes, u32, u8)) -> std::cmp::Ordering {
+    a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1))
+}
+
+fn sort_blank_pairs(
+    pairs: &mut Vec<(KeyBytes, u32, u8)>,
+    merge: &mut Vec<(KeyBytes, u32, u8)>,
+    parallel: bool,
+) {
+    let middle = pairs.len() / 2;
+    if !parallel || middle < 2 {
+        pairs.sort_unstable_by(compare_blank_pairs);
+        return;
+    }
+    let (left, right) = pairs.split_at_mut(middle);
+    let sorted = std::thread::scope(|scope| {
+        if std::thread::Builder::new()
+            .spawn_scoped(scope, || left.sort_unstable_by(compare_blank_pairs))
+            .is_err()
+        {
+            return false;
+        }
+        right.sort_unstable_by(compare_blank_pairs);
+        true
+    });
+    if !sorted {
+        pairs.sort_unstable_by(compare_blank_pairs);
+        return;
+    }
+    merge.clear();
+    merge.reserve(left.len() + right.len());
+    let (mut i, mut j) = (0, 0);
+    while i < left.len() && j < right.len() {
+        if compare_blank_pairs(&left[i], &right[j]).is_le() {
+            merge.push(left[i]);
+            i += 1;
+        } else {
+            merge.push(right[j]);
+            j += 1;
+        }
+    }
+    merge.extend_from_slice(&left[i..]);
+    merge.extend_from_slice(&right[j..]);
+    std::mem::swap(pairs, merge);
+}
+
 type Table<V> = std::collections::HashMap<KeyBytes, V, std::hash::BuildHasherDefault<KeyHasher>>;
 
 impl Anagrams {
@@ -480,6 +526,10 @@ impl Anagrams {
         answer_tiles.clear();
         answer_tiles.reserve_exact(all_pairs);
         let mut runs = keyed.chunk_by(|a, b| a.0 == b.0).peekable();
+        let parallel_sort = !cfg!(target_family = "wasm")
+            && budget.max == usize::MAX
+            && crate::parallelism::available() > 1;
+        let mut merge = Vec::new();
         for len in 0..lengths {
             budget.take(table_bytes::<(KeyBytes, u32)>(keys_of[len]))?;
             let mut table = table_of(keys_of[len]);
@@ -507,7 +557,7 @@ impl Anagrams {
 
             // within a group, removing each tile gives a different key.
             // a length's pairs, emptied before the next length's are made
-            pairs.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            sort_blank_pairs(pairs, &mut merge, parallel_sort);
             let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
             budget.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
             let mut table = table_of(blank_keys);
