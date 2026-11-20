@@ -1626,7 +1626,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     next_look: u64,          // the nodes this pass searches before the next look
     last_look: std::time::Duration, // the time at the last look, from the solve's start
     threads: usize,          // the solve's threads, one lane each (1: the plain search)
-    verdicts: Vec<Option<(equity::Equity, bool)>>, // by root order: a lane's bound on a move failing low
+    verdicts: Vec<Option<(equity::Equity, bool)>>, // by split node's order: a bound on a failing move
     helper_tables: Vec<Option<KeptTable>>,         // each lane's table, kept from pass to pass
 }
 
@@ -4504,6 +4504,13 @@ impl<
         } = frame.node;
         if matches!(frame.child, Child::Moves) {
             let (root, table_first, mut next) = (frame.root, frame.table_first, frame.next);
+            // use the reply's alternatives when there is only one first play.
+            let split = self.work_buffer.threads > 1
+                && (root
+                    || (ply == 1
+                        && self.work_buffer.frames[0].root
+                        && self.work_buffer.orders[0].len() + usize::from(self.allows_pass(true))
+                            == 1));
             let moves = self.work_buffer.orders[ply].len();
             while next < moves {
                 let i = next;
@@ -4517,15 +4524,14 @@ impl<
                         NO_PLAY,
                     );
                 }
-                if root
+                if split
                     && i == 1
-                    && work_buffer.threads > 1
                     && work_buffer.in_bag.is_none()
                     && work_buffer.time_limit.is_none()
                     && work_buffer.state_limit.is_none()
                     && work_buffer.verdicts.is_empty()
                 {
-                    self.root_verdicts(player_idx, depth);
+                    self.split_verdicts(t, player_idx, depth);
                 }
                 let work_buffer = &mut self.work_buffer;
                 let found = work_buffer.orders[ply][i] as u32 as usize;
@@ -4541,7 +4547,7 @@ impl<
                     }
                     continue;
                 }
-                if root && let Some(&Some((value, complete))) = work_buffer.verdicts.get(i) {
+                if split && let Some(&Some((value, complete))) = work_buffer.verdicts.get(i) {
                     work_buffer.frames[t].best.complete &= complete;
                     self.take_value(i, index, value);
                     continue;
@@ -4687,12 +4693,13 @@ impl<
 
     // a move failing low at the first alpha never beats a later alpha, so its
     // bound stands in for its search
-    fn root_verdicts(&mut self, player_idx: u8, depth: i8) {
+    fn split_verdicts(&mut self, frame: usize, player_idx: u8, depth: i8) {
         let work_buffer = &self.work_buffer;
-        let alpha = work_buffer.frames[0].node.alpha;
-        let moves = (1..work_buffer.orders[0].len())
+        let Enter { alpha, ply, .. } = work_buffer.frames[frame].node;
+        let orders = &work_buffer.orders[ply];
+        let moves = (1..orders.len())
             .filter_map(|i| {
-                let candidate = &work_buffer.lists[0][work_buffer.orders[0][i] as u32 as usize];
+                let candidate = &work_buffer.lists[ply][orders[i] as u32 as usize];
                 (!candidate.plays_out).then(|| (i, candidate.play.clone(), candidate.valuation))
             })
             .collect::<Vec<_>>();
@@ -4716,7 +4723,11 @@ impl<
             .map_or(room, |limit| room.min(limit.room() / threads));
         let (gc, kwg, arm_tables) = (self.game_config, self.kwg, self.arm_tables);
         let run_letters = &self.run_letters;
-        let (board_tiles, racks, scoreless) = (&self.board_tiles, &self.racks, self.scoreless);
+        let (board_tiles, racks, scoreless) = (
+            &self.work_buffer.board_tiles,
+            &self.work_buffer.racks,
+            self.scoreless,
+        );
         let (moves, limits) = (&moves, &limits);
         // each lane's solver, made at its first pass and kept for the next
         let lane = move |lane: usize, table: Option<KeptTable>, helper| {
@@ -4772,7 +4783,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer
             .verdicts
-            .resize(work_buffer.orders[0].len(), None);
+            .resize(work_buffer.orders[ply].len(), None);
         for (_, found, table, helper) in helped {
             for (i, value, complete) in found {
                 work_buffer.verdicts[i] = Some((value, complete));
@@ -11603,9 +11614,10 @@ mod tests {
             let solved = egs
                 .solve_within_on_threads(mover, &super::Limits::NONE, threads)
                 .unwrap();
+            let orders = &egs.work_buffer.orders;
+            let split_ply = usize::from(orders[0].is_empty());
             assert!(
-                egs.work_buffer.helper_tables.len()
-                    <= egs.work_buffer.orders[0].len().saturating_sub(1)
+                egs.work_buffer.helper_tables.len() <= orders[split_ply].len().saturating_sub(1)
             );
             solved.value
         };
@@ -11656,7 +11668,7 @@ mod tests {
         };
         work.memory_limit = Some(limit);
         // depth zero below each helper move leaves its initial table size.
-        solver.root_verdicts(0, node.depth);
+        solver.split_verdicts(0, 0, node.depth);
         assert_eq!(solver.work_buffer.helper_tables.len(), 4);
         let bytes = solver
             .work_buffer
@@ -11666,6 +11678,63 @@ mod tests {
             .map(|kept| kept.table.buckets.len() * std::mem::size_of::<[u64; 8]>())
             .sum::<usize>();
         assert!(bytes <= limit.room(), "{bytes} helper table bytes");
+    }
+
+    #[test]
+    fn the_only_first_play_can_split_its_replies() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut split = [false; 2];
+        for (name, pos) in all_positions().into_iter().take(40) {
+            let mut state = crate::game_state::GameState::new(&gc);
+            state.bag.set_from_iter([]);
+            state.board_tiles.copy_from_slice(&pos.board);
+            state.players[0].rack.extend_from_slice(&pos.racks[0]);
+            state.players[1].rack.extend_from_slice(&pos.racks[1]);
+            let snapshot = movegen::BoardSnapshot {
+                board_tiles: &state.board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let mut choices =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+            choices.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+            choices.reset_position();
+            choices.generate_root(0, false);
+            let place = choices.work_buffer.lists[0]
+                .iter()
+                .find(|candidate| !candidate.plays_out)
+                .map(|candidate| candidate.play.clone());
+            let pass = movegen::Play::Exchange {
+                tiles: [][..].into(),
+            };
+            for (kind, play) in [Some(pass), place].into_iter().enumerate() {
+                let Some(play) = play else { continue };
+                let root = super::RootMoves::checked(&snapshot, &state, vec![play]).unwrap();
+                let solve = |threads| {
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables)
+                            .unwrap()
+                            .with_root_moves(Some(&root));
+                    solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+                    let result = solver
+                        .solve_within_on_threads(0, &super::Limits::NONE, threads)
+                        .unwrap();
+                    assert!(result.exact);
+                    (result.value, solver.work_buffer.helper_tables.len())
+                };
+                let (serial, _) = solve(1);
+                let (parallel, helpers) = solve(4);
+                assert_eq!(serial, parallel, "{name}, root kind {kind}");
+                split[kind] |= helpers != 0;
+            }
+        }
+        assert_eq!(split, [true; 2]);
     }
 
     #[test]
