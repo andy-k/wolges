@@ -226,7 +226,7 @@ impl GameState {
                 // nothing but the rack's order
                 let new_score = current_player
                     .score
-                    .checked_add(*score)
+                    .checked_add(score.raw())
                     .ok_or("score overflow")?;
                 use_tiles(
                     &mut current_player.rack,
@@ -368,7 +368,7 @@ mod tests {
             lane: 7,
             idx: 7,
             word: [1, 2, 26][..].into(),
-            score: 10,
+            score: equity::Equity::new(10),
         };
         assert!(game_state.play(&game_config, &mut rng, &play).is_err());
         assert!(game_state.board_tiles.iter().all(|&tile| tile == 0));

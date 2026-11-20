@@ -912,7 +912,7 @@ fn tiles_placed(play: &movegen::Play) -> usize {
 fn play_score(play: &movegen::Play) -> i64 {
     match play {
         movegen::Play::Exchange { .. } => 0,
-        movegen::Play::Place { score, .. } => *score as i64,
+        movegen::Play::Place { score, .. } => score.raw() as i64,
     }
 }
 
@@ -3681,7 +3681,7 @@ mod tests {
                 lane,
                 idx,
                 word: word.into(),
-                score: score * equity::SCALE,
+                score: equity::Points::new(score).scaled(),
             },
         }
     }
@@ -3739,7 +3739,7 @@ mod tests {
             lane: 7,
             idx: 7,
             word: [1, 20][..].into(),
-            score: 4,
+            score: equity::Equity::new(4),
         };
         game_state
             .play(&game_config, &mut deal_rng, &opening)
@@ -3924,7 +3924,7 @@ mod tests {
                     lane: 7,
                     idx: 0,
                     word: vec![1u8; 7 - i as usize][..].into(),
-                    score: 0,
+                    score: equity::Equity::new(0),
                 },
             })
             .collect::<Vec<_>>();

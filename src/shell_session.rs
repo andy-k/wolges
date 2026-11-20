@@ -1941,7 +1941,7 @@ impl Session {
                     lane: coord.lane,
                     idx: coord.idx,
                     word: v[..].into(),
-                    score: 0,
+                    score: equity::Equity::ZERO,
                 }
             }
             _ => return Err("play 8D WORD, play D8 WORD, play exch TILES, or play pass".into()),
@@ -1961,7 +1961,7 @@ impl Session {
         if let movegen::Play::Place { .. } = play {
             let recounted = self.play_scorer.compute_score(board_snapshot, &play);
             if let movegen::Play::Place { score, .. } = &mut play {
-                *score = recounted;
+                *score = equity::Equity::new(recounted);
             }
         }
         let alphabet = self.game_config.alphabet();
@@ -2093,7 +2093,7 @@ impl Session {
                     write!(
                         out,
                         ", scored as {}",
-                        equity::descale_score(*score) + turn.adjust()
+                        equity::descale_score(score.raw()) + turn.adjust()
                     )?;
                 }
                 replay.play_turn(self.game_config, &mut rng, turn)?;
@@ -2604,7 +2604,7 @@ impl Session {
         let kwg = self.kwg()?;
         let score = match &play {
             movegen::Play::Place { score, .. } => *score,
-            movegen::Play::Exchange { .. } => 0,
+            movegen::Play::Exchange { .. } => equity::Equity::ZERO,
         };
         let equity = self.play_scorer.compute_equity(
             &movegen::BoardSnapshot {
@@ -2618,7 +2618,7 @@ impl Session {
             &self.state,
             &play,
             move_filter::LEAVE_SCALE_DENOM,
-            score,
+            score.raw(),
         );
         let begun = self.sim.is_none();
         let sim = self.sim_mut()?;
@@ -2864,7 +2864,7 @@ impl Session {
                 if let (GcgKind::Play(_), movegen::Play::Place { score, .. }) =
                     (&gcg_move.kind, &game.turns[game.at - 1].play)
                 {
-                    let board = equity::descale_score(*score);
+                    let board = equity::descale_score(score.raw());
                     if let Some(correct) = gcg_move.correct
                         && correct != board
                     {
@@ -2891,7 +2891,7 @@ impl Session {
                 let turn = &game.turns[game.at - 1];
                 let score = match (&gcg_move.kind, &turn.play) {
                     (GcgKind::Play(_), movegen::Play::Place { score, .. }) => {
-                        equity::descale_score(*score) + turn.adjust()
+                        equity::descale_score(score.raw()) + turn.adjust()
                     }
                     _ => gcg_move.score,
                 };
@@ -3036,7 +3036,7 @@ impl Session {
                                 .ok_or("a tile not in the alphabet")?
                         });
                     }
-                    (text, equity::descale_score(*score))
+                    (text, equity::descale_score(score.raw()))
                 }
             };
             // a given seat's rack: what it was known to hold (no tile of an
@@ -5186,7 +5186,7 @@ mod tests {
         assert_eq!(first.state.players[0].score, equity::scale_score(5));
         let turn = &first.game.as_ref().unwrap().turns[0];
         let four = equity::scale_score(4);
-        assert!(matches!(turn.play, movegen::Play::Place { score, .. } if score == four));
+        assert!(matches!(turn.play, movegen::Play::Place { score, .. } if score.raw() == four));
         // the move as scored, then the board's score in a note
         let text = first.gcg_text().unwrap();
         let lines = ">p1: AETAETE 8G AT +5 5\n#note the correct score is 4\n";
@@ -6081,7 +6081,7 @@ mod tests {
             lane: 7,
             idx: 3,
             word: [1, 5, 20, 1, 5, 20, 5, 1][..].into(),
-            score: 0,
+            score: equity::Equity::ZERO,
         };
         let score = first.play_scorer.compute_score(
             &movegen::BoardSnapshot {

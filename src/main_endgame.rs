@@ -243,7 +243,7 @@ impl Question {
                     lane: coord.lane,
                     idx: coord.idx,
                     word: v[..].into(),
-                    score: move_score,
+                    score: equity::Equity::new(move_score),
                 });
             }
             if let Some(play) = move_to_play {
@@ -1692,10 +1692,7 @@ fn solve_position<N: kwg::Node>(
                             word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
                         }
                     }
-                    format!(
-                        "{coord} {word_str} (scores {})",
-                        equity::Equity::new(*score)
-                    )
+                    format!("{coord} {word_str} (scores {})", *score)
                 }
             };
             writeln!(
@@ -1829,7 +1826,7 @@ fn solve_position<N: kwg::Node>(
                     writeln!(
                         std::io::stdout(),
                         "peg: model = committed; best move = {coord} {word_str} (scores {})",
-                        equity::Equity::new(*score),
+                        *score,
                     )?;
                 }
                 Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
