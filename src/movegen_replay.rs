@@ -1,9 +1,10 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use crate::{game_args, parse_rack};
+use rand::SeedableRng;
 use std::io::{BufRead, Write};
 use std::time::Instant;
-use wolges::{anagrams, display, error, game_config, klv, kwg, movegen, return_error};
+use wolges::{anagrams, display, error, game_config, game_state, klv, kwg, movegen, return_error};
 
 #[derive(clap::Args)]
 #[command(about = "time top-one static move generation on a frozen chronological trace")]
@@ -18,7 +19,7 @@ pub(crate) struct ReplayArgs {
     cold: bool,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct Position {
     game: u64,
     ply: u32,
@@ -221,5 +222,68 @@ pub(crate) fn replay(
             "cold": args.cold,
         }),
     )?;
+    Ok(())
+}
+
+#[derive(clap::Args)]
+#[command(about = "write the positions and best static moves of seeded games as JSON lines")]
+pub(crate) struct CaptureArgs {
+    kwg: String,
+    klv: String,
+    #[arg(long)]
+    games: std::num::NonZeroU64,
+    #[arg(long)]
+    seed: u64,
+}
+
+pub(crate) fn capture(
+    options: &game_args::GameArgs,
+    kbwg: bool,
+    args: &CaptureArgs,
+) -> error::Returns<()> {
+    let engine = Engine::load(options, kbwg, &args.kwg, &args.klv)?;
+    if engine.game.num_passes_to_end() == 0 && engine.game.num_zeros_to_end() == 0 {
+        return_error!("trace capture needs a scoreless-turn rule that ends each game".to_string());
+    }
+    let gc = &engine.game;
+    let alphabet = gc.alphabet();
+    let mut state = game_state::GameState::new(gc);
+    let mut generator = movegen::InlineGenerator::<225>::try_new(gc)?;
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(args.seed);
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    let mut scores = [0; 2];
+    for game in 0..args.games.get() {
+        state.reset_and_draw_tiles(gc, &mut rng);
+        for ply in 0.. {
+            let mover = state.current_player();
+            let snapshot = engine.snapshot(&state.board_tiles);
+            generate(&mut generator, &snapshot, &mover.rack, mover.num_exchanges);
+            let chosen = &generator.plays[0];
+            serde_json::to_writer(
+                &mut out,
+                &Position {
+                    game,
+                    ply,
+                    fen: display::BoardFenner::new(alphabet, gc.board_layout(), &state.board_tiles)
+                        .to_string(),
+                    racks: std::array::from_fn(|seat| {
+                        alphabet.fmt_rack(&state.players[seat].rack).to_string()
+                    }),
+                    turn: state.turn,
+                    bag: state.bag.len(),
+                    exchanges: mover.num_exchanges,
+                    reference: chosen.play.fmt(&snapshot).to_string(),
+                    equity: chosen.equity.raw(),
+                },
+            )?;
+            writeln!(out)?;
+            state.play(gc, &mut rng, &chosen.play)?;
+            match state.check_game_ended(gc, &mut scores)? {
+                game_state::CheckGameEnded::NotEnded => state.next_turn(),
+                _ => break,
+            }
+        }
+    }
+    out.flush()?;
     Ok(())
 }
