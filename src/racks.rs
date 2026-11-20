@@ -90,6 +90,24 @@ impl RackTable {
         }
     }
 
+    // advance to the next rack in count order.
+    fn next_rack(&self, rack: &mut [u8]) {
+        let mut suffix = 0;
+        for i in (0..rack.len()).rev() {
+            if suffix != 0 && rack[i] < self.counts[i] {
+                rack[i] += 1;
+                suffix -= 1;
+                for (count, &most) in rack[i + 1..].iter_mut().zip(&self.counts[i + 1..]).rev() {
+                    *count = suffix.min(most);
+                    suffix -= *count;
+                }
+                return;
+            }
+            suffix += rack[i];
+        }
+        unreachable!("the last full rack has no next rack");
+    }
+
     fn subracks_before(&self, rack_tally: &[u8], ways: &[u64]) -> u64 {
         let width = self.rack_size as usize + 1;
         let mut left = self.rack_size as usize;
@@ -160,8 +178,11 @@ impl RackTable {
                     let mut multi_leaves = klv::MultiLeaves::new();
                     let mut keys = Vec::new();
                     let mut order = Vec::new();
+                    table_ref.unrank(from as u64, &mut rack_tally);
                     for (i, end) in ends.iter_mut().enumerate() {
-                        table_ref.unrank((from + i) as u64, &mut rack_tally);
+                        if i != 0 {
+                            table_ref.next_rack(&mut rack_tally);
+                        }
                         multi_leaves.init(
                             &rack_tally,
                             klv,
