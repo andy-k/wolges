@@ -47,6 +47,60 @@ impl Equity {
     }
 }
 
+// the arithmetic of an f32 holding whole millipoints: an infinity stays one
+// through a sum with a finite equity, and negating one gives the other
+impl std::ops::Neg for Equity {
+    type Output = Self;
+
+    #[inline(always)]
+    fn neg(self) -> Self {
+        match self.0 {
+            i32::MIN => Self::INFINITY,
+            i32::MAX => Self::NEG_INFINITY,
+            v => Self(-v),
+        }
+    }
+}
+
+impl std::ops::Add for Equity {
+    type Output = Self;
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        if !self.is_finite() {
+            debug_assert!(other.is_finite() || other == self, "{self:?} + {other:?}");
+            self
+        } else if !other.is_finite() {
+            other
+        } else {
+            Self(self.0 + other.0)
+        }
+    }
+}
+
+impl std::ops::Sub for Equity {
+    type Output = Self;
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        self + -other
+    }
+}
+
+impl std::ops::AddAssign for Equity {
+    #[inline(always)]
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl std::ops::SubAssign for Equity {
+    #[inline(always)]
+    fn sub_assign(&mut self, other: Self) {
+        *self = *self - other;
+    }
+}
+
 // as the float it stood for prints itself: {} prints a whole number with no
 // decimals and a fraction with the few it needs, a precision that many; a width
 // pads it as it pads a number, on the left unless told otherwise
@@ -159,6 +213,34 @@ impl std::fmt::Debug for Points {
 #[cfg(test)]
 mod tests {
     use super::{Equity, Points};
+
+    #[test]
+    #[inline]
+    fn an_equity_counts_as_an_f32_of_whole_millipoints() {
+        let e = Equity::new;
+        let (inf, neg_inf) = (Equity::INFINITY, Equity::NEG_INFINITY);
+        assert_eq!(e(7000) + e(-2500), e(4500));
+        assert_eq!(e(7000) - e(-2500), e(9500));
+        assert_eq!(-e(3), e(-3));
+        assert_eq!(-inf, neg_inf);
+        assert_eq!(-neg_inf, inf);
+        for v in [e(0), e(1), e(-16_777_216), e(16_777_216)] {
+            assert_eq!(inf + v, inf);
+            assert_eq!(v + inf, inf);
+            assert_eq!(neg_inf - v, neg_inf);
+            assert_eq!(v - inf, neg_inf);
+            assert_eq!(v - neg_inf, inf);
+            assert_eq!(neg_inf + v, neg_inf);
+        }
+        assert_eq!(inf + inf, inf);
+        assert_eq!(neg_inf - inf, neg_inf);
+        let mut q = e(1);
+        q += e(9);
+        q -= e(3);
+        assert_eq!(q, e(7));
+        q -= inf;
+        assert_eq!(q, neg_inf);
+    }
 
     #[test]
     #[inline]
