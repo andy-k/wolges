@@ -5247,7 +5247,11 @@ impl Losses {
                         seeker.gen_moves_filtered(
                             params,
                             movegen::PlacePredicate::Dyn(
-                                &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                                &mut |down: bool,
+                                      lane: i8,
+                                      idx: i8,
+                                      word: &[u8],
+                                      _score: equity::Equity| {
                                     checker.words_placed_are_ok(
                                         params.board_snapshot,
                                         down,
@@ -5682,14 +5686,13 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
     // by list: its half wins (a win counts two, a tie one) and its games
-    let results =
-        std::thread::scope(|s| -> error::Returns<Vec<(u64, u64)>> {
-            let mut handles = Vec::new();
-            for _ in 0..threads {
-                let (game_config, kwg, klv, lists, arm_tables) =
-                    (&game_config, &kwg, &klv, &lists, &arm_tables);
-                let (claimed, finished, reported_secs) = (&claimed, &finished, &reported_secs);
-                handles.push(s.spawn(move || -> error::Returns<Vec<(u64, u64)>> {
+    let results = std::thread::scope(|s| -> error::Returns<Vec<(u64, u64)>> {
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let (game_config, kwg, klv, lists, arm_tables) =
+                (&game_config, &kwg, &klv, &lists, &arm_tables);
+            let (claimed, finished, reported_secs) = (&claimed, &finished, &reported_secs);
+            handles.push(s.spawn(move || -> error::Returns<Vec<(u64, u64)>> {
                     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
                     let mut checker = move_filter::LimitedVocabChecker::new();
                     let mut game_state = game_state::GameState::new(game_config);
@@ -5735,7 +5738,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     move_generator.gen_moves_filtered(
                                     &params,
                                     movegen::PlacePredicate::Dyn(
-                                        &mut |down: bool, lane: i8, idx: i8, word: &[u8], _: i32| {
+                                        &mut |down: bool, lane: i8, idx: i8, word: &[u8], _: equity::Equity| {
                                             checker.words_placed_are_ok(
                                                 board_snapshot,
                                                 down,
@@ -5790,17 +5793,17 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     }
                     Ok(results)
                 }));
+        }
+        let mut all = vec![(0u64, 0u64); lists.len()];
+        for handle in handles {
+            let results = handle.join().map_err(|_| "a study thread panicked")??;
+            for (all, part) in all.iter_mut().zip(results) {
+                all.0 += part.0;
+                all.1 += part.1;
             }
-            let mut all = vec![(0u64, 0u64); lists.len()];
-            for handle in handles {
-                let results = handle.join().map_err(|_| "a study thread panicked")??;
-                for (all, part) in all.iter_mut().zip(results) {
-                    all.0 += part.0;
-                    all.1 += part.1;
-                }
-            }
-            Ok(all)
-        })?;
+        }
+        Ok(all)
+    })?;
 
     let run_identifier = run_stamp();
     let mut csv_out =
@@ -11313,7 +11316,11 @@ WCMP_P1_SCORE 402.000000
                     seeker.gen_moves_filtered(
                         &params,
                         movegen::PlacePredicate::Dyn(
-                            &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                            &mut |down: bool,
+                                  lane: i8,
+                                  idx: i8,
+                                  word: &[u8],
+                                  _score: equity::Equity| {
                                 checker.words_placed_are_ok(
                                     board_snapshot,
                                     down,

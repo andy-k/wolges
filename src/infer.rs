@@ -177,26 +177,28 @@ pub fn build_sheet_spell_once<
     // the snapshot holds no tables, so the lean arm alone runs it
     move_generator.gen_census_sheet_lean(
         &params,
-        movegen::PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], _score: i32| {
-            n_cand += 1;
-            let real_score = play_scorer::score_and_blank_deltas(
-                board_snapshot,
-                down,
-                lane,
-                idx,
-                word,
-                blank_deltas,
-            ) + opening_adjustment(phase, game_config, down, idx, word);
-            census::record_blank_variants(
-                lat,
-                sheet,
-                real_score,
-                blank_deltas,
-                unseen_tally,
-                num_blanks_eff,
-            );
-            false // never keep the move
-        }),
+        movegen::PlacePredicate::Dyn(
+            &mut |down, lane, idx, word: &[u8], _score: equity::Equity| {
+                n_cand += 1;
+                let real_score = play_scorer::score_and_blank_deltas(
+                    board_snapshot,
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    blank_deltas,
+                ) + opening_adjustment(phase, game_config, down, idx, word);
+                census::record_blank_variants(
+                    lat,
+                    sheet,
+                    real_score,
+                    blank_deltas,
+                    unseen_tally,
+                    num_blanks_eff,
+                );
+                false // never keep the move
+            },
+        ),
         klv::AdjustLeave::Identity,
         movegen::EquityPredicate::RejectAll,
     );

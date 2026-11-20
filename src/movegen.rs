@@ -63,7 +63,7 @@ struct CrossSetComputation {
     p: i32,
 }
 
-type PlaceMoveFn<'a> = &'a mut dyn FnMut(bool, i8, i8, &[u8], i32) -> bool;
+type PlaceMoveFn<'a> = &'a mut dyn FnMut(bool, i8, i8, &[u8], equity::Equity) -> bool;
 
 type EquityFn<'a> = &'a mut dyn FnMut(equity::Equity, &Play) -> bool;
 
@@ -100,7 +100,7 @@ impl PlacePredicate<'_> {
         match self {
             PlacePredicate::AcceptAll => true,
             PlacePredicate::RejectAll => false,
-            PlacePredicate::Dyn(f) => f(down, lane, idx, word, score),
+            PlacePredicate::Dyn(f) => f(down, lane, idx, word, equity::Equity::new(score)),
         }
     }
 }
@@ -9043,32 +9043,34 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         };
         self.gen_census_sheet_impl(
             &params,
-            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], _score: i32| {
-                if word.iter().filter(|&&tile| tile != 0).count() <= rack_size {
-                    let key = word
-                        .iter()
-                        .filter(|&&tile| tile != 0)
-                        .map(|&tile| {
-                            if nibbles {
-                                alphagram::Nibble.place_value(tile)
-                            } else {
-                                layout.place_value(tile)
-                            }
-                        })
-                        .sum::<u128>();
-                    let score = play_scorer::score_and_blank_deltas(
-                        &snapshot,
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        &mut deltas,
-                    );
-                    let lane_id = if down { rows + lane as u8 } else { lane as u8 };
-                    census.add(key, lane_id, score);
-                }
-                false
-            }),
+            PlacePredicate::Dyn(
+                &mut |down, lane, idx, word: &[u8], _score: equity::Equity| {
+                    if word.iter().filter(|&&tile| tile != 0).count() <= rack_size {
+                        let key = word
+                            .iter()
+                            .filter(|&&tile| tile != 0)
+                            .map(|&tile| {
+                                if nibbles {
+                                    alphagram::Nibble.place_value(tile)
+                                } else {
+                                    layout.place_value(tile)
+                                }
+                            })
+                            .sum::<u128>();
+                        let score = play_scorer::score_and_blank_deltas(
+                            &snapshot,
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            &mut deltas,
+                        );
+                        let lane_id = if down { rows + lane as u8 } else { lane as u8 };
+                        census.add(key, lane_id, score);
+                    }
+                    false
+                },
+            ),
             klv::AdjustLeave::Identity,
             EquityPredicate::RejectAll,
         );
@@ -9135,9 +9137,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             self.working_buffer.jumbled.walk = JUMBLED_ONCE_PER_RACK_TILES;
             self.gen_sheet_impl(
                 &params,
-                PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: equity::Equity| {
                     if word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize {
-                        found(down, lane, idx, word, score);
+                        found(down, lane, idx, word, score.raw());
                     }
                     false
                 }),
@@ -9172,32 +9174,34 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         }
         self.gen_census_sheet_impl(
             &params,
-            PlacePredicate::Dyn(&mut |down, lane, idx, spelled: &[u8], _score: i32| {
-                if spelled.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize {
-                    letters.clear();
-                    letters.extend(spelled.iter().map(|&tile| tile & 0x7f));
-                    let score = play_scorer::score_and_blank_deltas(
-                        &snapshot,
-                        down,
-                        lane,
-                        idx,
-                        &letters,
-                        &mut deltas,
-                    );
-                    word.clear();
-                    word.extend_from_slice(&letters);
-                    designate(
-                        tally,
-                        &deltas,
-                        &mut word,
-                        0,
-                        0,
-                        score,
-                        &mut |word: &[u8], score| found(down, lane, idx, word, score),
-                    );
-                }
-                false
-            }),
+            PlacePredicate::Dyn(
+                &mut |down, lane, idx, spelled: &[u8], _score: equity::Equity| {
+                    if spelled.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize {
+                        letters.clear();
+                        letters.extend(spelled.iter().map(|&tile| tile & 0x7f));
+                        let score = play_scorer::score_and_blank_deltas(
+                            &snapshot,
+                            down,
+                            lane,
+                            idx,
+                            &letters,
+                            &mut deltas,
+                        );
+                        word.clear();
+                        word.extend_from_slice(&letters);
+                        designate(
+                            tally,
+                            &deltas,
+                            &mut word,
+                            0,
+                            0,
+                            score,
+                            &mut |word: &[u8], score| found(down, lane, idx, word, score),
+                        );
+                    }
+                    false
+                },
+            ),
             klv::AdjustLeave::Identity,
             EquityPredicate::RejectAll,
         );
@@ -9322,14 +9326,14 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             self.working_buffer.jumbled.through = Some(through);
             self.gen_sheet_impl(
                 &params,
-                PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+                PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: equity::Equity| {
                     let (along, at) = if down { (col, row) } else { (row, col) };
                     let kept = word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize
                         && lane == along
                         && at >= idx
                         && word.get((at - idx) as usize).is_some_and(|&tile| tile != 0);
                     if kept {
-                        found(down, lane, idx, word, score);
+                        found(down, lane, idx, word, score.raw());
                     }
                     kept
                 }),
@@ -9383,9 +9387,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.jumbled.seen = 0;
         self.gen_sheet_impl(
             &params,
-            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: equity::Equity| {
                 if word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize {
-                    found(down, lane, idx, word, score);
+                    found(down, lane, idx, word, score.raw());
                 }
                 false
             }),
@@ -9465,10 +9469,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.jumbled.walk = JUMBLED_ONCE_PER_RACK_TILES;
         self.gen_sheet_impl(
             &params,
-            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: equity::Equity| {
                 let kept = word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize;
                 if kept {
-                    found(down, lane, idx, word, score);
+                    found(down, lane, idx, word, score.raw());
                 }
                 kept
             }),
@@ -9524,10 +9528,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.jumbled.floor = floor.0;
         self.gen_sheet_impl(
             &params,
-            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
+            PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: equity::Equity| {
                 let kept = word.iter().filter(|&&tile| tile != 0).count() <= rack_size as usize;
                 if kept {
-                    found(down, lane, idx, word, score);
+                    found(down, lane, idx, word, score.raw());
                 }
                 kept
             }),
@@ -18192,10 +18196,12 @@ mod tests {
                         pass_policy: PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
                     },
-                    PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score: i32| {
-                        words.push((down, lane, idx, word.to_vec(), score));
-                        false
-                    }),
+                    PlacePredicate::Dyn(
+                        &mut |down, lane, idx, word: &[u8], score: equity::Equity| {
+                            words.push((down, lane, idx, word.to_vec(), score));
+                            false
+                        },
+                    ),
                     klv::AdjustLeave::Identity,
                     EquityPredicate::RejectAll,
                 );
@@ -19006,7 +19012,7 @@ mod tests {
                     kept.gen_census_sheet(
                         &params(usize::MAX),
                         PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], score| {
-                            calls.push((down, lane, idx, word.to_vec(), score));
+                            calls.push((down, lane, idx, word.to_vec(), score.raw()));
                             true
                         }),
                         klv::AdjustLeave::Identity,

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{game_config, klv, kwg, movegen, prob};
+use super::{equity, game_config, klv, kwg, movegen, prob};
 use rand::prelude::*;
 use std::io::Write;
 
@@ -224,7 +224,11 @@ impl GenMoves<'_> {
                         dynamic_leaves,
                     },
                     movegen::PlacePredicate::Dyn(
-                        &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                        &mut |down: bool,
+                              lane: i8,
+                              idx: i8,
+                              word: &[u8],
+                              _score: equity::Equity| {
                             limited_vocab_checker.words_placed_are_ok(
                                 board_snapshot,
                                 down,
