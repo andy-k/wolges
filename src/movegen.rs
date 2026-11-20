@@ -4956,8 +4956,7 @@ fn gen_classic_place_moves<
                 if board_strip[pos] != 0 {
                     continue;
                 }
-                let tile_value =
-                    env.alphabet.score(c) as i32 * equity::SCALE * tile_multipliers[pos] as i32;
+                let tile_value = env.alphabet.scaled_score(c).raw() * tile_multipliers[pos] as i32;
                 main_score += tile_value;
                 perpendicular_cumulative_score +=
                     tile_value * perpendicular_word_multipliers[pos] as i32;
@@ -5004,7 +5003,7 @@ fn gen_classic_place_moves<
                 continue 'word;
             }
             let blank_value = env.alphabet.scaled_score(0).raw();
-            let real_value = env.alphabet.score(blank_letter) as i32 * equity::SCALE;
+            let real_value = env.alphabet.scaled_score(blank_letter).raw();
             if first_blank == 0 {
                 for (i, &c) in word.iter().enumerate() {
                     let pos = left + i;
@@ -5027,7 +5026,7 @@ fn gen_classic_place_moves<
                 }
                 continue 'word;
             }
-            let first_value = env.alphabet.score(first_blank) as i32 * equity::SCALE;
+            let first_value = env.alphabet.scaled_score(first_blank).raw();
             for (i, &c) in word.iter().enumerate() {
                 let pos = left + i;
                 if c != first_blank || board_strip[pos] != 0 {
@@ -5505,8 +5504,7 @@ fn gen_classic_place_moves<
                 if env.params.board_strip[pos] != 0 {
                     continue;
                 }
-                let tile_value = env.alphabet.score(c) as i32
-                    * equity::SCALE
+                let tile_value = env.alphabet.scaled_score(c).raw()
                     * env.params.remaining_tile_multipliers_strip[pos] as i32;
                 main_score += tile_value;
                 perpendicular_cumulative_score +=
@@ -5567,7 +5565,7 @@ fn gen_classic_place_moves<
         };
         let left = env.left as usize;
         let blank_value = env.alphabet.scaled_score(0).raw();
-        let real_value = env.alphabet.score(letter) as i32 * equity::SCALE;
+        let real_value = env.alphabet.scaled_score(letter).raw();
         for (j, &c) in word.iter().enumerate().skip(start) {
             let pos = left + j;
             if c != letter || env.params.board_strip[pos] != 0 {
