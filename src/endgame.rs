@@ -4711,6 +4711,9 @@ impl<
         kept.resize_with(threads, || None);
         let mut helpers = std::mem::take(&mut self.helpers);
         helpers.resize_with(threads, || None);
+        let room = limits
+            .memory
+            .map_or(room, |limit| room.min(limit.room() / threads));
         let (gc, kwg, arm_tables) = (self.game_config, self.kwg, self.arm_tables);
         let run_letters = &self.run_letters;
         let (board_tiles, racks, scoreless) = (&self.board_tiles, &self.racks, self.scoreless);
@@ -11620,6 +11623,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn helper_tables_share_the_memory_left_to_reserve() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        solver.init(&[0; 225], [&[1, 1, 2, 8, 12, 20, 20], &[5, 6]]);
+        assert!(solver.reserve_table(32 << 10));
+        solver.reset_position();
+        solver.generate_root(0, false);
+        let node = super::Enter {
+            ply: 0,
+            player_idx: 0,
+            depth: 1,
+            alpha: equity::Equity::ZERO,
+            beta: equity::Equity::INFINITY,
+            scoreless: super::Scoreless::Counted {
+                passes: 0,
+                zeros: 0,
+            },
+        };
+        let work = &mut solver.work_buffer;
+        work.frames.push(super::Frame::new(node, true, 0, false));
+        work.threads = 4;
+        let limit = super::MemoryLimit {
+            bytes: 64 << 10,
+            held: || 32 << 10,
+        };
+        work.memory_limit = Some(limit);
+        // depth zero below each helper move leaves its initial table size.
+        solver.root_verdicts(0, node.depth);
+        assert_eq!(solver.work_buffer.helper_tables.len(), 4);
+        let bytes = solver
+            .work_buffer
+            .helper_tables
+            .iter()
+            .flatten()
+            .map(|kept| kept.table.buckets.len() * std::mem::size_of::<[u64; 8]>())
+            .sum::<usize>();
+        assert!(bytes <= limit.room(), "{bytes} helper table bytes");
     }
 
     #[test]
