@@ -70,7 +70,7 @@ type EquityFn<'a> = &'a mut dyn FnMut(equity::Equity, &Play) -> bool;
 // a generation's found_place_move behind a dyn: handed a play as a walk finds
 // it, it hands back the threshold
 type FoundPlaceMoveFn<'a> =
-    &'a mut dyn FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32;
+    &'a mut dyn FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity;
 
 pub enum EquityPredicate<'a> {
     AcceptAll,
@@ -7171,7 +7171,7 @@ fn gen_place_moves_lean<
 struct GenPlaceMovesAtParams<
     'a,
     R: RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -7193,7 +7193,7 @@ fn gen_place_moves_at_lean<
     'a,
     const D: usize,
     R: RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -7305,6 +7305,7 @@ fn gen_place_moves_at_lean<
                     equity::Equity::new(score),
                     equity::Equity::new(leave_value),
                 )
+                .raw()
             },
             multi_leaves,
             num_tiles_in_bag: working_buffer.num_tiles_in_bag,
@@ -7326,7 +7327,7 @@ fn gen_place_moves_at<
     const D: usize,
     W: LaneBits,
     T: TablePlaces,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -7468,6 +7469,7 @@ fn gen_place_moves_at<
                     equity::Equity::new(score),
                     equity::Equity::new(leave_value),
                 )
+                .raw()
             },
             leave_values: multi_leaves.leave_values(),
             score_bound: placement.best_possible_equity
@@ -8656,7 +8658,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                                 _leave_value: equity::Equity| {
             if T::STOPS && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes)) {
                 stopped = true;
-                return i32::MAX;
+                return equity::Equity::INFINITY;
             }
             vec_moves.push(ValuedMove {
                 equity: equity::Equity::ZERO,
@@ -8668,7 +8670,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     score,
                 },
             });
-            i32::MIN
+            equity::Equity::NEG_INFINITY
         };
         // the copy for any side in G, or (a generator with none: the wasm's)
         // the copy compiled for the board's side
@@ -8866,7 +8868,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     },
                 );
             }
-            threshold.get().raw()
+            threshold.get()
         };
         // a rack of one tile has its plays from the cross sets, with no walk
         if working_buffer.num_tiles_on_rack == 1 {
@@ -8895,10 +8897,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     working_buffer,
                     multi_leaves: &multi_leaves,
                     found_place_move,
-                    can_accept: |best_possible_equity: i32| {
-                        threshold.get() <= equity::Equity::new(best_possible_equity)
+                    can_accept: |best_possible_equity: equity::Equity| {
+                        threshold.get() <= best_possible_equity
                     },
-                    current_threshold: || threshold.get().raw(),
+                    current_threshold: || threshold.get(),
                 },
             ) {
                 breathe().await;
@@ -9936,7 +9938,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     },
                 );
             }
-            threshold.get().raw()
+            threshold.get()
         };
         // steered (Steer): the lanes the walk may take narrowed to those
         // touched and those of the others whose best equity is the best
@@ -9997,10 +9999,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             working_buffer: &mut *working_buffer,
             multi_leaves: &multi_leaves,
             found_place_move,
-            can_accept: |best_possible_equity: i32| {
-                threshold.get() <= equity::Equity::new(best_possible_equity)
+            can_accept: |best_possible_equity: equity::Equity| {
+                threshold.get() <= best_possible_equity
             },
-            current_threshold: || threshold.get().raw(),
+            current_threshold: || threshold.get(),
         }) {}
         (working_buffer.lane_rows, working_buffer.lane_cols) = lanes_before;
         // with the threshold above the best an exchange can be, push_move would
@@ -10207,12 +10209,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     },
                 );
             }
-            threshold.get().raw()
+            threshold.get()
         };
-        let can_accept = |best_possible_equity: i32| {
-            threshold.get() <= equity::Equity::new(best_possible_equity)
-        };
-        let current_threshold = || threshold.get().raw();
+        let can_accept =
+            |best_possible_equity: equity::Equity| threshold.get() <= best_possible_equity;
+        let current_threshold = || threshold.get();
         // with the run letters the lean arm's table keeps, the walk goes
         // straight to a tile's node; a generator that never jumps (the wasm's,
         // whose table keeps none) has no walk that does
@@ -10242,7 +10243,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 params.board_snapshot,
                 working_buffer,
                 &multi_leaves,
-                current_threshold(),
+                current_threshold().raw(),
                 found_place_move,
             ),
             None if empty => gen_empty_board_place_moves::<D, _, _, _, _, _, _, _>(
@@ -10250,7 +10251,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 params.board_snapshot,
                 working_buffer,
                 &multi_leaves,
-                current_threshold(),
+                current_threshold().raw(),
                 found_place_move,
             ),
             Some(runs) => {
@@ -10987,7 +10988,8 @@ fn walk_jumbled_star_lanes<
                 word,
                 equity::Equity::new(score),
                 equity::Equity::new(leave_value + hotspot_penalty(game_config, down, idx, word)),
-            );
+            )
+            .raw();
             threshold
         };
         gen_jumbled_place_moves::<BAG_TERM, _, _, _>(
@@ -11074,7 +11076,7 @@ fn gen_empty_board_place_moves<
     'a,
     const D: usize,
     R: RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -11236,7 +11238,8 @@ fn gen_empty_board_place_moves_made<
                             start as i8,
                             word,
                         )),
-                    );
+                    )
+                    .raw();
                 }
             }
             return;
@@ -11281,7 +11284,8 @@ fn gen_empty_board_place_moves_made<
                     equity::Equity::new(
                         leave_value + hotspot_penalty(game_config, lane.down, start as i8, word),
                     ),
-                );
+                )
+                .raw();
             }
         }
     }
@@ -11462,9 +11466,9 @@ fn gen_empty_board_place_moves_made<
 struct KurniaIterParams<
     'a,
     R: RunLetters,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
-    CanAccept: 'a + Fn(i32) -> bool,
-    CurrentThreshold: 'a + Fn() -> i32,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
+    CanAccept: 'a + Fn(equity::Equity) -> bool,
+    CurrentThreshold: 'a + Fn() -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -11486,9 +11490,9 @@ fn kurnia_gen_place_moves_iter_lean<
     const D: usize,
     W: LaneBits,
     R: 'a + RunLetters,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
-    CanAccept: 'a + Fn(i32) -> bool,
-    CurrentThreshold: 'a + Fn() -> i32,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
+    CanAccept: 'a + Fn(equity::Equity) -> bool,
+    CurrentThreshold: 'a + Fn() -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -11654,7 +11658,7 @@ fn kurnia_gen_place_moves_iter_lean<
     working_buffer.placement_order = placement_order;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
-            if can_accept(equity) {
+            if can_accept(equity::Equity::new(equity)) {
                 let placement = working_buffer.found_placements[idx as usize];
                 working_buffer.bounds_at = idx as usize * 2 * bounds_stride;
                 gen_place_moves_at_lean::<D, _, _, _, _, _, _, _>(GenPlaceMovesAtParams {
@@ -11664,7 +11668,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     multi_leaves,
                     placement: &placement,
                     num_max_played,
-                    threshold: current_threshold(),
+                    threshold: current_threshold().raw(),
                     found_place_move:
                         &mut |down: bool,
                               lane: i8,
@@ -11710,7 +11714,7 @@ fn kurnia_gen_raw_place_moves<
     const D: usize,
     W: LaneBits,
     R: 'a + RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -11897,6 +11901,7 @@ fn kurnia_gen_raw_place_moves<
                             equity::Equity::new(score),
                             equity::Equity::new(leave_value),
                         )
+                        .raw()
                     },
                     multi_leaves,
                     num_tiles_in_bag: working_buffer.num_tiles_in_bag,
@@ -11929,7 +11934,7 @@ fn kurnia_gen_raw_place_moves<
 #[inline]
 fn kurnia_gen_one_tile_moves<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -12069,7 +12074,8 @@ fn kurnia_gen_one_tile_moves<
                     &word_buffer[word_start..word_end],
                     equity::Equity::new(score),
                     equity::Equity::new(leave_value),
-                );
+                )
+                .raw();
             }
         };
         let mut idx = 0;
@@ -12801,9 +12807,9 @@ fn kurnia_gen_place_moves_iter<
     const D: usize,
     W: LaneBits,
     T: 'a + TablePlaces,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
-    CanAccept: 'a + Fn(i32) -> bool,
-    CurrentThreshold: 'a + Fn() -> i32,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
+    CanAccept: 'a + Fn(equity::Equity) -> bool,
+    CurrentThreshold: 'a + Fn() -> equity::Equity,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -13103,13 +13109,13 @@ fn kurnia_gen_place_moves_iter<
                         }
                     }
                     bucket_from = starts[bucket] as usize;
-                    if len == 0 || !can_accept(tops[bucket]) {
+                    if len == 0 || !can_accept(equity::Equity::new(tops[bucket])) {
                         working_buffer.placement_order.clear();
                         return None;
                     }
                 }
                 let (equity, idx) = working_buffer.placement_order.pop()?;
-                if !can_accept(equity) {
+                if !can_accept(equity::Equity::new(equity)) {
                     continue;
                 }
                 {
@@ -13121,7 +13127,7 @@ fn kurnia_gen_place_moves_iter<
                         multi_leaves,
                         placement: &placement,
                         num_max_played,
-                        threshold: current_threshold(),
+                        threshold: current_threshold().raw(),
                         found_place_move:
                             &mut |down: bool,
                                   lane: i8,
@@ -18739,7 +18745,7 @@ mod tests {
                     score,
                 },
             });
-            i32::MIN
+            equity::Equity::NEG_INFINITY
         };
         if raw {
             kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _, _, _>(
@@ -18757,8 +18763,8 @@ mod tests {
                     working_buffer: &mut *working_buffer,
                     multi_leaves: &multi_leaves,
                     found_place_move,
-                    can_accept: |_: i32| true,
-                    current_threshold: || i32::MIN,
+                    can_accept: |_: equity::Equity| true,
+                    current_threshold: || equity::Equity::NEG_INFINITY,
                 },
             ) {}
         }
