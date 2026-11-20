@@ -14356,7 +14356,10 @@ fn rcs_lane_placements(
         let idx = hooks.trailing_zeros() as usize;
         hooks &= hooks - 1;
         let fits = allowed[idx] & rack_bits;
-        unfillable |= ((fits == 0) as u64) << idx;
+        if fits == 0 {
+            unfillable |= 1 << idx;
+            continue;
+        }
         caps[idx] = rack_tiles
             .iter()
             .map(|&(bit, score)| if fits & bit != 0 { score } else { 0 })
