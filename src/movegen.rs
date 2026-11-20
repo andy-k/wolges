@@ -4624,21 +4624,53 @@ fn sort_subracks(subracks: &[Subrack], order: &mut Vec<u64>) {
 pub(crate) fn subrack_order(
     multi_leaves: &klv::MultiLeaves,
     rack_tally: &[u8],
+    keys: &mut Vec<u64>,
     order: &mut Vec<u8>,
 ) {
-    let mut subracks = Vec::new();
-    // the order reads no places, so every tile's first place is 0
-    walk_subracks(
-        multi_leaves,
-        alphagram::Nibble,
-        rack_tally,
-        &[0; MAX_ALPHABET_LEN],
-        &mut subracks,
+    fn walk(digits: &[(u8, u32)], leaves: &[i32], leave_idx: u32, played: u8, keys: &mut Vec<u64>) {
+        if let Some((&(count, place), rest)) = digits.split_first() {
+            for kept in 0..=count {
+                walk(
+                    rest,
+                    leaves,
+                    leave_idx + u32::from(kept) * place,
+                    played - kept,
+                    keys,
+                );
+            }
+        } else {
+            let value = leaves[leave_idx as usize];
+            const SCORE_SHIFT: u32 = u64::BITS - u8::BITS - i32::BITS;
+            const PLAYED_SHIFT: u32 = SCORE_SHIFT + i32::BITS;
+            keys.push(
+                u64::from(played) << PLAYED_SHIFT
+                    | u64::from(!(value as u32 ^ i32::MIN as u32)) << SCORE_SHIFT
+                    | keys.len() as u64,
+            );
+        }
+    }
+
+    let mut digits = [(0, 0); crate::racks::MAX_RACK_SIZE as usize];
+    let mut num_digits = 0;
+    let mut played = 0;
+    for (tile, &count) in rack_tally.iter().enumerate() {
+        if count != 0 {
+            digits[num_digits] = (count, multi_leaves.place_value(tile as u8));
+            num_digits += 1;
+            played += count;
+        }
+    }
+    keys.clear();
+    walk(
+        &digits[..num_digits],
+        multi_leaves.leave_values(),
+        0,
+        played,
+        keys,
     );
-    let mut keys = Vec::new();
-    sort_subracks(&subracks, &mut keys);
+    keys.sort_unstable();
     order.clear();
-    order.extend(keys.iter().map(|&key| (key & 0xffffff) as u8));
+    order.extend(keys.iter().map(|&key| key as u8));
 }
 
 // a rack's subracks in build_subracks's walk of them, each with its leave: the

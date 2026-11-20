@@ -120,6 +120,7 @@ impl RackTable {
                         let mut rack_tally = vec![0u8; table_ref.counts.len()];
                         let mut multi_leaves = klv::MultiLeaves::new();
                         let mut order = Vec::new();
+                        let mut keys = Vec::new();
                         let mut lens = Vec::with_capacity(to - from);
                         let mut data = Vec::new();
                         for rank in from..to {
@@ -136,7 +137,12 @@ impl RackTable {
                             for &leave_value in multi_leaves.leave_values() {
                                 data.extend_from_slice(&leave_value.to_le_bytes());
                             }
-                            movegen::subrack_order(&multi_leaves, &rack_tally, &mut order);
+                            movegen::subrack_order(
+                                &multi_leaves,
+                                &rack_tally,
+                                &mut keys,
+                                &mut order,
+                            );
                             data.extend_from_slice(&order);
                             lens.push((data.len() - at) as u64);
                         }
@@ -341,6 +347,7 @@ mod tests {
         let mut walked = klv::MultiLeaves::new();
         let mut read = klv::MultiLeaves::new();
         let mut order = Vec::new();
+        let mut keys = Vec::new();
         for rank in (0..table.num_racks()).step_by(97) {
             table.unrank(rank as u64, &mut rack);
             assert_eq!(table.rank(&rack), Some(rank));
@@ -357,7 +364,7 @@ mod tests {
             read.init_from_leaves(&rack, setup_leaves, read.dense_most(), std::iter::empty());
             assert_eq!(read.leave_values(), walked.leave_values());
             assert_eq!(read.num_playeds(), walked.num_playeds());
-            movegen::subrack_order(&walked, &rack, &mut order);
+            movegen::subrack_order(&walked, &rack, &mut keys, &mut order);
             assert_eq!(given, &order[..]);
         }
     }
