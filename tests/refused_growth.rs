@@ -46,12 +46,14 @@ fn refusing_at<T>(nth: usize, f: impl FnOnce() -> T) -> (T, usize) {
 // on this thread, refuses the one request refusing_at names
 struct Refusing;
 
-#[allow(clippy::undocumented_unsafe_blocks)]
+// SAFETY: All allocations use System. The refusal and accounting only track
+// sizes. A refused realloc leaves the original allocation in place.
 unsafe impl std::alloc::GlobalAlloc for Refusing {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         if refused(layout.size()) {
             return std::ptr::null_mut();
         }
+        // SAFETY: The caller supplies a valid, nonzero allocation layout.
         unsafe { std::alloc::System.alloc(layout) }
     }
 
@@ -59,10 +61,12 @@ unsafe impl std::alloc::GlobalAlloc for Refusing {
         if refused(layout.size()) {
             return std::ptr::null_mut();
         }
+        // SAFETY: The caller supplies a valid, nonzero allocation layout.
         unsafe { std::alloc::System.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, p: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: The caller passes a live allocation from System and its layout.
         unsafe { std::alloc::System.dealloc(p, layout) }
     }
 
@@ -70,6 +74,7 @@ unsafe impl std::alloc::GlobalAlloc for Refusing {
         if refused(new_size) {
             return std::ptr::null_mut();
         }
+        // SAFETY: Forward the live System allocation, layout, and valid size.
         unsafe { std::alloc::System.realloc(p, layout, new_size) }
     }
 }
