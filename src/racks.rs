@@ -147,76 +147,84 @@ impl RackTable {
         };
         let num_racks = table.num_racks();
         let threads = threads.max(1).min(num_racks.max(1));
-        let per_thread = num_racks.div_ceil(threads).max(1);
         let subrack_ways = Self::ways_of::<true>(&table.counts, rack_size);
         let num_bytes = usize::try_from(subrack_ways[rack_size as usize] * SUBRACK_BYTES as u64)
             .map_err(|_| "the rack table does not fit in memory")?;
         let mut ends = vec![0u64; num_racks];
         let mut data = vec![0u8; num_bytes];
-        let table_ref = &table;
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(threads);
-            let mut remaining = data.as_mut_slice();
-            let mut offset = 0;
-            let mut boundary_rack = vec![0u8; table_ref.counts.len()];
-            for (worker, ends) in ends.chunks_mut(per_thread).enumerate() {
-                let from = worker * per_thread;
-                let until = from + ends.len();
-                let end = if until < num_racks {
-                    table_ref.unrank(until as u64, &mut boundary_rack);
-                    (table_ref.subracks_before(&boundary_rack, &subrack_ways)
-                        * SUBRACK_BYTES as u64) as usize
-                } else {
-                    num_bytes
-                };
-                let (mut rows, later) = remaining.split_at_mut(end - offset);
-                remaining = later;
-                let mut at = offset;
-                offset = end;
-                handles.push(scope.spawn(move || {
-                    let mut rack_tally = vec![0u8; table_ref.counts.len()];
-                    let mut multi_leaves = klv::MultiLeaves::new();
-                    let mut keys = Vec::new();
-                    let mut order = Vec::new();
-                    table_ref.unrank(from as u64, &mut rack_tally);
-                    for (i, end) in ends.iter_mut().enumerate() {
-                        if i != 0 {
-                            table_ref.next_rack(&mut rack_tally);
-                        }
-                        multi_leaves.init(
-                            &rack_tally,
-                            klv,
-                            true,
-                            klv::AdjustLeave::Identity,
-                            multi_leaves.dense_most(),
-                            std::iter::empty(),
-                        );
-                        let leaves = multi_leaves.leave_values();
-                        let (row, later) = rows.split_at_mut(leaves.len() * SUBRACK_BYTES);
-                        rows = later;
-                        let (values, permutation) = row.split_at_mut(leaves.len() * LEAVE_BYTES);
-                        for (to, value) in values
-                            .as_chunks_mut::<LEAVE_BYTES>()
-                            .0
-                            .iter_mut()
-                            .zip(leaves)
-                        {
-                            *to = value.to_le_bytes();
-                        }
-                        movegen::subrack_order(&multi_leaves, &rack_tally, &mut keys, &mut order);
-                        permutation.copy_from_slice(&order);
-                        at += row.len();
-                        *end = at as u64;
-                    }
-                    debug_assert!(rows.is_empty());
-                }));
+        let build_rows = |from, mut at, ends: &mut [u64], mut rows: &mut [u8]| {
+            let mut rack_tally = vec![0u8; table.counts.len()];
+            let mut multi_leaves = klv::MultiLeaves::new();
+            let mut keys = Vec::new();
+            let mut order = Vec::new();
+            table.unrank(from as u64, &mut rack_tally);
+            for (i, end) in ends.iter_mut().enumerate() {
+                if i != 0 {
+                    table.next_rack(&mut rack_tally);
+                }
+                multi_leaves.init(
+                    &rack_tally,
+                    klv,
+                    true,
+                    klv::AdjustLeave::Identity,
+                    multi_leaves.dense_most(),
+                    std::iter::empty(),
+                );
+                let leaves = multi_leaves.leave_values();
+                let (row, later) = rows.split_at_mut(leaves.len() * SUBRACK_BYTES);
+                rows = later;
+                let (values, permutation) = row.split_at_mut(leaves.len() * LEAVE_BYTES);
+                for (to, value) in values
+                    .as_chunks_mut::<LEAVE_BYTES>()
+                    .0
+                    .iter_mut()
+                    .zip(leaves)
+                {
+                    *to = value.to_le_bytes();
+                }
+                movegen::subrack_order(&multi_leaves, &rack_tally, &mut keys, &mut order);
+                permutation.copy_from_slice(&order);
+                at += row.len();
+                *end = at as u64;
             }
-            handles
-                .into_iter()
-                .map(|handle| handle.join())
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .map_err(|_| "a thread making the rack table failed")?;
+            debug_assert!(rows.is_empty());
+        };
+        if threads == 1 {
+            // the serial builder needs no thread support, including in wasm
+            if !ends.is_empty() {
+                build_rows(0, 0, &mut ends, &mut data);
+            }
+        } else {
+            let per_thread = num_racks.div_ceil(threads);
+            let build_rows = &build_rows;
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(threads);
+                let mut remaining = data.as_mut_slice();
+                let mut offset = 0;
+                let mut boundary_rack = vec![0u8; table.counts.len()];
+                for (worker, ends) in ends.chunks_mut(per_thread).enumerate() {
+                    let from = worker * per_thread;
+                    let until = from + ends.len();
+                    let end = if until < num_racks {
+                        table.unrank(until as u64, &mut boundary_rack);
+                        (table.subracks_before(&boundary_rack, &subrack_ways)
+                            * SUBRACK_BYTES as u64) as usize
+                    } else {
+                        num_bytes
+                    };
+                    let (rows, later) = remaining.split_at_mut(end - offset);
+                    remaining = later;
+                    let at = offset;
+                    offset = end;
+                    handles.push(scope.spawn(move || build_rows(from, at, ends, rows)));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join())
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|_| "a thread making the rack table failed")?;
+        }
         table.ends = ends.into_boxed_slice();
         table.data = data.into_boxed_slice();
         Ok(table)
@@ -390,6 +398,8 @@ mod tests {
             .collect::<Vec<_>>();
         let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(&leaves)).unwrap();
         let table = RackTable::build(&klv, &gc, 4).unwrap();
+        let serial = RackTable::build(&klv, &gc, 1).unwrap();
+        assert!(serial.ends == table.ends && serial.data == table.data);
         let mut file = Vec::new();
         table.write(&mut file).unwrap();
         let read_back = RackTable::read(&gc, &file).unwrap();
