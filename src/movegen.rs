@@ -2007,15 +2007,22 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     }
 }
 
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-// nibble keys come with classic games only
-fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
-    board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    board_strip: &'a [u8],
+struct CrossSetOutput<'a> {
     allowed: &'a mut [u64],
     cross_scores: &'a mut [i32],
     output_strider: matrix::Strider,
+}
+
+// nibble keys come with classic games only
+#[inline(always)]
+fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    board_strip: &'a [u8],
+    CrossSetOutput {
+        allowed,
+        cross_scores,
+        output_strider,
+    }: CrossSetOutput<'a>,
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
     used_letters_tally: &'a mut [u8],
@@ -10765,9 +10772,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.allowed_for_across_plays,
-                &mut working_buffer.cross_score_for_across_plays,
-                dim.down(col),
+                CrossSetOutput {
+                    allowed: &mut working_buffer.allowed_for_across_plays,
+                    cross_scores: &mut working_buffer.cross_score_for_across_plays,
+                    output_strider: dim.down(col),
+                },
                 &mut working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_across_plays
@@ -10781,9 +10790,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.allowed_for_down_plays,
-                &mut working_buffer.cross_score_for_down_plays,
-                transposed_dim.down(row),
+                CrossSetOutput {
+                    allowed: &mut working_buffer.allowed_for_down_plays,
+                    cross_scores: &mut working_buffer.cross_score_for_down_plays,
+                    output_strider: transposed_dim.down(row),
+                },
                 &mut working_buffer.cross_set_buffer_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_down_plays
@@ -11297,9 +11308,11 @@ fn lean_cross_sets<
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.allowed_for_across_plays,
-                &mut working_buffer.cross_score_for_across_plays,
-                dim.down(col),
+                CrossSetOutput {
+                    allowed: &mut working_buffer.allowed_for_across_plays,
+                    cross_scores: &mut working_buffer.cross_score_for_across_plays,
+                    output_strider: dim.down(col),
+                },
                 &mut working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_across_plays
@@ -11320,9 +11333,11 @@ fn lean_cross_sets<
             gen_cross_set::<NoTables, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.allowed_for_down_plays,
-                &mut working_buffer.cross_score_for_down_plays,
-                transposed_dim.down(row),
+                CrossSetOutput {
+                    allowed: &mut working_buffer.allowed_for_down_plays,
+                    cross_scores: &mut working_buffer.cross_score_for_down_plays,
+                    output_strider: transposed_dim.down(row),
+                },
                 &mut working_buffer.cross_set_buffer_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_down_plays
@@ -13296,9 +13311,11 @@ fn kurnia_gen_place_moves_iter<
             gen_cross_set::<T, _, _>(
                 board_snapshot,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.allowed_for_across_plays,
-                &mut working_buffer.cross_score_for_across_plays,
-                dim.down(col),
+                CrossSetOutput {
+                    allowed: &mut working_buffer.allowed_for_across_plays,
+                    cross_scores: &mut working_buffer.cross_score_for_across_plays,
+                    output_strider: dim.down(col),
+                },
                 &mut working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_across_plays
@@ -13319,9 +13336,11 @@ fn kurnia_gen_place_moves_iter<
             gen_cross_set::<T, _, _>(
                 board_snapshot,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.allowed_for_down_plays,
-                &mut working_buffer.cross_score_for_down_plays,
-                transposed_dim.down(row),
+                CrossSetOutput {
+                    allowed: &mut working_buffer.allowed_for_down_plays,
+                    cross_scores: &mut working_buffer.cross_score_for_down_plays,
+                    output_strider: transposed_dim.down(row),
+                },
                 &mut working_buffer.cross_set_buffer_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.cached_cross_set_for_down_plays
