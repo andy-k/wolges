@@ -2358,8 +2358,10 @@ impl<
             },
             watcher_rack,
             last.play,
-            infer::FUZZ,
-            threads,
+            infer::InferOptions {
+                fuzz: infer::FUZZ,
+                threads,
+            },
             std::sync::Arc::make_mut(&mut self.inferred),
         )
     }

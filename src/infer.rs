@@ -261,6 +261,11 @@ pub fn each_tally_of_size(
     cur[t] = 0;
 }
 
+pub struct ObservedMove<'a> {
+    pub tiles: MoveTiles<'a>,
+    pub value: i32,
+}
+
 // the board's half of an inference: what each multiset of the pool, played, can
 // score at best (the census sheet), and what each multiset is worth kept
 pub struct InferSheet<'a> {
@@ -534,7 +539,6 @@ const GENERATE_EACH_RACK_UPTO_LEAN: usize = 800;
 // leave it could keep, from an entry no play reached. Made lean, by the lean
 // arm alone, so that a build that runs only that arm (the wasm) need not carry
 // the other.
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn weigh_racks_by_generation<
     const LEAN: bool,
@@ -548,8 +552,10 @@ pub fn weigh_racks_by_generation<
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     is: &InferSheet<'_>,
     pool: &[u8],
-    tiles: MoveTiles<'_>,
-    move_value: i32,
+    ObservedMove {
+        tiles,
+        value: move_value,
+    }: ObservedMove<'_>,
     scratch: &mut WeighScratch,
     f: &mut impl FnMut(u32, f64, i32, u32),
 ) {
@@ -1065,8 +1071,7 @@ fn kept_leaves_impl<
         board_snapshot,
         watcher_rack,
         play,
-        fuzz,
-        threads,
+        InferOptions { fuzz, threads },
         &mut leaves,
     )?;
     Ok((0..leaves.len())
@@ -1098,16 +1103,19 @@ pub fn kept_leaves_packed<
         board_snapshot,
         watcher_rack,
         play,
-        fuzz,
-        threads,
+        InferOptions { fuzz, threads },
         &mut leaves,
     )?;
     Ok(leaves)
 }
 
+pub struct InferOptions {
+    pub fuzz: f64,
+    pub threads: usize,
+}
+
 // the same, into leaves, whose memory is kept: an inference allocates nothing
 // once the tables' scratch and the list have grown (on one thread)
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn kept_leaves_packed_into<
     N: kwg::Node,
@@ -1121,8 +1129,7 @@ pub fn kept_leaves_packed_into<
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
-    fuzz: f64,
-    threads: usize,
+    options: InferOptions,
     leaves: &mut PackedLeaves,
 ) -> error::Returns<()> {
     kept_leaves_packed_impl::<false, _, _, _, JUMPS, ANY_SIDE>(
@@ -1131,8 +1138,7 @@ pub fn kept_leaves_packed_into<
         board_snapshot,
         watcher_rack,
         play,
-        fuzz,
-        threads,
+        options,
         leaves,
     )
 }
@@ -1161,14 +1167,12 @@ pub fn kept_leaves_packed_lean<
         board_snapshot,
         watcher_rack,
         play,
-        fuzz,
-        threads,
+        InferOptions { fuzz, threads },
         &mut leaves,
     )?;
     Ok(leaves)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
 fn kept_leaves_packed_impl<
     const LEAN: bool,
@@ -1183,8 +1187,7 @@ fn kept_leaves_packed_impl<
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
-    fuzz: f64,
-    threads: usize,
+    InferOptions { fuzz, threads }: InferOptions,
     leaves: &mut PackedLeaves,
 ) -> error::Returns<()> {
     leaves.clear();
@@ -1269,8 +1272,10 @@ fn kept_leaves_packed_impl<
                 ln_binom,
             },
             pool,
-            tiles,
-            move_value,
+            ObservedMove {
+                tiles,
+                value: move_value,
+            },
             weigh,
             &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
         );
@@ -1375,19 +1380,22 @@ fn binom(n: usize, k: usize) -> u64 {
     (0..k).fold(1u64, |c, i| c * (n - i) as u64 / (i + 1) as u64)
 }
 
+struct ReplyTallies<'a> {
+    pool: &'a [u8],
+    kept: &'a [u8],
+}
+
 // the reply's sums over every full rack that holds the kept tiles (a tally) and
 // draws the rest from the pool less them, each rack's best reply as
 // best_equity_of gives it (its own leave, a pass, when it has no other); the
 // draws walked as weigh_racks walks them, on this many threads when they are
 // many
 #[inline]
-#[allow(clippy::too_many_arguments)]
 fn reply_sums(
     lat: &census::MultisetLattice,
     sheet: &[i32],
     leave: &[i32],
-    pool: &[u8],
-    kept: &[u8],
+    ReplyTallies { pool, kept }: ReplyTallies<'_>,
     threads: usize,
     scratch: &mut WeighScratch,
     ways: &mut Vec<u64>,
@@ -1608,7 +1616,15 @@ pub fn reply_to<
     // the reply over the full racks holding this tally, the rest drawn
     let mut reply_holding = |tally: &[u8]| -> error::Returns<Reply> {
         let n = tally.iter().map(|&c| c as usize).sum::<usize>();
-        let sums = reply_sums(lat, sheet, leave, pool, tally, threads, weigh, ways)?;
+        let sums = reply_sums(
+            lat,
+            sheet,
+            leave,
+            ReplyTallies { pool, kept: tally },
+            threads,
+            weigh,
+            ways,
+        )?;
         let deals = binom(pool_size - n, rack_size - n);
         if sums.deals != deals {
             return_error!(format!(
@@ -1985,8 +2001,10 @@ mod tests {
                 &board_snapshot,
                 &is,
                 &pool,
-                tiles(which),
-                value,
+                ObservedMove {
+                    tiles: tiles(which),
+                    value,
+                },
                 &mut WeighScratch::new(),
                 &mut |rank, ln_prior, gap, kept| {
                     by_generation.push((rank, ln_prior.to_bits(), gap, kept));
