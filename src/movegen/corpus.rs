@@ -474,16 +474,20 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
                 run_case(
                     config,
                     picks,
-                    false,
-                    &kwg,
-                    klv,
-                    &arms,
+                    CaseArms {
+                        kwg: &kwg,
+                        klv,
+                        arms: &arms,
+                    },
                     &mut kept,
-                    &board_tiles,
-                    &rack_tiles,
-                    &masks,
-                    &run_letter_bits,
-                    &case,
+                    CasePosition {
+                        board_tiles: &board_tiles,
+                        rack: &rack_tiles,
+                        masks: &masks,
+                        run_letter_bits: &run_letter_bits,
+                        name: &case,
+                        game: false,
+                    },
                     out,
                 );
             }
@@ -511,16 +515,20 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
             let best = run_case(
                 config,
                 picks,
-                true,
-                &kwg,
-                klv,
-                &arms,
+                CaseArms {
+                    kwg: &kwg,
+                    klv,
+                    arms: &arms,
+                },
                 &mut kept,
-                &board_tiles,
-                &rack,
-                &masks,
-                &run_letter_bits,
-                &format!("{} {klv_name} game turn {turn} {rack_str}", config.name),
+                CasePosition {
+                    board_tiles: &board_tiles,
+                    rack: &rack,
+                    masks: &masks,
+                    run_letter_bits: &run_letter_bits,
+                    name: &format!("{} {klv_name} game turn {turn} {rack_str}", config.name),
+                    game: true,
+                },
                 out,
             );
             let Some(Play::Place {
@@ -549,23 +557,37 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
     }
 }
 
+struct CasePosition<'a> {
+    board_tiles: &'a [u8],
+    rack: &'a [u8],
+    masks: &'a [(u128, u128)],
+    run_letter_bits: &'a [u64],
+    name: &'a str,
+    game: bool,
+}
+
+struct CaseArms<'a, 'b> {
+    kwg: &'a kwg::Kwg<kwg::Node24>,
+    klv: &'a klv::Klv<kwg::Node24>,
+    arms: &'a [Arm<'b>],
+}
+
 // a case on every arm, every pass policy, exchanges allowed or used up; the
 // best place move of the first arm, a pass only when forced, exchanges allowed
 #[inline]
-#[allow(clippy::too_many_arguments)]
 fn run_case<'a>(
     config: &Config<'_>,
     picks: &[Pick],
-    game: bool,
-    kwg: &kwg::Kwg<kwg::Node24>,
-    klv: &klv::Klv<kwg::Node24>,
-    arms: &[Arm<'a>],
+    CaseArms { kwg, klv, arms }: CaseArms<'_, 'a>,
     kept: &mut Kept,
-    board_tiles: &[u8],
-    rack: &[u8],
-    masks: &[(u128, u128)],
-    run_letter_bits: &[u64],
-    case: &str,
+    CasePosition {
+        board_tiles,
+        rack,
+        masks,
+        run_letter_bits,
+        name: case,
+        game,
+    }: CasePosition<'_>,
     out: &mut String,
 ) -> Option<Play> {
     let gc = &config.gc;
