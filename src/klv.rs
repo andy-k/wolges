@@ -46,6 +46,57 @@ pub struct Klv<L: kwg::Node> {
     racks: Option<Box<racks::RackTable>>, // every full rack's setup from these leaves, if given
 }
 
+// tables with matching graphs can share an index walk across different values.
+#[derive(Clone, Copy)]
+pub struct LeavePair<'a, L: kwg::Node> {
+    tables: [&'a Klv<L>; 2],
+    same_graph: bool,
+}
+
+impl<'a, L: kwg::Node> LeavePair<'a, L> {
+    pub fn new(tables: [&'a Klv<L>; 2]) -> Self {
+        let [first, second] = tables;
+        let a = &first.kwg.0;
+        let b = &second.kwg.0;
+        let same_graph = std::ptr::eq(first, second)
+            || (a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| {
+                    a.tile() == b.tile()
+                        && a.arc_index() == b.arc_index()
+                        && a.accepts() == b.accepts()
+                        && a.is_end() == b.is_end()
+                }));
+        Self { tables, same_graph }
+    }
+
+    #[inline(always)]
+    pub fn table(self, seat: usize) -> &'a Klv<L> {
+        self.tables[seat]
+    }
+
+    #[inline(always)]
+    pub fn ordered(self, seat: usize) -> Self {
+        Self {
+            tables: [self.tables[seat], self.tables[1 - seat]],
+            ..self
+        }
+    }
+
+    pub fn same_values(self) -> bool {
+        let [first, second] = self.tables;
+        std::ptr::eq(first, second)
+            || (self.same_graph
+                && first.racks.is_none()
+                && second.racks.is_none()
+                && first.leaves == second.leaves)
+    }
+
+    #[inline(always)]
+    pub(crate) fn same_graph(self) -> bool {
+        self.same_graph
+    }
+}
+
 // an empty klv of each node layout, each made at its first use and kept (a
 // census that reads no leaves walks one), or made again at the next use where
 // it could not be made
@@ -535,6 +586,12 @@ struct MultiLeavesDigit {
     place_value: u32,
 }
 
+struct LeaveWalk {
+    use_klv: bool,
+    adjust_leave_value: AdjustLeave,
+    dense_most: u32,
+}
+
 // example: EEHJTTU should make digits.len() == 27,
 // [5]=(2,1), [8]=(1,3), [10]=(1,6), [20]=(2,12), [21]=(1,36),
 // and the other elements are (0,0).
@@ -754,37 +811,67 @@ impl MultiLeaves {
         dense_most: u32,
         bag_terms: impl Iterator<Item = i32>,
     ) {
-        self.init_values::<true, _>(
+        self.init_values::<true, false, _>(
             rack_tally,
             klv,
-            use_klv,
-            adjust_leave_value,
-            dense_most,
+            LeaveWalk {
+                use_klv,
+                adjust_leave_value,
+                dense_most,
+            },
             bag_terms,
+            None,
         );
     }
 
     #[inline(always)]
     pub(crate) fn init_for_rack_table<L: kwg::Node>(&mut self, rack_tally: &[u8], klv: &Klv<L>) {
-        self.init_values::<false, _>(
+        self.init_values::<false, false, _>(
             rack_tally,
             klv,
-            true,
-            AdjustLeave::Identity,
-            self.dense_most(),
+            LeaveWalk {
+                use_klv: true,
+                adjust_leave_value: AdjustLeave::Identity,
+                dense_most: self.dense_most(),
+            },
             std::iter::empty(),
+            None,
+        );
+    }
+
+    pub(crate) fn init_shared_graph<L: kwg::Node>(
+        &mut self,
+        rack_tally: &[u8],
+        tables: LeavePair<'_, L>,
+        values: &mut [Vec<i32>; 2],
+        dense_most: u32,
+    ) {
+        assert!(tables.same_graph());
+        self.init_values::<true, true, _>(
+            rack_tally,
+            tables.table(0),
+            LeaveWalk {
+                use_klv: true,
+                adjust_leave_value: AdjustLeave::Identity,
+                dense_most,
+            },
+            std::iter::empty(),
+            Some((&tables.table(1).leaves, values)),
         );
     }
 
     #[inline(always)]
-    fn init_values<const COUNT_PLAYED: bool, L: kwg::Node>(
+    fn init_values<const COUNT_PLAYED: bool, const PAIRED: bool, L: kwg::Node>(
         &mut self,
         rack_tally: &[u8],
         klv: &Klv<L>,
-        use_klv: bool,
-        adjust_leave_value: AdjustLeave,
-        dense_most: u32,
+        LeaveWalk {
+            use_klv,
+            adjust_leave_value,
+            dense_most,
+        }: LeaveWalk,
         bag_terms: impl Iterator<Item = i32>,
+        mut paired: Option<(&[i32], &mut [Vec<i32>; 2])>,
     ) {
         self.bag_terms.clear();
         self.bag_terms.extend(bag_terms);
@@ -793,6 +880,12 @@ impl MultiLeaves {
         self.num_playeds.clear();
         if dense {
             self.leave_values.resize(place_value as usize, 0);
+            if let Some((_, values)) = &mut paired {
+                for slot in values.iter_mut() {
+                    slot.clear();
+                    slot.resize(place_value as usize, 0);
+                }
+            }
             if COUNT_PLAYED {
                 self.num_playeds.resize(place_value as usize, 0xff);
                 self.num_playeds[0] = num_tiles_on_rack;
@@ -803,8 +896,9 @@ impl MultiLeaves {
                 digits: &'a mut [MultiLeavesDigit],
                 leave_values: &'a mut [i32],
                 num_playeds: &'a mut [u8],
+                paired: Option<(&'a [i32], &'a mut [Vec<i32>; 2])>,
             }
-            fn precompute_leaves<const COUNT_PLAYED: bool, L: kwg::Node>(
+            fn precompute_leaves<const COUNT_PLAYED: bool, const PAIRED: bool, L: kwg::Node>(
                 env: &mut Env<'_, L>,
                 mut p: i32,
                 mut idx: u32,
@@ -843,13 +937,21 @@ impl MultiLeaves {
                             let node = env.klv.kwg(p);
                             if node.tile() == tile {
                                 if node.accepts() {
-                                    env.leave_values[leave_idx as usize] = env.klv.leave(idx).raw();
+                                    let mut value = env.klv.leave(idx).raw();
+                                    if PAIRED {
+                                        let (other, values) = env.paired.as_mut().unwrap();
+                                        let other = other[idx as usize];
+                                        values[0][leave_idx as usize] = value;
+                                        values[1][leave_idx as usize] = other;
+                                        value = value.max(other);
+                                    }
+                                    env.leave_values[leave_idx as usize] = value;
                                 }
                                 child = node.arc_index();
                                 child_idx = idx + node.accepts() as u32;
                             }
                         }
-                        precompute_leaves::<COUNT_PLAYED, _>(
+                        precompute_leaves::<COUNT_PLAYED, PAIRED, _>(
                             env,
                             child,
                             child_idx,
@@ -861,13 +963,14 @@ impl MultiLeaves {
                     }
                 }
             }
-            precompute_leaves::<COUNT_PLAYED, _>(
+            precompute_leaves::<COUNT_PLAYED, PAIRED, _>(
                 &mut Env {
                     klv,
                     unique_tiles: &self.unique_tiles,
                     digits: &mut self.digits,
                     leave_values: &mut self.leave_values,
                     num_playeds: &mut self.num_playeds,
+                    paired,
                 },
                 if use_klv { klv.kwg[0].arc_index() } else { 0 },
                 0,
@@ -876,7 +979,7 @@ impl MultiLeaves {
                 num_tiles_on_rack,
             );
 
-            if use_klv {
+            if !matches!(adjust_leave_value, AdjustLeave::Identity) {
                 self.leave_values
                     .iter_mut()
                     .for_each(|m| *m = adjust_leave_value.apply(*m));
@@ -930,6 +1033,15 @@ impl MultiLeaves {
                     self.num_playeds[i] = self.num_playeds[i - place_value] - 1;
                 }
             }
+        }
+    }
+
+    // use the larger leave as a bound for either table's move.
+    pub(crate) fn bound_two_tables(&mut self, other: &Self, original: &mut Vec<i32>) {
+        original.clear();
+        original.extend_from_slice(&self.leave_values);
+        for (value, &other_value) in self.leave_values.iter_mut().zip(&other.leave_values) {
+            *value = (*value).max(other_value);
         }
     }
 
@@ -1842,6 +1954,41 @@ mod tests {
             (num / den) as i32,
             "one tile in the bag draws one tile, not two"
         );
+    }
+
+    #[test]
+    fn shared_leave_indices_match_separate_lookups() {
+        let first =
+            kbwg_from_bytes_alloc(make_klv2(&[(&[1], -1.5), (&[1, 3], 8.0), (&[3], 6.0)])).unwrap();
+        let second =
+            kbwg_from_bytes_alloc(make_klv2(&[(&[1], -8.0), (&[1, 3], 2.5), (&[3], 9.0)])).unwrap();
+        let rack = [1, 2, 3, 4, 5];
+        let mut leaves = MultiLeaves::new();
+        let mut values = [Vec::new(), Vec::new()];
+        leaves.init_shared_graph(
+            &rack,
+            LeavePair::new([&first, &second]),
+            &mut values,
+            leaves.dense_most(),
+        );
+
+        let mut separate = MultiLeaves::new();
+        for (table, values) in [&first, &second].into_iter().zip(&values) {
+            separate.init(
+                &rack,
+                table,
+                true,
+                AdjustLeave::Identity,
+                separate.dense_most(),
+                std::iter::empty(),
+            );
+            assert_eq!(values, separate.leave_values());
+        }
+        for ((&bound, &first), &second) in
+            leaves.leave_values().iter().zip(&values[0]).zip(&values[1])
+        {
+            assert_eq!(bound, first.max(second));
+        }
     }
 
     #[test]
