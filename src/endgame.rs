@@ -2055,6 +2055,7 @@ struct BagLimits {
     refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
     memory_stopped: std::cell::Cell<bool>, // the limit that stopped it was the memory's
     estimates: bool,
+    exact_pass: bool,
 }
 
 impl BagLimits {
@@ -2077,6 +2078,7 @@ impl BagLimits {
             refused: std::cell::Cell::new(false),
             memory_stopped: std::cell::Cell::new(false),
             estimates: false,
+            exact_pass: false,
         }
     }
 
@@ -2085,7 +2087,7 @@ impl BagLimits {
     // searched to its end
     #[inline(always)]
     fn deepens(&self) -> bool {
-        self.time.is_some() || self.states.is_some() || self.estimates
+        !self.exact_pass && (self.time.is_some() || self.states.is_some() || self.estimates)
     }
 
     // what another thread of the same search needs to keep to its limits
@@ -2098,6 +2100,7 @@ impl BagLimits {
             t0: self.t0,
             depth: self.depth.get(),
             estimates: self.estimates,
+            exact_pass: self.exact_pass,
         }
     }
 
@@ -2121,6 +2124,7 @@ impl BagLimits {
             refused: std::cell::Cell::new(false),
             memory_stopped: std::cell::Cell::new(false),
             estimates: clock.estimates,
+            exact_pass: clock.exact_pass,
         }
     }
 
@@ -2177,6 +2181,7 @@ struct OnOneClock {
     t0: Started,
     depth: i8,
     estimates: bool,
+    exact_pass: bool,
 }
 
 // an average of values in millipoints, such as the peg's margin, kept in f32,
@@ -6145,6 +6150,7 @@ impl<
         self.work_buffer.clock = limits.clock;
         let mut limits = BagLimits::new(limits, self.progress.take());
         limits.estimates = progress.estimates;
+        limits.exact_pass = progress.exact_pass;
         let mut sub = self.take_sub()?;
         let mut mg = self.take_mg();
         // the endgames keep what they learn in this solver's table, lent to the
@@ -6316,6 +6322,7 @@ impl<
             part: _,
             estimates: _,
             root_moves: selected,
+            exact_pass: _,
             state,
             endgames: _,
             nodes: _,
@@ -6377,7 +6384,7 @@ impl<
                 Err(e) => return Err(e),
             };
             order.extend(0..moves.len());
-            if deepens {
+            if deepens || limits.exact_pass {
                 order.sort_unstable_by_key(|&i| {
                     let score = match &moves[i] {
                         movegen::Play::Place { score, .. } => *score,
@@ -6440,7 +6447,7 @@ impl<
                 let arena = &mut arenas[0];
                 while let Some(&i) = state.order.get(state.next) {
                     limits.moves.set(Some((state.next, state.order.len())));
-                    limits.may_stop.set(deepens);
+                    limits.may_stop.set(deepens || limits.exact_pass);
                     let mut search = BagSearch {
                         gc,
                         kwg,
@@ -6576,7 +6583,7 @@ impl<
         let kwg = sub.kwg;
         let arm_tables = sub.arm_tables;
         let run_letters = &sub.run_letters.clone();
-        let deepens = limits.deepens();
+        let may_stop = limits.deepens() || limits.exact_pass;
         let base = state.next;
         let rest = state.order.len() - base;
         let num_splits = splits.len();
@@ -6650,7 +6657,7 @@ impl<
                 limits
                     .moves
                     .set(Some((moves_valued.load(Relaxed), order.len())));
-                limits.may_stop.set(deepens);
+                limits.may_stop.set(may_stop);
                 search.exact = true;
                 let play = &moves[order[base + m]];
                 let began = limits.t0.elapsed();
@@ -7962,6 +7969,7 @@ pub struct PegBagProgress {
     part: (usize, usize),
     estimates: bool,
     root_moves: Option<RootMoves>,
+    exact_pass: bool,
     state: PegBagState,
     endgames: u64,
     nodes: u64,
@@ -7970,6 +7978,16 @@ pub struct PegBagProgress {
 }
 
 impl PegBagProgress {
+    // search root moves in one exact pass, highest-scoring placements first.
+    pub fn with_exact_pass(mut self) -> error::Returns<Self> {
+        if !self.state.order.is_empty() {
+            return Err("choose an exact pass before starting the pre-endgame search".into());
+        }
+        self.exact_pass = true;
+        self.estimates = false;
+        Ok(self)
+    }
+
     // a search of the position, not yet begun; an error for a bag that the
     // tiles the mover cannot see do not fill, or that holds none
     #[inline]
@@ -8047,6 +8065,7 @@ impl PegBagProgress {
             part: choices.part,
             estimates: choices.estimates,
             root_moves: None,
+            exact_pass: false,
             state: Default::default(),
             endgames: 0,
             nodes: 0,
