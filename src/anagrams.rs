@@ -470,7 +470,7 @@ impl Anagrams {
             index += 1;
         });
         if !keep {
-            *word = Vec::new();
+            drop(std::mem::take(word));
         }
         budget.give(longest as usize);
         keyed.sort_unstable();
@@ -562,13 +562,13 @@ impl Anagrams {
             }
             pairs.clear();
             if !keep {
-                *pairs = Vec::new();
+                drop(std::mem::take(pairs));
             }
             budget.give(pair_bytes);
         }
         keyed.clear();
         if !keep {
-            *keyed = Vec::new();
+            drop(std::mem::take(keyed));
         }
         budget.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
 
@@ -591,12 +591,12 @@ impl Anagrams {
             index += 1;
         });
         if !keep {
-            *word = Vec::new();
+            drop(std::mem::take(word));
         }
         budget.give(longest as usize);
         at.clear();
         if !keep {
-            *at = Vec::new();
+            drop(std::mem::take(at));
         }
         budget.give(index * std::mem::size_of::<u32>());
 
