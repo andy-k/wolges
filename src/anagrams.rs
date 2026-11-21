@@ -456,6 +456,8 @@ impl Anagrams {
             ..
         } = scratch;
         let keep = *keep;
+        // a capped build returns each released buffer's bytes to its budget.
+        let reuse_scratch = keep || budget.max == usize::MAX;
         // each word the layout keys, by length, key, then its place among the
         // words walked, none longer than longest
         budget.take(words * std::mem::size_of::<(u8, KeyBytes, u32)>())?;
@@ -469,7 +471,7 @@ impl Anagrams {
             }
             index += 1;
         });
-        if !keep {
+        if !reuse_scratch {
             drop(std::mem::take(word));
         }
         budget.give(longest as usize);
@@ -561,13 +563,16 @@ impl Anagrams {
                 }
             }
             pairs.clear();
-            if !keep {
+            if !reuse_scratch {
                 drop(std::mem::take(pairs));
             }
             budget.give(pair_bytes);
         }
         keyed.clear();
         if !keep {
+            if reuse_scratch {
+                drop(std::mem::take(pairs));
+            }
             drop(std::mem::take(keyed));
         }
         budget.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
