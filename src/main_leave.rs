@@ -9945,6 +9945,190 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
     }
 }
 
+struct CompareMoveGenerator<const LEAN: bool> {
+    general: movegen::KurniaMoveGenerator,
+    inline_15: Option<movegen::InlineGenerator<225>>,
+    inline_21: Option<movegen::InlineGenerator<441>>,
+}
+
+impl<const LEAN: bool> CompareMoveGenerator<LEAN> {
+    fn new(game_config: &game_config::GameConfig) -> Self {
+        Self {
+            general: movegen::KurniaMoveGenerator::new(game_config),
+            inline_15: (!LEAN)
+                .then(|| movegen::InlineGenerator::try_new(game_config).ok())
+                .flatten(),
+            inline_21: (!LEAN)
+                .then(|| movegen::InlineGenerator::try_new(game_config).ok())
+                .flatten(),
+        }
+    }
+
+    #[inline]
+    fn best<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &movegen::GenMovesParams<'_, N, L>,
+    ) -> &movegen::Play {
+        let plays = if LEAN {
+            self.general.gen_moves_unfiltered_lean(params);
+            &self.general.plays
+        } else if let Some(g) = &mut self.inline_15 {
+            g.gen_moves_unfiltered(params);
+            &g.plays
+        } else if let Some(g) = &mut self.inline_21 {
+            g.gen_moves_unfiltered(params);
+            &g.plays
+        } else {
+            self.general.gen_moves_unfiltered(params);
+            &self.general.plays
+        };
+        &plays[0].play
+    }
+
+    #[inline]
+    fn best_for_two<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &movegen::GenMovesParams<'_, N, L>,
+        tables: klv::LeavePair<'_, L>,
+        pair: &mut movegen::PairedHasty,
+    ) -> [movegen::Play; 2] {
+        if let Some(g) = &mut self.inline_15 {
+            g.gen_best_moves_for_two_leaves(params, tables, pair, false)
+        } else if let Some(g) = &mut self.inline_21 {
+            g.gen_best_moves_for_two_leaves(params, tables, pair, false)
+        } else {
+            self.general
+                .gen_best_moves_for_two_leaves(params, tables, pair, LEAN)
+        }
+    }
+}
+
+type CompareResult = (i32, i32, u32, game_state::CheckGameEnded);
+
+struct HastyCompare<'a, N: kwg::Node, L: kwg::Node> {
+    game_config: &'a game_config::GameConfig,
+    kwg: &'a kwg::Kwg<N>,
+    arm_tables: &'a anagrams::ArmTables,
+    leaves: klv::LeavePair<'a, L>,
+    same_leaves: bool,
+}
+
+impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
+    #[inline(always)]
+    fn board<'a>(
+        &'a self,
+        state: &'a game_state::GameState,
+        seat: usize,
+    ) -> movegen::BoardSnapshot<'a, N, L> {
+        movegen::BoardSnapshot {
+            board_tiles: &state.board_tiles,
+            game_config: self.game_config,
+            kwg: self.kwg,
+            anagrams: self.arm_tables.anagrams(),
+            rack_lengths: self.arm_tables.rack_lengths(),
+            klv: self.leaves.table(seat),
+        }
+    }
+
+    #[inline]
+    fn step(
+        &self,
+        state: &mut game_state::GameState,
+        rng: &mut GameRng,
+        play: &movegen::Play,
+        turns: &mut u32,
+        swapped: usize,
+    ) -> error::Returns<Option<CompareResult>> {
+        state.play(self.game_config, rng, play)?;
+        *turns += 1;
+        let mut scores = [0; 2];
+        let end = state.check_game_ended(self.game_config, &mut scores)?;
+        if matches!(end, game_state::CheckGameEnded::NotEnded) {
+            state.next_turn();
+            Ok(None)
+        } else {
+            Ok(Some((scores[swapped], scores[1 - swapped], *turns, end)))
+        }
+    }
+
+    fn tail<const LEAN: bool>(
+        &self,
+        generator: &mut CompareMoveGenerator<LEAN>,
+        state: &mut game_state::GameState,
+        rng: &mut GameRng,
+        first: &movegen::Play,
+        mut turns: u32,
+        swapped: usize,
+    ) -> error::Returns<CompareResult> {
+        if let Some(result) = self.step(state, rng, first, &mut turns, swapped)? {
+            return Ok(result);
+        }
+        loop {
+            let board = self.board(state, state.turn as usize ^ swapped);
+            let params = compare_hasty_params(&board, state.current_player());
+            let play = generator.best(&params);
+            if let Some(result) = self.step(state, rng, play, &mut turns, swapped)? {
+                return Ok(result);
+            }
+        }
+    }
+
+    fn pair<const LEAN: bool>(
+        &self,
+        generator: &mut CompareMoveGenerator<LEAN>,
+        state: &mut game_state::GameState,
+        mirrored: &mut game_state::GameState,
+        rng: &mut GameRng,
+        paired: &mut movegen::PairedHasty,
+    ) -> error::Returns<([CompareResult; 2], bool)> {
+        let mut turns = 0;
+        loop {
+            let seat = state.turn as usize;
+            let board = self.board(state, seat);
+            let params = compare_hasty_params(&board, state.current_player());
+            // while both seats pick the same play, the board, racks, and RNG
+            // stay in step. The leave tables also agree once the bag empties.
+            let result = if self.same_leaves || state.bag.is_empty() {
+                let play = generator.best(&params);
+                self.step(state, rng, play, &mut turns, 0)?
+            } else {
+                let [first, second] =
+                    generator.best_for_two(&params, self.leaves.ordered(seat), paired);
+                if first != second {
+                    mirrored.clone_from(state);
+                    let mut mirrored_rng = rng.copy_state();
+                    let result = self.tail(generator, state, rng, &first, turns, 0)?;
+                    let other =
+                        self.tail(generator, mirrored, &mut mirrored_rng, &second, turns, 1)?;
+                    return Ok(([result, other], true));
+                }
+                self.step(state, rng, &first, &mut turns, 0)?
+            };
+            if let Some((first, second, turns, end)) = result {
+                return Ok((
+                    [(first, second, turns, end), (second, first, turns, end)],
+                    false,
+                ));
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn compare_hasty_params<'a, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a movegen::BoardSnapshot<'a, N, L>,
+    player: &'a game_state::GamePlayer,
+) -> movegen::GenMovesParams<'a, N, L> {
+    movegen::GenMovesParams {
+        board_snapshot,
+        rack: &player.rack,
+        max_gen: 1,
+        num_exchanges_by_this_player: player.num_exchanges,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        dynamic_leaves: None,
+    }
+}
+
 #[inline]
 fn compare_seats<
     N: kwg::Node + Sync + Send + 'static,
@@ -10079,6 +10263,16 @@ fn compare_seats<
         ),
     )?;
 
+    let hasty = HASTY_ONLY.then(|| {
+        let leaves = klv::LeavePair::new([&arc_klv0, &arc_klv1]);
+        HastyCompare {
+            game_config: &game_config,
+            kwg: &kwg,
+            arm_tables: &arm_tables,
+            leaves,
+            same_leaves: leaves.same_values(),
+        }
+    });
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
         for _ in 0..num_threads {
@@ -10090,14 +10284,10 @@ fn compare_seats<
             let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
+            let hasty = hasty.as_ref();
             thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                let mut inline_15 = (!LEAN)
-                    .then(|| movegen::InlineGenerator::<225>::try_new(&game_config).ok())
-                    .flatten();
-                let mut inline_21 = (!LEAN)
-                    .then(|| movegen::InlineGenerator::<441>::try_new(&game_config).ok())
-                    .flatten();
+                let mut generator = CompareMoveGenerator::<LEAN>::new(&game_config);
+                let mut paired = movegen::PairedHasty::default();
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
                 let mut driver_p0 = seat_picker(
                     p0_picker,
@@ -10156,83 +10346,76 @@ fn compare_seats<
 
                     let mut rng = GameRng::from_stream(seed, pair_idx);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    saved_game_state.clone_from(&game_state);
-                    let saved_rng = rng.copy_state();
+                    let (pair_results, pair_diverged) = if let Some(hasty) = hasty {
+                        hasty.pair(
+                            &mut generator,
+                            &mut game_state,
+                            &mut saved_game_state,
+                            &mut rng,
+                            &mut paired,
+                        )?
+                    } else {
+                        saved_game_state.clone_from(&game_state);
+                        let saved_rng = rng.copy_state();
 
-                    let mut pair_diverged = false;
-                    let mut pair_results =
-                        [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
+                        let mut pair_diverged = false;
+                        let mut pair_results =
+                            [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
 
-                    for game_in_pair in 0..2u8 {
-                        if game_in_pair > 0 {
-                            game_state.clone_from(&saved_game_state);
-                            rng = saved_rng.copy_state();
-                        }
-                        let seat_swapped = game_in_pair != 0;
-                        let mut num_turns = 0u32;
-                        let mut last_play: Option<movegen::Play> = None;
-                        if !seat_swapped {
-                            first_game_moves.clear();
-                        }
-
-                        let end_reason = loop {
-                            let is_p0_seat = (game_state.turn == 0) != seat_swapped;
-                            let board_snapshot = movegen::BoardSnapshot {
-                                board_tiles: &game_state.board_tiles,
-                                game_config: &game_config,
-                                kwg: &kwg,
-                                anagrams: arm_tables.anagrams(),
-                                rack_lengths: arm_tables.rack_lengths(),
-                                klv: if is_p0_seat { &arc_klv0 } else { &arc_klv1 },
-                            };
-                            let bag_empty = game_state.bag.is_empty();
-                            let driver = if is_p0_seat {
-                                seat_driver(&mut driver_p0, &mut end_p0, bag_empty)
-                            } else {
-                                seat_driver(&mut driver_p1, &mut end_p1, bag_empty)
-                            };
-
-                            if let move_picker::MovePicker::Simmer(simmer_driver) = &mut *driver {
-                                // https://doi.org/10.1145/2714064.2660195
-                                // https://prng.di.unimi.it/splitmix64.c
-                                simmer_driver.reseed(census_mix64(
-                                    seed.wrapping_add(census_mix64(
-                                        pair_idx
-                                            .wrapping_mul(0x9e3779b97f4a7c15)
-                                            .wrapping_add((game_in_pair as u64).wrapping_shl(40))
-                                            .wrapping_add(num_turns as u64),
-                                    )),
-                                ));
+                        for game_in_pair in 0..2u8 {
+                            if game_in_pair > 0 {
+                                game_state.clone_from(&saved_game_state);
+                                rng = saved_rng.copy_state();
                             }
-                            let plays =
-                                if HASTY_ONLY || matches!(driver, move_picker::MovePicker::Hasty) {
-                                    let gen_params = movegen::GenMovesParams {
-                                        board_snapshot: &board_snapshot,
-                                        rack: &game_state.current_player().rack,
-                                        max_gen: 1,
-                                        num_exchanges_by_this_player: game_state
-                                            .current_player()
-                                            .num_exchanges,
-                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                        dynamic_leaves: None,
-                                    };
-                                    if LEAN {
-                                        move_generator.gen_moves_unfiltered_lean(&gen_params);
-                                        &move_generator.plays
-                                    } else if let Some(g) = &mut inline_15 {
-                                        g.gen_moves_unfiltered(&gen_params);
-                                        &g.plays
-                                    } else if let Some(g) = &mut inline_21 {
-                                        g.gen_moves_unfiltered(&gen_params);
-                                        &g.plays
-                                    } else {
-                                        move_generator.gen_moves_unfiltered(&gen_params);
-                                        &move_generator.plays
-                                    }
+                            let seat_swapped = game_in_pair != 0;
+                            let mut num_turns = 0u32;
+                            let mut last_play: Option<movegen::Play> = None;
+                            if !seat_swapped {
+                                first_game_moves.clear();
+                            }
+
+                            let end_reason = loop {
+                                let is_p0_seat = (game_state.turn == 0) != seat_swapped;
+                                let board_snapshot = movegen::BoardSnapshot {
+                                    board_tiles: &game_state.board_tiles,
+                                    game_config: &game_config,
+                                    kwg: &kwg,
+                                    anagrams: arm_tables.anagrams(),
+                                    rack_lengths: arm_tables.rack_lengths(),
+                                    klv: if is_p0_seat { &arc_klv0 } else { &arc_klv1 },
+                                };
+                                let bag_empty = game_state.bag.is_empty();
+                                let driver = if is_p0_seat {
+                                    seat_driver(&mut driver_p0, &mut end_p0, bag_empty)
+                                } else {
+                                    seat_driver(&mut driver_p1, &mut end_p1, bag_empty)
+                                };
+
+                                if let move_picker::MovePicker::Simmer(simmer_driver) = &mut *driver
+                                {
+                                    // https://doi.org/10.1145/2714064.2660195
+                                    // https://prng.di.unimi.it/splitmix64.c
+                                    simmer_driver.reseed(census_mix64(
+                                        seed.wrapping_add(census_mix64(
+                                            pair_idx
+                                                .wrapping_mul(0x9e3779b97f4a7c15)
+                                                .wrapping_add(
+                                                    (game_in_pair as u64).wrapping_shl(40),
+                                                )
+                                                .wrapping_add(num_turns as u64),
+                                        )),
+                                    ));
+                                }
+                                let play = if matches!(driver, move_picker::MovePicker::Hasty) {
+                                    let params = compare_hasty_params(
+                                        &board_snapshot,
+                                        game_state.current_player(),
+                                    );
+                                    generator.best(&params)
                                 } else {
                                     driver.pick_a_move_after(
                                         &mut filtered_movegen,
-                                        &mut move_generator,
+                                        &mut generator.general,
                                         &board_snapshot,
                                         &game_state,
                                         &game_state.current_player().rack,
@@ -10241,60 +10424,62 @@ fn compare_seats<
                                             play,
                                         }),
                                     )?;
-                                    &move_generator.plays
+                                    &generator.general.plays[0].play
                                 };
-                            let play = &plays[0].play;
-                            if !HASTY_ONLY {
                                 last_board.copy_from_slice(&game_state.board_tiles);
                                 last_play = Some(play.clone());
-                            }
-                            if seat_swapped {
-                                if !pair_diverged
-                                    && (num_turns as usize >= first_game_moves.len()
-                                        || first_game_moves[num_turns as usize] != *play)
-                                {
-                                    pair_diverged = true;
+                                if seat_swapped {
+                                    if !pair_diverged
+                                        && (num_turns as usize >= first_game_moves.len()
+                                            || first_game_moves[num_turns as usize] != *play)
+                                    {
+                                        pair_diverged = true;
+                                    }
+                                } else {
+                                    first_game_moves.push(play.clone());
                                 }
-                            } else {
-                                first_game_moves.push(play.clone());
-                            }
-                            game_state.play(&game_config, &mut rng, play)?;
-                            num_turns += 1;
-                            let end =
-                                game_state.check_game_ended(&game_config, &mut final_scores)?;
-                            match end {
-                                game_state::CheckGameEnded::PlayedOut
-                                | game_state::CheckGameEnded::ZeroScores => break end,
-                                game_state::CheckGameEnded::NotEnded => {}
-                            }
-                            game_state.next_turn();
-                        };
+                                game_state.play(&game_config, &mut rng, play)?;
+                                num_turns += 1;
+                                let end =
+                                    game_state.check_game_ended(&game_config, &mut final_scores)?;
+                                match end {
+                                    game_state::CheckGameEnded::PlayedOut
+                                    | game_state::CheckGameEnded::ZeroScores => break end,
+                                    game_state::CheckGameEnded::NotEnded => {}
+                                }
+                                game_state.next_turn();
+                            };
 
-                        let (p0_score, p1_score) = if seat_swapped {
-                            (final_scores[1], final_scores[0])
-                        } else {
-                            (final_scores[0], final_scores[1])
-                        };
-                        pair_results[game_in_pair as usize] =
-                            (p0_score, p1_score, num_turns, end_reason);
-                    }
-                    if !pair_diverged && pair_results[0].2 != pair_results[1].2 {
-                        pair_diverged = true;
-                    }
+                            let (p0_score, p1_score) = if seat_swapped {
+                                (final_scores[1], final_scores[0])
+                            } else {
+                                (final_scores[0], final_scores[1])
+                            };
+                            pair_results[game_in_pair as usize] =
+                                (p0_score, p1_score, num_turns, end_reason);
+                        }
+                        if !pair_diverged && pair_results[0].2 != pair_results[1].2 {
+                            pair_diverged = true;
+                        }
+                        (pair_results, pair_diverged)
+                    };
                     for &(p0_score, p1_score, num_turns, end_reason) in &pair_results {
                         stats.add_game(p0_score, p1_score, num_turns, end_reason, pair_diverged);
                     }
 
-                    finished_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let secs = t0.elapsed().as_secs();
-                    let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
-                    if !quiet && secs > prev {
-                        writeln!(
-                            boxed_stdout_or_stderr(),
-                            "After {secs}s: {} pairs",
-                            finished_pairs.load(std::sync::atomic::Ordering::Relaxed),
-                        )
-                        .ok();
+                    if !quiet {
+                        finished_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let secs = t0.elapsed().as_secs();
+                        let prev =
+                            reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
+                        if secs > prev {
+                            writeln!(
+                                boxed_stdout_or_stderr(),
+                                "After {secs}s: {} pairs",
+                                finished_pairs.load(std::sync::atomic::Ordering::Relaxed),
+                            )
+                            .ok();
+                        }
                     }
                 }
 
