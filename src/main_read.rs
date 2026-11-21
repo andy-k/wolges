@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats, text};
+use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats, text, woadwage};
 
 use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
@@ -1894,6 +1894,27 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             &make_alphabet()?,
             AnagramMode::Super,
         ),
+        Task::WoadwageCheck { graph_file, words } => {
+            let alphabet = make_alphabet()?;
+            let (_, graph) = graph_file.load_with_graph(Some(&alphabet))?;
+            let reader = alphabet::AlphabetReader::new_for_words(&alphabet);
+            let mut tiles = Vec::new();
+            let mut accepted = true;
+            for word in &words {
+                reader.set_word(word, &mut tiles)?;
+                accepted &= woadwage::accepts(&graph, &tiles);
+            }
+            writeln!(
+                std::io::stdout(),
+                "{}",
+                if accepted {
+                    "Play is Acceptable"
+                } else {
+                    "Play is NOT acceptable"
+                }
+            )?;
+            Ok(())
+        }
         Task::KwgCheck { graph_file, words } => {
             let alphabet = make_alphabet()?;
             do_wg_check(&graph_file.load(Some(&alphabet))?, &words, &alphabet)
@@ -3022,6 +3043,13 @@ impl WordGraph {
     // tiles past the alphabet a task reads it with is refused here too
     #[inline]
     fn load(&self, alphabet: Option<&alphabet::Alphabet>) -> error::Returns<Vec<u8>> {
+        Ok(self.load_with_graph(alphabet)?.0)
+    }
+
+    fn load_with_graph(
+        &self,
+        alphabet: Option<&alphabet::Alphabet>,
+    ) -> error::Returns<(Vec<u8>, kwg::Kwg<kwg::Node24>)> {
         let mut bytes = read_to_end(&mut make_reader(&self.kwg)?)?;
         if !self.kbwg {
             kwg::repack_in_place::<kwg::Node22, kwg::Node24>(&mut bytes)?;
@@ -3038,7 +3066,7 @@ impl WordGraph {
             )
             .into());
         }
-        Ok(bytes)
+        Ok((bytes, kwg))
     }
 }
 
@@ -3165,6 +3193,13 @@ enum Task {
         out: String,
         #[arg(help = "the rack, such as A?AC")]
         rack: String,
+    },
+    #[command(about = "check Woadwage words using the dictionary's dawg")]
+    WoadwageCheck {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(required = true, help = "the words")]
+        words: Vec<String>,
     },
     #[command(about = "checks if all words are valid (using dawg)")]
     KwgCheck {

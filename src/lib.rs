@@ -38,6 +38,7 @@ pub mod simmer;
 pub mod stats;
 pub mod text;
 pub mod win_pct;
+pub mod woadwage;
 pub mod zone;
 
 // the commit this was built from and the target, as build.rs stamps them
