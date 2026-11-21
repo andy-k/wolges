@@ -3043,6 +3043,7 @@ impl WordGraph {
 }
 
 #[derive(clap::Subcommand)]
+#[command(defer = true)]
 enum Task {
     #[command(about = "print a file's length and digest, as a run line prints them")]
     Hash {
