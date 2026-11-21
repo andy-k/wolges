@@ -116,6 +116,7 @@ pub struct ArmScratch {
     pairs_of: Vec<usize>,
     at: Vec<u32>,
     pairs: Vec<(KeyBytes, u32, u8)>,
+    merge_pairs: Vec<(KeyBytes, u32, u8)>,
     word: Vec<u8>,
     counts: Vec<u32>,
     marks: Vec<u8>,
@@ -450,6 +451,7 @@ impl Anagrams {
             pairs_of,
             at,
             pairs,
+            merge_pairs,
             word,
             outs,
             keep,
@@ -519,7 +521,6 @@ impl Anagrams {
         let parallel_sort = !cfg!(target_family = "wasm")
             && budget.max == usize::MAX
             && crate::parallelism::available() > 1;
-        let mut merge = Vec::new();
         for len in 0..lengths {
             budget.take(table_bytes::<(KeyBytes, u32)>(keys_of[len]))?;
             let table = &mut groups[len];
@@ -548,7 +549,7 @@ impl Anagrams {
 
             // within a group, removing each tile gives a different key.
             // a length's pairs, emptied before the next length's are made
-            sort_blank_pairs(pairs, &mut merge, parallel_sort);
+            sort_blank_pairs(pairs, merge_pairs, parallel_sort);
             let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
             budget.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
             let table = &mut blanked[len];
@@ -569,10 +570,12 @@ impl Anagrams {
             budget.give(pair_bytes);
         }
         keyed.clear();
+        merge_pairs.clear();
         if !keep {
             if reuse_scratch {
                 drop(std::mem::take(pairs));
             }
+            drop(std::mem::take(merge_pairs));
             drop(std::mem::take(keyed));
         }
         budget.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
