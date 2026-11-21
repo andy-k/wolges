@@ -5835,6 +5835,11 @@ struct JumbledMultisets {
 #[derive(Clone)]
 pub struct PoolLists(JumbledMultisets);
 
+pub struct PoolWindow {
+    pub lanes: (u128, u128),
+    pub window: std::ops::Range<u64>,
+}
+
 #[derive(Clone, Default)]
 struct PoolScratch {
     walked: Vec<u8>,
@@ -9675,13 +9680,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // as pool_plays_best_window, walking at most budget (1 or more) blank
     // choices, from where part says the walk before stopped if the window
     // starts there; part then says where this one stopped
-    #[allow(clippy::too_many_arguments)]
     pub fn pool_plays_best_part<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         pool: &[u8],
-        lanes: (u128, u128),
-        window: std::ops::Range<u64>,
+        PoolWindow { lanes, window }: PoolWindow,
         budget: u64,
         (lists, part): (&mut PoolLists, &mut PoolPart),
         found: impl FnMut(bool, i8, i8, &[u8], i32),
@@ -9750,13 +9753,14 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // as pool_plays_top, a window of the lanes' multisets at a time, from the
     // threshold the windows before it reached (floor, carried in and out): the
     // windows of every lane, together, offer every play of the pool's top most
-    #[allow(clippy::too_many_arguments)]
     pub fn pool_plays_top_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         pool: &[u8],
-        (rows, cols): (u128, u128),
-        window: std::ops::Range<u64>,
+        PoolWindow {
+            lanes: (rows, cols),
+            window,
+        }: PoolWindow,
         most: usize,
         (lists, floor): (&mut PoolLists, &mut PoolFloor),
         mut found: impl FnMut(bool, i8, i8, &[u8], i32),
@@ -18198,8 +18202,10 @@ mod tests {
                             generator.pool_plays_best_part(
                                 &board_snapshot,
                                 pool,
-                                masks,
-                                from..u64::MAX,
+                                PoolWindow {
+                                    lanes: masks,
+                                    window: from..u64::MAX,
+                                },
                                 budget,
                                 (&mut lists, &mut part),
                                 |down, lane, idx, word, score| {
@@ -18383,8 +18389,10 @@ mod tests {
                             let seen = generator.pool_plays_top_window(
                                 &board_snapshot,
                                 pool,
-                                masks,
-                                from..from + 3,
+                                PoolWindow {
+                                    lanes: masks,
+                                    window: from..from + 3,
+                                },
                                 most,
                                 (&mut lists, &mut floor),
                                 |down, lane, idx, word, score| {
