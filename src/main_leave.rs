@@ -913,7 +913,7 @@ enum Task {
     Autoplay(SelfPlay),
     #[command(about = "autoplay and also save the summary")]
     AutoplaySummarize(SelfPlay),
-    #[command(about = "autoplay and save only the summary")]
+    #[command(about = "autoplay through bag exhaustion and save only the summary")]
     AutoplaySummarizeOnly(SelfPlay),
     #[command(about = "GillesB board sampling, summarized as autoplay-summarize does")]
     Gilles(Gilles),
@@ -2126,7 +2126,11 @@ fn generate_autoplay_logs<
                     game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    loop {
+                    let ended = loop {
+                        let old_bag_len = game_state.bag.len();
+                        if !WRITE_LOGS && old_bag_len == 0 {
+                            break false;
+                        }
                         num_moves += 1;
 
                         game_state.players[game_state.turn as usize]
@@ -2134,7 +2138,6 @@ fn generate_autoplay_logs<
                             .sort_unstable();
                         let cur_rack = &game_state.current_player().rack;
 
-                        let old_bag_len = game_state.bag.len();
                         if SUMMARIZE && old_bag_len > 0 {
                             cur_rack_as_vec.clone_from(cur_rack);
                         }
@@ -2330,122 +2333,24 @@ fn generate_autoplay_logs<
                             );
                         }
 
+                        let ended = !matches!(
+                            game_state
+                                .check_game_ended(&game_config, &mut final_scores)
+                                .map_err(fail)?,
+                            game_state::CheckGameEnded::NotEnded
+                        );
                         if WRITE_LOGS {
                             equity_fmt.clear();
-
                             write!(equity_fmt, "{}", play.equity).unwrap();
-                        }
 
-                        let res = {
-                            let game_ended = game_state
-                                .check_game_ended(&game_config, &mut final_scores)
-                                .map_err(fail)?;
-
-                            match game_ended {
-                                game_state::CheckGameEnded::NotEnded
-                                    if !WRITE_LOGS && old_bag_len == 0 =>
-                                {
-
-                                    for (i, p) in game_state.players.iter().enumerate() {
-                                        final_scores[i] = p.score.raw();
-                                    }
-                                    game_state::CheckGameEnded::PlayedOut
-                                }
-                                _ => game_ended,
-                            }
-                        };
-                        match res {
-                            game_state::CheckGameEnded::PlayedOut
-                            | game_state::CheckGameEnded::ZeroScores => {
-                                let completed_moves = completed_moves
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if WRITE_LOGS {
-                                    batched_csv_log
-                                        .serialize((
-                                            &player_aliases[old_turn as usize],
-                                            &game_id,
-                                            num_moves,
-                                            &cur_rack_ser,
-                                            &play_fmt,
-                                            equity::descale_score(play_score),
-                                            equity::descale_score(
-                                                final_scores[old_turn as usize],
-                                            ),
-                                            tiles_played,
-                                            &aft_rack_ser,
-                                            &equity_fmt,
-                                            old_bag_len,
-                                            equity::descale_score(
-                                                final_scores[new_turn as usize],
-                                            ),
-                                        ))
-                                        .unwrap();
-                                }
-                                for (pts, &mp) in
-                                    final_scores_pts.iter_mut().zip(final_scores.iter())
-                                {
-                                    *pts = equity::descale_score(mp);
-                                }
-                                batched_csv_game
-                                    .serialize((
-                                        &game_id,
-                                        &final_scores_pts,
-                                        &num_bingos,
-                                        &num_turns,
-                                        &player_aliases[0],
-                                    ))
-                                    .unwrap();
-                                num_batched_games_here += 1;
-                                if num_batched_games_here >= batch_size {
-                                    let logged_games = logged_games.fetch_add(
-                                        num_batched_games_here,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    ) + num_batched_games_here;
-                                    num_batched_games_here = 0;
-                                    let mut batched_csv_log_buf =
-                                        batched_csv_log.into_inner().unwrap();
-                                    let mut batched_csv_game_buf =
-                                        batched_csv_game.into_inner().unwrap();
-                                    let elapsed_time_secs = t0.elapsed().as_secs();
-                                    {
-                                        let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                        if WRITE_LOGS
-                                            && let Some(c) = &mut mutex_guard.csv_log_writer
-                                        {
-                                            c.write_all(&batched_csv_log_buf)
-                                                .map_err(|e| fail(e.into()))?;
-                                        }
-                                        mutex_guard
-                                            .csv_game_writer
-                                            .write_all(&batched_csv_game_buf)
-                                            .map_err(|e| fail(e.into()))?;
-                                        if !quiet && mutex_guard.tick_periods.update(elapsed_time_secs) {
-                                            write!(boxed_stdout_or_stderr(),
-                                                "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)").ok();
-                                            if !mutex_guard.undersampling_comment.is_empty() {
-                                                write!(boxed_stdout_or_stderr(), "{}", mutex_guard.undersampling_comment).ok();
-                                                let num_todo = undersampling_remediation_countdown
-                                                    .load(std::sync::atomic::Ordering::Relaxed);
-                                                if num_todo > 0 {
-                                                    write!(boxed_stdout_or_stderr(), " (to do: {num_todo})").ok();
-                                                }
-                                            }
-                                            writeln!(boxed_stdout_or_stderr(), " into {run_identifier}").ok();
-                                        }
-                                    }
-                                    batched_csv_log_buf.clear();
-                                    batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
-                                    batched_csv_game_buf.clear();
-                                    batched_csv_game =
-                                        csv::Writer::from_writer(batched_csv_game_buf);
-                                }
-                                break;
-                            }
-                            game_state::CheckGameEnded::NotEnded => {}
-                        }
-
-                        if WRITE_LOGS {
+                            let (player_score, next_score) = if ended {
+                                (final_scores[old_turn as usize], final_scores[new_turn as usize])
+                            } else {
+                                (
+                                    game_state.players[old_turn as usize].score.raw(),
+                                    game_state.players[new_turn as usize].score.raw(),
+                                )
+                            };
                             batched_csv_log
                                 .serialize((
                                     &player_aliases[old_turn as usize],
@@ -2454,21 +2359,82 @@ fn generate_autoplay_logs<
                                     &cur_rack_ser,
                                     &play_fmt,
                                     equity::descale_score(play_score),
-                                    equity::descale_score(
-                                        game_state.players[old_turn as usize].score.raw(),
-                                    ),
+                                    equity::descale_score(player_score),
                                     tiles_played,
                                     &aft_rack_ser,
                                     &equity_fmt,
                                     old_bag_len,
-                                    equity::descale_score(
-                                        game_state.players[new_turn as usize].score.raw(),
-                                    ),
+                                    equity::descale_score(next_score),
                                 ))
                                 .unwrap();
                         }
                         completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if ended {
+                            break true;
+                        }
                         game_state.turn = new_turn;
+                    };
+
+                    if !WRITE_LOGS && !ended {
+                        for (score, player) in final_scores.iter_mut().zip(&game_state.players) {
+                            *score = player.score.raw();
+                        }
+                    }
+                    completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    for (pts, &mp) in final_scores_pts.iter_mut().zip(final_scores.iter()) {
+                        *pts = equity::descale_score(mp);
+                    }
+                    batched_csv_game
+                        .serialize((
+                            &game_id,
+                            &final_scores_pts,
+                            &num_bingos,
+                            &num_turns,
+                            &player_aliases[0],
+                        ))
+                        .unwrap();
+                    num_batched_games_here += 1;
+                    if num_batched_games_here >= batch_size {
+                        let logged_games = logged_games.fetch_add(
+                            num_batched_games_here,
+                            std::sync::atomic::Ordering::Relaxed,
+                        ) + num_batched_games_here;
+                        num_batched_games_here = 0;
+                        let mut batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
+                        let mut batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
+                        let elapsed_time_secs = t0.elapsed().as_secs();
+                        {
+                            let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                            if WRITE_LOGS
+                                && let Some(c) = &mut mutex_guard.csv_log_writer
+                            {
+                                c.write_all(&batched_csv_log_buf)
+                                    .map_err(|e| fail(e.into()))?;
+                            }
+                            mutex_guard
+                                .csv_game_writer
+                                .write_all(&batched_csv_game_buf)
+                                .map_err(|e| fail(e.into()))?;
+                            if !quiet && mutex_guard.tick_periods.update(elapsed_time_secs) {
+                                let completed_moves =
+                                    completed_moves.load(std::sync::atomic::Ordering::Relaxed);
+                                write!(boxed_stdout_or_stderr(),
+                                    "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)").ok();
+                                if !mutex_guard.undersampling_comment.is_empty() {
+                                    write!(boxed_stdout_or_stderr(), "{}", mutex_guard.undersampling_comment).ok();
+                                    let num_todo = undersampling_remediation_countdown
+                                        .load(std::sync::atomic::Ordering::Relaxed);
+                                    if num_todo > 0 {
+                                        write!(boxed_stdout_or_stderr(), " (to do: {num_todo})").ok();
+                                    }
+                                }
+                                writeln!(boxed_stdout_or_stderr(), " into {run_identifier}").ok();
+                            }
+                        }
+                        batched_csv_log_buf.clear();
+                        batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
+                        batched_csv_game_buf.clear();
+                        batched_csv_game = csv::Writer::from_writer(batched_csv_game_buf);
                     }
                 }
 
