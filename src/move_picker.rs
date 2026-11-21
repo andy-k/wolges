@@ -1053,6 +1053,11 @@ fn after_play(
     }
 }
 
+struct FootprintScratch<'a> {
+    acc: &'a mut PlaySet,
+    t: &'a mut PlaySet,
+}
+
 // a set of the other side's moves by their index, as bits
 #[derive(Clone, Default)]
 struct PlaySet(Vec<u64>);
@@ -1465,7 +1470,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
     // score and the replies that block it (their set's place in sets). Also
     // whether those outs hold the value down: none stands, or one reply blocks
     // them all
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn value_on_footprints(
         &self,
@@ -1474,8 +1478,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         left_twice: i64,
         outs: &[(i64, usize)],
         sets: &[u64],
-        acc: &mut PlaySet,
-        t: &mut PlaySet,
+        FootprintScratch { acc, t }: FootprintScratch<'_>,
     ) -> (i64, bool) {
         let c = score + self.other_twice;
         let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - left_twice;
@@ -1730,15 +1733,27 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 outs.push((self.choices[u].score, blocks));
             }
             let left_twice = twice(game_config, left);
-            let (value, held) =
-                self.value_on_footprints(changed, choice.score, left_twice, outs, sets, acc, t);
+            let (value, held) = self.value_on_footprints(
+                changed,
+                choice.score,
+                left_twice,
+                outs,
+                sets,
+                FootprintScratch { acc, t },
+            );
             values.push(value);
             if held {
                 let phantom = list.first().map_or(0, |&u| self.choices[u].score);
                 let at = outs.partition_point(|&(s, _)| s >= phantom);
                 outs.insert(at, (phantom, unblockable));
-                let (hope, _) =
-                    self.value_on_footprints(changed, choice.score, left_twice, outs, sets, acc, t);
+                let (hope, _) = self.value_on_footprints(
+                    changed,
+                    choice.score,
+                    left_twice,
+                    outs,
+                    sets,
+                    FootprintScratch { acc, t },
+                );
                 hopes.push(hope);
             } else {
                 hopes.push(i64::MIN);
@@ -1820,8 +1835,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 twice(game_config, left),
                 outs,
                 sets,
-                acc,
-                t,
+                FootprintScratch { acc, t },
             );
             values[i] = values[i].max(value);
         }
