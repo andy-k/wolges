@@ -13159,18 +13159,22 @@ fn rcs_placements<
         rcs_lane_placements(
             kept,
             allowed,
-            rack_bits,
-            rack_tiles,
             &mut caps,
-            unrestricted_cap,
             check,
-            &working_buffer.descending_scores,
-            &working_buffer.best_leave_values,
-            num_max_played,
-            feasible_lengths,
-            down,
-            lane,
-            found_placements,
+            RcsRack {
+                bits: rack_bits,
+                tiles: rack_tiles,
+                unrestricted_cap,
+                descending_scores: &working_buffer.descending_scores,
+                best_leave_values: &working_buffer.best_leave_values,
+                num_max_played,
+                feasible_lengths,
+            },
+            RcsPlacementOutput {
+                down,
+                lane,
+                found_placements,
+            },
         );
     }
     // a lane this turn passed by keeps its mark for the turn that walks it
@@ -13178,23 +13182,42 @@ fn rcs_placements<
     working_buffer.rcs_stale_cols = stale_cols;
 }
 
+struct RcsRack<'a> {
+    bits: u64,
+    tiles: &'a [(u64, i32)],
+    unrestricted_cap: i32,
+    descending_scores: &'a [i32],
+    best_leave_values: &'a [i32],
+    num_max_played: u8,
+    feasible_lengths: u64,
+}
+
+struct RcsPlacementOutput<'a> {
+    down: bool,
+    lane: i8,
+    found_placements: &'a mut Vec<PossiblePlacement>,
+}
+
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
 fn rcs_lane_placements(
     kept: &RcsLane,
     allowed: &[u64],
-    rack_bits: u64,
-    rack_tiles: &[(u64, i32)],
     caps: &mut [i32; u64::BITS as usize],
-    unrestricted_cap: i32,
     mut check: Option<KeyCheck<'_>>,
-    descending_scores: &[i32],
-    best_leave_values: &[i32],
-    num_max_played: u8,
-    feasible_lengths: u64,
-    down: bool,
-    lane: i8,
-    found_placements: &mut Vec<PossiblePlacement>,
+    RcsRack {
+        bits: rack_bits,
+        tiles: rack_tiles,
+        unrestricted_cap,
+        descending_scores,
+        best_leave_values,
+        num_max_played,
+        feasible_lengths,
+    }: RcsRack<'_>,
+    RcsPlacementOutput {
+        down,
+        lane,
+        found_placements,
+    }: RcsPlacementOutput<'_>,
 ) {
     // the crossing squares none of the rack's tiles fit (with a blank on hand,
     // none: a cross set's bit 0 is the blank's), and each crossing square's
