@@ -2961,7 +2961,8 @@ impl Session {
         let cost = self
             .game_config
             .alphabet()
-            .rack_score(&self.state.players[counted].rack);
+            .rack_score(&self.state.players[counted].rack)
+            .raw();
         let (score, total) = (sign * cost, equity::descale_score(final_scores[seat]));
         if (score, total) != (gcg_move.score, gcg_move.total) {
             return Err(format!(
@@ -3140,7 +3141,7 @@ impl Session {
                             ">{}: ({}) +{} {}\n",
                             nicknames[seat],
                             alphabet.fmt_rack(other),
-                            2 * alphabet.rack_score(other),
+                            2 * alphabet.rack_score(other).raw(),
                             total(seat)
                         ));
                     } else if none.is_none() && !player.rack.is_empty() {
@@ -3150,7 +3151,7 @@ impl Session {
                             nicknames[seat],
                             alphabet.fmt_rack(&player.rack),
                             alphabet.fmt_rack(&player.rack),
-                            alphabet.rack_score(&player.rack),
+                            alphabet.rack_score(&player.rack).raw(),
                             total(seat)
                         ));
                     }
@@ -3798,13 +3799,14 @@ impl Replay {
                     // two players: the one with no tiles gets twice the other's
                     Some(none) if none == seat => alphabet
                         .scaled_rack_score(&state.players[1 - seat].rack)
+                        .raw()
                         .checked_mul(2)
                         .and_then(|bonus| player.score.checked_add(bonus))
                         .ok_or("score overflow")?,
                     Some(_) => player.score,
                     None => player
                         .score
-                        .checked_sub(alphabet.scaled_rack_score(&player.rack))
+                        .checked_sub(alphabet.scaled_rack_score(&player.rack).raw())
                         .ok_or("score overflow")?,
                 };
             }
@@ -4189,7 +4191,7 @@ mod tests {
         let counted = |session: &Session| {
             let players = session.state.players.iter();
             players
-                .map(|player| player.score - alphabet.scaled_rack_score(&player.rack))
+                .map(|player| player.score - alphabet.scaled_rack_score(&player.rack).raw())
                 .collect::<Vec<_>>()
         };
         assert_eq!(first.state.players[1].rack, [5, 5]);
@@ -4203,7 +4205,9 @@ mod tests {
         // nothing
         run(&mut first, "rack 2 -").unwrap();
         let score = |seat: usize| first.state.players[seat].score;
-        let twice = 2 * alphabet.scaled_rack_score(&first.state.players[0].rack);
+        let twice = 2 * alphabet
+            .scaled_rack_score(&first.state.players[0].rack)
+            .raw();
         assert_eq!(first.final_scores, Some(vec![score(0), score(1) + twice]));
         let mut second = session();
         for line in log_of(&first).clone() {
@@ -4226,11 +4230,13 @@ mod tests {
         // player 1's dealt rack counts against them; player 2's, with nothing
         // known, counts nothing
         let alphabet = first.game_config.alphabet();
-        let left = alphabet.scaled_rack_score(&first.state.players[0].rack);
+        let left = alphabet
+            .scaled_rack_score(&first.state.players[0].rack)
+            .raw();
         let score = first.state.players[0].score;
         assert_eq!(first.final_scores, Some(vec![score - left, 0]));
         run(&mut first, "rack 2 EE").unwrap();
-        let ee = alphabet.scaled_rack_score(&[5, 5]);
+        let ee = alphabet.scaled_rack_score(&[5, 5]).raw();
         assert_eq!(first.final_scores, Some(vec![score - left, -ee]));
         // with player 1 set to no tiles, they get twice player 2's
         run(&mut first, "rack 1 -").unwrap();
@@ -4372,7 +4378,7 @@ mod tests {
         }
         let alphabet = fifth.game_config.alphabet();
         let player = &fifth.state.players[0];
-        let left = alphabet.scaled_rack_score(&player.rack);
+        let left = alphabet.scaled_rack_score(&player.rack).raw();
         assert_eq!(fifth.final_scores, Some(vec![player.score - left, 0]));
     }
 
@@ -4928,7 +4934,7 @@ mod tests {
             .to_string();
         run(&mut first, &format!("rack 2 {shown}")).unwrap();
         let text = first.gcg_text().unwrap();
-        let cost = alphabet.rack_score(&first.state.players[1].rack);
+        let cost = alphabet.rack_score(&first.state.players[1].rack).raw();
         let line = format!(">p2: {shown} ({shown}) -{cost} ");
         assert!(text.contains(&line), "{text}");
         let mut third = session();
@@ -4962,7 +4968,7 @@ mod tests {
         // counts nothing
         let alphabet = first.game_config.alphabet();
         let rack = alphabet.fmt_rack(&first.state.players[0].rack).to_string();
-        let cost = alphabet.rack_score(&first.state.players[0].rack);
+        let cost = alphabet.rack_score(&first.state.players[0].rack).raw();
         let total = equity::descale_score(first.final_scores.as_ref().unwrap()[0]);
         let counted = format!(">p1: {rack} ({rack}) -{cost} {total}\n");
         let text = first.gcg_text().unwrap();

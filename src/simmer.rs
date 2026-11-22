@@ -861,8 +861,8 @@ impl<
                 .iter_mut()
                 .zip(self.game_state.players.iter())
             {
-                *value =
-                    -equity::ENDGAME_PENALTY_BASE - 2 * alphabet.scaled_rack_score(&player.rack);
+                *value = -equity::ENDGAME_PENALTY_BASE
+                    - 2 * alphabet.scaled_rack_score(&player.rack).raw();
             }
         }
         Ok(false)
@@ -1353,8 +1353,14 @@ mod tests {
         let alphabet = game_config.alphabet();
         let game_state = a_bag_emptied_onto_the_board(&game_config);
         // the mover holds A and B (4 points), the opponent Q (10 points)
-        assert_eq!(alphabet.rack_score(&game_state.players[0].rack), 4);
-        assert_eq!(alphabet.rack_score(&game_state.players[1].rack), 10);
+        assert_eq!(
+            alphabet.rack_score(&game_state.players[0].rack),
+            equity::Points::new(4)
+        );
+        assert_eq!(
+            alphabet.rack_score(&game_state.players[1].rack),
+            equity::Points::new(10)
+        );
 
         // with no words, every ply passes, past the two-ply horizon, until the
         // sixth scoreless turn in a row ends the game

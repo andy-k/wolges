@@ -380,7 +380,7 @@ impl PlayScorer {
                             tile_multiplier = 1;
                             board_snapshot.board_tiles[strider_at_i]
                         };
-                        let face_value_tile_score = alphabet.scaled_score(placed_tile);
+                        let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
                         let tile_score = face_value_tile_score * tile_multiplier as i32;
                         word_score += tile_score;
                     }
@@ -424,7 +424,7 @@ impl PlayScorer {
                             if placed_tile == 0 {
                                 break;
                             }
-                            let face_value_tile_score = alphabet.scaled_score(placed_tile);
+                            let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
                             let tile_score = face_value_tile_score * tile_multiplier as i32;
                             word_score += tile_score;
                         }
@@ -584,7 +584,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
     let premiums = board_layout.premiums();
     let dim = board_layout.dim();
     let strider = dim.lane(down, lane);
-    let blank_scaled = alphabet.scaled_score(0);
+    let blank_scaled = alphabet.scaled_score(0).raw();
     out.clear();
 
     let mut recounted_score = 0;
@@ -605,14 +605,14 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                 let letter = tile & 0x7f;
                 out.push((
                     letter,
-                    (alphabet.scaled_score(letter) - blank_scaled) * tile_multiplier as i32,
+                    (alphabet.scaled_score(letter).raw() - blank_scaled) * tile_multiplier as i32,
                 ));
                 letter
             } else {
                 tile_multiplier = 1;
                 board_snapshot.board_tiles[strider_at_i]
             };
-            let face_value_tile_score = alphabet.scaled_score(placed_tile);
+            let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
             word_score += face_value_tile_score * tile_multiplier as i32;
         }
         recounted_score += word_score * word_multiplier;
@@ -662,11 +662,11 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                 if placed_tile == 0 {
                     break;
                 }
-                let face_value_tile_score = alphabet.scaled_score(placed_tile);
+                let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
                 word_score += face_value_tile_score * tile_multiplier as i32;
             }
             recounted_score += word_score * word_multiplier;
-            out[k].1 += (alphabet.scaled_score(letter) - blank_scaled)
+            out[k].1 += (alphabet.scaled_score(letter).raw() - blank_scaled)
                 * placed_tile_multiplier
                 * word_multiplier;
             k += 1;
