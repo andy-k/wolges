@@ -489,30 +489,143 @@ pub fn best_equity_of(
     equity::Equity::new(best_split_of(lat, sheet, leave, &nz[..m]))
 }
 
+// a sum of draw ways times a rack's best in millipoints, kept exactly: i64
+// holds every sum while C(pool, rack_size) times the largest |best| of a rack
+// the pool can draw stays below 2^63 (sums_fit), and i128 holds the rest
+pub trait ApportionSum: Copy {
+    const MAX: i128;
+
+    fn add_ways_times(&mut self, ways: u64, best: i32);
+
+    fn add(&mut self, other: Self);
+
+    // the mean, this sum over den, rounded half away from zero
+    fn mean(self, den: u64) -> i32;
+}
+
+impl ApportionSum for i64 {
+    const MAX: i128 = i64::MAX as i128;
+
+    #[inline(always)]
+    fn add_ways_times(&mut self, ways: u64, best: i32) {
+        *self += ways as i64 * i64::from(best);
+    }
+
+    #[inline(always)]
+    fn add(&mut self, other: Self) {
+        *self += other;
+    }
+
+    #[inline(always)]
+    fn mean(self, den: u64) -> i32 {
+        rounded_mean(i128::from(self), den)
+    }
+}
+
+impl ApportionSum for i128 {
+    const MAX: i128 = i128::MAX;
+
+    #[inline(always)]
+    fn add_ways_times(&mut self, ways: u64, best: i32) {
+        *self += i128::from(ways) * i128::from(best);
+    }
+
+    #[inline(always)]
+    fn add(&mut self, other: Self) {
+        *self += other;
+    }
+
+    #[inline(always)]
+    fn mean(self, den: u64) -> i32 {
+        rounded_mean(self, den)
+    }
+}
+
+// num over den rounded half away from zero, as f64::round rounds their
+// quotient; den is not 0
+#[inline(always)]
+fn rounded_mean(num: i128, den: u64) -> i32 {
+    let den = i128::from(den);
+    let (quotient, rest) = (num / den, num % den);
+    if 2 * rest.abs() >= den {
+        (quotient + num.signum()) as i32
+    } else {
+        quotient as i32
+    }
+}
+
+// whether T holds every sum the ways of a pool of pool tiles make: at most
+// C(pool, rack_size) times most (the largest |best| of a rack it can draw)
+// times factor (how much more than its draw ways a full rack's weight can be:
+// 1 for the ways alone)
 #[inline]
-pub fn apportion_table(
+fn sums_fit<T: ApportionSum>(pool: u64, rack_size: usize, most: u64, factor: u64) -> bool {
+    i128::from(n_choose_k(pool, rack_size as u64)) * i128::from(most) * i128::from(factor) <= T::MAX
+}
+
+// the ways to draw the full rack ridx from unseen (0 when it cannot be), its
+// letters and counts written to nz, and how many there are
+#[inline]
+fn full_rack_ways(
+    lat: &MultisetLattice,
+    unseen: &[u8],
+    ridx: usize,
+    r: &mut [u8],
+    nz: &mut [(usize, u8)],
+) -> (u64, usize) {
+    lat.unrank_into(ridx, r);
+    let mut w = 1u64;
+    let mut m = 0;
+    for (t, &c) in r.iter().enumerate() {
+        if c > 0 {
+            nz[m] = (t, c);
+            m += 1;
+            w *= n_choose_k(unseen[t] as u64, c as u64);
+            if w == 0 {
+                break;
+            }
+        }
+    }
+    (w, m)
+}
+
+#[inline]
+pub fn apportion_table<T: ApportionSum>(
     lat: &MultisetLattice,
     best: &[i32],
     unseen: &[u8],
-    num: &mut [f64],
-    den: &mut [f64],
+    num: &mut [T],
+    den: &mut [u64],
 ) {
     // the walk's reads and writes are unchecked: every table is the lattice's
     // size
     assert!(best.len() == lat.len() && num.len() == lat.len() && den.len() == lat.len());
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
+    let lo = lat.full_rack_start();
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    let mut most = 0u64;
+    for (ridx, &b) in best.iter().enumerate().skip(lo) {
+        if full_rack_ways(lat, unseen, ridx, &mut r[..n], &mut nz).0 > 0 {
+            most = most.max(u64::from(b.unsigned_abs()));
+        }
+    }
+    let pool = unseen.iter().map(|&c| c as u64).sum();
+    assert!(
+        sums_fit::<T>(pool, lat.rack_size(), most, 1),
+        "the sums of a pool of {pool} outgrow the table's type"
+    );
 
-    struct Ctx<'a> {
+    struct Ctx<'a, T> {
         nz: &'a [(usize, u8)],
         n: usize,
         lat: &'a MultisetLattice,
-        w: f64,
-        we: f64,
-        num: &'a mut [f64],
-        den: &'a mut [f64],
+        w: u64,
+        e: i32,
+        num: &'a mut [T],
+        den: &'a mut [u64],
     }
-    impl Ctx<'_> {
+    impl<T: ApportionSum> Ctx<'_, T> {
         fn rec(&mut self, i: usize, s_s: usize, within_s: u64) {
             if i == 0 {
                 let sr = (self.lat.size_offset[s_s] + within_s) as usize;
@@ -520,7 +633,9 @@ pub fn apportion_table(
                 // holds, so it is below lat.len(), the length of num and of den
                 // (apportion_table checks it).
                 unsafe {
-                    *self.num.get_unchecked_mut(sr) += self.we;
+                    self.num
+                        .get_unchecked_mut(sr)
+                        .add_ways_times(self.w, self.e);
                     *self.den.get_unchecked_mut(sr) += self.w;
                 }
                 return;
@@ -540,37 +655,20 @@ pub fn apportion_table(
             }
         }
     }
-    let lo = lat.full_rack_start();
-    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
     for ridx in lo..lat.len() {
-        lat.unrank_into(ridx, &mut r[..n]);
-
-        let mut w = 1.0f64;
-        let mut m = 0;
-        let mut drawable = true;
-        for (t, &c) in r[..n].iter().enumerate() {
-            if c > 0 {
-                nz[m] = (t, c);
-                m += 1;
-                w *= n_choose_k(unseen[t] as u64, c as u64) as f64;
-                if w == 0.0 {
-                    drawable = false;
-                    break;
-                }
-            }
-        }
-        if !drawable {
+        let (w, m) = full_rack_ways(lat, unseen, ridx, &mut r[..n], &mut nz);
+        if w == 0 {
             continue;
         }
         // Safety: ridx runs over lo..lat.len(), and best's length is lat.len()
         // (checked above).
-        let e = unsafe { *best.get_unchecked(ridx) } as f64;
+        let e = unsafe { *best.get_unchecked(ridx) };
         Ctx {
             nz: &nz[..m],
             n,
             lat,
             w,
-            we: w * e,
+            e,
             num,
             den,
         }
@@ -988,10 +1086,10 @@ pub struct ApportionBoard<'a> {
 // bests and deals, below the full racks (num, den: full_rack_start() long);
 // each full rack's deals (ways: the rest of the lattice long), its best then in
 // maxsheet, so a full rack's mean is its best
-pub struct ApportionOut<'a> {
-    pub num: &'a mut [f64],
-    pub den: &'a mut [f64],
-    pub ways: &'a mut [f64],
+pub struct ApportionOut<'a, T> {
+    pub num: &'a mut [T],
+    pub den: &'a mut [u64],
+    pub ways: &'a mut [u64],
 }
 
 pub struct ApportionMode {
@@ -1000,15 +1098,17 @@ pub struct ApportionMode {
     pub scatter: bool,
 }
 
+// false, with nothing summed into num and den, when T cannot hold the board's
+// sums (sums_fit); the ways and the full racks' bests are made either way
 #[inline]
-pub fn apportion_fused(
+pub fn apportion_fused<T: ApportionSum>(
     lat: &MultisetLattice,
     add: &AddTable,
     board: &ApportionBoard,
-    out: ApportionOut,
+    out: ApportionOut<T>,
     maxsheet: &mut [i32],
     mode: ApportionMode,
-) {
+) -> bool {
     let ApportionBoard {
         sheet,
         leave,
@@ -1046,23 +1146,23 @@ pub fn apportion_fused(
     for t in (0..n).rev() {
         suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
     }
-    struct Ctx<'a> {
+    struct Ctx<'a, T> {
         n: usize,
         unseen: &'a [u8],
         suffix_cap: &'a [u32],
         add: &'a AddTable,
         sheet: &'a [i32],
         leave: &'a [i32],
-        num: &'a mut [f64],
-        den: &'a mut [f64],
-        ways: &'a mut [f64],
+        num: &'a mut [T],
+        den: &'a mut [u64],
+        ways: &'a mut [u64],
         lo: usize,
-        zeta: bool,
         best_from_maxsheet: bool,
         maxsheet: &'a mut [i32],
         nz: &'a mut [(usize, u8)],
+        most: u64, // the largest |best| of a rack drawn
     }
-    impl Ctx<'_> {
+    impl<T: ApportionSum> Ctx<'_, T> {
         fn rec_max(&self, i: usize, p_idx: usize, k_idx: usize, best: &mut i32) {
             if i == 0 {
                 // Safety: p_idx and k_idx rank the played P and the kept K of a
@@ -1091,11 +1191,11 @@ pub fn apportion_fused(
             }
         }
 
-        fn apportion_rec(&mut self, i: usize, s_idx: usize, w: f64, we: f64) {
+        fn apportion_rec(&mut self, i: usize, s_idx: usize, w: u64, best: i32) {
             if i == 0 {
                 // the full rack itself keeps its share as its deals (ways)
                 if s_idx < self.lo {
-                    self.num[s_idx] += we;
+                    self.num[s_idx].add_ways_times(w, best);
                     self.den[s_idx] += w;
                 }
                 return;
@@ -1103,15 +1203,30 @@ pub fn apportion_fused(
             let (t, cnt) = self.nz[i - 1];
             let mut idx = s_idx;
             for cs in 0..=cnt {
-                self.apportion_rec(i - 1, idx, w, we);
+                self.apportion_rec(i - 1, idx, w, best);
                 if cs < cnt {
                     idx = self.add.add(idx, t);
                 }
             }
         }
 
-        fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
+        // each full rack the pool can draw, its draw ways w: SUM false finds
+        // its best (into maxsheet) and its ways, SUM true sums them into its
+        // subracks (apportion_rec)
+        fn enum_drawable<const SUM: bool>(
+            &mut self,
+            t: usize,
+            remaining: usize,
+            w: u64,
+            idx: usize,
+            m: usize,
+        ) {
             if remaining == 0 {
+                if SUM {
+                    let best = self.maxsheet[idx];
+                    self.apportion_rec(m, 0, w, best);
+                    return;
+                }
                 let best = if self.best_from_maxsheet {
                     // Safety: idx ranks a full rack, built up from 0 by add,
                     // whose ranks are the lattice's; so it is below lat.len(),
@@ -1126,26 +1241,24 @@ pub fn apportion_fused(
                 // the full rack's deals beside its best, as the sums below it
                 // read it (fold_full)
                 self.ways[idx - self.lo] = w;
-                if !self.zeta {
-                    self.apportion_rec(m, 0, w, w * best as f64);
-                }
+                self.most = self.most.max(u64::from(best.unsigned_abs()));
                 return;
             }
             if t == self.n || (self.suffix_cap[t] as usize) < remaining {
                 return;
             }
 
-            self.enum_drawable(t + 1, remaining, w, idx, m);
+            self.enum_drawable::<SUM>(t + 1, remaining, w, idx, m);
 
-            let nt = self.unseen[t] as usize;
-            let cap = nt.min(remaining);
-            let mut binom = 1.0f64;
+            let nt = self.unseen[t] as u64;
+            let cap = nt.min(remaining as u64);
+            let mut binom = 1u64;
             let mut idx_c = idx;
             for c in 1..=cap {
-                binom = binom * (nt - c + 1) as f64 / c as f64;
+                binom = binom * (nt - c + 1) / c;
                 idx_c = self.add.add(idx_c, t);
                 self.nz[m] = (t, c as u8);
-                self.enum_drawable(t + 1, remaining - c, w * binom, idx_c, m + 1);
+                self.enum_drawable::<SUM>(t + 1, remaining - c as usize, w * binom, idx_c, m + 1);
             }
         }
 
@@ -1186,7 +1299,7 @@ pub fn apportion_fused(
         #[inline(always)]
         fn fold_full(&mut self, idx: usize, sp: usize) {
             let w = self.ways[sp - self.lo];
-            self.num[idx] += w * self.maxsheet[sp] as f64;
+            self.num[idx].add_ways_times(w, self.maxsheet[sp]);
             self.den[idx] += w;
         }
 
@@ -1194,7 +1307,7 @@ pub fn apportion_fused(
         #[inline(always)]
         fn fold_one(&mut self, idx: usize, sp: usize) {
             let (sn, sd) = (self.num[sp], self.den[sp]);
-            self.num[idx] += sn;
+            self.num[idx].add(sn);
             self.den[idx] += sd;
         }
     }
@@ -1210,15 +1323,22 @@ pub fn apportion_fused(
         den: out.den,
         ways: out.ways,
         lo: lat.full_rack_start(),
-        zeta,
         best_from_maxsheet,
         maxsheet,
         nz: &mut nz,
+        most: 0,
     };
-    ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
+    ctx.enum_drawable::<false>(0, rack_size, 1, 0, 0);
+    let pool = unseen.iter().map(|&c| c as u64).sum();
+    if !sums_fit::<T>(pool, rack_size, ctx.most, 1) {
+        return false;
+    }
     if zeta {
         ctx.fold_zeta(lat.size_start(rack_size.saturating_sub(1)));
+    } else {
+        ctx.enum_drawable::<true>(0, rack_size, 1, 0, 0);
     }
+    true
 }
 
 struct DrawCtx<'a> {
@@ -1776,8 +1896,8 @@ mod tests {
                 .spawn_scoped(s, || {
                     let mut best = vec![UNPLAYABLE.raw(); lat.len()];
                     best_equity_table(&lat, &sheet, &leave, &mut best);
-                    let mut num = vec![0f64; lat.len()];
-                    let mut den = vec![0f64; lat.len()];
+                    let mut num = vec![0i64; lat.len()];
+                    let mut den = vec![0u64; lat.len()];
                     apportion_table(&lat, &best, &unseen, &mut num, &mut den);
                     let tally = vec![0u8; 27];
                     let value = leave_value_by_draw(&lat, &best, &unseen, &tally);
@@ -1854,8 +1974,8 @@ mod tests {
             let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
         }
-        let mut num = vec![0f64; lat.len()];
-        let mut den = vec![0f64; lat.len()];
+        let mut num = vec![0i64; lat.len()];
+        let mut den = vec![0u64; lat.len()];
         apportion_table(&lat, &best, &unseen, &mut num, &mut den);
 
         let n = lat.num_letters();
@@ -1888,13 +2008,13 @@ mod tests {
         }
         for idx in 0..lat.len() {
             assert!(
-                (num[idx] - num_naive[idx]).abs() <= 1e-6 * num_naive[idx].abs().max(1.0),
+                (num[idx] as f64 - num_naive[idx]).abs() <= 1e-6 * num_naive[idx].abs().max(1.0),
                 "num mismatch at {idx}: {} vs {}",
                 num[idx],
                 num_naive[idx]
             );
             assert!(
-                (den[idx] - den_naive[idx]).abs() <= 1e-6 * den_naive[idx].abs().max(1.0),
+                (den[idx] as f64 - den_naive[idx]).abs() <= 1e-6 * den_naive[idx].abs().max(1.0),
                 "den mismatch at {idx}: {} vs {}",
                 den[idx],
                 den_naive[idx]
@@ -1933,19 +2053,19 @@ mod tests {
             let mut maxsheet = vec![0i32; lat.len()];
 
             for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
-                let mut num_a = vec![0f64; lat.len()];
-                let mut den_a = vec![0f64; lat.len()];
+                let mut num_a = vec![0i64; lat.len()];
+                let mut den_a = vec![0u64; lat.len()];
                 apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
                 for (by_letter, add) in tables.iter().enumerate() {
                     for scatter in [false, true] {
                         for zeta in [false, true] {
                             let lo = lat.full_rack_start();
-                            let mut num_b = vec![0f64; lo];
-                            let mut den_b = vec![0f64; lo];
-                            let mut ways_b = vec![0f64; lat.len() - lo];
+                            let mut num_b = vec![0i64; lo];
+                            let mut den_b = vec![0u64; lo];
+                            let mut ways_b = vec![0u64; lat.len() - lo];
                             // what a board before leaves there, never read back
                             maxsheet.fill(UNPLAYABLE.raw());
-                            apportion_fused(
+                            assert!(apportion_fused(
                                 &lat,
                                 add,
                                 &ApportionBoard {
@@ -1965,7 +2085,7 @@ mod tests {
                                     null_leave: false,
                                     scatter,
                                 },
-                            );
+                            ));
                             let case = (top, unseen, by_letter, zeta, scatter);
                             for idx in 0..lo {
                                 assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
@@ -1974,10 +2094,10 @@ mod tests {
                             // a full rack: its deals, and its best for each
                             for (idx, &ways) in (lo..).zip(&ways_b) {
                                 assert_eq!(den_a[idx], ways, "ways at {idx} {case:?}");
-                                let num = if ways == 0.0 {
-                                    0.0
+                                let num = if ways == 0 {
+                                    0
                                 } else {
-                                    ways * maxsheet[idx] as f64
+                                    ways as i64 * i64::from(maxsheet[idx])
                                 };
                                 assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
                             }
@@ -2012,19 +2132,19 @@ mod tests {
         let mut maxsheet = vec![0i32; lat.len()];
 
         for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
-            let mut num_a = vec![0f64; lat.len()];
-            let mut den_a = vec![0f64; lat.len()];
+            let mut num_a = vec![0i64; lat.len()];
+            let mut den_a = vec![0u64; lat.len()];
             apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
             for (by_letter, add) in tables.iter().enumerate() {
                 for null_leave in [false, true] {
                     for zeta in [false, true] {
                         let lo = lat.full_rack_start();
-                        let mut num_b = vec![0f64; lo];
-                        let mut den_b = vec![0f64; lo];
-                        let mut ways_b = vec![0f64; lat.len() - lo];
+                        let mut num_b = vec![0i64; lo];
+                        let mut den_b = vec![0u64; lo];
+                        let mut ways_b = vec![0u64; lat.len() - lo];
                         // what a board before leaves there, never read back
                         maxsheet.fill(UNPLAYABLE.raw());
-                        apportion_fused(
+                        assert!(apportion_fused(
                             &lat,
                             add,
                             &ApportionBoard {
@@ -2044,7 +2164,7 @@ mod tests {
                                 null_leave,
                                 scatter: false,
                             },
-                        );
+                        ));
                         let case = (unseen, by_letter, zeta, null_leave);
                         for idx in 0..lo {
                             assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
@@ -2053,16 +2173,84 @@ mod tests {
                         // a full rack: its deals, and its best for each
                         for (idx, &ways) in (lo..).zip(&ways_b) {
                             assert_eq!(den_a[idx], ways, "ways at {idx} {case:?}");
-                            let num = if ways == 0.0 {
-                                0.0
+                            let num = if ways == 0 {
+                                0
                             } else {
-                                ways * maxsheet[idx] as f64
+                                ways as i64 * i64::from(maxsheet[idx])
                             };
                             assert_eq!(num_a[idx], num, "best at {idx} {case:?}");
                         }
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn apportion_fused_sums_past_i64_in_i128() {
+        // a pool of 765 tiles and racks of 4: C(765, 4) draw ways times bests
+        // near i32::MAX pass 2^63, so an i64 table takes no sums and an i128
+        // one takes what apportion_table makes
+        let lat = MultisetLattice::new(3, 4).unwrap();
+        let unseen = [255u8, 255, 255];
+        let mut sheet = vec![0i32; lat.len()];
+        for (idx, slot) in sheet.iter_mut().enumerate().skip(1) {
+            *slot = i32::MAX - idx as i32;
+        }
+        let leave = vec![0i32; lat.len()];
+        let mut best = vec![UNPLAYABLE.raw(); lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+        let mut num_a = vec![0i128; lat.len()];
+        let mut den_a = vec![0u64; lat.len()];
+        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+        let add = AddTable::new(&lat);
+        let lo = lat.full_rack_start();
+        let mut maxsheet = vec![0i32; lat.len()];
+        let board = ApportionBoard {
+            sheet: &sheet,
+            leave: &leave,
+            leave_max: &leave,
+            unseen: &unseen,
+        };
+        for zeta in [false, true] {
+            let mode = || ApportionMode {
+                zeta,
+                null_leave: false,
+                scatter: false,
+            };
+            let mut den = vec![0u64; lo];
+            let mut ways = vec![0u64; lat.len() - lo];
+            let mut narrow = vec![0i64; lo];
+            assert!(!apportion_fused(
+                &lat,
+                &add,
+                &board,
+                ApportionOut {
+                    num: &mut narrow,
+                    den: &mut den,
+                    ways: &mut ways,
+                },
+                &mut maxsheet,
+                mode(),
+            ));
+            assert!(narrow.iter().all(|&v| v == 0) && den.iter().all(|&v| v == 0));
+            let mut wide = vec![0i128; lo];
+            ways.fill(0);
+            assert!(apportion_fused(
+                &lat,
+                &add,
+                &board,
+                ApportionOut {
+                    num: &mut wide,
+                    den: &mut den,
+                    ways: &mut ways,
+                },
+                &mut maxsheet,
+                mode(),
+            ));
+            assert_eq!(wide[..], num_a[..lo], "zeta={zeta}");
+            assert_eq!(den[..], den_a[..lo], "zeta={zeta}");
         }
     }
 
