@@ -248,8 +248,8 @@ pub fn value_text_into<F: ryu::Float>(value: F, out: &mut String) {
 // formatting into the wasm, which never prints one otherwise.
 #[inline(always)]
 fn millipoints(i: usize, value: f32) -> error::Returns<i32> {
-    let scaled = (value * equity::SCALE as f32).round();
-    if (i32::MIN as f32..-(i32::MIN as f32)).contains(&scaled) {
+    let scaled = (f64::from(value) * equity::SCALE as f64).round();
+    if (i32::MIN as f64..-(i32::MIN as f64)).contains(&scaled) {
         Ok(scaled as i32)
     } else {
         let kind = if value.is_nan() {
@@ -1635,6 +1635,15 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_value_is_kept_as_the_millipoints_its_f32_rounds_to() {
+        // as an f32, 12.3455 is just under 12345.5 millipoints
+        let klv = kbwg_from_bytes_alloc(make_klv2(&[(&[1], 12.3455), (&[2], -12.3455)])).unwrap();
+        assert_eq!(klv.leave_value_from_tally(&[0, 1, 0]).raw(), 12345);
+        assert_eq!(klv.leave_value_from_tally(&[0, 0, 1]).raw(), -12345);
+    }
+
+    #[test]
+    #[inline]
     fn a_table_read_a_piece_at_a_time_holds_each_value_at_its_leave() {
         let leaves: &[(&[u8], f32)] = &[
             (&[1], -1.25),
@@ -1668,7 +1677,7 @@ mod tests {
                     let want = if as_i16 {
                         ((value * 256.0).round() as i16 as i32 * equity::SCALE + 128) / 256
                     } else {
-                        (value * equity::SCALE as f32).round() as i32
+                        (f64::from(value) * equity::SCALE as f64).round() as i32
                     };
                     assert_eq!(
                         klv.leave_value_from_tally(&tally).raw(),
