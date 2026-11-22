@@ -4,6 +4,9 @@ use super::{error, game_config, klv, kwg, movegen};
 
 pub const MAX_RACK_SIZE: u8 = u8::BITS as u8;
 
+const LEAVE_BYTES: usize = std::mem::size_of::<i32>();
+const SUBRACK_BYTES: usize = LEAVE_BYTES + std::mem::size_of::<u8>();
+
 // every full rack's setup as a generation makes it from a klv, made once: the
 // leave of each part of the rack it keeps, by MultiLeaves's leave index, and
 // the order the table walk takes its subracks in (movegen::subrack_order's),
@@ -20,8 +23,8 @@ pub struct RackTable {
 }
 
 impl RackTable {
-    // the racks of each size that each run of the tiles can make
-    fn ways_of(counts: &[u8], rack_size: u8) -> Box<[u64]> {
+    // count the racks of each size, or the subracks in all their setups.
+    fn ways_of<const SUBRACKS: bool>(counts: &[u8], rack_size: u8) -> Box<[u64]> {
         let width = rack_size as usize + 1;
         let tiles = counts.len();
         let mut ways = vec![0u64; (tiles + 1) * width];
@@ -29,7 +32,9 @@ impl RackTable {
         for t in (0..tiles).rev() {
             for k in 0..width {
                 ways[t * width + k] = (0..=(counts[t] as usize).min(k))
-                    .map(|c| ways[(t + 1) * width + k - c])
+                    .map(|c| {
+                        ways[(t + 1) * width + k - c] * if SUBRACKS { c as u64 + 1 } else { 1 }
+                    })
                     .sum();
             }
         }
@@ -85,6 +90,21 @@ impl RackTable {
         }
     }
 
+    fn subracks_before(&self, rack_tally: &[u8], ways: &[u64]) -> u64 {
+        let width = self.rack_size as usize + 1;
+        let mut left = self.rack_size as usize;
+        let mut before = 0;
+        let mut prefix = 1;
+        for (tile, &count) in rack_tally.iter().enumerate() {
+            for earlier in 0..count as usize {
+                before += prefix * (earlier as u64 + 1) * ways[(tile + 1) * width + left - earlier];
+            }
+            prefix *= u64::from(count) + 1;
+            left -= count as usize;
+        }
+        before
+    }
+
     // the table for this config's bag and rack size from these leaves, made in
     // threads runs of ranks at once
     pub fn build<L: kwg::Node + Sync>(
@@ -98,7 +118,7 @@ impl RackTable {
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<[u8]>>();
         let rack_size = game_config.rack_size();
-        let ways = Self::ways_of(&counts, rack_size);
+        let ways = Self::ways_of::<false>(&counts, rack_size);
         let mut table = Self {
             rack_size,
             counts,
@@ -108,62 +128,74 @@ impl RackTable {
             data_start: 0,
         };
         let num_racks = table.num_racks();
-        let threads = threads.max(1);
-        let per_thread = num_racks.div_ceil(threads);
+        let threads = threads.max(1).min(num_racks.max(1));
+        let per_thread = num_racks.div_ceil(threads).max(1);
+        let subrack_ways = Self::ways_of::<true>(&table.counts, rack_size);
+        let num_bytes = usize::try_from(subrack_ways[rack_size as usize] * SUBRACK_BYTES as u64)
+            .map_err(|_| "the rack table does not fit in memory")?;
+        let mut ends = vec![0u64; num_racks];
+        let mut data = vec![0u8; num_bytes];
         let table_ref = &table;
-        let parts = std::thread::scope(|scope| {
-            let handles = (0..threads)
-                .map(|i| {
-                    let from = (i * per_thread).min(num_racks);
-                    let to = ((i + 1) * per_thread).min(num_racks);
-                    scope.spawn(move || {
-                        let mut rack_tally = vec![0u8; table_ref.counts.len()];
-                        let mut multi_leaves = klv::MultiLeaves::new();
-                        let mut order = Vec::new();
-                        let mut keys = Vec::new();
-                        let mut lens = Vec::with_capacity(to - from);
-                        let mut data = Vec::new();
-                        for rank in from..to {
-                            table_ref.unrank(rank as u64, &mut rack_tally);
-                            multi_leaves.init(
-                                &rack_tally,
-                                klv,
-                                true,
-                                klv::AdjustLeave::Identity,
-                                multi_leaves.dense_most(),
-                                std::iter::empty(),
-                            );
-                            let at = data.len();
-                            for &leave_value in multi_leaves.leave_values() {
-                                data.extend_from_slice(&leave_value.to_le_bytes());
-                            }
-                            movegen::subrack_order(
-                                &multi_leaves,
-                                &rack_tally,
-                                &mut keys,
-                                &mut order,
-                            );
-                            data.extend_from_slice(&order);
-                            lens.push((data.len() - at) as u64);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(threads);
+            let mut remaining = data.as_mut_slice();
+            let mut offset = 0;
+            let mut boundary_rack = vec![0u8; table_ref.counts.len()];
+            for (worker, ends) in ends.chunks_mut(per_thread).enumerate() {
+                let from = worker * per_thread;
+                let until = from + ends.len();
+                let end = if until < num_racks {
+                    table_ref.unrank(until as u64, &mut boundary_rack);
+                    (table_ref.subracks_before(&boundary_rack, &subrack_ways)
+                        * SUBRACK_BYTES as u64) as usize
+                } else {
+                    num_bytes
+                };
+                let (mut rows, later) = remaining.split_at_mut(end - offset);
+                remaining = later;
+                let mut at = offset;
+                offset = end;
+                handles.push(scope.spawn(move || {
+                    let mut rack_tally = vec![0u8; table_ref.counts.len()];
+                    let mut multi_leaves = klv::MultiLeaves::new();
+                    let mut keys = Vec::new();
+                    let mut order = Vec::new();
+                    for (i, end) in ends.iter_mut().enumerate() {
+                        table_ref.unrank((from + i) as u64, &mut rack_tally);
+                        multi_leaves.init(
+                            &rack_tally,
+                            klv,
+                            true,
+                            klv::AdjustLeave::Identity,
+                            multi_leaves.dense_most(),
+                            std::iter::empty(),
+                        );
+                        let leaves = multi_leaves.leave_values();
+                        let (row, later) = rows.split_at_mut(leaves.len() * SUBRACK_BYTES);
+                        rows = later;
+                        let (values, permutation) = row.split_at_mut(leaves.len() * LEAVE_BYTES);
+                        for (to, value) in values
+                            .as_chunks_mut::<LEAVE_BYTES>()
+                            .0
+                            .iter_mut()
+                            .zip(leaves)
+                        {
+                            *to = value.to_le_bytes();
                         }
-                        (lens, data)
-                    })
-                })
-                .collect::<Vec<_>>();
+                        movegen::subrack_order(&multi_leaves, &rack_tally, &mut keys, &mut order);
+                        permutation.copy_from_slice(&order);
+                        at += row.len();
+                        *end = at as u64;
+                    }
+                    debug_assert!(rows.is_empty());
+                }));
+            }
             handles
                 .into_iter()
                 .map(|handle| handle.join())
                 .collect::<Result<Vec<_>, _>>()
         })
         .map_err(|_| "a thread making the rack table failed")?;
-        let mut ends = Vec::with_capacity(num_racks);
-        let mut data = Vec::with_capacity(parts.iter().map(|(_, part)| part.len()).sum());
-        for (lens, part) in parts {
-            for len in lens {
-                ends.push(ends.last().copied().unwrap_or(0) + len);
-            }
-            data.extend_from_slice(&part);
-        }
         table.ends = ends.into_boxed_slice();
         table.data = data.into_boxed_slice();
         Ok(table)
@@ -206,7 +238,7 @@ impl RackTable {
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<[u8]>>();
         let rack_size = game_config.rack_size();
-        let ways = Self::ways_of(&counts, rack_size);
+        let ways = Self::ways_of::<false>(&counts, rack_size);
         let mut table = Self {
             rack_size,
             counts,
@@ -232,7 +264,9 @@ impl RackTable {
             let len = end
                 .checked_sub(from)
                 .ok_or("the rack table's setups do not follow each other")?;
-            if len % 5 != 0 || len / 5 > 1 << 8 {
+            if !len.is_multiple_of(SUBRACK_BYTES as u64)
+                || len / SUBRACK_BYTES as u64 > 1 << u8::BITS
+            {
                 return Err("the rack table holds a setup of no rack".into());
             }
             from = end;
@@ -251,7 +285,7 @@ impl RackTable {
         let rank = self.rank(rack_tally)?;
         let from = if rank == 0 { 0 } else { self.ends[rank - 1] } as usize;
         let setup = &self.data[self.data_start + from..self.data_start + self.ends[rank] as usize];
-        Some(setup.split_at(setup.len() / 5 * 4))
+        Some(setup.split_at(setup.len() / SUBRACK_BYTES * LEAVE_BYTES))
     }
 }
 
@@ -279,7 +313,7 @@ mod tests {
         let table = RackTable {
             rack_size,
             counts: counts.into(),
-            ways: RackTable::ways_of(&counts, rack_size),
+            ways: RackTable::ways_of::<false>(&counts, rack_size),
             ends: Box::new([]),
             data: Box::new([]),
             data_start: 0,
