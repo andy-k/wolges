@@ -2358,13 +2358,13 @@ fn generate_autoplay_logs<
                                     num_moves,
                                     &cur_rack_ser,
                                     &play_fmt,
-                                    equity::descale_score(play_score),
-                                    equity::descale_score(player_score),
+                                    equity::Equity::new(play_score).descaled().raw(),
+                                    equity::Equity::new(player_score).descaled().raw(),
                                     tiles_played,
                                     &aft_rack_ser,
                                     &equity_fmt,
                                     old_bag_len,
-                                    equity::descale_score(next_score),
+                                    equity::Equity::new(next_score).descaled().raw(),
                                 ))
                                 .unwrap();
                         }
@@ -2382,7 +2382,7 @@ fn generate_autoplay_logs<
                     }
                     completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     for (pts, &mp) in final_scores_pts.iter_mut().zip(final_scores.iter()) {
-                        *pts = equity::descale_score(mp);
+                        *pts = equity::Equity::new(mp).descaled().raw();
                     }
                     batched_csv_game
                         .serialize((
@@ -6142,8 +6142,10 @@ impl GameStats {
         turns: u32,
         end_reason: game_state::CheckGameEnded,
     ) {
-        self.p0_score.update(equity::descale_score(p0_final) as f64);
-        self.p1_score.update(equity::descale_score(p1_final) as f64);
+        self.p0_score
+            .update(equity::Equity::new(p0_final).descaled().raw() as f64);
+        self.p1_score
+            .update(equity::Equity::new(p1_final).descaled().raw() as f64);
         self.turns.update(turns as f64);
         match end_reason {
             game_state::CheckGameEnded::PlayedOut => self.played_out += 1,
@@ -6564,8 +6566,8 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     loop {
         let mover = game_state.turn as usize;
         let other = 1 - mover;
-        let lead = equity::descale_score(game_state.players[mover].score.raw())
-            - equity::descale_score(game_state.players[other].score.raw());
+        let lead = game_state.players[mover].score.descaled().raw()
+            - game_state.players[other].score.descaled().raw();
         snapshots.push((
             game_state.bag.len(),
             game_state.players[mover].rack.len(),
@@ -6666,8 +6668,10 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                     )?;
 
                     for &(bag, my, opp, mover, lead) in &snapshots {
-                        let mover_final = equity::descale_score(final_scores[mover])
-                            - equity::descale_score(final_scores[1 - mover]);
+                        let mover_final = equity::Equity::new(final_scores[mover]).descaled().raw()
+                            - equity::Equity::new(final_scores[1 - mover])
+                                .descaled()
+                                .raw();
                         acc.record(bag, my, opp, lead, mover_final);
                     }
                     let done =
@@ -6793,8 +6797,10 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         &mut final_scores,
                     )?;
                     for &(bag, my, opp, mover, lead) in &snapshots {
-                        let mover_final = equity::descale_score(final_scores[mover])
-                            - equity::descale_score(final_scores[1 - mover]);
+                        let mover_final = equity::Equity::new(final_scores[mover]).descaled().raw()
+                            - equity::Equity::new(final_scores[1 - mover])
+                                .descaled()
+                                .raw();
                         let result = match mover_final.signum() {
                             1 => 1.0f64,
                             -1 => 0.0,

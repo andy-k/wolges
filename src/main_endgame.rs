@@ -1659,7 +1659,7 @@ fn solve_position<N: kwg::Node>(
     reserve_table(&mut egs, solving);
     let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| -> error::Returns<()> {
         if bag_size > 1 {
-            let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
+            let scaled_score_diff = equity::Points::new(score_diff).scaled();
             let mut progress = endgame::PegBagProgress::new(
                 endgame::PegBagPosition {
                     mover: 0,
@@ -1822,7 +1822,7 @@ fn solve_position<N: kwg::Node>(
                 say_where_a_limit_stopped(result.depth)?;
             }
         } else if bag_size == 1 {
-            let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
+            let scaled_score_diff = equity::Points::new(score_diff).scaled();
             let mut progress = endgame::PegProgress::new(
                 0,
                 &board_tiles,
@@ -1935,8 +1935,7 @@ fn solve_position<N: kwg::Node>(
             );
             let solved = egs.evaluate_on_threads(0, &solving.limits, solving.threads)?;
             if let Some(future_margin) = solved.value {
-                let total_margin =
-                    equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
+                let total_margin = equity::Points::new(score_diff).scaled() + future_margin;
                 writeln!(
                     std::io::stdout(),
                     "total game margin (current score {score_diff:+} + future {future_margin}) = \

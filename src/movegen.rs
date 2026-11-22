@@ -7973,7 +7973,7 @@ impl<N: kwg::Node, L: kwg::Node> WriteablePlay<'_, N, L> {
                 if inside {
                     write!(f, ")")?;
                 }
-                write!(f, " {}", equity::descale_score(score.raw()))?;
+                write!(f, " {}", score.descaled())?;
             }
         }
         Ok(())
@@ -18649,7 +18649,7 @@ mod tests {
         assert!(generator.num_tiles_in_bag() <= 0);
         let key = alphagram::Nibble.place_value(1);
         let lanes = census.lanes_of(key).unwrap();
-        assert!(lanes.contains(&equity::scale_score(2)));
+        assert!(lanes.contains(&equity::Points::new(2).scaled().raw()));
     }
 
     #[test]

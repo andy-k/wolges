@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout, equity, error, game_config, game_state, game_timers};
+use super::{alphabet, board_layout, error, game_config, game_state, game_timers};
 use std::io::Write;
 use std::str::FromStr;
 
@@ -449,7 +449,7 @@ impl GameStatePrinter<'_> {
                 f,
                 "Player {}: {:>4} {}",
                 i + 1,
-                equity::descale_score(player.score.raw()),
+                player.score.descaled(),
                 self.game_config.alphabet().fmt_rack(&player.rack)
             )?;
             if let Some(game_timers) = self.optional_game_timers {
@@ -501,7 +501,7 @@ pub fn print_game_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix;
+    use crate::{equity, matrix};
 
     #[test]
     #[inline]

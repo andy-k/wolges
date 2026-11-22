@@ -2011,7 +2011,7 @@ impl Session {
                 Seat::Bot(None) => write!(out, "bot")?,
                 Seat::Bot(Some(ms)) => write!(out, "bot sim {ms}")?,
             }
-            write!(out, "): {}", equity::descale_score(player.score.raw()))?;
+            write!(out, "): {}", player.score.descaled())?;
             if !player.rack.is_empty() {
                 write!(out, " {}", self.rack_shown(i, &player.rack))?;
             }
@@ -2093,7 +2093,7 @@ impl Session {
                     write!(
                         out,
                         ", scored as {}",
-                        equity::descale_score(score.raw()) + turn.adjust()
+                        score.descaled().raw() + turn.adjust()
                     )?;
                 }
                 replay.play_turn(self.game_config, &mut rng, turn)?;
@@ -2101,7 +2101,7 @@ impl Session {
                 writeln!(
                     out,
                     " (total {})",
-                    equity::descale_score(replay.state.players[mover].score.raw()),
+                    replay.state.players[mover].score.descaled(),
                 )?;
                 // its notes, under it
                 for after in &turn.after {
@@ -2122,7 +2122,7 @@ impl Session {
             write!(out, "game over, ")?;
             for (seat, &score) in final_scores.iter().enumerate() {
                 let to = if seat == 0 { "" } else { " to " };
-                write!(out, "{to}{}", equity::descale_score(score))?;
+                write!(out, "{to}{}", equity::Equity::new(score).descaled())?;
             }
             if let Some(seat) = self.loser {
                 write!(out, ", and player {} lost on a challenge", seat + 1)?;
@@ -2864,7 +2864,7 @@ impl Session {
                 if let (GcgKind::Play(_), movegen::Play::Place { score, .. }) =
                     (&gcg_move.kind, &game.turns[game.at - 1].play)
                 {
-                    let board = equity::descale_score(score.raw());
+                    let board = score.descaled().raw();
                     if let Some(correct) = gcg_move.correct
                         && correct != board
                     {
@@ -2891,7 +2891,7 @@ impl Session {
                 let turn = &game.turns[game.at - 1];
                 let score = match (&gcg_move.kind, &turn.play) {
                     (GcgKind::Play(_), movegen::Play::Place { score, .. }) => {
-                        equity::descale_score(score.raw()) + turn.adjust()
+                        score.descaled().raw() + turn.adjust()
                     }
                     _ => gcg_move.score,
                 };
@@ -2900,7 +2900,7 @@ impl Session {
                     (GcgKind::Time(_), Some(final_scores)) => final_scores[seat],
                     _ => self.state.players[seat].score.raw(),
                 };
-                let total = equity::descale_score(total);
+                let total = equity::Equity::new(total).descaled().raw();
                 if (score, total) != (gcg_move.score, gcg_move.total) {
                     return Err(on_line(
                         line_number,
@@ -2963,7 +2963,10 @@ impl Session {
             .alphabet()
             .rack_score(&self.state.players[counted].rack)
             .raw();
-        let (score, total) = (sign * cost, equity::descale_score(final_scores[seat]));
+        let (score, total) = (
+            sign * cost,
+            equity::Equity::new(final_scores[seat]).descaled().raw(),
+        );
         if (score, total) != (gcg_move.score, gcg_move.total) {
             return Err(format!(
                 "its rack counts {score} for a total of {total} here, {} for {} in the file",
@@ -3036,7 +3039,7 @@ impl Session {
                                 .ok_or("a tile not in the alphabet")?
                         });
                     }
-                    (text, equity::descale_score(score.raw()))
+                    (text, score.descaled().raw())
                 }
             };
             // a given seat's rack: what it was known to hold (no tile of an
@@ -3048,7 +3051,7 @@ impl Session {
                 &held_tiles[..]
             };
             let rack = rack_text(self.game_config, turn.given, known, held_tiles);
-            let before = equity::descale_score(board.players[mover].score.raw());
+            let before = board.players[mover].score.descaled().raw();
             // a misscore: the move as scored, then the board's score in a note
             // after its line (a note is about the line before it)
             let scored = score + turn.adjust();
@@ -3133,7 +3136,9 @@ impl Session {
                 });
                 // the totals before what time cost, which the time lines give
                 let time = last.time();
-                let total = |seat: usize| equity::descale_score(final_scores[seat]) + time[seat];
+                let total = |seat: usize| {
+                    equity::Equity::new(final_scores[seat]).descaled().raw() + time[seat]
+                };
                 for (seat, player) in board.players.iter().enumerate() {
                     let other = &board.players[1 - seat].rack;
                     if none == Some(seat) {
@@ -3168,7 +3173,7 @@ impl Session {
                         nicknames[seat],
                         alphabet.fmt_rack(&board.players[seat].rack),
                         lost,
-                        equity::descale_score(final_scores[seat])
+                        equity::Equity::new(final_scores[seat]).descaled()
                     ));
                 }
             }
@@ -3735,14 +3740,11 @@ impl Replay {
         let mover = state.turn as usize;
         // a misscore goes with the move, and is taken back with it
         let adjust = if turn.withdrawn() { 0 } else { turn.adjust() };
-        state.players[mover].score = equity::Equity::new(
-            state.players[mover]
-                .score
-                .raw()
-                .checked_add(equity::scale_score(turn.bonus().unwrap_or(0)))
-                .and_then(|score| score.checked_add(equity::scale_score(adjust)))
-                .ok_or("score overflow")?,
-        );
+        state.players[mover].score = state.players[mover]
+            .score
+            .checked_add(equity::Points::new(turn.bonus().unwrap_or(0)).scaled())
+            .and_then(|score| score.checked_add(equity::Points::new(adjust).scaled()))
+            .ok_or("score overflow")?;
         Ok(())
     }
 
@@ -3822,7 +3824,7 @@ impl Replay {
         // then what time cost each player
         for (score, &lost) in final_scores.iter_mut().zip(turn.time().iter()) {
             *score = score
-                .checked_sub(equity::scale_score(lost))
+                .checked_sub(equity::Points::new(lost).scaled().raw())
                 .ok_or("score overflow")?;
         }
         Ok(Some(final_scores))
@@ -4440,7 +4442,10 @@ mod tests {
         assert_eq!(snapshot(&first), snapshot(&second));
         // the first mover's moves: AT, doubled on the star, for 4, and TEA for
         // 3
-        assert_eq!(first.state.players[0].score.raw(), equity::scale_score(7));
+        assert_eq!(
+            first.state.players[0].score,
+            equity::Points::new(7).scaled()
+        );
     }
 
     #[test]
@@ -4983,7 +4988,7 @@ mod tests {
         let alphabet = first.game_config.alphabet();
         let rack = alphabet.fmt_rack(&first.state.players[0].rack).to_string();
         let cost = alphabet.rack_score(&first.state.players[0].rack).raw();
-        let total = equity::descale_score(first.final_scores.as_ref().unwrap()[0]);
+        let total = equity::Equity::new(first.final_scores.as_ref().unwrap()[0]).descaled();
         let counted = format!(">p1: {rack} ({rack}) -{cost} {total}\n");
         let text = first.gcg_text().unwrap();
         assert!(text.ends_with(&counted), "{text}");
@@ -5009,7 +5014,7 @@ mod tests {
         // player 2 with no tiles gets twice player 1's rack, the only end line
         run(&mut first, "rack 2 -").unwrap();
         let text = first.gcg_text().unwrap();
-        let score = equity::descale_score(first.final_scores.as_ref().unwrap()[1]);
+        let score = equity::Equity::new(first.final_scores.as_ref().unwrap()[1]).descaled();
         let twice = format!(">p2: ({rack}) +{} {score}\n", 2 * cost);
         assert!(text.ends_with(&twice), "{text}");
         assert!(!text.contains(&counted), "{text}");
@@ -5197,10 +5202,13 @@ mod tests {
         // AT through the star makes 4; its player was given 5
         assert!(run(&mut first, "adjust 0").is_err());
         run(&mut first, "adjust 1").unwrap();
-        assert_eq!(first.state.players[0].score.raw(), equity::scale_score(5));
+        assert_eq!(
+            first.state.players[0].score,
+            equity::Points::new(5).scaled()
+        );
         let turn = &first.game.as_ref().unwrap().turns[0];
-        let four = equity::scale_score(4);
-        assert!(matches!(turn.play, movegen::Play::Place { score, .. } if score.raw() == four));
+        let four = equity::Points::new(4).scaled();
+        assert!(matches!(turn.play, movegen::Play::Place { score, .. } if score == four));
         // the move as scored, then the board's score in a note
         let text = first.gcg_text().unwrap();
         let lines = ">p1: AETAETE 8G AT +5 5\n#note the correct score is 4\n";
@@ -5228,7 +5236,7 @@ mod tests {
         assert_eq!(fourth.gcg_text().unwrap(), text);
         // undo takes it back
         run(&mut first, "undo").unwrap();
-        assert_eq!(first.state.players[0].score.raw(), four);
+        assert_eq!(first.state.players[0].score, four);
     }
 
     #[test]
@@ -5447,7 +5455,13 @@ mod tests {
             assert!(run(&mut first, bad).is_err(), "{bad}");
         }
         let after = first.final_scores.clone().unwrap();
-        assert_eq!(after, [before[0], before[1] - equity::scale_score(10)]);
+        assert_eq!(
+            after,
+            [
+                before[0],
+                before[1] - equity::Points::new(10).scaled().raw()
+            ]
+        );
         // kept with the move that ended the game, through back and forward
         run(&mut first, "back").unwrap();
         assert!(first.final_scores.is_none());
@@ -5457,7 +5471,7 @@ mod tests {
         let text = first.gcg_text().unwrap();
         let alphabet = first.game_config.alphabet();
         let rack = alphabet.fmt_rack(&first.state.players[1].rack).to_string();
-        let total = equity::descale_score(after[1]);
+        let total = equity::Equity::new(after[1]).descaled();
         assert!(
             text.ends_with(&format!(">p2: {rack} (time) -10 {total}\n")),
             "{text}"
@@ -6108,7 +6122,7 @@ mod tests {
             },
             &play,
         );
-        assert_eq!(score, equity::scale_score(68));
+        assert_eq!(score, equity::Points::new(68).scaled().raw());
         // overdrawn: ten tiles; playing two leaves eight, and nothing is drawn
         run(&mut first, "rack AETAETEATE").unwrap();
         assert_eq!(first.state.players[0].rack.len(), 10);
