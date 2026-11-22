@@ -459,6 +459,11 @@ struct Census {
         help = "weight racks by draws after setting aside the kept leave"
     )]
     completion_weights: bool,
+    #[arg(
+        long,
+        help = "subtract each board's fresh-rack mean before averaging leaves"
+    )]
+    per_board_centering: bool,
     #[arg(long, help = "print no progress")]
     quiet: bool,
 }
@@ -1169,6 +1174,7 @@ fn run(
                     continue_state: a.continue_state,
                     full: a.full,
                     completion_weights: a.completion_weights,
+                    per_board_centering: a.per_board_centering,
                     quiet: a.quiet,
                 },
             )
@@ -3660,6 +3666,7 @@ struct CensusParams {
     continue_state: Option<String>,
     full: bool,
     completion_weights: bool,
+    per_board_centering: bool,
     quiet: bool,
 }
 
@@ -3806,6 +3813,34 @@ fn census_means_from_bytes(
     Ok(())
 }
 
+// a board's means added into the census's sums and counts, each less the
+// board's own fresh-rack mean (the empty leave's) when centering: how many
+// multisets it values for the first time
+#[inline]
+fn sum_census_board(
+    means: &[i32],
+    empty_rank: usize,
+    per_board_centering: bool,
+    sums: &mut [i64],
+    counts: &mut [u64],
+) -> u64 {
+    let empty = means[empty_rank];
+    let baseline = if per_board_centering && empty != census::UNPLAYABLE.raw() {
+        i64::from(empty)
+    } else {
+        0
+    };
+    let mut newly_valued = 0;
+    for ((sum, count), &mean) in sums.iter_mut().zip(counts).zip(means) {
+        if mean != census::UNPLAYABLE.raw() {
+            newly_valued += u64::from(*count == 0);
+            *sum += i64::from(mean) - baseline;
+            *count += 1;
+        }
+    }
+    newly_valued
+}
+
 // the fewest boards that any full rack the tiles can deal is valued on
 #[inline]
 fn least_full_rack_boards(lat: &census::MultisetLattice, cnt: &[u64], freqs: &[u8]) -> u64 {
@@ -3900,6 +3935,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         continue_state,
         full,
         completion_weights,
+        per_board_centering,
         quiet,
     }: CensusParams,
 ) -> error::Returns<()> {
@@ -4094,6 +4130,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         census::apportion_fused::<i128>
     };
+    if per_board_centering {
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "census: centering leaves on each board"
+        )?;
+    }
 
     if start_gen >= gens {
         return Err(format!(
@@ -4325,16 +4367,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     let mut g = shared.lock().unwrap();
                     let (sum, cnt, completed, valued, _ever) = &mut *g;
-                    for idx in 0..lat_len {
-                        let v = contrib[idx];
-                        if v != census::UNPLAYABLE.raw() {
-                            if cnt[idx] == 0 {
-                                *valued += 1;
-                            }
-                            sum[idx] += v as i64;
-                            cnt[idx] += 1;
-                        }
-                    }
+                    *valued += sum_census_board(
+                        contrib,
+                        empty_rank,
+                        per_board_centering,
+                        sum,
+                        cnt,
+                    );
                     *completed += 1;
                     if !quiet {
                         writeln!(boxed_stdout_or_stderr(),
@@ -10748,6 +10787,29 @@ WCMP_P1_SCORE 402.000000
         let mut other = bytes.clone();
         other[0] ^= 1;
         assert!(census_state_from_bytes(&other, "state").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn census_centers_a_leave_on_the_boards_that_value_it() {
+        let mut sums = [0, 0];
+        let mut counts = [0, 0];
+        assert_eq!(
+            sum_census_board(&[30_000, 33_000], 0, true, &mut sums, &mut counts),
+            2,
+        );
+        assert_eq!(
+            sum_census_board(
+                &[40_000, census::UNPLAYABLE.raw()],
+                0,
+                true,
+                &mut sums,
+                &mut counts
+            ),
+            0,
+        );
+        assert_eq!(sums, [0, 3_000]);
+        assert_eq!(counts, [2, 1]);
     }
 
     #[test]
