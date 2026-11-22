@@ -7030,10 +7030,6 @@ impl<
         progress: &mut PegProgress,
         limits: &BagLimits,
     ) -> error::Returns<PegResult> {
-        let unseen: Vec<(u8, u32)> = (progress.unseen_tally.iter().enumerate())
-            .filter(|&(_, &c)| c != 0)
-            .map(|(t, &c)| (t as u8, c as u32))
-            .collect();
         let mut sub = self.take_sub()?;
         let mut mg = self.take_mg();
         // the endgames keep what they learn in this solver's table, lent to the
@@ -7051,7 +7047,7 @@ impl<
                 mover: progress.mover,
                 board: &progress.board,
                 mover_rack: &progress.mover_rack,
-                unseen: &unseen,
+                unseen: &progress.unseen,
                 tiles: progress.unseen_tally.len(),
                 scoreless: progress.scoreless,
                 root_moves: progress.root_moves.as_ref(),
@@ -7632,6 +7628,7 @@ pub struct PegProgress {
     board: Vec<u8>,
     mover_rack: Vec<u8>,
     unseen_tally: Vec<u8>,
+    unseen: Vec<(u8, u32)>, // each tile unseen with its count, for every solve
     score_diff: equity::Equity,
     scoreless: [u8; 2],
     root_moves: Option<RootMoves>,
@@ -7663,6 +7660,10 @@ impl PegProgress {
             board: board.to_vec(),
             mover_rack: mover_rack.to_vec(),
             unseen_tally: unseen_tally.to_vec(),
+            unseen: (unseen_tally.iter().enumerate())
+                .filter(|&(_, &c)| c != 0)
+                .map(|(t, &c)| (t as u8, c as u32))
+                .collect(),
             score_diff,
             scoreless: scoreless_counts(scoreless),
             root_moves: None,
