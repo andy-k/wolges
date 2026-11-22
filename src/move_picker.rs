@@ -461,6 +461,8 @@ pub struct Simmer<
     decision_seed: u64,
     candidate_scratch: Vec<movegen::ValuedMove>,
     dynamic_root: Option<klv::DynamicLeavesRef<'a>>,
+    turn_time: Option<std::time::Duration>,
+    turn_clock: Option<(std::time::Instant, std::time::Duration)>,
     prepared_pristine: game_state::GameState,
     quiet: bool,
     decision_t0: Option<std::time::Instant>, // set only when not quiet
@@ -685,6 +687,8 @@ impl<
             decision_seed,
             candidate_scratch: Vec::new(),
             dynamic_root: None,
+            turn_time: None,
+            turn_clock: None,
             prepared_pristine: game_state::GameState::new(game_config),
             quiet: params.quiet,
             decision_t0: None,
@@ -712,6 +716,20 @@ impl<
     pub fn with_dynamic_root(mut self, dynamic_leaves: klv::DynamicLeavesRef<'a>) -> Self {
         self.dynamic_root = Some(dynamic_leaves);
         self
+    }
+
+    // a decision's time budget, counted from before its candidates are
+    // generated; a rollout iteration or parallel block under way finishes
+    // first
+    pub fn with_turn_time(mut self, time: std::time::Duration) -> Self {
+        self.turn_time = Some(time);
+        self
+    }
+
+    #[inline(always)]
+    fn turn_time_up(&self) -> bool {
+        self.turn_clock
+            .is_some_and(|(began, time)| began.elapsed() >= time)
     }
 
     #[inline(always)]
@@ -1979,7 +1997,7 @@ impl<
         count: u64,
         look: &mut Look<'_>,
     ) -> error::Returns<()> {
-        if self.candidates.len() < 2 {
+        if self.candidates.len() < 2 || self.turn_time_up() {
             return Ok(());
         }
 
@@ -2046,9 +2064,10 @@ impl<
                     1 + 2 * prune_periods_remaining as usize,
                 );
             }
-            if sim_iter % PRUNE_CADENCE == 0 || sim_iter == start + count {
+            let out_of_time = self.turn_time_up();
+            if sim_iter % PRUNE_CADENCE == 0 || sim_iter == start + count || out_of_time {
                 look(sim_iter - start, candidates.len())?;
-                if candidates.len() < 2 {
+                if candidates.len() < 2 || out_of_time {
                     break;
                 }
             }
@@ -2221,7 +2240,10 @@ impl<
         let end = start + count;
         let mut broken = false;
         let result = (|| -> error::Returns<()> {
-            while let Some(block) = self.next_block(end) {
+            while !self.turn_time_up() {
+                let Some(block) = self.next_block(end) else {
+                    break;
+                };
                 {
                     let mut plays = plays.write().map_err(|_| stopped())?;
                     plays.clear();
@@ -2656,7 +2678,8 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                 );
             }
             MovePicker::Simmer(simmer) => {
-                let t0 = (!simmer.quiet).then(std::time::Instant::now);
+                let t0 =
+                    (!simmer.quiet || simmer.turn_time.is_some()).then(std::time::Instant::now);
                 let mut scratch = std::mem::take(&mut simmer.candidate_scratch);
                 gen_simmer_field(
                     filtered_movegen,
@@ -2686,14 +2709,19 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     _ => None,
                 };
                 let budget = simmer.num_sim_iters;
-                simmer.begin_decision_of(
+                simmer.turn_clock = t0.zip(simmer.turn_time);
+                let result = simmer.begin_decision_of(
                     move_generator,
                     game_state,
                     budget,
                     &[],
                     inferred.as_slice(),
-                )?;
-                if let Some(t0) = t0 {
+                );
+                simmer.turn_clock = None;
+                result?;
+                if !simmer.quiet
+                    && let Some(t0) = t0
+                {
                     const Z: f64 = 1.96; // 95% confidence interval
                     let top = simmer
                         .candidates
@@ -2712,7 +2740,11 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     )
                     .ok();
                 }
-                let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
+                let winner_play_index = if simmer.turn_time.is_some() && simmer.iters_done == 0 {
+                    0
+                } else {
+                    top_candidate_play_index_by_mean(&simmer.candidates)
+                };
                 move_generator.plays.swap(0, winner_play_index);
                 move_generator.plays.truncate(1);
             }
