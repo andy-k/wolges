@@ -4,7 +4,8 @@
 // and it still has many bugs
 
 use super::{
-    anagrams, display, equity, error, fash, game_config, infer, klv, kwg, matrix, movegen, zone,
+    anagrams, display, equity, error, fash, game_config, game_state, infer, klv, kwg, matrix,
+    movegen, play_scorer, zone,
 };
 use std::io::Write;
 
@@ -666,6 +667,70 @@ struct Line {
     plies: Vec<(equity::Equity, movegen::Play)>,
 }
 
+// a nonempty set of legal first plays of a particular position
+pub struct RootMoves {
+    plays: Vec<movegen::Play>,
+    pass: bool,
+    key: u64,
+}
+
+impl RootMoves {
+    // check the plays against the position, using the normal move scorer
+    pub fn checked<N: kwg::Node, L: kwg::Node>(
+        snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        state: &game_state::GameState,
+        plays: Vec<movegen::Play>,
+    ) -> error::Returns<Self> {
+        if plays.is_empty() || plays.len() > PASS_PLAY as usize {
+            return Err(format!("root_moves: expected 1 to {PASS_PLAY} plays").into());
+        }
+        let mut scorer = play_scorer::PlayScorer::new();
+        let mut checked = Vec::new();
+        checked.try_reserve_exact(plays.len())?;
+        let mut pass = false;
+        for (i, play) in plays.into_iter().enumerate() {
+            if let movegen::Play::Exchange { tiles } = &play
+                && !tiles.is_empty()
+                && (tiles.len() > state.bag.len()
+                    || !exchange_legal(
+                        snapshot.game_config,
+                        state.bag.len(),
+                        state.current_player().num_exchanges,
+                    ))
+            {
+                return Err(format!("root_moves[{i}]: exchange is unavailable").into());
+            }
+            let play = scorer
+                .validate_play(snapshot, state, &play)
+                .map_err(|e| format!("root_moves[{i}]: {e}"))?
+                .unwrap_or(play);
+            if !scorer.words_are_valid(snapshot, &play) {
+                return Err(format!("root_moves[{i}]: play makes an invalid word").into());
+            }
+            match &play {
+                movegen::Play::Place { score, .. }
+                    if *score != scorer.compute_score(snapshot, &play) =>
+                {
+                    return Err(format!("root_moves[{i}]: wrong score").into());
+                }
+                movegen::Play::Exchange { tiles } if tiles.is_empty() => pass = true,
+                _ => {}
+            }
+            if checked.contains(&play) {
+                return Err(format!("root_moves[{i}]: duplicate play").into());
+            }
+            checked.push(play);
+        }
+        use std::hash::BuildHasher;
+        let key = std::hash::RandomState::new().hash_one(&checked).max(1);
+        Ok(Self {
+            plays: checked,
+            pass,
+            key,
+        })
+    }
+}
+
 // a move generated for a position, as the search orders it
 struct Candidate {
     play: movegen::Play,
@@ -674,6 +739,38 @@ struct Candidate {
     valuation: f32, // a play out's whole value, else its score
     plays_out: bool,
     placed: u8, // the tiles it places
+}
+
+#[inline(always)]
+fn add_placement(
+    list: &mut Vec<Candidate>,
+    ordered: &mut Vec<u128>,
+    play: &movegen::Play,
+    uses: u32,
+    placed: usize,
+    rack_len: usize,
+    out_bonus: i32,
+) {
+    if let movegen::Play::Place {
+        down,
+        lane,
+        idx,
+        score,
+        ..
+    } = play
+    {
+        let plays_out = placed == rack_len;
+        let valuation = if plays_out { score + out_bonus } else { *score };
+        ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
+        list.push(Candidate {
+            play: play.clone(),
+            uses,
+            index: NO_PLAY,
+            valuation: valuation as f32,
+            plays_out,
+            placed: placed as u8,
+        });
+    }
 }
 
 // a ply's moves on the lanes only the move two plies up changed, found by the
@@ -1719,6 +1816,22 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         }
     }
 
+    #[inline(always)]
+    fn begin_list(&mut self, ply: usize) {
+        if self.lists.len() <= ply {
+            self.lists.resize_with(ply + 1, Vec::new);
+            self.orders.resize_with(ply + 1, Vec::new);
+            self.zones.resize(ply + 1, (0, 0));
+            self.spent.resize(ply + 1, 0);
+            self.keeps.resize(ply + 1, false);
+            self.serials.resize(ply + 1, 0);
+            self.siblings.resize_with(ply + 1, Siblings::default);
+        }
+        self.generated += 1;
+        self.serials[ply] = self.generated;
+        self.movegen_cut = false;
+    }
+
     // whether the memory limit has passed, the buckets a growing table leaves
     // not counted
     #[inline(always)]
@@ -2317,6 +2430,7 @@ pub struct EndgameSolver<
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
     scoreless: [u8; 2], // the passes and the zeros before the position to solve
+    root_moves: Option<&'a RootMoves>,
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
     progress: Option<ProgressFn>, // its listener, apart from the buffer
     helpers: Vec<Option<Helper<L, G, JUMPS, ANY_SIDE>>>, // each lane's, kept from pass to pass
@@ -2383,6 +2497,7 @@ impl<
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             scoreless: [0, 0],
+            root_moves: None,
             work_buffer: WorkBuffer::new(movegen, run_letter_bits),
             progress: None,
             helpers: Vec::new(),
@@ -2456,6 +2571,7 @@ impl<
             board_tiles: helper.board_tiles,
             racks: helper.racks,
             scoreless: [0, 0],
+            root_moves: None,
             work_buffer: helper.work_buffer,
             progress: None,
             helpers: Vec::new(),
@@ -2570,6 +2686,22 @@ impl<
         self.racks[1].clear();
         self.racks[1].extend_from_slice(racks[1]);
         self.scoreless = scoreless_counts([passes, zeros]);
+    }
+
+    // select the first plays checked for this empty-bag position
+    pub fn with_root_moves(mut self, root_moves: Option<&'a RootMoves>) -> Self {
+        self.root_moves = root_moves;
+        self
+    }
+
+    #[inline(always)]
+    fn root_key(&self, player_idx: u8, scoreless: Scoreless) -> u64 {
+        self.node_key(player_idx, scoreless) ^ self.root_moves.map_or(0, |root| root.key)
+    }
+
+    #[inline(always)]
+    fn allows_pass(&self, root: bool) -> bool {
+        !root || self.root_moves.is_none_or(|moves| moves.pass)
     }
 
     // reset the position searched to the one to solve, computing its key afresh
@@ -3017,6 +3149,36 @@ impl<
         true
     }
 
+    // a root's requested placements. Two plies down makes its own list since
+    // the requested placements cannot supply all the unchanged lanes
+    fn generate_root(&mut self, player_idx: u8, keeps: bool) {
+        let Some(root) = self.root_moves else {
+            self.generate(0, player_idx, keeps);
+            return;
+        };
+        let work = &mut self.work_buffer;
+        work.begin_list(0);
+        work.keeps[0] = false;
+        let list = &mut work.lists[0];
+        let order = &mut work.orders[0];
+        list.clear();
+        order.clear();
+        let places = root.plays.len() - usize::from(root.pass);
+        if list.try_reserve(places).is_err() || order.try_reserve(places).is_err() {
+            work.movegen_cut = true;
+            return;
+        }
+        let rack_len = work.racks[player_idx as usize].len();
+        let bonus = 2 * work.rack_scores[player_idx as usize ^ 1];
+        for play in &root.plays {
+            if let movegen::Play::Place { word, .. } = play {
+                let placed = word.iter().filter(|&&tile| tile != 0).count();
+                add_placement(list, order, play, 0, placed, rack_len, bonus);
+            }
+        }
+        work.movegen_cut = work.memory_passed();
+    }
+
     // generate player_idx's moves that place tiles (a pass is searched on its
     // own) on the position searched, into this ply's list, and their keys,
     // unsorted, into its orders. Below the first two plies, only the zones of
@@ -3028,18 +3190,7 @@ impl<
     #[inline]
     fn generate(&mut self, ply: usize, player_idx: u8, keeps: bool) {
         let work_buffer = &mut self.work_buffer;
-        if work_buffer.lists.len() <= ply {
-            work_buffer.lists.resize_with(ply + 1, Vec::new);
-            work_buffer.orders.resize_with(ply + 1, Vec::new);
-            work_buffer.zones.resize(ply + 1, (0, 0));
-            work_buffer.spent.resize(ply + 1, 0);
-            work_buffer.keeps.resize(ply + 1, false);
-            work_buffer.serials.resize(ply + 1, 0);
-            work_buffer.siblings.resize_with(ply + 1, Siblings::default);
-        }
-        work_buffer.generated += 1;
-        work_buffer.serials[ply] = work_buffer.generated;
-        work_buffer.movegen_cut = false;
+        work_buffer.begin_list(ply);
         let leaving = work_buffer.table.leaving();
         let limit = work_buffer.memory_limit.map(|limit| movegen::HeldBytes {
             held: limit.held,
@@ -3229,26 +3380,7 @@ impl<
         list.clear();
         ordered.clear();
         let mut push = |play: &movegen::Play, uses: u32, placed: usize| {
-            if let movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                score,
-                ..
-            } = play
-            {
-                let plays_out = placed == rack.len();
-                let valuation = if plays_out { score + out_bonus } else { *score };
-                ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
-                list.push(Candidate {
-                    play: play.clone(),
-                    uses,
-                    index: NO_PLAY,
-                    valuation: valuation as f32,
-                    plays_out,
-                    placed: placed as u8,
-                });
-            }
+            add_placement(list, ordered, play, uses, placed, rack.len(), out_bonus);
         };
         // the lanes walked that only the move two plies up changed are kept for
         // the later replies to the same list
@@ -3646,7 +3778,7 @@ impl<
         // on where it stopped, its moves placed again on the board as it left
         // them; any other is dropped. A limit keeps this one's frames
         let pass = (
-            self.node_key(player_idx, self.entering()),
+            self.root_key(player_idx, self.entering()),
             player_idx,
             depth,
             alpha.to_bits(),
@@ -3921,7 +4053,7 @@ impl<
             });
         }
         self.reset_position();
-        self.generate(0, player_idx, false);
+        self.generate_root(player_idx, false);
         let work_buffer = &mut self.work_buffer;
         order(
             &mut work_buffer.lists[0],
@@ -3950,7 +4082,7 @@ impl<
         self.reset_position();
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
-        self.generate(0, player_idx, false);
+        self.generate_root(player_idx, false);
         if self.work_buffer.movegen_cut {
             return Ok(false);
         }
@@ -4022,7 +4154,7 @@ impl<
     ) -> error::Returns<Vec<FirstMove>> {
         self.start_clock(limits);
         self.reset_position();
-        self.generate(0, player_idx, false);
+        self.generate_root(player_idx, false);
         if self.work_buffer.movegen_cut {
             return Ok(Vec::new());
         }
@@ -4036,9 +4168,11 @@ impl<
         let mut plays = (work_buffer.lists[0].iter())
             .map(|candidate| candidate.play.clone())
             .collect::<Vec<_>>();
-        plays.push(movegen::Play::Exchange {
-            tiles: [][..].into(),
-        });
+        if self.allows_pass(true) {
+            plays.push(movegen::Play::Exchange {
+                tiles: [][..].into(),
+            });
+        }
         let mut valued = Vec::with_capacity(plays.len());
         for play in plays {
             let (value, exact) = self.first_move_value(player_idx, &play, limits)?;
@@ -4065,7 +4199,7 @@ impl<
         self.reset_position();
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
-        self.generate(0, player_idx, false);
+        self.generate_root(player_idx, false);
         if self.work_buffer.movegen_cut {
             return Ok((None, false));
         }
@@ -4238,7 +4372,11 @@ impl<
         // the window; its move goes first either way. A bound inside the window
         // does not narrow it, so what this search finds is bounded by the
         // window alone, and a full window always finds the exact value
-        let key = self.node_key(player_idx, scoreless);
+        let key = if root {
+            self.root_key(player_idx, scoreless)
+        } else {
+            self.node_key(player_idx, scoreless)
+        };
         let mut table_play = NO_PLAY;
         if let Some(entry) = self.work_buffer.table.probe(key) {
             table_play = entry.play;
@@ -4262,7 +4400,11 @@ impl<
         // the list stays at its ply while searched, for the ply two down to
         // reuse. Sort lazily: with a table move, all of them, that one first;
         // else the first only, and the rest once it has not cut off
-        self.generate(ply, player_idx, depth >= 3);
+        if root {
+            self.generate_root(player_idx, depth >= 3);
+        } else {
+            self.generate(ply, player_idx, depth >= 3);
+        }
         if self.work_buffer.movegen_cut {
             let work_buffer = &mut self.work_buffer;
             work_buffer.cut_short = true;
@@ -4451,10 +4593,11 @@ impl<
             // ends the line when it answers a pass or brings the scoreless turns
             // to the config's count, each player losing their rack. The depth
             // stays the same across a forced pass (no move placing tiles)
+            let pass = self.allows_pass(self.work_buffer.frames[t].root);
             let frame = &mut self.work_buffer.frames[t];
             frame.next = next;
             frame.child = Child::PassDone;
-            if frame.best.value < frame.node.beta {
+            if pass && frame.best.value < frame.node.beta {
                 let (scoreless, alpha, beta) =
                     (frame.node.scoreless, frame.node.alpha, frame.node.beta);
                 if self.pass_ends_the_line(scoreless) {
@@ -4623,7 +4766,7 @@ impl<
                 break;
             }
         }
-        if frame.best.value < frame.node.beta {
+        if self.allows_pass(root) && frame.best.value < frame.node.beta {
             let value = if self.pass_ends_the_line(frame.node.scoreless) {
                 self.both_pass_value(player_idx)
             } else {
@@ -4826,7 +4969,7 @@ impl<
     #[inline]
     fn line_of(&mut self, player_idx: u8) -> (u64, u8, i8) {
         self.reset_position();
-        let key = self.node_key(player_idx, self.entering());
+        let key = self.root_key(player_idx, self.entering());
         (key, player_idx, self.work_buffer.finished)
     }
 
@@ -4859,8 +5002,13 @@ impl<
         let mut scoreless = self.entering();
         let mut depth = self.work_buffer.finished;
         let mut answer = self.work_buffer.answer;
+        let mut restricted = self.root_moves.is_some();
         while depth > 0 {
-            let key = self.node_key(player_idx, scoreless);
+            let key = if restricted {
+                self.root_key(player_idx, scoreless)
+            } else {
+                self.node_key(player_idx, scoreless)
+            };
             let fits = |entry: &Entry| {
                 entry.bound == Bound::Exact && entry.depth >= depth && entry.play != NO_PLAY
             };
@@ -4874,17 +5022,20 @@ impl<
                 None => match self.work_buffer.table.probe(key).filter(fits) {
                     Some(entry) => entry,
                     None => {
-                        if !search
-                            || self
-                                .negamax_eval(
-                                    0,
-                                    player_idx,
-                                    depth,
-                                    f32::NEG_INFINITY,
-                                    f32::INFINITY,
-                                    scoreless,
-                                )
-                                .is_err()
+                        if !search {
+                            break;
+                        }
+                        self.work_buffer.at_root = restricted;
+                        if self
+                            .negamax_eval(
+                                0,
+                                player_idx,
+                                depth,
+                                f32::NEG_INFINITY,
+                                f32::INFINITY,
+                                scoreless,
+                            )
+                            .is_err()
                         {
                             break;
                         }
@@ -4913,14 +5064,22 @@ impl<
                 if self.pass_ends_the_line(scoreless) {
                     break;
                 }
-                self.generate(0, player_idx, false);
+                if restricted {
+                    self.generate_root(player_idx, false);
+                } else {
+                    self.generate(0, player_idx, false);
+                }
                 if self.work_buffer.lists[0].is_empty() {
                     cost = 0;
                 }
                 scoreless = Scoreless::Answering;
             } else {
                 // the move the table keeps, generated again
-                self.generate(0, player_idx, false);
+                if restricted {
+                    self.generate_root(player_idx, false);
+                } else {
+                    self.generate(0, player_idx, false);
+                }
                 let work_buffer = &mut self.work_buffer;
                 order(
                     &mut work_buffer.lists[0],
@@ -4946,6 +5105,7 @@ impl<
                     zeros: 0,
                 };
             }
+            restricted = false;
             player_idx ^= 1;
             depth -= cost;
         }
@@ -12028,6 +12188,61 @@ mod tests {
             }
         }
         assert!(solved > 0);
+    }
+
+    #[test]
+    fn selected_first_moves_keep_their_own_table_answer() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut state = crate::game_state::GameState::new(&gc);
+        state.bag.set_from_iter([]);
+        state.players[0].rack.extend([1, 2]); // AB
+        state.players[1].rack.push(8); // H
+        let make = || {
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+            solver.init(
+                &state.board_tiles,
+                [&state.players[0].rack, &state.players[1].rack],
+            );
+            solver
+        };
+        let mut full = make();
+        let best = full.solve(0).unwrap();
+        let first = full.value_first_moves(0, &super::Limits::NONE).unwrap();
+        let pass = first
+            .iter()
+            .find(|p| matches!(&p.play, movegen::Play::Exchange { tiles } if tiles.is_empty()))
+            .unwrap();
+        assert!(pass.value.unwrap() < best);
+        let root = super::RootMoves::checked(
+            &movegen::BoardSnapshot {
+                board_tiles: &state.board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            },
+            &state,
+            vec![pass.play.clone()],
+        )
+        .unwrap();
+        let mut restricted = make().with_root_moves(Some(&root));
+        assert!(restricted.give_table(full.take_table()).is_ok());
+        assert_eq!(restricted.solve(0).unwrap(), pass.value.unwrap());
+        let mut line = Vec::new();
+        restricted.collect_pv(0, &mut line);
+        assert!(line.first().is_some_and(|(_, play)| play == &pass.play));
+        let selected = restricted
+            .value_first_moves(0, &super::Limits::NONE)
+            .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].value, pass.value);
+        assert!(full.give_table(restricted.take_table()).is_ok());
+        assert_eq!(full.solve(0).unwrap(), best);
     }
 
     #[test]
