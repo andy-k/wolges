@@ -6,6 +6,7 @@ edition = "2024"
 default-run = "auto"
 license = "MIT"
 resolver = "2"
+autotests = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -98,6 +99,24 @@ crate-type = ["lib"]
 test = true
 
 [[example]]
+name = "refused_growth"
+path = "tests/refused_growth.rs"
+crate-type = ["lib"]
+test = true
+
+[[example]]
+name = "refused_pool"
+path = "tests/refused_pool.rs"
+crate-type = ["lib"]
+test = true
+
+[[example]]
 name = "score_overflow"
+crate-type = ["lib"]
+test = true
+
+[[example]]
+name = "woogles_peg"
+path = "tests/woogles_peg.rs"
 crate-type = ["lib"]
 test = true
