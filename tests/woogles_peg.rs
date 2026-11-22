@@ -1,5 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+#![cfg(test)]
+
 use rand::SeedableRng;
 use std::{collections::BTreeMap, path::PathBuf};
 use wolges::{

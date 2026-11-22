@@ -1,5 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+#![cfg(test)]
+
 use wolges::{alphabet, bites, build, game_config, klv, kwg, movegen};
 
 thread_local! {
