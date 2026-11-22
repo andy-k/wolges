@@ -6999,6 +6999,7 @@ enum SeatPicker {
     Hasty,
     Dynamic,
     Simmer,
+    SimmerDynamicRoot, // a simmer whose field is ranked by dynamic leaves
     Deft,
 }
 
@@ -7053,6 +7054,7 @@ fn picker_name(picker: SeatPicker) -> &'static str {
         SeatPicker::Hasty => "hasty",
         SeatPicker::Dynamic => "dynamic",
         SeatPicker::Simmer => "simmer",
+        SeatPicker::SimmerDynamicRoot => "simmer-dynamic-root",
         SeatPicker::Deft => "deft",
     }
 }
@@ -8248,7 +8250,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
         std::sync::Arc::new(klv),
     );
 
-    let dyn_ctx = if matches!(mover, SeatPicker::Dynamic) {
+    let dyn_ctx = if matches!(mover, SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot) {
         Some((
             census::AddTable::new_with_threads(&lat, threads),
             full_rack_values(&lat, &klv)?,
@@ -8266,7 +8268,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
         std::io::stdout(),
         "infer-fit: the mover {}{}, the watcher hasty; {num_games} games{}",
         picker_name(mover),
-        if matches!(mover, SeatPicker::Simmer) {
+        if matches!(mover, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot) {
             format!(" ({num_sim_iters} rollouts a move)")
         } else {
             String::new()
@@ -9996,15 +9998,20 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
         // reseeded before each of its turns, so its first generator is fixed
         // rather than drawn from the system
-        SeatPicker::Simmer => {
-            move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::with_rng(
+        SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot => {
+            let simmer = move_picker::Simmer::with_rng(
                 game_config,
                 kwg,
                 arm_tables,
                 klv,
                 simmer_params,
                 wolges::simmer::DefaultRng::seed_from_u64(0),
-            )))
+            );
+            let simmer = match picker {
+                SeatPicker::SimmerDynamicRoot => simmer.with_dynamic_root(dynamic_leaves.unwrap()),
+                _ => simmer,
+            };
+            move_picker::MovePicker::Simmer(Box::new(simmer))
         }
     }
 }
@@ -10251,13 +10258,16 @@ fn compare_seats<
     let winpct_p0 = winpct_p0.as_ref();
     let winpct_p1 = winpct_p1.as_ref();
     let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, [Vec<i32>; 2])> =
-        if matches!(p0_picker, SeatPicker::Dynamic) || matches!(p1_picker, SeatPicker::Dynamic) {
+        if [p0_picker, p1_picker]
+            .iter()
+            .any(|picker| matches!(picker, SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot))
+        {
             let num_letters = game_config.alphabet().len() as usize;
             let rack_size = game_config.rack_size() as usize;
             census::check_letters(num_letters)?;
             let lat = census::MultisetLattice::new(num_letters, rack_size)?;
             let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
-                SeatPicker::Dynamic => full_rack_values(&lat, klv),
+                SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot => full_rack_values(&lat, klv),
                 SeatPicker::Hasty | SeatPicker::Simmer | SeatPicker::Deft => Ok(Vec::new()),
             };
             let full_v = [
@@ -10284,7 +10294,7 @@ fn compare_seats<
                      window: i32,
                      endgame: Option<EndPicker>| {
         let line = match picker {
-            SeatPicker::Simmer => format!(
+            SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot => format!(
                 "{} ({iters} rollouts a move, {plies} plies each, win%={})",
                 picker_name(picker),
                 win_pct.unwrap_or("sigmoid"),
