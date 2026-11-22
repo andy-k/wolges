@@ -548,6 +548,16 @@ struct Compare {
     p1_iters: u64,
     #[arg(
         long,
+        help = "the time seat p0's simmer may take for each move it picks, in ms"
+    )]
+    p0_time_ms: Option<std::num::NonZeroU64>,
+    #[arg(
+        long,
+        help = "the time seat p1's simmer may take for each move it picks, in ms"
+    )]
+    p1_time_ms: Option<std::num::NonZeroU64>,
+    #[arg(
+        long,
         value_name = "POINTS",
         help = "seat p0, when deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
     )]
@@ -1220,6 +1230,19 @@ fn run(
             };
             let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
                 && hasty_throughout(a.p1_picker, a.p1_endgame);
+            let turn_times = [(a.p0_picker, a.p0_time_ms), (a.p1_picker, a.p1_time_ms)].map(
+                |(picker, time)| -> error::Returns<_> {
+                    if time.is_some()
+                        && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot)
+                    {
+                        wolges::return_error!(
+                            "a decision time budget requires a simmer picker".to_string()
+                        );
+                    }
+                    Ok(time.map(|ms| std::time::Duration::from_millis(ms.get())))
+                },
+            );
+            let [p0_time, p1_time] = turn_times;
             let params = CompareParams {
                 num_game_pairs: a.pairs,
                 seed: a.seed,
@@ -1233,6 +1256,7 @@ fn run(
                 p1_plies: a.p1_plies.into(),
                 p0_iters: a.p0_iters,
                 p1_iters: a.p1_iters,
+                turn_times: [p0_time?, p1_time?],
                 p0_window,
                 p1_window,
                 p0_endgame: a.p0_endgame,
@@ -8307,6 +8331,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                     klv,
                     SeatParams {
                         dynamic_leaves: dyn_ref,
+                        turn_time: None,
                         simmer_params: move_picker::SimmerParams {
                             num_sim_iters,
                             num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
@@ -9966,6 +9991,7 @@ struct CompareParams {
     p1_plies: usize,
     p0_iters: u64,
     p1_iters: u64,
+    turn_times: [Option<std::time::Duration>; 2],
     p0_window: i32,
     p1_window: i32,
     p0_endgame: Option<EndPicker>,
@@ -9976,6 +10002,7 @@ struct CompareParams {
 struct SeatParams<'a> {
     dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
     simmer_params: move_picker::SimmerParams<'a>,
+    turn_time: Option<std::time::Duration>,
     deft_window: i32,
 }
 
@@ -9989,6 +10016,7 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
     SeatParams {
         dynamic_leaves,
         simmer_params,
+        turn_time,
         deft_window,
     }: SeatParams<'a>,
 ) -> move_picker::MovePicker<'a, N, L> {
@@ -10010,6 +10038,10 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
             let simmer = match picker {
                 SeatPicker::SimmerDynamicRoot => simmer.with_dynamic_root(dynamic_leaves.unwrap()),
                 _ => simmer,
+            };
+            let simmer = match turn_time {
+                Some(time) => simmer.with_turn_time(time),
+                None => simmer,
             };
             move_picker::MovePicker::Simmer(Box::new(simmer))
         }
@@ -10224,6 +10256,7 @@ fn compare_seats<
         p1_plies,
         p0_iters,
         p1_iters,
+        turn_times,
         p0_window,
         p1_window,
         p0_endgame,
@@ -10337,6 +10370,16 @@ fn compare_seats<
         ),
     )?;
 
+    for (seat, time) in turn_times.into_iter().enumerate() {
+        if let Some(time) = time {
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "compare: p{seat} simmer decision budget {} ms",
+                time.as_millis(),
+            )?;
+        }
+    }
+
     let hasty = HASTY_ONLY.then(|| {
         let leaves = klv::LeavePair::new([&arc_klv0, &arc_klv1]);
         HastyCompare {
@@ -10371,6 +10414,7 @@ fn compare_seats<
                     &arc_klv0,
                     SeatParams {
                         dynamic_leaves: dyn_refs.map(|refs| refs[0]),
+                        turn_time: turn_times[0],
                         simmer_params: move_picker::SimmerParams {
                             num_sim_iters: p0_iters,
                             num_sim_plies: p0_plies,
@@ -10390,6 +10434,7 @@ fn compare_seats<
                     &arc_klv1,
                     SeatParams {
                         dynamic_leaves: dyn_refs.map(|refs| refs[1]),
+                        turn_time: turn_times[1],
                         simmer_params: move_picker::SimmerParams {
                             num_sim_iters: p1_iters,
                             num_sim_plies: p1_plies,
