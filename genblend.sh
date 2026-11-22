@@ -225,13 +225,10 @@ for full_arg in "$@"; do
     gen_seed="$[seed + num_processed - 1]"
   fi
   time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} \
-    "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon" ${gen_seed:+"$gen_seed"}
+    "$autoplay_subcommand" --no-games-log "$kwg" "$last_leave"{,} "$before_colon" "$after_colon" ${gen_seed:+"$gen_seed"}
   log_file="$(ls -1td summary-log-* | head -1 | cut -f2- -d-)"
   echo "$log_file"
   mv -fv "summary-${log_file}" "summary${num_processed}.csv"
-  if [ -f "games-${log_file}" ]; then
-    rm -fv "games-${log_file}"
-  fi
   time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} \
     "$generate_subcommand" "summary${num_processed}.csv" "leaves${num_processed}.csv"
   time cargo run --release --bin buildlex -- --tiles "$buildlex_tiles" "$buildlex_subcommand" \
