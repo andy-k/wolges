@@ -5,6 +5,7 @@ use super::{
     matrix, play_scorer,
 };
 use alphagram::KeyPlaces as _;
+use endgame::Grow as _;
 
 pub const MAX_ALPHABET_LEN: usize = 64;
 
@@ -228,19 +229,20 @@ impl LaneScaffold {
     #[inline]
     fn refresh<const D: usize>(
         &mut self,
+        room: &endgame::Room,
         alphabet: &alphabet::Alphabet,
         board_strip: &[u8],
         remaining_word_multipliers_strip: &[i8],
         remaining_tile_multipliers_strip: &[i8],
         perpendicular_word_multipliers_strip: &[i8],
-    ) {
+    ) -> bool {
         if self.valid
             && self.board_strip == board_strip
             && self.remaining_word_multipliers_strip == remaining_word_multipliers_strip
             && self.remaining_tile_multipliers_strip == remaining_tile_multipliers_strip
             && self.perpendicular_word_multipliers_strip == perpendicular_word_multipliers_strip
         {
-            return;
+            return true;
         }
         let strider_len = if D == 0 { board_strip.len() } else { D };
         if D != 0 {
@@ -249,6 +251,7 @@ impl LaneScaffold {
             assert_eq!(remaining_tile_multipliers_strip.len(), D);
             assert_eq!(perpendicular_word_multipliers_strip.len(), D);
         }
+        self.valid = false;
         self.aggregated_word_multipliers.clear();
         let mut last_was_one = false;
         for i in 0..strider_len {
@@ -259,6 +262,9 @@ impl LaneScaffold {
             }
             last_was_one = wm == 1;
             if let Err(idx) = self.aggregated_word_multipliers.binary_search(&wm) {
+                if !self.aggregated_word_multipliers.room_for(room, 1) {
+                    return false;
+                }
                 self.aggregated_word_multipliers.insert(idx, wm);
             }
             for &wm_val in &remaining_word_multipliers_strip[i + 1..strider_len] {
@@ -268,34 +274,52 @@ impl LaneScaffold {
                     }
                     wm *= wm_val as i32;
                     if let Err(idx) = self.aggregated_word_multipliers.binary_search(&wm) {
+                        if !self.aggregated_word_multipliers.room_for(room, 1) {
+                            return false;
+                        }
                         self.aggregated_word_multipliers.insert(idx, wm);
                     }
                 }
             }
         }
         let vec_size = strider_len * self.aggregated_word_multipliers.len();
-        self.precomputed_square_multiplier.resize(vec_size, 0);
+        self.precomputed_square_multiplier
+            .resize_in(room, vec_size, 0);
         self.indexes_to_descending_square_multiplier
-            .resize(vec_size, 0);
-        self.square_ranks.resize(vec_size, 0);
+            .resize_in(room, vec_size, 0);
+        self.square_ranks.resize_in(room, vec_size, 0);
         self.ranked.clear();
         self.ranked
-            .resize(self.aggregated_word_multipliers.len(), false);
+            .resize_in(room, self.aggregated_word_multipliers.len(), false);
+        if self.square_keys.len() < strider_len {
+            self.square_keys.resize_in(room, strider_len, 0);
+        }
+        let jump = MultiJump {
+            left_score: 0,
+            right_score: 0,
+            left_idx: 0,
+            right_idx: 0,
+        };
+        self.multi_jumps.resize_in(room, strider_len, jump);
+        self.board_strip.clear();
+        self.board_strip.extend_in(room, board_strip);
+        self.remaining_word_multipliers_strip.clear();
+        self.remaining_word_multipliers_strip
+            .extend_in(room, remaining_word_multipliers_strip);
+        self.remaining_tile_multipliers_strip.clear();
+        self.remaining_tile_multipliers_strip
+            .extend_in(room, remaining_tile_multipliers_strip);
+        self.perpendicular_word_multipliers_strip.clear();
+        self.perpendicular_word_multipliers_strip
+            .extend_in(room, perpendicular_word_multipliers_strip);
+        if room.refused() {
+            return false;
+        }
 
         fill_multi_jumps::<D>(alphabet, board_strip, &mut self.multi_jumps);
 
         self.valid = true;
-        self.board_strip.clear();
-        self.board_strip.extend_from_slice(board_strip);
-        self.remaining_word_multipliers_strip.clear();
-        self.remaining_word_multipliers_strip
-            .extend_from_slice(remaining_word_multipliers_strip);
-        self.remaining_tile_multipliers_strip.clear();
-        self.remaining_tile_multipliers_strip
-            .extend_from_slice(remaining_tile_multipliers_strip);
-        self.perpendicular_word_multipliers_strip.clear();
-        self.perpendicular_word_multipliers_strip
-            .extend_from_slice(perpendicular_word_multipliers_strip);
+        true
     }
 }
 
@@ -621,6 +645,24 @@ pub trait BoardStore {
     const SQUARES: usize;
     type Of<T: Clone>: BoardBuf<T>;
     fn filled<T: Clone>(len: usize, value: T) -> Self::Of<T>;
+
+    #[inline(always)]
+    fn filled_in<T: Clone>(room: &endgame::Room, len: usize, value: T) -> Self::Of<T> {
+        let bytes = if Self::SQUARES == 0 {
+            len * std::mem::size_of::<T>()
+        } else {
+            0
+        };
+        let taken = room.take(bytes);
+        Self::filled(if taken.is_some() { len } else { 0 }, value)
+    }
+}
+
+#[inline(always)]
+fn boxed_in<T: Clone>(room: &endgame::Room, len: usize, value: T) -> Box<[T]> {
+    let taken = room.take(len * std::mem::size_of::<T>());
+    let len = if taken.is_some() { len } else { 0 };
+    vec![value; len].into_boxed_slice()
 }
 
 pub struct BoxStore;
@@ -733,6 +775,7 @@ struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool, S: BoardStore> {
     rack_tally_shadowr: [u8; MAX_ALPHABET_LEN], // for shadow_play_right
     anagrams_fit_config: bool,
     is_census: bool,
+    room: endgame::Room, // the request's limit, and any growth it refused
 }
 
 impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G, BAG_TERM, S> {
@@ -835,6 +878,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
             rack_tally_shadowr: self.rack_tally_shadowr,
             is_census: self.is_census,
             anagrams_fit_config: self.anagrams_fit_config,
+            room: self.room.clone(),
         }
     }
 
@@ -950,16 +994,17 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
 }
 
 impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM, S> {
-    fn new(game_config: &game_config::GameConfig) -> Self {
+    fn new(game_config: &game_config::GameConfig, room: endgame::Room) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
             rack_tally: [0u8; MAX_ALPHABET_LEN],
-            word_buffer_for_across_plays: S::filled(rows_times_cols, 0u8),
-            word_buffer_for_down_plays: S::filled(rows_times_cols, 0u8),
-            cross_score_for_across_plays: S::filled(rows_times_cols, 0i32),
-            cross_score_for_down_plays: S::filled(rows_times_cols, 0i32),
-            cached_cross_set_for_across_plays: S::filled(
+            word_buffer_for_across_plays: S::filled_in(&room, rows_times_cols, 0u8),
+            word_buffer_for_down_plays: S::filled_in(&room, rows_times_cols, 0u8),
+            cross_score_for_across_plays: S::filled_in(&room, rows_times_cols, 0i32),
+            cross_score_for_down_plays: S::filled_in(&room, rows_times_cols, 0i32),
+            cached_cross_set_for_across_plays: S::filled_in(
+                &room,
                 rows_times_cols,
                 CachedCrossSet {
                     p_left: 0,
@@ -967,7 +1012,8 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     bits: 0,
                 },
             ),
-            cached_cross_set_for_down_plays: S::filled(
+            cached_cross_set_for_down_plays: S::filled_in(
+                &room,
                 rows_times_cols,
                 CachedCrossSet {
                     p_left: 0,
@@ -975,7 +1021,8 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     bits: 0,
                 },
             ),
-            cross_set_buffer_for_across_plays: S::filled(
+            cross_set_buffer_for_across_plays: S::filled_in(
+                &room,
                 rows_times_cols,
                 CrossSetComputation {
                     score: 0,
@@ -984,7 +1031,8 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     p: 0,
                 },
             ),
-            cross_set_buffer_for_down_plays: S::filled(
+            cross_set_buffer_for_down_plays: S::filled_in(
+                &room,
                 rows_times_cols,
                 CrossSetComputation {
                     score: 0,
@@ -993,24 +1041,32 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     p: 0,
                 },
             ),
-            prev_board_tiles: S::filled(rows_times_cols, 0xffu8),
+            prev_board_tiles: S::filled_in(&room, rows_times_cols, 0xffu8),
             dirty_rows: G::from(0),
             dirty_cols: G::from(0),
             lane_rows: !G::from(0),
             lane_cols: !G::from(0),
-            remaining_word_multipliers_for_across_plays: S::filled(rows_times_cols, 0i8),
-            remaining_word_multipliers_for_down_plays: S::filled(rows_times_cols, 0i8),
-            remaining_tile_multipliers_for_across_plays: S::filled(rows_times_cols, 0i8),
-            remaining_tile_multipliers_for_down_plays: S::filled(rows_times_cols, 0i8),
-            face_value_scores_for_across_plays: S::filled(rows_times_cols, 0i32),
-            face_value_scores_for_down_plays: S::filled(rows_times_cols, 0i32),
-            perpendicular_word_multipliers_for_across_plays: S::filled(rows_times_cols, 0i8),
-            perpendicular_word_multipliers_for_down_plays: S::filled(rows_times_cols, 0i8),
-            perpendicular_scores_for_across_plays: S::filled(rows_times_cols, 0i32),
-            perpendicular_scores_for_down_plays: S::filled(rows_times_cols, 0i32),
-            allowed_for_across_plays: S::filled(rows_times_cols, !1u64),
-            allowed_for_down_plays: S::filled(rows_times_cols, !1u64),
-            transposed_board_tiles: S::filled(rows_times_cols, 0u8),
+            remaining_word_multipliers_for_across_plays: S::filled_in(&room, rows_times_cols, 0i8),
+            remaining_word_multipliers_for_down_plays: S::filled_in(&room, rows_times_cols, 0i8),
+            remaining_tile_multipliers_for_across_plays: S::filled_in(&room, rows_times_cols, 0i8),
+            remaining_tile_multipliers_for_down_plays: S::filled_in(&room, rows_times_cols, 0i8),
+            face_value_scores_for_across_plays: S::filled_in(&room, rows_times_cols, 0i32),
+            face_value_scores_for_down_plays: S::filled_in(&room, rows_times_cols, 0i32),
+            perpendicular_word_multipliers_for_across_plays: S::filled_in(
+                &room,
+                rows_times_cols,
+                0i8,
+            ),
+            perpendicular_word_multipliers_for_down_plays: S::filled_in(
+                &room,
+                rows_times_cols,
+                0i8,
+            ),
+            perpendicular_scores_for_across_plays: S::filled_in(&room, rows_times_cols, 0i32),
+            perpendicular_scores_for_down_plays: S::filled_in(&room, rows_times_cols, 0i32),
+            allowed_for_across_plays: S::filled_in(&room, rows_times_cols, !1u64),
+            allowed_for_down_plays: S::filled_in(&room, rows_times_cols, !1u64),
+            transposed_board_tiles: S::filled_in(&room, rows_times_cols, 0u8),
             num_tiles_on_board: 0,
             board_tile_score: 0,
             prev_tile_count: 0,
@@ -1024,8 +1080,11 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             dynamic_kept: klv::DynamicKept::default(),
             descending_scores: Vec::new(),
             exchange_buffer: Vec::new(),
-            lane_scaffold: vec![LaneScaffold::new(); dim.rows as usize + dim.cols as usize]
-                .into_boxed_slice(),
+            lane_scaffold: boxed_in(
+                &room,
+                dim.rows as usize + dim.cols as usize,
+                LaneScaffold::new(),
+            ),
             best_leave_values: Vec::new(),
             span_out: Vec::new(),
             subracks: Vec::new(),
@@ -1049,14 +1108,17 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
             span_memo: SpanMemo::new(),
-            span_prefix: vec![
-                SpanPrefix::new();
+            span_prefix: boxed_in(
+                &room,
                 dim.rows as usize * (dim.cols as usize + 1)
-                    + dim.cols as usize * (dim.rows as usize + 1)
-            ]
-            .into_boxed_slice(),
-            span_lanes: vec![SpanLane::new(); dim.rows as usize + dim.cols as usize]
-                .into_boxed_slice(),
+                    + dim.cols as usize * (dim.rows as usize + 1),
+                SpanPrefix::new(),
+            ),
+            span_lanes: boxed_in(
+                &room,
+                dim.rows as usize + dim.cols as usize,
+                SpanLane::new(),
+            ),
             span_turn: 0,
             span_look_turn: 0,
             span_source: 0,
@@ -1073,6 +1135,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             rack_tally_shadowr: [0u8; MAX_ALPHABET_LEN],
             is_census: false,
             anagrams_fit_config: false,
+            room,
         }
     }
 
@@ -2143,6 +2206,7 @@ struct GenPlacePlacementsParams<'a, C: SpanCheck = ()> {
     feasible_lengths: u64,
     descending_scores: &'a [i32],
     lane_scaffold: &'a mut LaneScaffold,
+    room: &'a endgame::Room,
     best_leave_values: &'a [i32],
     span_out: &'a mut Vec<(i8, i8, u8, i32)>,
     per_span: bool,
@@ -2451,14 +2515,17 @@ fn gen_place_placements_impl<
 ) {
     let strider_len = params.board_strip.len();
 
-    if !want_raw {
-        params.lane_scaffold.refresh::<0>(
+    if !want_raw
+        && !params.lane_scaffold.refresh::<0>(
+            params.room,
             params.alphabet,
             params.board_strip,
             params.remaining_word_multipliers_strip,
             params.remaining_tile_multipliers_strip,
             params.perpendicular_word_multipliers_strip,
-        );
+        )
+    {
+        return;
     }
 
     struct Env<'a, C: SpanCheck> {
@@ -3052,14 +3119,17 @@ fn $name<
         assert_eq!(params.perpendicular_scores_strip.len(), D);
     }
 
-    if !want_raw {
-        params.lane_scaffold.refresh::<D>(
+    if !want_raw
+        && !params.lane_scaffold.refresh::<D>(
+            params.room,
             params.alphabet,
             params.board_strip,
             params.remaining_word_multipliers_strip,
             params.remaining_tile_multipliers_strip,
             params.perpendicular_word_multipliers_strip,
-        );
+        )
+    {
+        return;
     }
 
     struct Env<'a, C: SpanCheck> {
@@ -8260,6 +8330,12 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // rows or columns than G holds is refused
     #[inline(always)]
     pub fn try_new(game_config: &game_config::GameConfig) -> error::Returns<Self> {
+        Self::check_board(game_config)?;
+        Ok(Self::new_in(game_config))
+    }
+
+    #[inline(always)]
+    fn check_board(game_config: &game_config::GameConfig) -> error::Returns<()> {
         let dim = game_config.board_layout().dim();
         if dim.rows as u32 > G::BITS || dim.cols as u32 > G::BITS {
             return_error!(format!(
@@ -8283,14 +8359,14 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 dim.rows, dim.cols
             ));
         }
-        Ok(Self::new_in(game_config))
+        Ok(())
     }
 
     // try_new's generator, for a game whose board a generator in G has taken
     #[inline(always)]
     pub(crate) fn new_in(game_config: &game_config::GameConfig) -> Self {
         Self {
-            working_buffer: WorkingBuffer::new(game_config),
+            working_buffer: WorkingBuffer::new(game_config, endgame::Room::default()),
             plays: Vec::new(),
             empty_klvs: klv::EmptyKlvs::default(),
         }
@@ -8302,21 +8378,48 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.longest_lane
     }
 
+    #[inline]
+    pub(crate) fn new_within(
+        game_config: &game_config::GameConfig,
+        memory: Option<endgame::MemoryLimit>,
+    ) -> Option<Self> {
+        let working_buffer = WorkingBuffer::new(game_config, endgame::Room::of(memory));
+        (!working_buffer.room.refused()).then(|| Self {
+            working_buffer,
+            plays: Vec::new(),
+            empty_klvs: klv::EmptyKlvs::default(),
+        })
+    }
+
+    #[inline]
+    pub fn try_new_within(
+        game_config: &game_config::GameConfig,
+        memory: Option<endgame::MemoryLimit>,
+    ) -> error::Returns<Option<Self>> {
+        Self::check_board(game_config)?;
+        Ok(Self::new_within(game_config, memory))
+    }
+
+    #[inline(always)]
+    pub fn begin_within(&mut self, memory: Option<endgame::MemoryLimit>) {
+        self.working_buffer.room = endgame::Room::of(memory);
+    }
+
     #[inline(always)]
     pub fn out_of_memory(&self) -> bool {
-        self.working_buffer.jumbled.splits.out_of_memory
+        self.working_buffer.jumbled.splits.out_of_memory || self.working_buffer.room.refused()
     }
 
     // dense_most: the most leaves a rack may have to be kept as a table
     #[inline(always)]
     pub(crate) fn new_in_dense(game_config: &game_config::GameConfig, dense_most: u32) -> Self {
-        let mut working_buffer = WorkingBuffer::new(game_config);
-        working_buffer.multi_leaves = klv::MultiLeaves::with_dense_most(dense_most);
-        Self {
-            working_buffer,
-            plays: Vec::new(),
-            empty_klvs: klv::EmptyKlvs::default(),
-        }
+        Self::new_in(game_config).with_dense_most(dense_most)
+    }
+
+    #[inline(always)]
+    pub(crate) fn with_dense_most(mut self, dense_most: u32) -> Self {
+        self.working_buffer.multi_leaves = klv::MultiLeaves::with_dense_most(dense_most);
+        self
     }
 
     #[inline(always)]
@@ -8324,10 +8427,26 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.num_tiles_in_bag
     }
 
-    // keeps what the generator holds of the board it last generated on
     #[inline]
     pub fn save_board_state(&self, state: &mut BoardState) {
         let w = &self.working_buffer;
+        let squares = w.prev_board_tiles.len();
+        let _parts = if state.board_tiles.len() != squares {
+            use std::mem::size_of;
+            let per_square = 2 * size_of::<u8>()
+                + 2 * (size_of::<u64>()
+                    + 2 * size_of::<i32>()
+                    + size_of::<CachedCrossSet>()
+                    + size_of::<CrossSetComputation>()
+                    + 3 * size_of::<i8>()
+                    + size_of::<i32>());
+            let Some(parts) = w.room.take(squares * per_square) else {
+                return;
+            };
+            parts
+        } else {
+            endgame::Reserved::NONE
+        };
         copy_board_part(&mut state.board_tiles, &w.prev_board_tiles);
         copy_board_part(&mut state.transposed_board_tiles, &w.transposed_board_tiles);
         state.counts = (
@@ -8399,6 +8518,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         if w.rcs_pending_rows != G::from(0)
             || w.rcs_pending_cols != G::from(0)
             || w.rcs_lanes.len() < w.board_cols as usize
+            || w.room.memory.is_some()
         {
             state.rcs_lanes.clear();
         } else {
@@ -8995,7 +9115,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.plays = vec_moves;
 
         working_buffer.multi_leaves = multi_leaves;
-        stopped
+        stopped || working_buffer.room.refused()
     }
 
     // the best one kept in one slot, more of them in a heap
@@ -11941,6 +12061,13 @@ fn kurnia_gen_place_moves_iter_lean<
         if working_buffer.lane_rows & (G::from(1) << row as u32) == G::from(0) {
             continue;
         }
+        let lane_len = dim.cols as usize;
+        if !(found_placements.room_for(&working_buffer.room, lane_len)
+            && (working_buffer.anchor_left_bounds)
+                .room_for(&working_buffer.room, lane_len * 2 * bounds_stride))
+        {
+            continue;
+        }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         shadow_lane_lean::<D, W, _>(
@@ -11967,6 +12094,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 lane_scaffold: &mut working_buffer.lane_scaffold[row as usize],
+                room: &working_buffer.room,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -11980,21 +12108,31 @@ fn kurnia_gen_place_moves_iter_lean<
             true,
             false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
-                found_placements.push(PossiblePlacement {
-                    num_played,
-                    down: false,
-                    lane: row,
-                    anchor,
-                    leftmost,
-                    rightmost,
-                    best_possible_equity,
-                    kept_at: NO_KEPT,
-                });
+                found_placements.push_in(
+                    &working_buffer.room,
+                    PossiblePlacement {
+                        num_played,
+                        down: false,
+                        lane: row,
+                        anchor,
+                        leftmost,
+                        rightmost,
+                        best_possible_equity,
+                        kept_at: NO_KEPT,
+                    },
+                );
             },
         );
     }
     for col in 0..dim.cols {
         if working_buffer.lane_cols & (G::from(1) << col as u32) == G::from(0) {
+            continue;
+        }
+        let lane_len = dim.rows as usize;
+        if !(found_placements.room_for(&working_buffer.room, lane_len)
+            && (working_buffer.anchor_left_bounds)
+                .room_for(&working_buffer.room, lane_len * 2 * bounds_stride))
+        {
             continue;
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -12022,6 +12160,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 lane_scaffold: &mut working_buffer.lane_scaffold[dim.rows as usize + col as usize],
+                room: &working_buffer.room,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -12035,18 +12174,24 @@ fn kurnia_gen_place_moves_iter_lean<
             false,
             false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
-                found_placements.push(PossiblePlacement {
-                    num_played,
-                    down: true,
-                    lane: col,
-                    anchor,
-                    leftmost,
-                    rightmost,
-                    best_possible_equity,
-                    kept_at: NO_KEPT,
-                });
+                found_placements.push_in(
+                    &working_buffer.room,
+                    PossiblePlacement {
+                        num_played,
+                        down: true,
+                        lane: col,
+                        anchor,
+                        leftmost,
+                        rightmost,
+                        best_possible_equity,
+                        kept_at: NO_KEPT,
+                    },
+                );
             },
         );
+    }
+    if !placement_order.room_for(&working_buffer.room, found_placements.len()) {
+        found_placements.clear();
     }
     placement_order.extend(
         found_placements
@@ -12212,6 +12357,7 @@ fn kurnia_gen_raw_place_moves<
                 feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 lane_scaffold: &mut working_buffer.lane_scaffold[at],
+                room: &working_buffer.room,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -13356,6 +13502,13 @@ fn kurnia_gen_place_moves_iter<
         if kept_lanes || working_buffer.lane_rows & (G::from(1) << row as u32) == G::from(0) {
             continue;
         }
+        let lane_len = dim.cols as usize;
+        if !(found_placements.room_for(&working_buffer.room, lane_len)
+            && (working_buffer.anchor_left_bounds)
+                .room_for(&working_buffer.room, lane_len * 2 * bounds_stride))
+        {
+            continue;
+        }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         let check = fill_key_check::<D, W, T, _, _, _, _, _>(
@@ -13389,6 +13542,7 @@ fn kurnia_gen_place_moves_iter<
                 feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 lane_scaffold: &mut working_buffer.lane_scaffold[row as usize],
+                room: &working_buffer.room,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -13410,21 +13564,31 @@ fn kurnia_gen_place_moves_iter<
             true,
             false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
-                found_placements.push(PossiblePlacement {
-                    num_played,
-                    down: false,
-                    lane: row,
-                    anchor,
-                    leftmost,
-                    rightmost,
-                    best_possible_equity,
-                    kept_at: NO_KEPT,
-                });
+                found_placements.push_in(
+                    &working_buffer.room,
+                    PossiblePlacement {
+                        num_played,
+                        down: false,
+                        lane: row,
+                        anchor,
+                        leftmost,
+                        rightmost,
+                        best_possible_equity,
+                        kept_at: NO_KEPT,
+                    },
+                );
             },
         );
     }
     for col in 0..dim.cols {
         if kept_lanes || working_buffer.lane_cols & (G::from(1) << col as u32) == G::from(0) {
+            continue;
+        }
+        let lane_len = dim.rows as usize;
+        if !(found_placements.room_for(&working_buffer.room, lane_len)
+            && (working_buffer.anchor_left_bounds)
+                .room_for(&working_buffer.room, lane_len * 2 * bounds_stride))
+        {
             continue;
         }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -13459,6 +13623,7 @@ fn kurnia_gen_place_moves_iter<
                 feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 lane_scaffold: &mut working_buffer.lane_scaffold[dim.rows as usize + col as usize],
+                room: &working_buffer.room,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -13480,18 +13645,24 @@ fn kurnia_gen_place_moves_iter<
             false,
             false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
-                found_placements.push(PossiblePlacement {
-                    num_played,
-                    down: true,
-                    lane: col,
-                    anchor,
-                    leftmost,
-                    rightmost,
-                    best_possible_equity,
-                    kept_at: NO_KEPT,
-                });
+                found_placements.push_in(
+                    &working_buffer.room,
+                    PossiblePlacement {
+                        num_played,
+                        down: true,
+                        lane: col,
+                        anchor,
+                        leftmost,
+                        rightmost,
+                        best_possible_equity,
+                        kept_at: NO_KEPT,
+                    },
+                );
             },
         );
+    }
+    if !placement_order.room_for(&working_buffer.room, found_placements.len()) {
+        found_placements.clear();
     }
     placement_order.extend(
         found_placements
@@ -18744,6 +18915,7 @@ mod tests {
                         feasible_lengths: !0,
                         descending_scores: &zeros[..rack_size as usize],
                         lane_scaffold: &mut wb.lane_scaffold[at],
+                        room: &wb.room,
                         best_leave_values: &zeros,
                         num_max_played: rack_size,
                         rack_tally_shadowl: &mut wb.rack_tally_shadowl,
