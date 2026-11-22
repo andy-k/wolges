@@ -371,6 +371,11 @@ struct SelfPlay {
     lean: bool,
     #[arg(long, help = "print no progress")]
     quiet: bool,
+    #[arg(
+        long,
+        help = "write no games-log-... file, a line a game; the progress lines still count the games"
+    )]
+    no_games_log: bool,
 }
 
 #[derive(clap::Args)]
@@ -1077,6 +1082,7 @@ fn run(
                     threads,
                     lean: a.lean,
                     quiet: a.quiet,
+                    games_log: !a.no_games_log,
                 },
             )
         }
@@ -1096,6 +1102,7 @@ fn run(
                     threads,
                     lean: a.lean,
                     quiet: a.quiet,
+                    games_log: !a.no_games_log,
                 },
             )
         }
@@ -1115,6 +1122,7 @@ fn run(
                     threads,
                     lean: a.lean,
                     quiet: a.quiet,
+                    games_log: !a.no_games_log,
                 },
             )
         }
@@ -1695,6 +1703,7 @@ struct SelfPlayParams {
     threads: usize,
     lean: bool,
     quiet: bool,
+    games_log: bool,
 }
 
 struct GamesParams {
@@ -1724,6 +1733,7 @@ fn generate_autoplay_logs<
         threads,
         lean,
         quiet,
+        games_log,
     }: SelfPlayParams,
 ) -> error::Returns<()> {
     if !SUMMARIZE && min_samples_per_rack != 0 {
@@ -1774,25 +1784,29 @@ fn generate_autoplay_logs<
     } else {
         None
     };
-    let mut csv_game =
-        csv::Writer::from_path(claim_output_path(&format!("games-{run_identifier}"))?)?;
-    csv_game.serialize((
-        "gameID",
-        player_aliases
-            .iter()
-            .map(|x| format!("{x}_score"))
-            .collect::<Box<[String]>>(),
-        player_aliases
-            .iter()
-            .map(|x| format!("{x}_bingos"))
-            .collect::<Box<[String]>>(),
-        player_aliases
-            .iter()
-            .map(|x| format!("{x}_turns"))
-            .collect::<Box<[String]>>(),
-        "first",
-    ))?;
-    let csv_game_writer = csv_game.into_inner()?;
+    let csv_game_writer = if games_log {
+        let mut csv_game =
+            csv::Writer::from_path(claim_output_path(&format!("games-{run_identifier}"))?)?;
+        csv_game.serialize((
+            "gameID",
+            player_aliases
+                .iter()
+                .map(|x| format!("{x}_score"))
+                .collect::<Box<[String]>>(),
+            player_aliases
+                .iter()
+                .map(|x| format!("{x}_bingos"))
+                .collect::<Box<[String]>>(),
+            player_aliases
+                .iter()
+                .map(|x| format!("{x}_turns"))
+                .collect::<Box<[String]>>(),
+            "first",
+        ))?;
+        Some(csv_game.into_inner()?)
+    } else {
+        None
+    };
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1836,7 +1850,7 @@ fn generate_autoplay_logs<
     let t0 = std::time::Instant::now();
     let tick_periods = move_picker::Periods(0);
     struct MutexedStuffs {
-        csv_game_writer: std::fs::File,
+        csv_game_writer: Option<std::fs::File>,
         csv_log_writer: Option<std::fs::File>,
         full_rack_map: fash::MyHashMap<bites::Bites, RackSum>,
         undersampled_racks: Vec<bites::Bites>,
@@ -2381,18 +2395,20 @@ fn generate_autoplay_logs<
                         }
                     }
                     completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    for (pts, &mp) in final_scores_pts.iter_mut().zip(final_scores.iter()) {
-                        *pts = equity::Equity::new(mp).descaled().raw();
+                    if games_log {
+                        for (pts, &mp) in final_scores_pts.iter_mut().zip(final_scores.iter()) {
+                            *pts = equity::Equity::new(mp).descaled().raw();
+                        }
+                        batched_csv_game
+                            .serialize((
+                                &game_id,
+                                &final_scores_pts,
+                                &num_bingos,
+                                &num_turns,
+                                &player_aliases[0],
+                            ))
+                            .unwrap();
                     }
-                    batched_csv_game
-                        .serialize((
-                            &game_id,
-                            &final_scores_pts,
-                            &num_bingos,
-                            &num_turns,
-                            &player_aliases[0],
-                        ))
-                        .unwrap();
                     num_batched_games_here += 1;
                     if num_batched_games_here >= batch_size {
                         let logged_games = logged_games.fetch_add(
@@ -2411,10 +2427,10 @@ fn generate_autoplay_logs<
                                 c.write_all(&batched_csv_log_buf)
                                     .map_err(|e| fail(e.into()))?;
                             }
-                            mutex_guard
-                                .csv_game_writer
-                                .write_all(&batched_csv_game_buf)
-                                .map_err(|e| fail(e.into()))?;
+                            if let Some(c) = &mut mutex_guard.csv_game_writer {
+                                c.write_all(&batched_csv_game_buf)
+                                    .map_err(|e| fail(e.into()))?;
+                            }
                             if !quiet && mutex_guard.tick_periods.update(elapsed_time_secs) {
                                 let completed_moves =
                                     completed_moves.load(std::sync::atomic::Ordering::Relaxed);
@@ -2445,10 +2461,10 @@ fn generate_autoplay_logs<
                     c.write_all(&batched_csv_log_buf)
                         .map_err(|e| fail(e.into()))?;
                 }
-                mutex_guard
-                    .csv_game_writer
-                    .write_all(&batched_csv_game_buf)
-                    .map_err(|e| fail(e.into()))?;
+                if let Some(c) = &mut mutex_guard.csv_game_writer {
+                    c.write_all(&batched_csv_game_buf)
+                        .map_err(|e| fail(e.into()))?;
+                }
 
                 if SUMMARIZE {
                     merge_rack_map(&mut mutex_guard.full_rack_map, &mut thread_full_rack_map);
