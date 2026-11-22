@@ -6437,10 +6437,10 @@ impl<
                         at: &at,
                         score_diff,
                         arenas: &mut *arenas,
+                        model: position.model,
                     },
                     limits,
                     threads,
-                    position.model,
                 )?
             } else {
                 let mut stopped = false;
@@ -6558,7 +6558,6 @@ impl<
     // sharing what they value below the moves (state.searched). Whether a limit
     // stopped the pass; the moves it valued in every split then go first in the
     // order, so a solve resuming the pass goes on after them
-    #[allow(clippy::too_many_arguments)]
     fn value_on_threads<At: Fn(&[u8], &[u8], &mut InBag) + Sync>(
         sub: &mut Self,
         klv: &klv::Klv<L>,
@@ -6567,7 +6566,6 @@ impl<
         root: PegBagRoot<'_, At>,
         limits: &BagLimits,
         threads: usize,
-        model: PegModel,
     ) -> error::Returns<bool>
     where
         N: Sync,
@@ -6578,6 +6576,7 @@ impl<
             at,
             score_diff,
             arenas,
+            model,
         } = root;
         let gc = sub.game_config;
         let kwg = sub.kwg;
@@ -8277,6 +8276,7 @@ struct PegBagRoot<'r, At: Fn(&[u8], &[u8], &mut InBag) + Sync> {
     at: &'r At,
     score_diff: f64,
     arenas: &'r mut Vec<BagArena>, // each thread's, as PegBagProgress keeps them
+    model: PegModel,
 }
 
 // the search so far: the moves; the order its pass values them in, the next to
