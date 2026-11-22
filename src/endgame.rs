@@ -3123,7 +3123,10 @@ impl<
             .map(|&tile| alphabet.scaled_score(held_tile(tile)).raw())
             .sum();
         let kept = work_buffer.rack_scores[player_idx as usize] - spent;
-        let cap = score - (outs.slots[k].score + equity::Equity::new(2 * kept));
+        let reply = outs.slots[k]
+            .score
+            .finite_add(equity::Equity::new(2 * kept));
+        let cap = score.finite_sub(reply);
         (cap <= alpha).then_some((k, cap))
     }
 
@@ -4842,7 +4845,7 @@ impl<
                 score
             } else {
                 frame.best.complete = false;
-                score - self.both_pass_value_after(player_idx, ply, found)
+                score.finite_sub(self.both_pass_value_after(player_idx, ply, found))
             };
             if frame.take_value(&mut self.work_buffer.proven, i, index, value) {
                 break;
@@ -4886,8 +4889,8 @@ impl<
                 candidate.valuation
             } else {
                 frame.best.complete = false;
-                candidate.valuation
-                    - self.both_pass_value_after(player_idx, ply, key as u32 as usize)
+                let after = self.both_pass_value_after(player_idx, ply, key as u32 as usize);
+                candidate.valuation.finite_sub(after)
             };
             if best.is_none_or(|(v, b)| value > v || value == v && before(key, b)) {
                 best = Some((value, key));
@@ -4946,7 +4949,7 @@ impl<
             ..
         } = &mut frame.child
         {
-            let value = *score - child.value;
+            let value = score.finite_sub(child.value);
             if value > frame.node.alpha && value < frame.node.beta {
                 *scout = false;
                 let Enter {
@@ -4979,7 +4982,7 @@ impl<
                 let (ply, depth) = (frame.node.ply, frame.node.depth);
                 self.unplace(mover, &play);
                 self.harvest_outs(ply, depth, &play);
-                if self.take_value(i, index, score - child.value) {
+                if self.take_value(i, index, score.finite_sub(child.value)) {
                     // a cutoff: no more moves, nor the pass
                     self.work_buffer.frames.last_mut().unwrap().next = usize::MAX;
                 }

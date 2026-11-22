@@ -42,6 +42,25 @@ impl Equity {
         self.0.checked_sub(other.0).map(Self)
     }
 
+    // a sum or a difference of two finite equities, with no infinity to carry
+    #[inline(always)]
+    pub fn finite_add(self, other: Self) -> Self {
+        debug_assert!(
+            self.is_finite() && other.is_finite(),
+            "{self:?} + {other:?}"
+        );
+        Self(self.0 + other.0)
+    }
+
+    #[inline(always)]
+    pub fn finite_sub(self, other: Self) -> Self {
+        debug_assert!(
+            self.is_finite() && other.is_finite(),
+            "{self:?} - {other:?}"
+        );
+        Self(self.0 - other.0)
+    }
+
     #[inline(always)]
     pub fn as_f64(self) -> f64 {
         self.0 as f64 / SCALE as f64
@@ -227,6 +246,8 @@ mod tests {
         let (inf, neg_inf) = (Equity::INFINITY, Equity::NEG_INFINITY);
         assert_eq!(e(7000) + e(-2500), e(4500));
         assert_eq!(e(7000) - e(-2500), e(9500));
+        assert_eq!(e(7000).finite_add(e(-2500)), e(4500));
+        assert_eq!(e(7000).finite_sub(e(-2500)), e(9500));
         assert_eq!(-e(3), e(-3));
         assert_eq!(-inf, neg_inf);
         assert_eq!(-neg_inf, inf);
