@@ -754,6 +754,38 @@ impl MultiLeaves {
         dense_most: u32,
         bag_terms: impl Iterator<Item = i32>,
     ) {
+        self.init_values::<true, _>(
+            rack_tally,
+            klv,
+            use_klv,
+            adjust_leave_value,
+            dense_most,
+            bag_terms,
+        );
+    }
+
+    #[inline(always)]
+    pub(crate) fn init_for_rack_table<L: kwg::Node>(&mut self, rack_tally: &[u8], klv: &Klv<L>) {
+        self.init_values::<false, _>(
+            rack_tally,
+            klv,
+            true,
+            AdjustLeave::Identity,
+            self.dense_most(),
+            std::iter::empty(),
+        );
+    }
+
+    #[inline(always)]
+    fn init_values<const COUNT_PLAYED: bool, L: kwg::Node>(
+        &mut self,
+        rack_tally: &[u8],
+        klv: &Klv<L>,
+        use_klv: bool,
+        adjust_leave_value: AdjustLeave,
+        dense_most: u32,
+        bag_terms: impl Iterator<Item = i32>,
+    ) {
         self.bag_terms.clear();
         self.bag_terms.extend(bag_terms);
         let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally, dense_most);
@@ -761,8 +793,10 @@ impl MultiLeaves {
         self.num_playeds.clear();
         if dense {
             self.leave_values.resize(place_value as usize, 0);
-            self.num_playeds.resize(place_value as usize, 0xff);
-            self.num_playeds[0] = num_tiles_on_rack;
+            if COUNT_PLAYED {
+                self.num_playeds.resize(place_value as usize, 0xff);
+                self.num_playeds[0] = num_tiles_on_rack;
+            }
             struct Env<'a, L: kwg::Node> {
                 klv: &'a Klv<L>,
                 unique_tiles: &'a [u8],
@@ -770,7 +804,7 @@ impl MultiLeaves {
                 leave_values: &'a mut [i32],
                 num_playeds: &'a mut [u8],
             }
-            fn precompute_leaves<L: kwg::Node>(
+            fn precompute_leaves<const COUNT_PLAYED: bool, L: kwg::Node>(
                 env: &mut Env<'_, L>,
                 mut p: i32,
                 mut idx: u32,
@@ -799,7 +833,9 @@ impl MultiLeaves {
                             }
                         }
                         let leave_idx = leave_idx_offset + env.digits[tile_usize].place_value;
-                        env.num_playeds[leave_idx as usize] = num_played;
+                        if COUNT_PLAYED {
+                            env.num_playeds[leave_idx as usize] = num_played;
+                        }
                         let mut child = 0;
                         let mut child_idx = 0;
                         if p != 0 {
@@ -813,7 +849,7 @@ impl MultiLeaves {
                                 child_idx = idx + node.accepts() as u32;
                             }
                         }
-                        precompute_leaves(
+                        precompute_leaves::<COUNT_PLAYED, _>(
                             env,
                             child,
                             child_idx,
@@ -825,7 +861,7 @@ impl MultiLeaves {
                     }
                 }
             }
-            precompute_leaves(
+            precompute_leaves::<COUNT_PLAYED, _>(
                 &mut Env {
                     klv,
                     unique_tiles: &self.unique_tiles,

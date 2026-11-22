@@ -162,14 +162,7 @@ impl RackTable {
                 if i != 0 {
                     table.next_rack(&mut rack_tally);
                 }
-                multi_leaves.init(
-                    &rack_tally,
-                    klv,
-                    true,
-                    klv::AdjustLeave::Identity,
-                    multi_leaves.dense_most(),
-                    std::iter::empty(),
-                );
+                multi_leaves.init_for_rack_table(&rack_tally, klv);
                 let leaves = multi_leaves.leave_values();
                 let (row, later) = rows.split_at_mut(leaves.len() * SUBRACK_BYTES);
                 rows = later;
