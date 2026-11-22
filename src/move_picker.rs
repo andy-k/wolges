@@ -502,12 +502,13 @@ struct LatePrune {
     arm_scratch: anagrams::ArmScratch,
 }
 
-// the opponent's last move and the board before it, from which a sim infers
-// what they kept
+// the opponent's last move, the board before it, and what the watcher knew of
+// their rack before it, from which a sim infers what they kept
 #[derive(Clone, Copy)]
 pub struct LastMove<'a> {
     pub board_before: &'a [u8],
     pub play: &'a movegen::Play,
+    pub held: infer::Held<'a>,
 }
 
 // a block of iterations, those after lo up to hi, rolled out for the plays
@@ -2391,7 +2392,7 @@ impl<
         watcher_rack: &[u8],
         last: LastMove<'_>,
     ) -> error::Returns<Vec<(Vec<u8>, f64)>> {
-        self.infer_kept(watcher_rack, last)?;
+        self.infer_kept(watcher_rack, last, None)?;
         let leaves = &self.inferred;
         Ok((0..leaves.len())
             .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
@@ -2400,9 +2401,15 @@ impl<
 
     // the same leaves, into the driver's packed list, in place: the simmer
     // lets go of the last decision's first, so that the list is the driver's
-    // alone and its memory is kept
+    // alone and its memory is kept; and into carried, where given, what the
+    // inference carries to the watcher's next
     #[inline]
-    fn infer_kept(&mut self, watcher_rack: &[u8], last: LastMove<'_>) -> error::Returns<()> {
+    fn infer_kept(
+        &mut self,
+        watcher_rack: &[u8],
+        last: LastMove<'_>,
+        carried: Option<&mut infer::Carried>,
+    ) -> error::Returns<()> {
         #[cfg(not(target_family = "wasm"))]
         let threads = self.sim_threads;
         #[cfg(target_family = "wasm")]
@@ -2421,7 +2428,7 @@ impl<
         if std::sync::Arc::get_mut(&mut self.inferred).is_none() {
             self.inferred = std::sync::Arc::default();
         }
-        infer::kept_leaves_packed_into(
+        infer::kept_leaves_carried_into(
             tables,
             infer_generator,
             &movegen::BoardSnapshot {
@@ -2433,12 +2440,12 @@ impl<
                 klv: self.klv,
             },
             watcher_rack,
-            last.play,
+            (last.play, last.held),
             infer::InferOptions {
                 fuzz: infer::FUZZ,
                 threads,
             },
-            std::sync::Arc::make_mut(&mut self.inferred),
+            (std::sync::Arc::make_mut(&mut self.inferred), carried),
         )
     }
 
@@ -2655,13 +2662,14 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
             board_snapshot,
             game_state,
             rack,
-            None,
+            (None, &mut infer::Carried::default()),
         )
     }
 
     // as pick_a_move, given the opponent's last move: a sim then draws their
     // rack from what that move says they kept, as the shell's sims do (with two
-    // players; the other pickers do not read it)
+    // players; the other pickers do not read it); carried is left holding what
+    // that inference carries to the watcher's next (nothing, if it made none)
     #[inline(always)]
     pub fn pick_a_move_after(
         &mut self,
@@ -2670,12 +2678,13 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         rack: &[u8],
-        last: Option<LastMove<'_>>,
+        (last, carried): (Option<LastMove<'_>>, &mut infer::Carried),
     ) -> error::Returns<()>
     where
         N: Sync,
         L: Sync,
     {
+        carried.clear();
         match self {
             MovePicker::Hasty => {
                 filtered_movegen.gen_moves(
@@ -2720,7 +2729,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                 // with the simmer, not copied
                 let inferred = match last {
                     Some(last) if game_state.players.len() == 2 => {
-                        simmer.infer_kept(rack, last)?;
+                        simmer.infer_kept(rack, last, Some(carried))?;
                         Some(simmer::KeptLeaves {
                             seat: 1 - game_state.turn,
                             leaves: simmer.inferred.clone(),
@@ -3860,6 +3869,7 @@ mod tests {
         let last = LastMove {
             board_before: &board_before,
             play: &opening,
+            held: infer::Held::Any,
         };
         let rack = game_state.current_player().rack.clone();
         let params = || SimmerParams {
@@ -3934,7 +3944,7 @@ mod tests {
                 &board_snapshot,
                 &game_state,
                 &rack,
-                Some(last),
+                (Some(last), &mut infer::Carried::default()),
             )
             .unwrap();
         assert!(picked.plays[0].play == want);
@@ -3950,6 +3960,158 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(means(&picked_simmer.candidates), means(&by_hand.candidates));
+    }
+
+    #[test]
+    #[inline]
+    fn a_sim_infers_each_opponent_move_from_what_it_inferred_at_the_last() {
+        // late in a game, 70 tiles down in the bag's order: two sims play it
+        // out, each seat starting its inference of the opponent's move from
+        // what its last one carried and the tiles it has put back since, as a
+        // chain of inferences by hand does, and the carry changes what some
+        // inference weighs
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let alphabet = game_config.alphabet();
+        let mut tiles = Vec::new();
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                tiles.push(tile);
+            }
+        }
+        let mut game_state = game_state::GameState::new(&game_config);
+        for (square, &tile) in tiles[..70].iter().enumerate() {
+            game_state.board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+        }
+        game_state.players[0].rack = tiles[70..77].to_vec();
+        game_state.players[1].rack = tiles[77..84].to_vec();
+        game_state.bag.set_from_iter(tiles[84..].iter().copied());
+        let (game_config, kwg, arm_tables, klv) = (
+            std::sync::Arc::new(game_config),
+            std::sync::Arc::new(kwg),
+            std::sync::Arc::new(arm_tables),
+            std::sync::Arc::new(klv),
+        );
+        let params = || SimmerParams {
+            num_sim_iters: 2,
+            num_sim_plies: 1,
+            sim_threads: 1,
+            win_pct_table: None,
+            quiet: true,
+            memory: None,
+        };
+        let mut pickers = [0, 1].map(|_| {
+            MovePicker::Simmer(Box::new(
+                Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params())
+                    .unwrap(),
+            ))
+        });
+        let mut rng = simmer::DefaultRng::seed_from_u64(7);
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut tables = infer::InferTables::new(&game_config, &klv).unwrap();
+        let mut infer_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        // each seat's carry (the pickers' and the hand's) and the tiles it has
+        // put back since
+        let mut carried = [(); 2].map(|_| infer::Carried::default());
+        let mut by_hand = [(); 2].map(|_| infer::Carried::default());
+        let mut put_back = [Vec::new(), Vec::new()];
+        let mut next = infer::Carried::default();
+        let mut last: Option<(Vec<u8>, movegen::Play)> = None;
+        let (mut weighed, mut changed) = (0, 0);
+        let mut final_scores = vec![0; 2];
+        loop {
+            let seat = game_state.turn as usize;
+            let board_snapshot = movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
+                klv: &klv,
+            };
+            let rack = game_state.current_player().rack.clone();
+            pickers[seat]
+                .pick_a_move_after(
+                    &mut move_filter::GenMoves::Unfiltered,
+                    &mut move_generator,
+                    &board_snapshot,
+                    &game_state,
+                    &rack,
+                    (
+                        last.as_ref().map(|(board_before, play)| LastMove {
+                            board_before,
+                            play,
+                            held: infer::Held::Kept(&carried[seat], &put_back[seat]),
+                        }),
+                        &mut next,
+                    ),
+                )
+                .unwrap();
+            if let Some((board_before, play)) = &last {
+                let mut infer_by_hand = |held, carried: &mut infer::Carried| {
+                    let mut leaves = infer::PackedLeaves::new();
+                    infer::kept_leaves_carried_into(
+                        &mut tables,
+                        &mut infer_generator,
+                        &movegen::BoardSnapshot {
+                            board_tiles: board_before,
+                            game_config: &game_config,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        &rack,
+                        (play, held),
+                        infer::InferOptions {
+                            fuzz: infer::FUZZ,
+                            threads: 1,
+                        },
+                        (&mut leaves, Some(carried)),
+                    )
+                    .unwrap();
+                    (0..leaves.len())
+                        .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i).to_bits()))
+                        .collect::<Vec<_>>()
+                };
+                let mut hand_next = infer::Carried::default();
+                let want = infer_by_hand(
+                    infer::Held::Kept(&by_hand[seat], &put_back[seat]),
+                    &mut hand_next,
+                );
+                let any = infer_by_hand(infer::Held::Any, &mut infer::Carried::default());
+                let MovePicker::Simmer(simmer) = &pickers[seat] else {
+                    unreachable!()
+                };
+                let leaves = &simmer.inferred;
+                let got = (0..leaves.len())
+                    .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i).to_bits()))
+                    .collect::<Vec<_>>();
+                assert_eq!(got, want);
+                weighed += usize::from(!want.is_empty());
+                changed += usize::from(want != any);
+                by_hand[seat] = hand_next;
+            }
+            std::mem::swap(&mut carried[seat], &mut next);
+            let play = move_generator.plays[0].play.clone();
+            put_back[seat].clear();
+            if let movegen::Play::Exchange { tiles } = &play {
+                put_back[seat].extend_from_slice(tiles);
+            }
+            let board_before = game_state.board_tiles.to_vec();
+            game_state.play(&game_config, &mut rng, &play).unwrap();
+            last = Some((board_before, play));
+            match game_state
+                .check_game_ended(&game_config, &mut final_scores)
+                .unwrap()
+            {
+                game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+                _ => break,
+            }
+        }
+        assert!(weighed > 1 && changed > 0);
     }
 
     #[test]

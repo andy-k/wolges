@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use wolges::{
     alphabet, anagrams, bag, bites, build, display, equity, error, fash, game_config, game_state,
-    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
+    game_timers, infer, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
 // its counting allocator and --max-memory; its endgame watching goes unused
@@ -314,9 +314,17 @@ fn do_it(
     // from game to game, the move there from the second turn of a game on
     let mut last_board = game_state.board_tiles.to_vec();
     let mut last_play: Option<movegen::Play> = None;
+    // each seat's inference of its opponent, carried to its next, and the
+    // tiles it has put back since, with the next carry's buffer: kept from
+    // game to game, emptied at the start of each
+    let mut carried = vec![infer::Carried::default(); game_state.players.len()];
+    let mut put_back = vec![Vec::new(); game_state.players.len()];
+    let mut next_carried = infer::Carried::default();
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         final_scores.iter_mut().for_each(|s| *s = 0);
+        carried.iter_mut().for_each(infer::Carried::clear);
+        put_back.iter_mut().for_each(Vec::clear);
 
         timers.reset_to(15 * 1000);
         let mut has_last = false;
@@ -568,24 +576,34 @@ fn do_it(
             if false {
                 move_generator.reset_for_another_kwg();
             }
+            let seat = game_state.turn as usize;
             move_picker.pick_a_move_after(
                 filtered_movegen,
                 &mut move_generator,
                 board_snapshot,
                 &game_state,
                 &game_state.current_player().rack,
-                last_play
-                    .as_ref()
-                    .filter(|_| has_last)
-                    .map(|play| move_picker::LastMove {
-                        board_before: &last_board,
-                        play,
-                    }),
+                (
+                    last_play
+                        .as_ref()
+                        .filter(|_| has_last)
+                        .map(|play| move_picker::LastMove {
+                            board_before: &last_board,
+                            play,
+                            held: infer::Held::Kept(&carried[seat], &put_back[seat]),
+                        }),
+                    &mut next_carried,
+                ),
             )?;
+            std::mem::swap(&mut carried[seat], &mut next_carried);
             let plays = &mut move_generator.plays;
             let play = &plays[0].play; // assume at least there's always Pass
             writeln!(std::io::stdout(), "Playing: {}", play.fmt(board_snapshot))?;
 
+            put_back[seat].clear();
+            if let movegen::Play::Exchange { tiles } = play {
+                put_back[seat].extend_from_slice(tiles);
+            }
             last_board.copy_from_slice(&game_state.board_tiles);
             match &mut last_play {
                 Some(last_play) => last_play.clone_from(play),
