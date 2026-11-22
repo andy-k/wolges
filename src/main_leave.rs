@@ -8287,6 +8287,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
         add,
         full_v,
         min_keep: 0,
+        take_kept: false,
     });
     writeln!(
         std::io::stdout(),
@@ -9703,6 +9704,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
                     add,
                     full_v,
                     min_keep: 0,
+                    take_kept: false,
                 }),
             )?;
             writeln!(
@@ -10318,6 +10320,7 @@ fn compare_seats<
             add,
             full_v: full_v[seat].as_slice(),
             min_keep: 0,
+            take_kept: false,
         })
     });
     let seat_line = |picker: SeatPicker,

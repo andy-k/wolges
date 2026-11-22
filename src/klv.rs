@@ -10,6 +10,7 @@ pub struct DynamicLeavesRef<'a> {
     pub add: &'a census::AddTable,
     pub full_v: &'a [i32],
     pub min_keep: usize,
+    pub take_kept: bool, // the last generation's values, on the same inputs
 }
 
 impl DynamicLeavesRef<'_> {
@@ -19,6 +20,30 @@ impl DynamicLeavesRef<'_> {
             .min(pool_size)
             .min(bag_size)
     }
+
+    // the tables' addresses and full_v's length, and min_keep
+    #[inline(always)]
+    fn identity(&self) -> [usize; 5] {
+        [
+            std::ptr::from_ref(self.lat).addr(),
+            std::ptr::from_ref(self.add).addr(),
+            self.full_v.as_ptr().addr(),
+            self.full_v.len(),
+            self.min_keep,
+        ]
+    }
+}
+
+// the values apply_dynamic_leaves gave a rack's leaves and what they were
+// found from, kept for a later call on the same to take
+#[derive(Clone, Default)]
+pub struct DynamicKept {
+    tables: [usize; 5], // DynamicLeavesRef::identity
+    pool: Vec<u8>,
+    bag_size: usize,
+    rack: Vec<(u8, u8)>, // each tile and its count
+    before: Vec<i32>,
+    after: Vec<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -1207,6 +1232,43 @@ impl MultiLeaves {
         }
     }
 
+    // apply_dynamic_leaves, keeping what it finds in kept; or, when dyn_ref
+    // says to take them, what it gave when kept last saw the same rack,
+    // leaves, pool, bag, and tables
+    #[inline(always)]
+    pub fn apply_dynamic_leaves_kept(
+        &mut self,
+        dyn_ref: &DynamicLeavesRef<'_>,
+        live_pool: &[u8],
+        bag_size: usize,
+        kept: &mut DynamicKept,
+    ) {
+        let tables = dyn_ref.identity();
+        let rack = self
+            .unique_tiles
+            .iter()
+            .map(|&tile| (tile, self.digits[tile as usize].count));
+        if dyn_ref.take_kept
+            && kept.tables == tables
+            && kept.pool == live_pool
+            && kept.bag_size == bag_size
+            && kept.before == self.leave_values
+            && kept.rack.iter().copied().eq(rack.clone())
+        {
+            self.leave_values.copy_from_slice(&kept.after);
+            return;
+        }
+        kept.tables = tables;
+        kept.pool.clear();
+        kept.pool.extend_from_slice(live_pool);
+        kept.bag_size = bag_size;
+        kept.rack.clear();
+        kept.rack.extend(rack);
+        kept.before.clone_from(&self.leave_values);
+        self.apply_dynamic_leaves(dyn_ref, live_pool, bag_size);
+        kept.after.clone_from(&self.leave_values);
+    }
+
     #[inline(always)]
     pub fn kurnia_gen_exchange_moves_unconditionally<
         'a,
@@ -1890,6 +1952,7 @@ mod tests {
             add: &add,
             full_v: &full_v,
             min_keep,
+            take_kept: false,
         };
         let bag_size = 5usize;
         ml.apply_dynamic_leaves(&replacing, &live_pool, bag_size);
@@ -1966,6 +2029,78 @@ mod tests {
             (num / den) as i32,
             "one tile in the bag draws one tile, not two"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn apply_dynamic_leaves_kept_finds_a_rack_once() {
+        let lat = census::MultisetLattice::new(3, 3).unwrap();
+        let add = census::AddTable::new(&lat);
+        let mut full_v = vec![0i32; lat.len()];
+        for (idx, slot) in full_v.iter_mut().enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            *slot = h.rem_euclid(20_000) - 5_000;
+        }
+        let ml = MultiLeaves {
+            unique_tiles: vec![0u8, 1u8],
+            digits: vec![
+                MultiLeavesDigit {
+                    count: 2,
+                    place_value: 1,
+                },
+                MultiLeavesDigit {
+                    count: 1,
+                    place_value: 3,
+                },
+                MultiLeavesDigit {
+                    count: 0,
+                    place_value: 0,
+                },
+            ],
+            leave_values: (0..6i32).map(|i| -100 - i).collect(),
+            num_playeds: vec![3, 2, 1, 2, 1, 0],
+            dense_most: DENSE_LEAVES_MOST,
+            bag_terms: Vec::new(),
+        };
+        let dyn_ref = DynamicLeavesRef {
+            lat: &lat,
+            add: &add,
+            full_v: &full_v,
+            min_keep: 1,
+            take_kept: false,
+        };
+        let taking = DynamicLeavesRef {
+            lat: &lat,
+            add: &add,
+            full_v: &full_v,
+            min_keep: 1,
+            take_kept: true,
+        };
+        let live_pool = [2u8, 2u8, 1u8];
+        let applied = |bag_size: usize| {
+            let mut fresh = ml.clone();
+            fresh.apply_dynamic_leaves(&dyn_ref, &live_pool, bag_size);
+            fresh.leave_values
+        };
+        let mut kept = DynamicKept::default();
+        let mut first = ml.clone();
+        first.apply_dynamic_leaves_kept(&dyn_ref, &live_pool, 5, &mut kept);
+        assert_eq!(first.leave_values, applied(5));
+        // the same again takes the kept values when told to, marked here to
+        // show it
+        kept.after.iter_mut().for_each(|value| *value += 1);
+        let mut again = ml.clone();
+        again.apply_dynamic_leaves_kept(&taking, &live_pool, 5, &mut kept);
+        assert_eq!(again.leave_values, kept.after);
+        // and finds them anew when not told to, keeping what it finds
+        let mut untold = ml.clone();
+        untold.apply_dynamic_leaves_kept(&dyn_ref, &live_pool, 5, &mut kept);
+        assert_eq!(untold.leave_values, applied(5));
+        assert_eq!(kept.after, applied(5));
+        // another bag finds them anew
+        let mut other = ml.clone();
+        other.apply_dynamic_leaves_kept(&taking, &live_pool, 1, &mut kept);
+        assert_eq!(other.leave_values, applied(1));
     }
 
     #[test]
