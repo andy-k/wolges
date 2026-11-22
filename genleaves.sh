@@ -224,8 +224,10 @@ done
 autoplay_subcommand="autoplay-summarize"
 gilles_subcommand="gilles"
 generate_subcommand="generate"
+games_log_flag=""
 if [ ! "$logs_mode" ]; then
   autoplay_subcommand="${autoplay_subcommand}-only"
+  games_log_flag="--no-games-log"
 fi
 if [ "$full_mode" ]; then
   generate_subcommand="${generate_subcommand}-full"
@@ -287,8 +289,8 @@ for full_arg in "$@"; do
     echo "$summary_file"
     mv -fv "$summary_file" "summary${num_processed}.csv"
   else
-    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon" ${gen_seed:+"$gen_seed"}
-    log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$autoplay_subcommand" ${games_log_flag:+"$games_log_flag"} "$kwg" "$last_leave"{,} "$before_colon" "$after_colon" ${gen_seed:+"$gen_seed"}
+    log_file="$(ls -1td summary-log-* | head -1 | cut -f2- -d-)"
     echo "$log_file"
     mv -fv "summary-${log_file}" "summary${num_processed}.csv"
   fi
