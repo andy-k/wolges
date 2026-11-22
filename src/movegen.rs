@@ -1391,7 +1391,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             build_subracks(
                 &self.multi_leaves,
                 places,
-                (&self.rack_tally, &first_places),
+                (&self.rack_tally, &first_places, self.num_tiles_on_rack),
                 &mut self.subracks,
                 &mut self.subracks_by_played,
                 (&mut self.subrack_order, &mut self.subracks_spare),
@@ -4771,7 +4771,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
 fn build_subracks<P: alphagram::KeyPlaces>(
     multi_leaves: &klv::MultiLeaves,
     places: P,
-    (rack_tally, first_places): (&[u8], &[u8]),
+    (rack_tally, first_places, num_tiles_on_rack): (&[u8], &[u8], u8),
     subracks: &mut Vec<Subrack>,
     by_played: &mut Vec<u32>,
     (order, spare): (&mut Vec<u64>, &mut Vec<Subrack>),
@@ -4788,12 +4788,8 @@ fn build_subracks<P: alphagram::KeyPlaces>(
             subracks.extend(order.iter().map(|&k| spare[(k & 0xffffff) as usize]));
         }
     }
-    let num_tiles_on_rack = rack_tally
-        .iter()
-        .map(|&count| count as usize)
-        .sum::<usize>();
     by_played.clear();
-    by_played.resize(num_tiles_on_rack + 2, subracks.len() as u32);
+    by_played.resize(num_tiles_on_rack as usize + 2, subracks.len() as u32);
     for (i, s) in subracks.iter().enumerate().rev() {
         by_played[s.num_played as usize] = i as u32;
     }
