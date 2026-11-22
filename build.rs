@@ -58,38 +58,26 @@ fn main() {
                 rerun_if_changed(&Path::new(&git_dir).join(file));
             }
         }
-        // each of these, all but what git ignores in it. Cargo watches a
-        // directory to its depths: one file written to src/lexbin or
-        // src/lexsrc, where the lexicon files live, would rerun this,
-        // rebuilding everything. So a directory is watched entry by entry.
-        let ignored = git(&[
+        // cargo's directory watches recurse. watch source files individually
+        // so ignored entries under a source directory, such as the lexicon
+        // files in src/lexbin and src/lexsrc, cannot rerun this script.
+        let mut files = vec![
             "ls-files",
+            "-z",
+            "--cached",
             "--others",
-            "--ignored",
             "--exclude-standard",
-            "--directory",
             "--",
-        ]
-        .iter()
-        .chain(&BUILT_FROM)
-        .copied()
-        .collect::<Vec<_>>())
-        .unwrap_or_default();
-        let ignored = ignored
-            .lines()
-            .map(|line| Path::new(line.trim_end_matches('/')))
-            .collect::<Vec<_>>();
-        for path in BUILT_FROM {
-            match std::fs::read_dir(path) {
-                Ok(entries) => {
-                    for entry in entries.flatten() {
-                        let entry = entry.path();
-                        if !ignored.contains(&entry.as_path()) {
-                            rerun_if_changed(&entry);
-                        }
-                    }
-                }
-                Err(_) => rerun_if_changed(Path::new(path)),
+        ];
+        files.extend(BUILT_FROM);
+        files.push(".gitignore");
+        if let Some(files) = git(&files) {
+            for file in files.split_terminator('\0') {
+                rerun_if_changed(Path::new(file));
+            }
+        } else {
+            for path in BUILT_FROM {
+                rerun_if_changed(Path::new(path));
             }
         }
         (|| {
