@@ -139,7 +139,6 @@ fn woogles_peg_draw_outcomes() {
             let mut solver =
                 endgame::EndgameSolver::<_, kwg::Node24>::new(&gc, pruned.kwg(), &arm_tables)
                     .unwrap();
-            solver.reserve_table(16 << 20);
 
             assert_eq!(candidate.margins.len(), draws.len(), "{name}");
             let mut hypotheses = Vec::new();
