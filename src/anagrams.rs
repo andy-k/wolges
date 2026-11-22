@@ -505,8 +505,9 @@ impl Anagrams {
             }
             groups.push(table);
 
+            // within a group, removing each tile gives a different key.
             // a length's pairs, emptied before the next length's are made
-            pairs.sort_unstable_by_key(|&(key, at, tile)| (key, at, tile));
+            pairs.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
             let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
             budget.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
             let mut table = table_of(blank_keys);
