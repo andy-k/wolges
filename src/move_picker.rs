@@ -113,11 +113,21 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         movegen::PassPolicy::OnlyWhenForced
     };
     std::mem::swap(&mut move_generator.plays, scratch);
+    // taking the dynamic leaves the field's generation above found
     filtered_movegen.gen_nonplacing_moves_with(
         move_generator,
         &movegen::GenMovesParams {
             max_gen: quota,
             pass_policy,
+            dynamic_leaves: params
+                .dynamic_leaves
+                .map(|dynamic_leaves| klv::DynamicLeavesRef {
+                    lat: dynamic_leaves.lat,
+                    add: dynamic_leaves.add,
+                    full_v: dynamic_leaves.full_v,
+                    min_keep: dynamic_leaves.min_keep,
+                    take_kept: true,
+                }),
             ..*params
         },
     );

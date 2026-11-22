@@ -697,6 +697,7 @@ struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool, S: BoardStore> {
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
+    dynamic_kept: klv::DynamicKept,
     descending_scores: Vec<i32>, // rack.len() (premultiplied by SCALE)
     exchange_buffer: Vec<u8>,    // rack.len(), or max(word length) with word prune
     lane_scaffold: Box<[LaneScaffold]>, // rows + cols, across lanes first
@@ -798,6 +799,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
             num_tiles_on_rack: self.num_tiles_on_rack,
             rack_bits: self.rack_bits,
             multi_leaves: self.multi_leaves.clone(),
+            dynamic_kept: self.dynamic_kept.clone(),
             descending_scores: self.descending_scores.clone(),
             exchange_buffer: self.exchange_buffer.clone(),
             lane_scaffold: self.lane_scaffold.clone(),
@@ -906,6 +908,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
         self.rack_bits.clone_from(&source.rack_bits);
         self.multi_leaves.clone_from(&source.multi_leaves);
+        self.dynamic_kept.clone_from(&source.dynamic_kept);
         self.descending_scores.clone_from(&source.descending_scores);
         self.exchange_buffer.clone_from(&source.exchange_buffer);
         self.lane_scaffold.clone_from(&source.lane_scaffold);
@@ -1027,6 +1030,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             num_tiles_on_rack: 0,
             rack_bits: 0,
             multi_leaves: klv::MultiLeaves::new(),
+            dynamic_kept: klv::DynamicKept::default(),
             descending_scores: Vec::new(),
             exchange_buffer: Vec::new(),
             lane_scaffold: vec![LaneScaffold::new(); dim.rows as usize + dim.cols as usize]
@@ -1414,10 +1418,11 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                             board_snapshot.board_tiles,
                             &self.rack_tally,
                         );
-                        self.multi_leaves.apply_dynamic_leaves(
+                        self.multi_leaves.apply_dynamic_leaves_kept(
                             &dyn_ref,
                             &live_pool[..n],
                             self.num_tiles_in_bag.max(0) as usize,
+                            &mut self.dynamic_kept,
                         );
                     }
                     // each placement's leave with its bag term, so every bound read
