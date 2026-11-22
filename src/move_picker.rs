@@ -544,7 +544,6 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
     // the rows of the iterations after lo up to hi for plays, in place of
     // those held, on a simmer prepared as pristine is, which each iteration is
     // restored to
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn push_rows<const OBSERVE: bool, R: rand::Rng + SeedableRng + simmer::CopyState>(
         &self,
