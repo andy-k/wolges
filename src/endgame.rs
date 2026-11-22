@@ -1061,7 +1061,6 @@ const POOL_SHARE: usize = 8;
 // list is let go
 struct LanePool {
     deal: Deal,                      // its pool, none outside such a search
-    most: usize,                     // the most tiles a rack holds
     places: [u8; 256],               // each tile's nibble; 0xff off the pool
     moves: Vec<(movegen::Play, u8)>, // each move kept, with the tiles it places
     known: Vec<KeyTable>,            // each slot's moves' ids, by their hashes
@@ -1095,7 +1094,6 @@ impl LanePool {
     fn new() -> Self {
         Self {
             deal: Deal::default(),
-            most: 0,
             places: [0xff; 256],
             moves: Vec::new(),
             known: Vec::new(),
@@ -1219,10 +1217,10 @@ impl LanePool {
         needed < limit.room() && self.bytes() + needed <= self.deal.budget
     }
 
-    // the deal of a search; no pool when it holds more kinds than Tiles has
-    // nibbles, or a rack more tiles than a nibble counts
-    fn set_pool(&mut self, deal: &Deal, most: usize) {
-        self.most = most;
+    // the deal of a search, its racks holding at most most tiles; no pool when
+    // it holds more kinds than Tiles has nibbles, or a rack more tiles than a
+    // nibble counts
+    fn adopt_deal(&mut self, deal: &Deal, most: usize) {
         if self.deal != *deal {
             self.deal.clone_from(deal);
             self.places = [0xff; 256];
@@ -3293,7 +3291,7 @@ impl<
             let rack = &work_buffer.racks[player_idx as usize];
             let lane_pool = &work_buffer.lane_pool;
             !lane_pool.deal.pool.is_empty()
-                && rack.len() <= lane_pool.most
+                && rack.len() <= self.game_config.rack_size() as usize
                 && within(rack, &lane_pool.deal.pool)
         };
         let (mut rack_rows, mut rack_cols) = (0u128, 0u128);
@@ -5939,7 +5937,7 @@ impl<
     // the same pool as another solver's (its deal)
     fn pool_lanes_as(&mut self, deal: &Deal) {
         let most = self.game_config.rack_size() as usize;
-        self.work_buffer.lane_pool.set_pool(deal, most);
+        self.work_buffer.lane_pool.adopt_deal(deal, most);
     }
 
     #[inline]
