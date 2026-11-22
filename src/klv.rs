@@ -1200,7 +1200,7 @@ impl MultiLeaves {
             let dynamic =
                 census::dynamic_leave_value(lat, add, full_v, live_pool, s_ridx as usize, draw);
             if dynamic != census::UNPLAYABLE {
-                self.leave_values[idx] = dynamic;
+                self.leave_values[idx] = dynamic.raw();
             }
         }
     }

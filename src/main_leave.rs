@@ -4129,7 +4129,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                let mut sheet = vec![census::UNPLAYABLE; lat_len];
+                let mut sheet = vec![census::UNPLAYABLE.raw(); lat_len];
 
                 let mut blank_deltas = Vec::<(u8, i32)>::new();
 
@@ -4246,12 +4246,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         *slot = if den_board[idx] > 0.0 {
                             (num_board[idx] / den_board[idx]).round() as i32
                         } else {
-                            census::UNPLAYABLE
+                            census::UNPLAYABLE.raw()
                         };
                     }
                     for (slot, &ways) in full.iter_mut().zip(&ways_board) {
                         if ways == 0.0 {
-                            *slot = census::UNPLAYABLE;
+                            *slot = census::UNPLAYABLE.raw();
                         }
                     }
                     if log_first {
@@ -4265,7 +4265,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     let (sum, cnt, completed, valued, _ever) = &mut *g;
                     for idx in 0..lat_len {
                         let v = contrib[idx];
-                        if v != census::UNPLAYABLE {
+                        if v != census::UNPLAYABLE.raw() {
                             if cnt[idx] == 0 {
                                 *valued += 1;
                             }
@@ -8608,10 +8608,10 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
         // keeps every tile (the sheet has no entry for playing nothing)
         let or_pass = |best: i32, pass: i32| if best < i32::MIN / 8 { pass } else { best };
         openness.best_score +=
-            chance * or_pass(census::best_equity_of(lat, sheet, leaves.1, rack), 0) as f64;
+            chance * or_pass(census::best_equity_of(lat, sheet, leaves.1, rack).raw(), 0) as f64;
         openness.best_equity += chance
             * or_pass(
-                census::best_equity_of(lat, sheet, leaves.0, rack),
+                census::best_equity_of(lat, sheet, leaves.0, rack).raw(),
                 leaves.0[rank],
             ) as f64;
         openness.bingo += chance * (sheet[rank] > floor) as u8 as f64;
@@ -9230,7 +9230,7 @@ fn print_rack_keeps<L: kwg::Node>(
             let static_value = klv.leave_value_from_tally(&kept_tally).raw();
             let draw = (rack_size - size).min(pool_size);
             let dynamic =
-                census::dynamic_leave_value(lat, add, full_v, pool, s_ridx as usize, draw);
+                census::dynamic_leave_value(lat, add, full_v, pool, s_ridx as usize, draw).raw();
             rows.push((size, kept, static_value, dynamic));
         }
         let mut i = 0;
@@ -9249,7 +9249,7 @@ fn print_rack_keeps<L: kwg::Node>(
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     for (_, kept, static_value, dynamic) in rows {
         let scale = equity::SCALE as f64;
-        if dynamic == census::UNPLAYABLE {
+        if dynamic == census::UNPLAYABLE.raw() {
             writeln!(
                 boxed_stdout_or_stderr(),
                 "  {kept:<16} {:>10.3}  undrawable",
@@ -10940,7 +10940,7 @@ WCMP_P1_SCORE 402.000000
                 .map(|(&p, &s)| p - s)
                 .collect::<Vec<_>>();
             let draw = (lat.rack_size() - size).min(pool_size - size);
-            let want = census::dynamic_leave_value(&lat, &add, &full_v, &rest, idx, draw);
+            let want = census::dynamic_leave_value(&lat, &add, &full_v, &rest, idx, draw).raw();
             assert!(
                 (got - want as f64).abs() <= 1.0,
                 "{tally:?}: {got} against {want}"

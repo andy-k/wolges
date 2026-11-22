@@ -191,7 +191,7 @@ pub fn build_sheet_spell_once<
                 census::record_blank_variants(
                     lat,
                     sheet,
-                    real_score,
+                    equity::Equity::new(real_score),
                     blank_deltas,
                     unseen_tally,
                     num_blanks_eff,
@@ -443,7 +443,7 @@ pub fn weigh_racks(
             *r = d + p;
         }
         let rank = lat.rank(rack);
-        let mut best = census::best_equity_of(lat, is.sheet, is.leave, rack);
+        let mut best = census::best_equity_of(lat, is.sheet, is.leave, rack).raw();
         if passed {
             best = best.max(is.leave[rank as usize]);
         }
@@ -454,7 +454,9 @@ pub fn weigh_racks(
                 (move_value + is.leave[kept as usize], kept)
             }
             MoveTiles::Exchanged(n) => {
-                census::best_keep_of(lat, is.leave, rack, rack_size.saturating_sub(n))
+                let (value, kept) =
+                    census::best_keep_of(lat, is.leave, rack, rack_size.saturating_sub(n));
+                (value.raw(), kept)
             }
         };
         let ln_prior = rack
@@ -610,6 +612,7 @@ pub fn weigh_racks_by_generation<
                         .map(|keep| census::best_keep_of(lat, leave, rack, keep).0)
                         .max()
                         .unwrap_or(census::UNPLAYABLE)
+                        .raw()
             }
             _ => top.equity.raw(),
         };
@@ -623,7 +626,9 @@ pub fn weigh_racks_by_generation<
                 (move_value + leave[kept as usize], kept)
             }
             MoveTiles::Exchanged(n) => {
-                census::best_keep_of(lat, leave, rack, rack_size.saturating_sub(n))
+                let (value, kept) =
+                    census::best_keep_of(lat, leave, rack, rack_size.saturating_sub(n));
+                (value.raw(), kept)
             }
         };
         let ln_prior = rack
@@ -1433,7 +1438,7 @@ fn reply_sums(
             .map(|(&d, ways)| ways[d as usize])
             .product::<u64>();
         let rank = lat.rank(rack) as usize;
-        let mut best = census::best_equity_of(lat, sheet, leave, rack);
+        let mut best = census::best_equity_of(lat, sheet, leave, rack).raw();
         if best < i32::MIN / 8 {
             best = leave[rank];
         }
