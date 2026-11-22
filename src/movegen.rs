@@ -506,7 +506,6 @@ struct RcsSpan {
     right: i8,
     num_played: u8,
     crossed: bool, // it holds a board tile
-    hooked: u64,   // its empty squares a cross word reaches, a bit each
     fixed: i32, // its board tiles' scores times its word multiplier, plus its cross words' board scores
     at: u32,
 }
@@ -12268,15 +12267,7 @@ impl RcsLists {
 impl RcsGeometry<'_> {
     // a span of the walk, its multipliers the walk's list
     #[inline(always)]
-    fn record(
-        &mut self,
-        walk: &RcsWalk,
-        list: &[Taken],
-        hooks: u64,
-        anchor: i8,
-        left: i8,
-        right: i8,
-    ) {
+    fn record(&mut self, walk: &RcsWalk, list: &[Taken], anchor: i8, left: i8, right: i8) {
         let at = self.kept.multipliers.len();
         let n = walk.num_played as usize;
         // a fixed count of entries copied, then the rest of a longer span's, or
@@ -12295,7 +12286,6 @@ impl RcsGeometry<'_> {
             right,
             num_played: walk.num_played,
             crossed: walk.crossed,
-            hooked: walk.placed & hooks,
             fixed: walk.board_score * walk.word_multiplier + walk.cross_score,
             at: at as u32,
         });
@@ -12378,7 +12368,7 @@ impl RcsGeometry<'_> {
                 idx = multi_jump.right_idx;
             }
             if idx > anchor + 1 && walk.num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                self.record(&walk, &lists.right, lists.hooks, anchor, idx_left, idx);
+                self.record(&walk, &lists.right, anchor, idx_left, idx);
             }
             if walk.num_played >= self.num_max_played || idx >= rightmost {
                 break;
@@ -12412,7 +12402,7 @@ impl RcsGeometry<'_> {
                 idx = multi_jump.left_idx;
             }
             if walk.num_played > !is_unique as u8 && anchor - idx >= 2 {
-                self.record(&walk, &lists.left, lists.hooks, anchor, idx + 1, anchor + 1);
+                self.record(&walk, &lists.left, anchor, idx + 1, anchor + 1);
             }
             if walk.num_played >= self.num_max_played {
                 break;
@@ -12797,8 +12787,10 @@ fn rcs_lane_placements(
             .fold(0, i32::max);
     }
     for span in &kept.spans {
+        // a span cannot be filled if the first unfillable hook at or after its
+        // left edge falls inside it.
         if span.num_played > num_max_played
-            || span.hooked & unfillable != 0
+            || (unfillable >> span.left as u32).trailing_zeros() < (span.right - span.left) as u32
             || (!span.crossed && feasible_lengths & 1 << span.num_played == 0)
             || (span.crossed && check.refuses(span.left, span.right, span.num_played))
         {
