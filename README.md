@@ -5,7 +5,7 @@
 Wolges, a library of Andy Kurnia's experiments to understand how to better play
 the Orthogonal Morphemes Game of Words, also known as OMGWords.
 
-Backronym idea: Weaving Out Letters Gathering Expected Scores.
+Backronym idea: Word-Oriented Letter Game Engine Suite.
 
 It is named after Woogles.io, the best site to play the game on.
 
