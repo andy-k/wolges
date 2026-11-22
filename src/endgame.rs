@@ -5110,6 +5110,7 @@ impl<
                         if !search {
                             break;
                         }
+                        self.work_buffer.verdicts.clear();
                         self.work_buffer.at_root = restricted;
                         if self
                             .negamax_eval(
