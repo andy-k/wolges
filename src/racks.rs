@@ -17,9 +17,8 @@ pub struct RackTable {
     rack_size: u8,
     counts: Box<[u8]>, // each tile's count in the bag, the blank's first
     ways: Box<[u64]>,  // the racks of k tiles that tiles t on can make, at t * (rack_size + 1) + k
-    ends: Box<[u64]>,  // by rank, where each rack's setup ends in data
-    data: Box<[u8]>,   // each rack's leaves (i32, little-endian), then its order (u8)
-    data_start: usize, // past the index when the original file bytes back data
+    data: Box<[u8]>,   // the index, then each rack's leaves (i32, little-endian) and order (u8)
+    data_start: usize, // past the index, by rank where each rack's setup ends past it (u64)
 }
 
 impl RackTable {
@@ -141,7 +140,6 @@ impl RackTable {
             rack_size,
             counts,
             ways,
-            ends: Box::new([]),
             data: Box::new([]),
             data_start: 0,
         };
@@ -150,9 +148,13 @@ impl RackTable {
         let subrack_ways = Self::ways_of::<true>(&table.counts, rack_size);
         let num_bytes = usize::try_from(subrack_ways[rack_size as usize] * SUBRACK_BYTES as u64)
             .map_err(|_| "the rack table does not fit in memory")?;
-        let mut ends = vec![0u64; num_racks];
-        let mut data = vec![0u8; num_bytes];
-        let build_rows = |from, mut at, ends: &mut [u64], mut rows: &mut [u8]| {
+        let data_start = (num_racks.checked_mul(8))
+            .filter(|start| start.checked_add(num_bytes).is_some())
+            .ok_or("the rack table does not fit in memory")?;
+        let mut data = vec![0u8; data_start + num_bytes];
+        let (ends, setups) = data.split_at_mut(data_start);
+        let ends = ends.as_chunks_mut::<8>().0;
+        let build_rows = |from, mut at, ends: &mut [[u8; 8]], mut rows: &mut [u8]| {
             let mut rack_tally = vec![0u8; table.counts.len()];
             let mut multi_leaves = klv::MultiLeaves::new();
             let mut keys = Vec::new();
@@ -178,21 +180,21 @@ impl RackTable {
                 movegen::subrack_order(&multi_leaves, &rack_tally, &mut keys, &mut order);
                 permutation.copy_from_slice(&order);
                 at += row.len();
-                *end = at as u64;
+                *end = (at as u64).to_le_bytes();
             }
             debug_assert!(rows.is_empty());
         };
         if threads == 1 {
             // the serial builder needs no thread support, including in wasm
             if !ends.is_empty() {
-                build_rows(0, 0, &mut ends, &mut data);
+                build_rows(0, 0, ends, setups);
             }
         } else {
             let per_thread = num_racks.div_ceil(threads);
             let build_rows = &build_rows;
             std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(threads);
-                let mut remaining = data.as_mut_slice();
+                let mut remaining = setups;
                 let mut offset = 0;
                 let mut boundary_rack = vec![0u8; table.counts.len()];
                 for (worker, ends) in ends.chunks_mut(per_thread).enumerate() {
@@ -218,25 +220,23 @@ impl RackTable {
             })
             .map_err(|_| "a thread making the rack table failed")?;
         }
-        table.ends = ends.into_boxed_slice();
         table.data = data.into_boxed_slice();
+        table.data_start = data_start;
         Ok(table)
     }
 
     // the file: by rank, where each rack's setup ends (u64, little-endian),
     // then the setups; no header, its racks those this config's bag deals
     pub fn write(&self, out: &mut impl std::io::Write) -> error::Returns<()> {
-        for end in &self.ends {
-            out.write_all(&end.to_le_bytes())?;
-        }
-        out.write_all(&self.data[self.data_start..])?;
+        out.write_all(&self.data)?;
         Ok(())
     }
 
     // a file write made, for this config's bag and rack size
     pub fn read(game_config: &game_config::GameConfig, bytes: &[u8]) -> error::Returns<Self> {
         let (mut table, start) = Self::read_index(game_config, bytes)?;
-        table.data = bytes[start..].into();
+        table.data = bytes.into();
+        table.data_start = start;
         Ok(table)
     }
 
@@ -261,11 +261,10 @@ impl RackTable {
             .collect::<Box<[u8]>>();
         let rack_size = game_config.rack_size();
         let ways = Self::ways_of::<false>(&counts, rack_size);
-        let mut table = Self {
+        let table = Self {
             rack_size,
             counts,
             ways,
-            ends: Box::new([]),
             data: Box::new([]),
             data_start: 0,
         };
@@ -275,14 +274,9 @@ impl RackTable {
             .filter(|&len| len <= bytes.len())
             .ok_or("the rack table is too short for this config's racks")?;
         let (ends, data) = bytes.split_at(ends_len);
-        let ends = ends
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|end| u64::from_le_bytes(*end))
-            .collect::<Box<[u64]>>();
         let mut from = 0u64;
-        for &end in &ends {
+        for end in ends.as_chunks::<8>().0 {
+            let end = u64::from_le_bytes(*end);
             let len = end
                 .checked_sub(from)
                 .ok_or("the rack table's setups do not follow each other")?;
@@ -296,8 +290,13 @@ impl RackTable {
         if from != data.len() as u64 {
             return Err("the rack table's setups do not end where it does".into());
         }
-        table.ends = ends;
         Ok((table, ends_len))
+    }
+
+    // where the setup of the rack of this rank ends, past the index
+    #[inline(always)]
+    fn end(&self, rank: usize) -> usize {
+        u64::from_le_bytes(self.data[..self.data_start].as_chunks::<8>().0[rank]) as usize
     }
 
     // a full rack's setup: its leaves (i32, little-endian) and its subracks'
@@ -305,8 +304,8 @@ impl RackTable {
     #[inline(always)]
     pub fn get(&self, rack_tally: &[u8]) -> Option<(&[u8], &[u8])> {
         let rank = self.rank(rack_tally)?;
-        let from = if rank == 0 { 0 } else { self.ends[rank - 1] } as usize;
-        let setup = &self.data[self.data_start + from..self.data_start + self.ends[rank] as usize];
+        let from = if rank == 0 { 0 } else { self.end(rank - 1) };
+        let setup = &self.data[self.data_start + from..self.data_start + self.end(rank)];
         Some(setup.split_at(setup.len() / SUBRACK_BYTES * LEAVE_BYTES))
     }
 }
@@ -336,7 +335,6 @@ mod tests {
             rack_size,
             counts: counts.into(),
             ways: RackTable::ways_of::<false>(&counts, rack_size),
-            ends: Box::new([]),
             data: Box::new([]),
             data_start: 0,
         };
@@ -392,11 +390,11 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(&leaves)).unwrap();
         let table = RackTable::build(&klv, &gc, 4).unwrap();
         let serial = RackTable::build(&klv, &gc, 1).unwrap();
-        assert!(serial.ends == table.ends && serial.data == table.data);
+        assert!(serial.data_start == table.data_start && serial.data == table.data);
         let mut file = Vec::new();
         table.write(&mut file).unwrap();
         let read_back = RackTable::read(&gc, &file).unwrap();
-        assert!(read_back.ends == table.ends && read_back.data == table.data);
+        assert!(read_back.data_start == table.data_start && read_back.data == table.data);
         let read_owned = RackTable::from_bytes_alloc(&gc, file.clone()).unwrap();
         let mut rewritten = Vec::new();
         read_owned.write(&mut rewritten).unwrap();
