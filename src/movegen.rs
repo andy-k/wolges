@@ -2059,12 +2059,11 @@ impl SpanCheck for Option<KeyCheck<'_>> {
         if slot.turn != check.turn || slot.key != crossed || slot.played != num_played {
             let from = check.by_played[num_played as usize] as usize;
             let upto = check.by_played[num_played as usize + 1] as usize;
-            let mut held = false;
-            for subrack in &check.subracks[from..upto] {
-                held |= check
+            let held = check.subracks[from..upto].iter().any(|subrack| {
+                check
                     .source
-                    .may_hold_part(crossed_part.wrapping_add(subrack.part));
-            }
+                    .may_hold_part(crossed_part.wrapping_add(subrack.part))
+            });
             *slot = ExistSlot {
                 key: crossed,
                 turn: check.turn,
