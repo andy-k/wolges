@@ -1245,24 +1245,6 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             0
         };
         self.play_out_bonus = play_out_bonus;
-        // the bag term by tiles played: none for none played (a pass or an
-        // exchange), none when the bag is already empty
-        if BAG_TERM {
-            match &self.bag_term {
-                Some(bag_term) if self.num_tiles_in_bag > 0 => {
-                    let bag = self.num_tiles_in_bag;
-                    self.multi_leaves
-                        .set_bag_terms((0..=self.num_tiles_on_rack as i16).map(|num_played| {
-                            if num_played == 0 {
-                                0
-                            } else {
-                                bag_term.at(bag - num_played)
-                            }
-                        }));
-                }
-                _ => self.multi_leaves.set_bag_terms(std::iter::empty()),
-            }
-        }
 
         self.descending_scores.clear();
         self.descending_scores
@@ -1298,13 +1280,15 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         if self.num_tiles_in_bag <= 0 {
             if !LEAVES {
                 // no leave is read: the digits alone, and no table
-                self.multi_leaves.init_digits(&self.rack_tally);
+                self.multi_leaves
+                    .init_digits(&self.rack_tally, std::iter::empty());
             } else {
                 self.multi_leaves.init(
                     &self.rack_tally,
                     board_snapshot.klv,
                     false,
                     adjust_leave_value,
+                    std::iter::empty(),
                 );
                 if self.multi_leaves.is_dense() {
                     self.multi_leaves
@@ -1322,13 +1306,36 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = play_out_bonus;
         } else {
+            // the bag term by tiles played: none for none played (a pass or an
+            // exchange); the bag is not empty here
+            let bag = self.num_tiles_in_bag;
+            let on_rack = self.num_tiles_on_rack as i16;
+            let bag_terms = (if BAG_TERM {
+                self.bag_term.as_ref()
+            } else {
+                None
+            })
+            .into_iter()
+            .flat_map(move |bag_term| {
+                (0..=on_rack).map(move |num_played| {
+                    if num_played == 0 {
+                        0
+                    } else {
+                        bag_term.at(bag - num_played)
+                    }
+                })
+            });
             match setup {
-                Some((leaves, _)) => self.multi_leaves.init_from_leaves(&self.rack_tally, leaves),
+                Some((leaves, _)) => {
+                    self.multi_leaves
+                        .init_from_leaves(&self.rack_tally, leaves, bag_terms)
+                }
                 None => self.multi_leaves.init(
                     &self.rack_tally,
                     board_snapshot.klv,
                     true,
                     adjust_leave_value,
+                    bag_terms,
                 ),
             }
             if self.multi_leaves.is_dense() {

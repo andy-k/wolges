@@ -625,14 +625,6 @@ impl MultiLeaves {
         }
     }
 
-    // the bag terms by tiles played (index 0 must be 0: a pass or an exchange
-    // gets none); empty for none
-    #[inline(always)]
-    pub fn set_bag_terms(&mut self, bag_terms: impl Iterator<Item = i32>) {
-        self.bag_terms.clear();
-        self.bag_terms.extend(bag_terms);
-    }
-
     // whether a placement may have a bag term
     #[inline(always)]
     pub fn has_bag_terms(&self) -> bool {
@@ -740,9 +732,13 @@ impl MultiLeaves {
     }
 
     // the rack's digits alone, with no leaves: for a caller that reads no leave
-    // value, as a raw generation
+    // value, as a raw generation. Each init takes the rack's bag terms by tiles
+    // played (index 0 must be 0: a pass or an exchange gets none), empty for
+    // none
     #[inline(always)]
-    pub fn init_digits(&mut self, rack_tally: &[u8]) {
+    pub fn init_digits(&mut self, rack_tally: &[u8], bag_terms: impl Iterator<Item = i32>) {
+        self.bag_terms.clear();
+        self.bag_terms.extend(bag_terms);
         self.set_digits(rack_tally);
         self.leave_values.clear();
         self.num_playeds.clear();
@@ -757,7 +753,10 @@ impl MultiLeaves {
         klv: &Klv<L>,
         use_klv: bool,
         adjust_leave_value: AdjustLeave,
+        bag_terms: impl Iterator<Item = i32>,
     ) {
+        self.bag_terms.clear();
+        self.bag_terms.extend(bag_terms);
         let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally);
         self.leave_values.clear();
         self.num_playeds.clear();
@@ -862,7 +861,14 @@ impl MultiLeaves {
     // as init walked them): the digits as init makes them, the leaves as given,
     // and each leave index's tiles played, the rack's less those it keeps
     #[inline(always)]
-    pub fn init_from_leaves(&mut self, rack_tally: &[u8], leaves: &[u8]) {
+    pub fn init_from_leaves(
+        &mut self,
+        rack_tally: &[u8],
+        leaves: &[u8],
+        bag_terms: impl Iterator<Item = i32>,
+    ) {
+        self.bag_terms.clear();
+        self.bag_terms.extend(bag_terms);
         let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally);
         debug_assert!(dense && place_value as usize * 4 == leaves.len());
         self.leave_values.clear();
