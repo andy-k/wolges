@@ -5040,7 +5040,7 @@ impl<
     // mover, the deepest finished pass, and that move stay
     #[inline]
     pub fn collect_pv(&mut self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
-        let stopped = self.set_aside();
+        let stopped = self.take_paused_depth();
         let search = stopped.is_none();
         let of = self.line_of(player_idx);
         let start = self.work_buffer.answer;
@@ -5052,7 +5052,7 @@ impl<
         if let Some(line) = &self.work_buffer.line {
             out.clone_from(&line.plies);
         }
-        self.put_back(stopped);
+        self.restore_paused_depth(stopped);
     }
 
     // what a line of player_idx to move is read for: the key of the position to
@@ -5442,7 +5442,7 @@ impl<
         table.renew();
         std::mem::swap(&mut self.work_buffer.table, &mut *table);
         KeptTable {
-            stopped: self.set_aside(),
+            stopped: self.take_paused_depth(),
             table,
             made_with: self.made_with(),
             line: self.work_buffer.line.take(),
@@ -5463,13 +5463,13 @@ impl<
         self.work_buffer.spare_table = Some(table);
         self.work_buffer.line = kept.line;
         self.work_buffer.cadence = kept.cadence;
-        self.put_back(kept.stopped);
+        self.restore_paused_depth(kept.stopped);
         Ok(())
     }
 
     // a stopped pass taken out of the work buffer with the lists its frames
     // read, for a table taken or a line collected; none without one
-    fn set_aside(&mut self) -> Option<Box<Stopped>> {
+    fn take_paused_depth(&mut self) -> Option<Box<Stopped>> {
         let work_buffer = &mut self.work_buffer;
         let pass = work_buffer.stopped.take()?;
         let pending = work_buffer.pending.take()?;
@@ -5490,7 +5490,7 @@ impl<
     }
 
     // a stopped pass set aside put back, to be resumed
-    fn put_back(&mut self, stopped: Option<Box<Stopped>>) {
+    fn restore_paused_depth(&mut self, stopped: Option<Box<Stopped>>) {
         let Some(stopped) = stopped else {
             return;
         };
