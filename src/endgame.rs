@@ -735,6 +735,20 @@ impl RootMoves {
     }
 }
 
+// bring named moves forward in request order, leaving the others ordered
+fn prioritize<T>(
+    mut pending: &mut [T],
+    requested: &[movegen::Play],
+    matches: impl Fn(&T, &movegen::Play) -> bool,
+) {
+    for play in requested {
+        if let Some(at) = pending.iter().position(|item| matches(item, play)) {
+            pending[..=at].rotate_right(1);
+            pending = &mut pending[1..];
+        }
+    }
+}
+
 // a move generated for a position, as the search orders it
 struct Candidate {
     play: movegen::Play,
@@ -2448,6 +2462,7 @@ pub struct EndgameSolver<
     racks: [Vec<u8>; 2],
     scoreless: [u8; 2], // the passes and the zeros before the position to solve
     root_moves: Option<&'a RootMoves>,
+    root_priority: &'a [movegen::Play],
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
     progress: Option<ProgressFn>, // its listener, apart from the buffer
     helpers: Vec<Option<Helper<L, G, JUMPS, ANY_SIDE>>>, // each lane's, kept from pass to pass
@@ -2515,6 +2530,7 @@ impl<
             racks: [Vec::new(), Vec::new()],
             scoreless: [0, 0],
             root_moves: None,
+            root_priority: &[],
             work_buffer: WorkBuffer::new(movegen, run_letter_bits),
             progress: None,
             helpers: Vec::new(),
@@ -2589,6 +2605,7 @@ impl<
             racks: helper.racks,
             scoreless: [0, 0],
             root_moves: None,
+            root_priority: &[],
             work_buffer: helper.work_buffer,
             progress: None,
             helpers: Vec::new(),
@@ -2708,6 +2725,12 @@ impl<
     // select the first plays checked for this empty-bag position
     pub fn with_root_moves(mut self, root_moves: Option<&'a RootMoves>) -> Self {
         self.root_moves = root_moves;
+        self
+    }
+
+    // name the candidates to value first in a timed PEG or first-move solve
+    pub fn with_root_priority(mut self, first: &'a [movegen::Play]) -> Self {
+        self.root_priority = first;
         self
     }
 
@@ -4214,6 +4237,9 @@ impl<
                 tiles: [][..].into(),
             });
         }
+        prioritize(&mut plays, self.root_priority, |candidate, play| {
+            candidate == play
+        });
         let mut valued = Vec::with_capacity(plays.len());
         for play in plays {
             let (value, exact) = self.first_move_value(player_idx, &play, limits)?;
@@ -6090,9 +6116,14 @@ impl<
         };
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, threads);
-        let scoreless = scoreless_counts(position.scoreless);
         let result = Self::peg_bag_by(
-            &mut sub, &self.klv, &mut mg, progress, scoreless, &limits, threads,
+            &mut sub,
+            &self.klv,
+            &mut mg,
+            progress,
+            self.root_priority,
+            &limits,
+            threads,
         );
         if progress.state.answer.is_none() {
             // the pass under way is the answer, and it may have valued more
@@ -6222,7 +6253,7 @@ impl<
         klv: &klv::Klv<L>,
         mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         progress: &mut PegBagProgress,
-        scoreless: [u8; 2],
+        priority: &[movegen::Play],
         limits: &BagLimits,
         threads: usize,
     ) -> error::Returns<PegBagResult>
@@ -6247,6 +6278,7 @@ impl<
             arenas,
         } = progress;
         BagArena::at_least(arenas, 1, gc.alphabet().len() as usize, position.bag_size);
+        let scoreless = scoreless_counts(position.scoreless);
         let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
             position.after_split(scoreless, opp_rack, bag, pos)
         };
@@ -6338,6 +6370,9 @@ impl<
         }
 
         while !state.done {
+            prioritize(&mut state.order[state.next..], priority, |&i, play| {
+                state.moves[i] == *play
+            });
             limits.depth.set(state.depth);
             let stopped = if threads > 1 {
                 Self::value_on_threads(
@@ -6908,6 +6943,7 @@ impl<
                 tiles: progress.unseen_tally.len(),
                 scoreless: progress.scoreless,
                 root_moves: progress.root_moves.as_ref(),
+                priority: self.root_priority,
             },
             progress.score_diff,
             limits,
@@ -7085,6 +7121,7 @@ impl<
             tiles,
             scoreless,
             root_moves,
+            priority,
         } = *position;
         let gc = sub.game_config;
         let kwg = sub.kwg;
@@ -7300,6 +7337,16 @@ impl<
         };
 
         while !state.done {
+            prioritize(
+                &mut state.order[state.next..],
+                priority,
+                |&i, play| match &state.moves[i] {
+                    PegMove::Place(candidate) => candidate == play,
+                    PegMove::Pass => {
+                        matches!(play, movegen::Play::Exchange { tiles } if tiles.is_empty())
+                    }
+                },
+            );
             limits.depth.set(state.depth);
             let mut stopped = false;
             while let Some(&i) = state.order.get(state.next) {
@@ -8403,6 +8450,7 @@ struct PegPosition<'a> {
     tiles: usize,
     scoreless: [u8; 2],
     root_moves: Option<&'a RootMoves>,
+    priority: &'a [movegen::Play],
 }
 
 #[inline(always)]
