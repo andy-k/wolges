@@ -4,6 +4,15 @@ pub struct Bites([u8; 16]);
 
 impl Bites {
     #[inline(always)]
+    pub const fn heap_bytes(len: usize) -> usize {
+        if len < std::mem::size_of::<Self>() {
+            0
+        } else {
+            len
+        }
+    }
+
+    #[inline(always)]
     fn new(given: &[u8]) -> Self {
         let mut ret = [0u8; 16];
         if given.len() < ret.len() {

@@ -2436,7 +2436,11 @@ mod tests {
                 .to_vec();
             let mut refused = Vec::new();
             for bytes in [1, 256, 4096, 65536, usize::MAX] {
-                let memory = endgame::MemoryLimit { bytes, held };
+                let memory = endgame::MemoryLimit {
+                    bytes,
+                    held,
+                    reserved: None,
+                };
                 match Builder::default().build_for_game_within(
                     &game_config,
                     &machine_words,
