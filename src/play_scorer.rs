@@ -499,7 +499,10 @@ impl PlayScorer {
                 recounted_equity += unplayed_tiles_bonus * equity::SCALE;
             }
         } else {
-            let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
+            let leave_value = board_snapshot
+                .klv
+                .leave_value_from_tally(&self.rack_tally)
+                .raw();
             recounted_equity += (leave_value as i64 * leave_scale as i64
                 / move_filter::LEAVE_SCALE_DENOM as i64) as i32;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {

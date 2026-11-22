@@ -2109,7 +2109,7 @@ mod tests {
 
         let klv =
             crate::klv::Klv::<kwg::Node22>::from_bytes_alloc(crate::klv::EMPTY_KLV_BYTES).unwrap();
-        assert_eq!(klv.leave_value_from_tally(&[0, 1]), 0);
+        assert_eq!(klv.leave_value_from_tally(&[0, 1]).raw(), 0);
     }
 
     #[inline]

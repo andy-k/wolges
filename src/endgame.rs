@@ -9792,7 +9792,7 @@ impl<
         for &tile in thrown {
             kept[tile as usize] -= 1;
         }
-        let value = score + self.klv.leave_value_from_tally(&kept) as f64;
+        let value = score + self.klv.leave_value_from_tally(&kept).raw() as f64;
         self.arena.give(self.ply, TALLY, kept);
         value
     }

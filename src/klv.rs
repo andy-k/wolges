@@ -361,15 +361,15 @@ impl<L: kwg::Node> Klv<L> {
     }
 
     #[inline(always)]
-    pub fn leave(&self, leave_idx: u32) -> i32 {
-        self.leaves[leave_idx as usize]
+    pub fn leave(&self, leave_idx: u32) -> equity::Equity {
+        equity::Equity::new(self.leaves[leave_idx as usize])
     }
 
     #[inline]
-    pub fn leave_range(&self) -> (i32, i32) {
-        self.leaves
-            .iter()
-            .fold((0, 0), |(lo, hi), &leave| (lo.min(leave), hi.max(leave)))
+    pub fn leave_range(&self) -> (equity::Equity, equity::Equity) {
+        let (lo, hi) =
+            (self.leaves.iter()).fold((0, 0), |(lo, hi), &leave| (lo.min(leave), hi.max(leave)));
+        (equity::Equity::new(lo), equity::Equity::new(hi))
     }
 
     // the largest tile on any node of its leaves' graph, found in one pass; a
@@ -395,7 +395,7 @@ impl<L: kwg::Node> Klv<L> {
     }
 
     #[inline(always)]
-    pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> i32 {
+    pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> equity::Equity {
         let leave_idx = self.kwg.get_word_index_of(
             &self.counts,
             self.kwg[0].arc_index(),
@@ -404,7 +404,7 @@ impl<L: kwg::Node> Klv<L> {
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
         );
         if leave_idx == !0 {
-            0
+            equity::Equity::ZERO
         } else {
             self.leave(leave_idx)
         }
@@ -440,7 +440,7 @@ impl<L: kwg::Node> Klv<L> {
                     let idx = base + env.klv.counts[q as usize] - env.klv.counts[p as usize];
                     env.tally[tile] += 1;
                     if node.accepts() {
-                        (env.f)(&env.tally, env.klv.leave(idx));
+                        (env.f)(&env.tally, env.klv.leave(idx).raw());
                     }
                     if node.arc_index() != 0 {
                         iter(env, node.arc_index(), idx + node.accepts() as u32, tile);
@@ -803,7 +803,7 @@ impl MultiLeaves {
                             idx -= env.klv.count(p);
                             let node = env.klv.kwg(p);
                             let leave_val = if node.tile() == tile && node.accepts() {
-                                env.klv.leave(idx)
+                                env.klv.leave(idx).raw()
                             } else {
                                 0
                             };
@@ -952,7 +952,7 @@ impl MultiLeaves {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_kept += 1;
                     if node.accepts() {
-                        let leave_val = env.adjust_leave_value.apply(env.klv.leave(idx));
+                        let leave_val = env.adjust_leave_value.apply(env.klv.leave(idx).raw());
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
                             && leave_val > env.best_leave_values[num_played]
@@ -1129,7 +1129,7 @@ impl MultiLeaves {
             tile_offset: u8,
         ) {
             if !env.exchange_buffer.is_empty() {
-                let leave_value = env.klv.leave_value_from_tally(env.rack_tally);
+                let leave_value = env.klv.leave_value_from_tally(env.rack_tally).raw();
                 (env.found_exchange_move)(env.exchange_buffer, leave_value);
             }
             if env.exchange_buffer.len() < env.max_vec_len {
@@ -1174,20 +1174,20 @@ impl MultiLeaves {
     }
 
     #[inline(always)]
-    pub fn leave_value(&self, idx: u32) -> i32 {
+    pub fn leave_value(&self, idx: u32) -> equity::Equity {
         if self.leave_values.is_empty() {
-            0
+            equity::Equity::ZERO
         } else {
-            self.leave_values[idx as usize]
+            equity::Equity::new(self.leave_values[idx as usize])
         }
     }
 
     #[inline(always)]
-    pub fn pass_leave_value(&self) -> i32 {
+    pub fn pass_leave_value(&self) -> equity::Equity {
         if self.leave_values.is_empty() {
-            0 // fallback; caller should use klv.leave_value_from_tally
+            equity::Equity::ZERO // fallback; caller should use klv.leave_value_from_tally
         } else {
-            *self.leave_values.last().unwrap()
+            equity::Equity::new(*self.leave_values.last().unwrap())
         }
     }
 }
@@ -1314,7 +1314,7 @@ mod tests {
                     rack_tally[tile] -= 1;
                     kept[tile] += 1;
                     if node.accepts() {
-                        let value = klv.leave_value_from_tally(kept);
+                        let value = klv.leave_value_from_tally(kept).raw();
                         let played = num_tiles_on_rack as usize
                             - kept.iter().map(|&n| n as usize).sum::<usize>();
                         if played < best.len() && value > best[played] {
@@ -1407,17 +1407,26 @@ mod tests {
     fn a_file_loads_into_kbwgs_layout() {
         let bin = make_klv2(&[(&[1], 1.0), (&[1, 2], 2.0), (&[2], 3.0)]);
         let klv = kbwg_from_bytes_alloc(bin.clone()).unwrap();
-        assert_eq!(klv.leave_value_from_tally(&[0, 1, 1]), 2 * equity::SCALE);
+        assert_eq!(
+            klv.leave_value_from_tally(&[0, 1, 1]).raw(),
+            2 * equity::SCALE
+        );
         let klv22 = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
         assert_eq!(klv.leave_range(), klv22.leave_range());
         assert_eq!(klv.max_tile(), klv22.max_tile());
         let empty = kbwg_from_bytes_alloc(EMPTY_KLV_BYTES.to_vec()).unwrap();
-        assert_eq!(empty.leave_range(), (0, 0));
-        assert_eq!(empty.leave_value_from_tally(&[0, 1, 1]), 0);
+        assert_eq!(
+            empty.leave_range(),
+            (equity::Equity::new(0), equity::Equity::new(0))
+        );
+        assert_eq!(empty.leave_value_from_tally(&[0, 1, 1]).raw(), 0);
         // the empty table, made in either layout, is the file's
         let made = Klv::<kwg::Node24>::empty().unwrap();
-        assert_eq!(made.leave_range(), (0, 0));
-        assert_eq!(made.leave_value_from_tally(&[0, 1, 1]), 0);
+        assert_eq!(
+            made.leave_range(),
+            (equity::Equity::new(0), equity::Equity::new(0))
+        );
+        assert_eq!(made.leave_value_from_tally(&[0, 1, 1]).raw(), 0);
         assert_eq!(made.max_tile(), empty.max_tile());
         use kwg::Node;
         let made22 = Klv::<kwg::Node22>::empty().unwrap();
@@ -1471,7 +1480,7 @@ mod tests {
                         (value * equity::SCALE as f32).round() as i32
                     };
                     assert_eq!(
-                        klv.leave_value_from_tally(&tally),
+                        klv.leave_value_from_tally(&tally).raw(),
                         want,
                         "{tiles:?} in pieces of {piece_len}"
                     );
@@ -1533,7 +1542,7 @@ mod tests {
         let lat = crate::census::MultisetLattice::new(4, 3).unwrap();
         let mut by_tally = vec![0i32; lat.len()];
         crate::census::fill_lattice_leaves(&lat, &mut by_tally, |tally| {
-            klv.leave_value_from_tally(tally)
+            klv.leave_value_from_tally(tally).raw()
         });
         let mut by_walk = vec![1i32; lat.len()];
         crate::census::fill_lattice_klv_leaves(&lat, &mut by_walk, &klv);
@@ -1546,7 +1555,10 @@ mod tests {
     fn a_klv_loads_only_with_one_value_for_each_leave() {
         let bin = make_klv2(&[(&[1], 1.0), (&[1, 2], 2.0), (&[2], 3.0)]);
         let klv = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
-        assert_eq!(klv.leave_value_from_tally(&[0, 1, 1]), 2 * equity::SCALE);
+        assert_eq!(
+            klv.leave_value_from_tally(&[0, 1, 1]).raw(),
+            2 * equity::SCALE
+        );
 
         assert!(Klv::<kwg::Node22>::from_bytes_alloc(&[]).is_err());
         assert!(Klv::<kwg::Node22>::from_bytes_alloc(&bin[..4]).is_err());
@@ -1582,7 +1594,13 @@ mod tests {
         }
         let bin = make_klv2(&[(&[1], 2_100_000.0), (&[2], -2_100_000.0)]);
         let klv = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
-        assert_eq!(klv.leave_range(), (-2_100_000_000, 2_100_000_000));
+        assert_eq!(
+            klv.leave_range(),
+            (
+                equity::Equity::new(-2_100_000_000),
+                equity::Equity::new(2_100_000_000)
+            )
+        );
 
         // read_leaves_alloc refuses the same, and hands the rest on as they are
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2_200_000.0] {
@@ -1751,13 +1769,19 @@ mod tests {
     #[inline]
     fn a_klv_knows_its_lowest_and_highest_leave() {
         let empty = Klv::<kwg::Node22>::from_bytes_alloc(EMPTY_KLV_BYTES).unwrap();
-        assert_eq!(empty.leave_range(), (0, 0));
+        assert_eq!(
+            empty.leave_range(),
+            (equity::Equity::new(0), equity::Equity::new(0))
+        );
         let klv = Klv::<kwg::Node22> {
             kwg: empty.kwg,
             counts: empty.counts,
             leaves: Box::new([-2_500, 700, 12_345, -9]),
             racks: None,
         };
-        assert_eq!(klv.leave_range(), (-2_500, 12_345));
+        assert_eq!(
+            klv.leave_range(),
+            (equity::Equity::new(-2_500), equity::Equity::new(12_345))
+        );
     }
 }
