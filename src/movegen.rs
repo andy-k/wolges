@@ -3760,6 +3760,31 @@ trait RunLetters: Copy {
     // straight to a tile's node, the count of the run's tiles below it past p,
     // which needs each run's tiles ascending (kwg::Kwg::runs_ascend)
     fn from(self, p: i32) -> Option<u64>;
+
+    // read one demanded tile in a run, as when passing a tile on the board.
+    #[inline(always)]
+    fn find<N: kwg::Node>(self, graph: &kwg::Kwg<N>, mut p: i32, tile: u8) -> i32 {
+        if p <= 0 {
+            return -1;
+        }
+        if let Some(run) = self.from(p) {
+            let bit = 1u64 << tile;
+            if run & bit != 0 {
+                return p + (run & (bit - 1)).count_ones() as i32;
+            }
+            return -1;
+        }
+        loop {
+            let node = graph[p];
+            if node.tile() == tile {
+                return p;
+            }
+            if node.is_end() {
+                return -1;
+            }
+            p += 1;
+        }
+    }
 }
 
 // nothing, so every run may
@@ -3920,7 +3945,8 @@ fn gen_classic_place_moves_lean<
             if b == 0 {
                 break;
             }
-            p = env.params.board_snapshot.kwg.seek(p, b & 0x7f);
+            let graph = env.params.board_snapshot.kwg;
+            p = env.runs.find(graph, graph[p].arc_index(), b & 0x7f);
             if p <= 0 {
                 return;
             }
@@ -3960,7 +3986,8 @@ fn gen_classic_place_moves_lean<
                 } else {
                     env.rack_bits
                 };
-            if candidates == 0 || !env.runs.may_hold(p, candidates) {
+            let run = env.runs.from(p);
+            if candidates == 0 || run.is_some_and(|run| run & candidates == 0) {
                 return;
             }
             let new_word_multiplier = acc.word_multiplier
@@ -4057,7 +4084,7 @@ fn gen_classic_place_moves_lean<
                     }
                 }};
             }
-            match env.runs.from(p) {
+            match run {
                 // the run's tiles known: each candidate's node is the count of
                 // the run's tiles below it past p, and the others are never read
                 Some(run) => {
@@ -4131,7 +4158,8 @@ fn gen_classic_place_moves_lean<
                 if b == 0 {
                     break;
                 }
-                p = env.params.board_snapshot.kwg.seek(p, b & 0x7f);
+                let graph = env.params.board_snapshot.kwg;
+                p = env.runs.find(graph, graph[p].arc_index(), b & 0x7f);
                 if p <= 0 {
                     return;
                 }
@@ -4141,7 +4169,7 @@ fn gen_classic_place_moves_lean<
                 idx -= 1;
             }
         }
-        let mut node = env.params.board_snapshot.kwg[p];
+        let node = env.params.board_snapshot.kwg[p];
         if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
             record::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                 env,
@@ -4188,25 +4216,17 @@ fn gen_classic_place_moves_lean<
             if turn == 0 {
                 return;
             }
-            let mut turnaround_p = p;
-            loop {
-                node = env.params.board_snapshot.kwg[turnaround_p];
-                if node.tile() == 0 {
-                    // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
-                    env.idx_left = idx + 1;
-                    play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
-                        env,
-                        acc,
-                        turnaround_p,
-                        env.params.anchor + 1,
-                        turnaround_is_unique,
-                    );
-                    break;
-                }
-                if node.is_end() {
-                    break;
-                }
-                turnaround_p += 1;
+            let turnaround_p = env.runs.find(env.params.board_snapshot.kwg, p, 0);
+            if turnaround_p > 0 {
+                // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
+                env.idx_left = idx + 1;
+                play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
+                    env,
+                    acc,
+                    turnaround_p,
+                    env.params.anchor + 1,
+                    turnaround_is_unique,
+                );
             }
             return;
         }
@@ -4218,7 +4238,8 @@ fn gen_classic_place_moves_lean<
                 } else {
                     env.rack_bits
                 });
-        if candidates == 0 || !env.runs.may_hold(p, candidates) {
+        let run = env.runs.from(p);
+        if candidates == 0 || run.is_some_and(|run| run & candidates == 0) {
             return;
         }
         let new_word_multiplier = acc.word_multiplier
@@ -4331,7 +4352,7 @@ fn gen_classic_place_moves_lean<
         }
         // the run's tiles known: each candidate's node is the count of the
         // run's tiles below it past p, and the others are never read
-        if let Some(run) = env.runs.from(p) {
+        if let Some(run) = run {
             let mut hits = run & candidates;
             while hits != 0 {
                 let tile = hits.trailing_zeros() as u8;
