@@ -17701,6 +17701,57 @@ mod tests {
         assert_eq!(checked, 2 * 4 * 16 * 3);
     }
 
+    #[test]
+    fn an_exact_bag_pass_can_stop_and_resume() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [1, 2, 8] {
+            unseen[tile] += 1;
+        }
+        let position = bag_position(&board, &[1, 2], &unseen, 2, equity::Equity::ZERO);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let whole = solver
+            .solve_peg(position.clone(), &super::Limits::NONE, 1)
+            .unwrap()
+            .unwrap();
+        assert!(whole.exact);
+        for threads in [1, 2] {
+            let mut progress =
+                super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
+                    .unwrap()
+                    .with_exact_pass()
+                    .unwrap();
+            let stopped = solver
+                .resume_peg(
+                    &mut progress,
+                    &super::Limits {
+                        time: Some(std::time::Duration::ZERO),
+                        ..super::Limits::NONE
+                    },
+                    threads,
+                )
+                .unwrap()
+                .unwrap();
+            assert!(!stopped.exact && stopped.moves.is_empty());
+            let resumed = solver
+                .resume_peg(&mut progress, &super::Limits::NONE, threads)
+                .unwrap()
+                .unwrap();
+            assert!(resumed.exact);
+            assert_eq!(resumed.moves.len(), whole.moves.len());
+            for (a, b) in resumed.moves.iter().zip(&whole.moves) {
+                assert!(a.play == b.play && a.exact && b.exact);
+                assert_eq!(a.win_pct, b.win_pct);
+                assert_eq!(a.expected_margin, b.expected_margin);
+            }
+        }
+    }
+
     // a search with tiles in the bag tells its listener, at every node inside
     // it, how many of its root's moves the pass under way has valued, of all,
     // and its line says so: never fewer than it told before, under either
