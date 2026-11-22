@@ -146,6 +146,7 @@ const NO_MEMORY_LIMIT: endgame::Limits = endgame::Limits {
     memory: Some(endgame::MemoryLimit {
         bytes: usize::MAX,
         held: || 0,
+        reserved: None,
     }),
     ..endgame::Limits::NONE
 };

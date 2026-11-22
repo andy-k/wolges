@@ -4,8 +4,8 @@
 // and it still has many bugs
 
 use super::{
-    anagrams, display, equity, error, fash, game_config, game_state, infer, klv, kwg, matrix,
-    movegen, play_scorer, zone,
+    anagrams, bites, display, equity, error, fash, game_config, game_state, infer, klv, kwg,
+    matrix, movegen, play_scorer, zone,
 };
 use std::io::Write;
 
@@ -1057,12 +1057,11 @@ struct Deal {
 // split alike among its threads
 const POOL_SHARE: usize = 8;
 
-// the room a lane pool has for a walk's lists (LanePool::room_for): enough,
-// none past its budget or what its ids number (full), or none the memory limit
+// why a lane pool has no room for a walk's lists (LanePool::room_for): none
+// past its budget or what its ids number (full), or none the memory limit
 // leaves
 #[derive(Clone, Copy, PartialEq)]
 enum PoolRoom {
-    Enough,
     Full,
     NoMemory,
 }
@@ -1199,25 +1198,24 @@ impl LanePool {
         }
     }
 
-    // whether a walk's moves on the fresh slots fit within the memory limit and
-    // the pool's budget; the room left must hold whatever must grow for them
-    // (at most as many groups and entries as moves, each move new to its slot),
-    // within the budget. The ids are u32 whatever the memory allows, so the
-    // moves, groups, entries, and lists they number must stay below NO_LIST.
-    // Where they do not fit, whether the pool is full (its budget or its ids)
-    // or the memory limit has no room
     #[inline(always)]
-    fn room_for(&self, memory_limit: Option<MemoryLimit>, moves: usize, lanes: usize) -> PoolRoom {
+    fn room_for(
+        &self,
+        memory_limit: Option<MemoryLimit>,
+        plays: &[movegen::ValuedMove],
+        (lanes, longest): (usize, usize),
+    ) -> Result<Reserved, PoolRoom> {
+        let moves = plays.len();
         let below = |len: usize, more: usize| len + more < NO_LIST as usize;
         if !(below(self.moves.len(), moves)
             && below(self.ends.len(), moves)
             && below(self.entries.len(), moves)
             && below(self.lists.len(), lanes))
         {
-            return PoolRoom::Full;
+            return Err(PoolRoom::Full);
         }
         let Some(limit) = memory_limit else {
-            return PoolRoom::Enough;
+            return Ok(Reserved::NONE);
         };
         fn growth<T>(v: &Vec<T>, more: usize) -> usize {
             if v.len() + more <= v.capacity() {
@@ -1247,12 +1245,26 @@ impl LanePool {
             + table(&self.keys, lanes)
             + table(&self.contents, lanes)
             + known;
-        if needed >= limit.room() {
-            PoolRoom::NoMemory
-        } else if self.bytes() + needed > self.deal.budget {
-            PoolRoom::Full
+        let slots = self.slot_lists.len();
+        let scratch = growth(&self.by_slot, moves)
+            + growth(&self.hashes, moves)
+            + growth(&self.sorting, moves)
+            + growth(&self.known, slots)
+            + growth(&self.starts, slots + 1);
+        let tiles = if bites::Bites::heap_bytes(longest) == 0 {
+            0
         } else {
-            PoolRoom::Enough
+            (plays.iter())
+                .map(|valued| play_bytes(&valued.play))
+                .sum::<usize>()
+        };
+        let Some(room) = limit.reserve(needed + scratch + tiles) else {
+            return Err(PoolRoom::NoMemory);
+        };
+        if self.bytes() + needed > self.deal.budget {
+            Err(PoolRoom::Full)
+        } else {
+            Ok(room)
         }
     }
 
@@ -1338,11 +1350,12 @@ impl LanePool {
         memory_limit: Option<MemoryLimit>,
         num_rows: usize,
     ) -> bool {
-        let room = self.room_for(memory_limit, plays.len(), self.fresh.len());
-        if room == PoolRoom::Enough && self.record_lists(plays, num_rows) {
+        let longest = num_rows.max(self.slot_lists.len().saturating_sub(num_rows));
+        let room = self.room_for(memory_limit, plays, (self.fresh.len(), longest));
+        if room.is_ok() && self.record_lists(plays, num_rows) {
             return true;
         }
-        self.let_go(room == PoolRoom::Full);
+        self.let_go(room.err() == Some(PoolRoom::Full));
         false
     }
 
@@ -1865,10 +1878,15 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         {
             let now = self.table.buckets.len();
             let mut buckets = now.saturating_mul(2);
+            let bucket = std::mem::size_of::<[u64; 8]>();
             if let Some(limit) = self.memory_limit {
-                buckets = buckets.min(limit.room() / std::mem::size_of::<[u64; 8]>());
+                buckets = buckets.min(limit.room() / bucket);
             }
-            self.can_grow = buckets > now && self.table.grow(buckets);
+            let room = (buckets > now)
+                .then(|| reserve_in(self.memory_limit.as_ref(), buckets.saturating_mul(bucket)))
+                .flatten();
+            self.can_grow = room.is_some() && self.table.grow(buckets);
+            drop(room);
             if buckets <= GROW_AT_ONCE {
                 self.table.finish();
             }
@@ -1960,14 +1978,11 @@ fn cells_of<T: Clone>(n: Option<usize>, value: T) -> error::Returns<Vec<T>> {
     Ok(cells)
 }
 
-// the most bytes the program may use, and how to read how many it holds. The
-// table grows only while the program stays within them, then replaces other
-// positions, so a solve stops on the limit only when the rest of the program
-// passes it
 #[derive(Clone, Copy)] // each endgame of a search with a tile in the bag takes a copy
 pub struct MemoryLimit {
     pub bytes: usize,
     pub held: fn() -> usize,
+    pub reserved: Option<&'static std::sync::atomic::AtomicUsize>,
 }
 
 impl MemoryLimit {
@@ -1979,10 +1994,14 @@ impl MemoryLimit {
         (self.held)().saturating_sub(leaving) >= self.bytes
     }
 
-    // the bytes the program may take on and still hold fewer than its bytes
     #[inline(always)]
     fn room(&self) -> usize {
-        self.bytes.saturating_sub((self.held)()).saturating_sub(1)
+        let reserved = (self.reserved).map_or(0, |reserved| {
+            reserved.load(std::sync::atomic::Ordering::Acquire)
+        });
+        (self.bytes.saturating_sub((self.held)()))
+            .saturating_sub(reserved)
+            .saturating_sub(1)
     }
 
     // whether the program may take on this many bytes and still hold fewer
@@ -1990,6 +2009,71 @@ impl MemoryLimit {
     #[inline(always)]
     pub fn has_room(&self, bytes: usize) -> bool {
         bytes <= self.room()
+    }
+
+    #[inline(always)]
+    pub fn reserve(&self, bytes: usize) -> Option<Reserved> {
+        if bytes == 0 {
+            return Some(Reserved::NONE);
+        }
+        match self.reserved {
+            None => self.has_room(bytes).then_some(Reserved::NONE),
+            Some(reserved) => self.reserve_shared(reserved, bytes),
+        }
+    }
+
+    // reserve's room taken in the shared count first and held read after, so a
+    // growth that gave its room back before that already held what it took,
+    // and one that gives it back later was counted in it
+    #[inline(never)]
+    fn reserve_shared(
+        &self,
+        reserved: &'static std::sync::atomic::AtomicUsize,
+        bytes: usize,
+    ) -> Option<Reserved> {
+        use std::sync::atomic::Ordering;
+        let before = reserved
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                taken.checked_add(bytes)
+            })
+            .ok()?;
+        let taken = Reserved {
+            reserved: Some(reserved),
+            bytes,
+        };
+        ((self.held)().saturating_add(before + bytes) < self.bytes).then_some(taken)
+    }
+}
+
+#[must_use]
+pub struct Reserved {
+    reserved: Option<&'static std::sync::atomic::AtomicUsize>,
+    bytes: usize,
+}
+
+impl Reserved {
+    // room taken from no shared count, which gives nothing back
+    pub const NONE: Self = Self {
+        reserved: None,
+        bytes: 0,
+    };
+
+    #[inline(always)]
+    pub fn keep(&mut self, kept: usize) {
+        if let Some(reserved) = self.reserved {
+            let given = self.bytes.saturating_sub(kept);
+            reserved.fetch_sub(given, std::sync::atomic::Ordering::Release);
+            self.bytes -= given;
+        }
+    }
+}
+
+impl Drop for Reserved {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if let Some(reserved) = self.reserved {
+            reserved.fetch_sub(self.bytes, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 
@@ -2005,6 +2089,14 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+#[inline(always)]
+pub fn reserve_in(memory: Option<&MemoryLimit>, bytes: usize) -> Option<Reserved> {
+    match memory {
+        Some(memory) => memory.reserve(bytes),
+        None => Some(Reserved::NONE),
+    }
+}
 
 // room in list for more items, its buffer grown when it has not: with no limit
 // as std grows one, else only when the limit has room for the new buffer's
@@ -2032,11 +2124,13 @@ fn grow_in<T>(memory: Option<&MemoryLimit>, list: &mut Vec<T>, more: usize) -> R
         return Ok(());
     };
     let needed = list.len().checked_add(more).ok_or(Refused)?;
-    let fits = memory.room() / std::mem::size_of::<T>().max(1);
+    let size = std::mem::size_of::<T>().max(1);
+    let fits = memory.room() / size;
     if needed > fits {
         return Err(Refused);
     }
     let capacity = needed.max(list.capacity().saturating_mul(2).min(fits));
+    let _room = memory.reserve(capacity * size).ok_or(Refused)?;
     list.try_reserve_exact(capacity - list.len())
         .map_err(|_| Refused)
 }
@@ -2167,15 +2261,12 @@ impl BagLimits {
         }
     }
 
-    // whether the memory limit leaves room for bytes more; if not, the search
-    // stops before it takes them (stopped and refused set), whether or not
-    // another limit may stop it: an error
     #[inline(always)]
-    fn refuse(&self, bytes: usize) -> error::Returns<()> {
-        if self.memory.is_some_and(|memory| bytes > memory.room()) {
-            return Err(self.stop_refused());
+    fn reserve(&self, bytes: usize) -> error::Returns<Reserved> {
+        match self.memory {
+            None => Ok(Reserved::NONE),
+            Some(memory) => memory.reserve(bytes).ok_or_else(|| self.stop_refused()),
         }
-        Ok(())
     }
 
     // the search stopped by the memory limit before it took what passes it
@@ -3286,8 +3377,10 @@ impl<
         work_buffer.begin_list(ply);
         let leaving = work_buffer.table.leaving();
         let limit = work_buffer.memory_limit.map(|limit| movegen::HeldBytes {
-            held: limit.held,
-            bytes: limit.bytes.saturating_add(leaving),
+            memory: MemoryLimit {
+                bytes: limit.bytes.saturating_add(leaving),
+                ..limit
+            },
             kept: work_buffer.held_kept,
         });
         let kept_from = ply >= 2 && work_buffer.keeps[ply - 2];
@@ -4782,7 +4875,7 @@ impl<
             };
             if let Some(table) = table {
                 let _ = own.give_table(table);
-            } else {
+            } else if let Some(_table) = reserve_in(limits.memory.as_ref(), room) {
                 own.reserve_table(room);
             }
             own.board_tiles.clone_from(board_tiles);
@@ -6394,7 +6487,7 @@ impl<
                 let moves = if let Some(selected) = selected {
                     let mut moves = list_in_room(limits, selected.plays.len())?;
                     for play in &selected.plays {
-                        limits.refuse(play_word_len(play))?;
+                        let _word = limits.reserve(play_word_len(play))?;
                         moves.push(play.clone());
                     }
                     moves
@@ -6447,11 +6540,13 @@ impl<
             // memory limit has no room for them (refused, the search stopped),
             // and then the threads' pass values none (value_on_threads)
             state.took = Vec::new();
-            let room = cells.is_none_or(|n| {
-                (limits.refuse(n.saturating_mul(std::mem::size_of::<std::time::Duration>())))
-                    .is_ok()
-            });
-            if room {
+            let room = match cells {
+                None => Some(Reserved::NONE),
+                Some(n) => (limits)
+                    .reserve(n.saturating_mul(std::mem::size_of::<std::time::Duration>()))
+                    .ok(),
+            };
+            if let Some(_cells) = room {
                 state.took = cells_of(cells, std::time::Duration::ZERO)?;
             }
         }
@@ -6557,8 +6652,10 @@ impl<
             }
             state.next = 0;
             state.pass_exact = true;
-            state.answered_searched = state.searched.shared(limits.memory);
+            let (answered, copies) = state.searched.shared(limits.memory).unzip();
+            state.answered_searched = answered;
             state.searched.deepen();
+            drop(copies);
             state.depth += 1;
             if let Some(report) = report.as_mut() {
                 let value = state.answered[best].as_ref().unwrap();
@@ -6639,20 +6736,18 @@ impl<
             return Ok(true); // stopped, nothing valued
         }
         // the tasks' order, what each found, and their hand-overs; the moves'
-        // splits not yet valued
+        // splits not yet valued: what each found is kept reserved through the
+        // pass, as it is made after it
         type Found = Option<(f64, f64, bool)>;
-        if limits
-            .refuse(
-                tasks
-                    * (std::mem::size_of::<usize>()
-                        + std::mem::size_of::<Found>()
-                        + std::mem::size_of::<HandOver>())
-                    + rest * std::mem::size_of::<AtomicUsize>(),
-            )
-            .is_err()
-        {
+        let Ok(mut lists) = limits.reserve(
+            tasks
+                * (std::mem::size_of::<usize>()
+                    + std::mem::size_of::<Found>()
+                    + std::mem::size_of::<HandOver>())
+                + rest * std::mem::size_of::<AtomicUsize>(),
+        ) else {
             return Ok(true); // stopped, nothing valued
-        }
+        };
         let next = AtomicUsize::new(0);
         // the tasks (each a move's place in the rest of the order and a split),
         // the costliest by the pass before first, ties in the order
@@ -6675,6 +6770,7 @@ impl<
         // each task's hand-over (HandOver), and how many tasks that hand the
         // turn over are still being valued
         let hand_overs = (0..tasks).map(|_| HandOver::new()).collect::<Vec<_>>();
+        lists.keep(tasks * std::mem::size_of::<Found>());
         let handing = AtomicUsize::new(0);
         // a thread's share: each move and split it valued (by its task, the
         // move's place in the rest of the order times the splits, plus the
@@ -6872,6 +6968,7 @@ impl<
         }
         let mut stopped = false;
         let mut found = cells_of(Some(tasks), None)?;
+        drop(lists);
         for share in shares {
             let (mine, stopped_here) = share?;
             stopped |= stopped_here;
@@ -7247,7 +7344,7 @@ impl<
                         let chosen = match play {
                             movegen::Play::Exchange { tiles } if tiles.is_empty() => PegMove::Pass,
                             movegen::Play::Place { word, .. } => {
-                                limits.refuse(word.len())?;
+                                let _word = limits.reserve(word.len())?;
                                 PegMove::Place(play.clone())
                             }
                             _ => return Err("root_moves: exchange is unavailable".into()),
@@ -7277,11 +7374,7 @@ impl<
                             mover_rack,
                             0,
                             pass,
-                            movegen::HeldBytes {
-                                held: memory.held,
-                                bytes: memory.bytes,
-                                kept: 0,
-                            },
+                            movegen::HeldBytes { memory, kept: 0 },
                         ),
                     };
                     if cut {
@@ -8060,20 +8153,26 @@ impl PegBagProgress {
         }
         position.mover_rack.sort_unstable();
         // the part's splits (every n-th from the k-th), counted first, so that
-        // their list, each rack, and each bag are taken at their full lengths,
-        // once the limit has room for them
+        // their list, each rack, each bag's counts, and the first split's copy
+        // are taken at their full lengths, once the limit has room for them
         let rack_len = unseen - position.bag_size;
+        let counts = position.unseen_tally.len();
+        let walk = (counts + 1) * std::mem::size_of::<usize>() + 2 * counts;
+        let Some(walking) = reserve_in(memory, walk) else {
+            return Ok(None);
+        };
         let mut num_splits = 0;
         each_split(&position.unseen_tally, rack_len, &mut |_, _, _| {
             num_splits += 1;
         });
+        drop(walking);
         let kept = num_splits / n + usize::from(k < num_splits % n);
-        let bytes = kept.saturating_mul(
-            std::mem::size_of::<(Vec<u8>, Vec<u8>, u64)>() + rack_len + position.bag_size,
-        );
-        if memory.is_some_and(|memory| !memory.has_room(bytes)) {
+        let bytes = (kept.saturating_add(1))
+            .saturating_mul(std::mem::size_of::<(Vec<u8>, Vec<u8>, u64)>() + rack_len + counts)
+            .saturating_add(walk);
+        let Some(_splits) = reserve_in(memory, bytes) else {
             return Ok(None);
-        }
+        };
         let mut splits: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
         splits.try_reserve_exact(kept)?;
         let mut moves_at = (Vec::new(), Vec::new());
@@ -9281,11 +9380,7 @@ fn root_moves<
         rack,
         made,
         movegen::PassPolicy::OnlyWhenForced,
-        movegen::HeldBytes {
-            held: memory.held,
-            bytes: memory.bytes,
-            kept: 0,
-        },
+        movegen::HeldBytes { memory, kept: 0 },
     );
     let mut plays = std::mem::take(&mut mg.plays);
     if cut {
@@ -9302,7 +9397,7 @@ fn root_moves<
         exchanges += 1
     });
     let mut moves = list_in_room::<movegen::Play>(limits, 1 + places + exchanges)?;
-    limits.refuse((exchanges + 1) * rack.len())?;
+    let _tiles = limits.reserve((exchanges + 1) * rack.len())?;
     moves.push(movegen::Play::Exchange {
         tiles: [][..].into(),
     });
@@ -9320,10 +9415,18 @@ fn root_moves<
     Ok(moves)
 }
 
+#[inline(always)]
+pub(crate) fn play_bytes(play: &movegen::Play) -> usize {
+    bites::Bites::heap_bytes(match play {
+        movegen::Play::Place { word, .. } => word.len(),
+        movegen::Play::Exchange { tiles } => tiles.len(),
+    })
+}
+
 // an empty list with room for n, under the memory limit: refused (the search
 // stopped) where it would take more than the room left
 fn list_in_room<T>(limits: &BagLimits, n: usize) -> error::Returns<Vec<T>> {
-    limits.refuse(n.saturating_mul(std::mem::size_of::<T>()))?;
+    let _list = limits.reserve(n.saturating_mul(std::mem::size_of::<T>()))?;
     let mut list = Vec::new();
     list.try_reserve_exact(n)
         .map_err(|_| limits.stop_refused())?;
@@ -9699,11 +9802,11 @@ impl<T> BagTable<T> {
         let len = 2 * self.entries.len();
         let bytes = len * std::mem::size_of::<Option<(u64, T)>>();
         let mut entries = Vec::new();
-        if memory.is_some_and(|memory| bytes > memory.room())
-            || entries.try_reserve_exact(len).is_err()
-        {
+        let room = reserve_in(memory.as_ref(), bytes);
+        if room.is_none() || entries.try_reserve_exact(len).is_err() {
             return;
         }
+        drop(room);
         entries.resize_with(len, || None);
         for (key, value) in std::mem::replace(&mut self.entries, entries)
             .into_iter()
@@ -9739,23 +9842,19 @@ impl<T> BagTable<T> {
 }
 
 impl BagValued {
-    // a copy sharing every shard until one is written, none where the memory
-    // limit refuses the room a copy of them all would take, as the next pass's
-    // writes may make one
-    fn shared(&self, memory: Option<MemoryLimit>) -> Option<Self> {
+    fn shared(&self, memory: Option<MemoryLimit>) -> Option<(Self, Reserved)> {
         let shards = (self.shards.iter())
             .map(|shard| shard.lock().unwrap().clone())
             .collect::<Box<[_]>>();
         let bytes = (shards.iter())
             .map(|shard| shard.nodes.bytes() + shard.endgames.bytes() + shard.infos.bytes())
             .sum::<usize>();
-        if memory.is_some_and(|memory| bytes > memory.room()) {
-            return None;
-        }
-        Some(Self {
+        let copies = reserve_in(memory.as_ref(), bytes)?;
+        let shared = Self {
             shards: shards.into_iter().map(std::sync::Mutex::new).collect(),
             under: Default::default(),
-        })
+        };
+        Some((shared, copies))
     }
 
     // nothing valued yet, in as many shards as threads search
@@ -11779,6 +11878,7 @@ mod tests {
         let limit = super::MemoryLimit {
             bytes: 64 << 10,
             held: || 32 << 10,
+            reserved: None,
         };
         work.memory_limit = Some(limit);
         // depth zero below each helper move leaves its initial table size.
@@ -13844,6 +13944,7 @@ mod tests {
                 memory: Some(super::MemoryLimit {
                     bytes: 1,
                     held: || usize::MAX,
+                    reserved: None,
                 }),
                 clock: None,
             };
@@ -13870,6 +13971,7 @@ mod tests {
                 memory: Some(super::MemoryLimit {
                     bytes: usize::MAX,
                     held: || 0,
+                    reserved: None,
                 }),
                 clock: None,
             };
@@ -13891,6 +13993,7 @@ mod tests {
                 memory: Some(super::MemoryLimit {
                     bytes: 1,
                     held: || 0,
+                    reserved: None,
                 }),
                 clock: None,
             };
@@ -14427,6 +14530,7 @@ mod tests {
         let limit = |held: usize| super::MemoryLimit {
             bytes: bytes + READ - held,
             held: || READ,
+            reserved: None,
         };
         let counted = |table: &super::Table| {
             (table.buckets.capacity() + table.next.capacity() + table.old.capacity()) * size
@@ -14555,6 +14659,7 @@ mod tests {
             Some(super::MemoryLimit {
                 bytes: 256 * std::mem::size_of::<[u64; 8]>() + 1,
                 held: || 0,
+                reserved: None,
             }),
         ] {
             let mut stepped = 0;
@@ -14815,6 +14920,7 @@ mod tests {
             memory: Some(super::MemoryLimit {
                 bytes: 1,
                 held: || usize::MAX,
+                reserved: None,
             }),
             clock: None,
         };
@@ -15049,6 +15155,7 @@ mod tests {
             memory: Some(super::MemoryLimit {
                 bytes: super::POOL_SHARE << 13,
                 held: || 0,
+                reserved: None,
             }),
             clock: None,
         };
@@ -15122,13 +15229,26 @@ mod tests {
         assert_eq!(pool.bytes(), 0);
         // a walk the budget refuses finds the pool full, and one the memory
         // limit refuses finds no memory, whatever the budget
-        let limit = |bytes| Some(super::MemoryLimit { bytes, held: || 0 });
-        assert!(pool.room_for(limit(1 << 40), 1, 1) == super::PoolRoom::Enough);
+        let limit = |bytes| {
+            Some(super::MemoryLimit {
+                bytes,
+                held: || 0,
+                reserved: None,
+            })
+        };
+        let plays = [movegen::ValuedMove {
+            equity: equity::Equity::ZERO,
+            play: movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+        }];
+        let room = |pool: &super::LanePool, bytes| pool.room_for(limit(bytes), &plays, (1, 1));
+        assert!(room(&pool, 1 << 40).is_ok());
         pool.deal.budget = 0;
-        assert!(pool.room_for(limit(1 << 40), 1, 1) == super::PoolRoom::Full);
-        assert!(pool.room_for(limit(1), 1, 1) == super::PoolRoom::NoMemory);
+        assert!(room(&pool, 1 << 40).err() == Some(super::PoolRoom::Full));
+        assert!(room(&pool, 1).err() == Some(super::PoolRoom::NoMemory));
         pool.deal.budget = usize::MAX;
-        assert!(pool.room_for(limit(1), 1, 1) == super::PoolRoom::NoMemory);
+        assert!(room(&pool, 1).err() == Some(super::PoolRoom::NoMemory));
     }
 
     #[test]
@@ -15220,6 +15340,7 @@ mod tests {
                 memory: Some(super::MemoryLimit {
                     bytes: usize::MAX / 2,
                     held: || usize::MAX,
+                    reserved: None,
                 }),
                 clock: None,
             });
@@ -16183,6 +16304,7 @@ mod tests {
             memory: Some(super::MemoryLimit {
                 bytes: usize::MAX,
                 held: || 0,
+                reserved: None,
             }),
             clock: None,
         };
@@ -16275,6 +16397,7 @@ mod tests {
                         0
                     }
                 },
+                reserved: None,
             }),
             clock: None,
         };
@@ -18104,6 +18227,7 @@ mod tests {
         let memory = Some(super::MemoryLimit {
             bytes: eight + 1,
             held: none_held,
+            reserved: None,
         });
         let mut table = super::BagTable::default();
         for key in 1..=6 {
@@ -18116,6 +18240,7 @@ mod tests {
         let memory = Some(super::MemoryLimit {
             bytes: eight,
             held: none_held,
+            reserved: None,
         });
         let mut table = super::BagTable::default();
         for (key, its_worth) in [(1, 2), (2, 0), (3, 1), (4, 2)] {
@@ -18142,6 +18267,7 @@ mod tests {
         let memory = Some(super::MemoryLimit {
             bytes: 1,
             held: all_held,
+            reserved: None,
         });
         let gc = game_config::make_english_game_config();
         let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
@@ -18205,6 +18331,7 @@ mod tests {
             memory: Some(super::MemoryLimit {
                 bytes: BYTES,
                 held: none_held,
+                reserved: None,
             }),
             clock: None,
         };
@@ -18214,6 +18341,7 @@ mod tests {
             memory: Some(super::MemoryLimit {
                 bytes: BYTES,
                 held: all_held,
+                reserved: None,
             }),
             clock: None,
         };
@@ -18315,6 +18443,7 @@ mod tests {
             memory: Some(super::MemoryLimit {
                 bytes: 4 * std::mem::size_of::<Option<(u64, equity::Equity)>>() + 1,
                 held: none_held,
+                reserved: None,
             }),
             clock: None,
         };
