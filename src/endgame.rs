@@ -2190,6 +2190,7 @@ struct OnOneClock {
 
 // an average of values in millipoints, such as the peg's margin, kept in f32,
 // which holds whole ones exactly, and rounded to the nearest
+#[cfg(test)]
 #[inline(always)]
 fn to_equity(v: f32) -> equity::Equity {
     debug_assert!(v.abs() <= (1u32 << f32::MANTISSA_DIGITS) as f32, "{v}");
@@ -2200,13 +2201,14 @@ fn to_equity(v: f32) -> equity::Equity {
 // below the bound rounded up
 #[inline(always)]
 fn beta_equity(beta: f64) -> equity::Equity {
-    let beta = beta as f32;
-    if beta == f32::INFINITY {
+    if beta == f64::INFINITY {
         equity::Equity::INFINITY
-    } else if beta == f32::NEG_INFINITY {
+    } else if beta == f64::NEG_INFINITY {
         equity::Equity::NEG_INFINITY
     } else {
-        to_equity(beta.ceil())
+        let beta = beta.ceil();
+        debug_assert!(beta > i32::MIN as f64 && beta < i32::MAX as f64, "{beta}");
+        equity::Equity::new(beta as i32)
     }
 }
 
