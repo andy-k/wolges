@@ -89,9 +89,14 @@ impl Kept {
     }
 }
 
+struct PositionScratch<'a> {
+    gs: &'a mut game_state::GameState,
+    final_scores: &'a mut [i32],
+    play: &'a mut movegen::Play,
+}
+
 // a game played greedily (the generator's best by static equity) for so many
 // turns from the deal this seed makes, on the caller's generator, into gs
-#[allow(clippy::too_many_arguments)]
 fn position(
     mg: &mut movegen::KurniaMoveGenerator,
     gc: &game_config::GameConfig,
@@ -99,9 +104,11 @@ fn position(
     klv: &Klv,
     seed: u64,
     turns: usize,
-    gs: &mut game_state::GameState,
-    final_scores: &mut [i32],
-    play: &mut movegen::Play,
+    PositionScratch {
+        gs,
+        final_scores,
+        play,
+    }: PositionScratch<'_>,
 ) -> error::Returns<()> {
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
     gs.reset_and_draw_tiles(gc, &mut rng);
@@ -273,9 +280,11 @@ fn main() -> error::Returns<()> {
             &klv,
             seed,
             turns,
-            real,
-            final_scores,
-            play,
+            PositionScratch {
+                gs: real,
+                final_scores,
+                play,
+            },
         )?;
         let real = &*real;
         let turn = real.turn as usize;
