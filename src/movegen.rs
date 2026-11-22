@@ -19822,26 +19822,36 @@ mod tests {
             lean: bool,
         ) -> Vec<(String, i32, Option<u8>)> {
             bag_term_plays_on(
-                false,
-                BAG_TERM_FEN,
-                BAG_TERM_BAG,
+                BagTermPosition {
+                    jumbled: false,
+                    fen: BAG_TERM_FEN,
+                    bag: BAG_TERM_BAG,
+                    rack,
+                },
                 bag_term,
-                rack,
                 max_gen,
                 dense,
                 lean,
             )
         }
 
+        struct BagTermPosition<'a> {
+            jumbled: bool,
+            fen: &'a str,
+            bag: i16,
+            rack: &'a str,
+        }
+
         // as bag_term_plays, on the board given (its bag counted by the caller),
         // by the jumbled rules or the classic
-        #[allow(clippy::too_many_arguments)]
         fn bag_term_plays_on(
-            jumbled: bool,
-            fen: &str,
-            bag: i16,
+            BagTermPosition {
+                jumbled,
+                fen,
+                bag,
+                rack,
+            }: BagTermPosition<'_>,
             bag_term: Option<BagTerm>,
-            rack: &str,
             max_gen: usize,
             dense: bool,
             lean: bool,
@@ -19975,7 +19985,18 @@ mod tests {
                 for (dense, lean) in [(true, false), (false, false), (true, true), (false, true)] {
                     let why = format!("{jumbled} {fen} {rack} {dense} {lean}");
                     let plays = |term: Option<BagTerm>, max_gen: usize| {
-                        bag_term_plays_on(jumbled, fen, bag, term, rack, max_gen, dense, lean)
+                        bag_term_plays_on(
+                            BagTermPosition {
+                                jumbled,
+                                fen,
+                                bag,
+                                rack,
+                            },
+                            term,
+                            max_gen,
+                            dense,
+                            lean,
+                        )
                     };
                     let without = plays(None, usize::MAX);
                     let with = plays(Some(term.clone()), usize::MAX);
