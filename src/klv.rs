@@ -348,9 +348,11 @@ impl<L: kwg::Node> Klv<L> {
                     leaves.push(millipoints(leaves.len(), f32::from_le_bytes(*value))?);
                 }
             } else {
-                // a klv's i16 counts 1/256 of a point
+                // a klv's i16 counts 1/256 of a point, kept as the nearest
+                // millipoints, half away from zero as a klv2's f32 rounds
                 for value in piece.as_chunks::<2>().0 {
-                    leaves.push((i16::from_le_bytes(*value) as i32 * equity::SCALE + 128) / 256);
+                    let scaled = i16::from_le_bytes(*value) as i32 * equity::SCALE;
+                    leaves.push((scaled + 128 * scaled.signum()) / 256);
                 }
             }
             at += piece.len();
@@ -1675,7 +1677,8 @@ mod tests {
                         tally[tile as usize] += 1;
                     }
                     let want = if as_i16 {
-                        ((value * 256.0).round() as i16 as i32 * equity::SCALE + 128) / 256
+                        let held = f64::from((value * 256.0).round() as i16) / 256.0;
+                        (held * equity::SCALE as f64).round() as i32
                     } else {
                         (f64::from(value) * equity::SCALE as f64).round() as i32
                     };
