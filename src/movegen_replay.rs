@@ -79,7 +79,10 @@ impl Engine {
         let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args.klv)?)?;
         game.check_klv(&klv)?;
         let klv = if let Some(path) = &args.racks {
-            klv.with_racks(racks::RackTable::read(&game, &std::fs::read(path)?)?)
+            klv.with_racks(racks::RackTable::from_bytes_alloc(
+                &game,
+                std::fs::read(path)?,
+            )?)
         } else {
             klv
         };
