@@ -360,6 +360,7 @@ struct Solving {
     quiet: bool,
     scoreless: [u16; 2],
     peg_model: endgame::PegModel,
+    peg_estimates: bool,
 }
 
 // the models of a search with two or more tiles in the bag (endgame::PegModel)
@@ -627,6 +628,11 @@ struct Cli {
                 racks then known, each draw averaged over every set of tiles it may bring"
     )]
     peg_model: PegModelArg,
+    #[arg(
+        long,
+        help = "for positions with two or more tiles in the bag, estimate lines that still have tiles in the bag at each pass's cutoff"
+    )]
+    peg_estimates: bool,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -664,6 +670,7 @@ fn main() -> error::Returns<()> {
         threads: (cli.threads).map_or_else(parallelism::available, std::num::NonZeroUsize::get),
         quiet: cli.quiet,
         scoreless: [cli.passes, cli.zeros],
+        peg_estimates: cli.peg_estimates,
         peg_model: match cli.peg_model {
             PegModelArg::InfoSets => endgame::PegModel::InfoSets,
             PegModelArg::RandomDraws => endgame::PegModel::RandomDraws,
@@ -1657,7 +1664,10 @@ fn solve_position<N: kwg::Node>(
                     exchanges: [0, 0],
                     model: solving.peg_model,
                 },
-                endgame::PegBagChoices::WHOLE,
+                endgame::PegBagChoices {
+                    estimates: solving.peg_estimates,
+                    ..endgame::PegBagChoices::WHOLE
+                },
             )?;
             let result = egs.resume_peg(&mut progress, &solving.limits, solving.threads)?;
             let result = match result {
@@ -1757,14 +1767,21 @@ fn solve_position<N: kwg::Node>(
                 result.win_pct * 100.0,
                 result.expected_margin,
             )?;
-            writeln!(std::io::stdout(), "peg: each move valued, best first:")?;
+            if let Some((_, total)) = progress.moves() {
+                writeln!(
+                    std::io::stdout(),
+                    "peg: {} of {total} moves ranked, best first:",
+                    result.moves.len(),
+                )?;
+            }
             for valued in &result.moves {
                 writeln!(
                     std::io::stdout(),
-                    "  {}: win% {:.4}, expected game margin {}",
+                    "  {}: win% {:.4}, expected game margin {}{}",
                     named(&valued.play),
                     valued.win_pct * 100.0,
                     valued.expected_margin,
+                    if valued.exact { "" } else { " (provisional)" },
                 )?;
             }
             if !result.exact {
