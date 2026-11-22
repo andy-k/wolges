@@ -1109,6 +1109,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         adjust_leave_value: klv::AdjustLeave,
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
         dense_most: u32,
+        other_leaves: OtherLeaves<'_, L>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
         self.anagrams_fit_config = board_snapshot
@@ -1360,14 +1361,48 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                         dense_most,
                         bag_terms,
                     ),
-                    None => self.multi_leaves.init(
-                        &self.rack_tally,
-                        board_snapshot.klv,
-                        true,
-                        adjust_leave_value,
-                        dense_most,
-                        bag_terms,
-                    ),
+                    None => {
+                        if let Some((tables, pair)) = other_leaves {
+                            if tables.same_graph() {
+                                self.multi_leaves.init_shared_graph(
+                                    &self.rack_tally,
+                                    tables,
+                                    &mut pair.values,
+                                    dense_most,
+                                );
+                            } else {
+                                self.multi_leaves.init(
+                                    &self.rack_tally,
+                                    board_snapshot.klv,
+                                    true,
+                                    adjust_leave_value,
+                                    dense_most,
+                                    bag_terms.clone(),
+                                );
+                                pair.alternate.init(
+                                    &self.rack_tally,
+                                    tables.table(1),
+                                    true,
+                                    adjust_leave_value,
+                                    dense_most,
+                                    bag_terms,
+                                );
+                                self.multi_leaves
+                                    .bound_two_tables(&pair.alternate, &mut pair.values[0]);
+                                pair.values[1].clear();
+                                pair.values[1].extend_from_slice(pair.alternate.leave_values());
+                            }
+                        } else {
+                            self.multi_leaves.init(
+                                &self.rack_tally,
+                                board_snapshot.klv,
+                                true,
+                                adjust_leave_value,
+                                dense_most,
+                                bag_terms,
+                            );
+                        }
+                    }
                 }
                 if self.multi_leaves.is_dense() {
                     if let Some(dyn_ref) = dynamic_leaves {
@@ -5017,7 +5052,7 @@ fn span_sets_u32(
     (word_multiplier, blank_ok)
 }
 
-#[inline]
+#[inline(always)]
 fn gen_classic_place_moves<
     'a,
     W: LaneBits,
@@ -8847,6 +8882,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             klv::AdjustLeave::Identity,
             None,
             working_buffer.multi_leaves.dense_most(),
+            None,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
@@ -9047,6 +9083,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             adjust_leave_value,
             params.dynamic_leaves,
             working_buffer.multi_leaves.dense_most(),
+            None,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
@@ -9882,6 +9919,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
+            None,
         );
         self.working_buffer.is_census = false;
         self.empty_klvs = empty_klvs;
@@ -9914,10 +9952,36 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         equity_predicate: EquityPredicate<'_>,
         steer: Option<&Steer<'_>>,
     ) {
+        self.gen_moves_with_leaves(
+            params,
+            MoveFilters {
+                place: place_move_predicate,
+                equity: equity_predicate,
+            },
+            adjust_leave_value,
+            steer,
+            false,
+            None,
+        );
+    }
+
+    #[inline(always)]
+    fn gen_moves_with_leaves<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        MoveFilters {
+            place: place_move_predicate,
+            equity: equity_predicate,
+        }: MoveFilters<'_, '_>,
+        adjust_leave_value: klv::AdjustLeave,
+        steer: Option<&Steer<'_>>,
+        lean: bool,
+        mut other: OtherLeaves<'_, L>,
+    ) {
         // the generation by the tables (keyed by nibbles where they are, else
         // by their layout); a turn it hands back, or a game with no anagrams,
         // is the lean arm's
-        let handed_back = match params.board_snapshot.anagrams {
+        let handed_back = match params.board_snapshot.anagrams.filter(|_| !lean) {
             Some(anagrams) if anagrams.nibble_side().is_some() => self
                 .gen_moves_tables::<15, u16, ByNibble, _, _>(
                     params,
@@ -9925,6 +9989,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     adjust_leave_value,
                     equity_predicate,
                     steer,
+                    other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
                 ),
             // keyed by the tables' layout, compiled for a 15 by 15 board, a 21
             // by 21 one, else for any
@@ -9940,6 +10005,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     adjust_leave_value,
                     equity_predicate,
                     steer,
+                    other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
                 )
             }
             Some(_)
@@ -9954,6 +10020,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     adjust_leave_value,
                     equity_predicate,
                     steer,
+                    other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
                 )
             }
             Some(_) => self.gen_moves_tables::<0, u128, ByLayout, _, _>(
@@ -9962,6 +10029,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 adjust_leave_value,
                 equity_predicate,
                 steer,
+                other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
             ),
             None => Some((place_move_predicate, equity_predicate)),
         };
@@ -9971,6 +10039,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 place_move_predicate,
                 adjust_leave_value,
                 equity_predicate,
+                other,
             );
         }
     }
@@ -10000,6 +10069,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'e>,
         steer: Option<&Steer<'_>>,
+        other: OtherLeaves<'_, L>,
     ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
         if params.max_gen == 1 {
             self.gen_moves_tables_kept::<KeptOne, D, W, T, N, L>(
@@ -10008,6 +10078,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 adjust_leave_value,
                 equity_predicate,
                 steer,
+                other,
             )
         } else {
             self.gen_moves_tables_kept::<KeptHeap, D, W, T, N, L>(
@@ -10016,6 +10087,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 adjust_leave_value,
                 equity_predicate,
                 steer,
+                other,
             )
         }
     }
@@ -10038,6 +10110,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'e>,
         steer: Option<&Steer<'_>>,
+        mut other: OtherLeaves<'_, L>,
     ) -> Option<(PlacePredicate<'p>, EquityPredicate<'e>)> {
         if self.working_buffer.is_census || params.rack.len() == 1 {
             return Some((place_move_predicate, equity_predicate));
@@ -10050,7 +10123,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         let alphabet = params.board_snapshot.game_config.alphabet();
         let board_layout = params.board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
-        let max_gen = params.max_gen;
 
         // nibble keys: a classic game on a square board of the instance's side,
         // its tables built for that side, checked before init, which is
@@ -10077,6 +10149,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             adjust_leave_value,
             params.dynamic_leaves,
             working_buffer.multi_leaves.dense_most(),
+            other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
         );
         // what the arm plays: a classic turn its tables take (by nibble keys,
         // once its tables fit the game's counts as init asked them and init
@@ -10090,17 +10163,25 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             return Some((place_move_predicate, equity_predicate));
         }
 
-        let mut found_moves = K::from_vec(std::mem::take(&mut self.plays));
-        let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
-        if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
+        if other.is_none()
+            && let Some(floor) =
+                sure_floor(params, working_buffer, &multi_leaves, &equity_predicate)
+        {
             threshold.set(floor);
         }
 
+        let mut selected = CappedMoves {
+            kept: K::from_vec(std::mem::take(&mut self.plays)),
+            predicate: equity_predicate,
+            pair: other.map(|(_, pair)| pair),
+            threshold: &threshold,
+            max_gen: params.max_gen,
+        };
         let found_place_move = |down: bool,
                                 lane: i8,
                                 idx: i8,
@@ -10125,14 +10206,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 } else {
                     0
                 };
-                let equity =
-                    equity::Equity::new(score.raw() + leave_value.raw() + other_adjustments);
-                push_kept(
-                    &mut found_moves,
-                    &mut equity_predicate,
-                    &threshold,
-                    max_gen,
-                    equity,
+                selected.offer(
+                    &multi_leaves,
+                    equity::Equity::new(score.raw() + other_adjustments),
+                    leave_value,
+                    word.iter().copied().filter(|&tile| tile != 0),
                     || Play::Place {
                         down,
                         lane,
@@ -10209,58 +10287,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             current_threshold: || threshold.get(),
         }) {}
         (working_buffer.lane_rows, working_buffer.lane_cols) = lanes_before;
-        // with the threshold above the best an exchange can be, push_move would
-        // turn each one away
-        if threshold.get()
-            <= best_exchange_equity::<BAG_TERM>(
-                params.board_snapshot.game_config,
-                &working_buffer.best_leave_values,
-                &multi_leaves,
-            )
-        {
-            kurnia_gen_exchange_moves(
-                params.board_snapshot,
-                working_buffer,
-                &multi_leaves,
-                params.num_exchanges_by_this_player,
-                |exchanged_tiles: &[u8], leave_value: equity::Equity| {
-                    push_kept(
-                        &mut found_moves,
-                        &mut equity_predicate,
-                        &threshold,
-                        max_gen,
-                        leave_value,
-                        || Play::Exchange {
-                            tiles: exchanged_tiles.into(),
-                        },
-                    );
-                },
-            );
-        }
-        if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
-            push_kept(
-                &mut found_moves,
-                &mut equity_predicate,
-                &threshold,
-                max_gen,
-                equity::Equity::new(if multi_leaves.is_dense() {
-                    multi_leaves.pass_leave_value().raw()
-                } else {
-                    params
-                        .board_snapshot
-                        .klv
-                        .leave_value_from_tally(&working_buffer.rack_tally)
-                        .raw()
-                }),
-                || Play::Exchange {
-                    tiles: (&working_buffer.exchange_buffer[..]).into(),
-                },
-            );
-        }
-
-        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
-        self.plays = found_moves.into_sorted_vec();
-
+        self.plays = selected.finish(params, working_buffer, &multi_leaves);
         working_buffer.multi_leaves = multi_leaves;
         None
     }
@@ -10278,6 +10305,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
+            None,
         )
     }
 
@@ -10290,6 +10318,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
+        other: OtherLeaves<'_, L>,
     ) {
         let dim = params.board_snapshot.game_config.board_layout().dim();
         if dim.rows == 15 && dim.cols == 15 {
@@ -10298,6 +10327,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 place_move_predicate,
                 adjust_leave_value,
                 equity_predicate,
+                other,
             );
         }
         if dim.rows == 21 && dim.cols == 21 {
@@ -10306,6 +10336,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 place_move_predicate,
                 adjust_leave_value,
                 equity_predicate,
+                other,
             );
         }
         // any other side, by the copy for any side in G; a generator with none
@@ -10318,6 +10349,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
+            other,
         )
     }
 
@@ -10329,6 +10361,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
+        other: OtherLeaves<'_, L>,
     ) {
         if params.max_gen == 1 {
             self.gen_moves_filtered_impl_kept::<KeptOne, D, W, N, L>(
@@ -10336,6 +10369,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 place_move_predicate,
                 adjust_leave_value,
                 equity_predicate,
+                other,
             )
         } else {
             self.gen_moves_filtered_impl_kept::<KeptHeap, D, W, N, L>(
@@ -10343,6 +10377,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 place_move_predicate,
                 adjust_leave_value,
                 equity_predicate,
+                other,
             )
         }
     }
@@ -10361,16 +10396,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         mut place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
+        mut other: OtherLeaves<'_, L>,
     ) {
         self.plays.clear();
         if params.max_gen == 0 {
             return;
         }
 
-        let max_gen = params.max_gen;
-
-        let mut found_moves = K::from_vec(std::mem::take(&mut self.plays));
-        let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         let working_buffer = &mut self.working_buffer;
@@ -10387,9 +10419,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             adjust_leave_value,
             params.dynamic_leaves,
             dense_most,
+            other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
-        if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
+        if other.is_none()
+            && let Some(floor) =
+                sure_floor(params, working_buffer, &multi_leaves, &equity_predicate)
+        {
             threshold.set(floor);
         }
         threshold.set(
@@ -10399,6 +10435,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
 
         // an empty board's leave value comes with the opening's penalty
+        let mut selected = CappedMoves {
+            kept: K::from_vec(std::mem::take(&mut self.plays)),
+            predicate: equity_predicate,
+            pair: other.map(|(_, pair)| pair),
+            threshold: &threshold,
+            max_gen: params.max_gen,
+        };
         let found_place_move = |down: bool,
                                 lane: i8,
                                 idx: i8,
@@ -10406,12 +10449,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                                 score: equity::Equity,
                                 leave_value: equity::Equity| {
             if place_move_predicate.test(down, lane, idx, word, score) {
-                push_kept(
-                    &mut found_moves,
-                    &mut equity_predicate,
-                    &threshold,
-                    max_gen,
-                    equity::Equity::new(score.raw() + leave_value.raw()),
+                selected.offer(
+                    &multi_leaves,
+                    score,
+                    leave_value,
+                    word.iter().copied().filter(|&tile| tile != 0),
                     || Play::Place {
                         down,
                         lane,
@@ -10493,58 +10535,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 ) {}
             }
         }
-        // with the threshold above the best an exchange can be, push_move would
-        // turn each one away
-        if threshold.get()
-            <= best_exchange_equity::<BAG_TERM>(
-                params.board_snapshot.game_config,
-                &working_buffer.best_leave_values,
-                &multi_leaves,
-            )
-        {
-            kurnia_gen_exchange_moves(
-                params.board_snapshot,
-                working_buffer,
-                &multi_leaves,
-                params.num_exchanges_by_this_player,
-                |exchanged_tiles: &[u8], leave_value: equity::Equity| {
-                    push_kept(
-                        &mut found_moves,
-                        &mut equity_predicate,
-                        &threshold,
-                        max_gen,
-                        leave_value,
-                        || Play::Exchange {
-                            tiles: exchanged_tiles.into(),
-                        },
-                    );
-                },
-            );
-        }
-        if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
-            push_kept(
-                &mut found_moves,
-                &mut equity_predicate,
-                &threshold,
-                max_gen,
-                equity::Equity::new(if multi_leaves.is_dense() {
-                    multi_leaves.pass_leave_value().raw()
-                } else {
-                    params
-                        .board_snapshot
-                        .klv
-                        .leave_value_from_tally(&working_buffer.rack_tally)
-                        .raw()
-                }),
-                || Play::Exchange {
-                    tiles: (&working_buffer.exchange_buffer[..]).into(),
-                },
-            );
-        }
-
-        working_buffer.jumbled.splits.out_of_memory |= found_moves.refused();
-        self.plays = found_moves.into_sorted_vec();
-
+        self.plays = selected.finish(params, working_buffer, &multi_leaves);
         working_buffer.multi_leaves = multi_leaves;
     }
 
@@ -10628,6 +10619,66 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
     }
 
+    // generate both tables' best plays on one board and rack with top-one
+    // parameters. The caller can reuse the scratch between searches.
+    pub fn gen_best_moves_for_two_leaves<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &GenMovesParams<'_, N, L>,
+        tables: klv::LeavePair<'_, L>,
+        pair: &mut PairedHasty,
+        lean: bool,
+    ) -> [Play; 2] {
+        assert!(params.max_gen == 1 && params.dynamic_leaves.is_none());
+        let board = params.board_snapshot;
+        assert!(std::ptr::eq(board.klv, tables.table(0)));
+        let other_klv = tables.table(1);
+        // sharing needs a dense rack and ordinary leave lookups.
+        if BAG_TERM
+            || 1u32
+                .checked_shl(params.rack.len() as u32)
+                .is_none_or(|limit| limit > self.working_buffer.multi_leaves.dense_most())
+            || board.klv.racks().is_some()
+            || other_klv.racks().is_some()
+        {
+            let mut best = [None, None];
+            for (out, klv) in best.iter_mut().zip([board.klv, other_klv]) {
+                let snapshot = BoardSnapshot { klv, ..*board };
+                let params = GenMovesParams {
+                    board_snapshot: &snapshot,
+                    ..*params
+                };
+                self.gen_moves_with_leaves(
+                    &params,
+                    MoveFilters {
+                        place: PlacePredicate::AcceptAll,
+                        equity: EquityPredicate::AcceptAll,
+                    },
+                    klv::AdjustLeave::Identity,
+                    None,
+                    lean,
+                    None,
+                );
+                *out = self.plays.pop().map(|valued| valued.play);
+            }
+            return best.map(Option::unwrap);
+        }
+
+        pair.values[0].clear();
+        pair.best = [None, None];
+        self.gen_moves_with_leaves(
+            params,
+            MoveFilters {
+                place: PlacePredicate::AcceptAll,
+                equity: EquityPredicate::AcceptAll,
+            },
+            klv::AdjustLeave::Identity,
+            None,
+            lean,
+            Some((tables, pair)),
+        );
+        std::mem::take(&mut pair.best).map(|best| best.unwrap().play)
+    }
+
     // each word the board can still take, whatever the racks and the bag hold:
     // found_word is called once for each, in ascending order
     #[inline(always)]
@@ -10673,6 +10724,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             klv::AdjustLeave::Identity,
             None,
             working_buffer.multi_leaves.dense_most(),
+            None,
         );
         working_buffer.prev_board_tiles.fill(0xff);
         let pruned = gen_remaining_words(board_snapshot, working_buffer, memory, found_word);
@@ -10700,6 +10752,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             klv::AdjustLeave::Identity,
             None,
             working_buffer.multi_leaves.dense_most(),
+            None,
         );
         let dim = board_snapshot.game_config.board_layout().dim();
         let transposed_dim = matrix::Dim {
@@ -10753,6 +10806,75 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         }
         // the next generation computes every cross set again, its own way
         working_buffer.prev_board_tiles.fill(0xff);
+    }
+}
+
+// a shared top-one walk prunes bounds below both seats' best equities.
+#[derive(Default)]
+pub struct PairedHasty {
+    alternate: klv::MultiLeaves,
+    values: [Vec<i32>; 2],
+    best: [Option<ValuedMove>; 2],
+}
+
+struct MoveFilters<'p, 'e> {
+    place: PlacePredicate<'p>,
+    equity: EquityPredicate<'e>,
+}
+
+type OtherLeaves<'a, L> = Option<(klv::LeavePair<'a, L>, &'a mut PairedHasty)>;
+
+impl PairedHasty {
+    #[inline]
+    fn offer(
+        &mut self,
+        threshold: &std::cell::Cell<equity::Equity>,
+        leaves: &klv::MultiLeaves,
+        score: i32,
+        bounded_leave: i32,
+        tiles: impl Iterator<Item = u8>,
+        make_play: impl FnOnce() -> Play,
+    ) {
+        if score + bounded_leave < threshold.get().raw() {
+            return;
+        }
+        let values = if self.values[0].is_empty() {
+            [bounded_leave; 2]
+        } else {
+            let index = tiles.fold(leaves.pass_leave_idx(), |index, tile| {
+                index - leaves.place_value(tile & !((tile as i8 >> 7) as u8))
+            });
+            // the lean arm's offered leave includes both seats' penalty.
+            let adjustment = bounded_leave - leaves.leave_value(index).raw();
+            [
+                self.values[0][index as usize] + adjustment,
+                self.values[1][index as usize] + adjustment,
+            ]
+        };
+        let equities = values.map(|value| equity::Equity::new(score + value));
+        if self
+            .best
+            .iter()
+            .zip(equities)
+            .all(|(best, equity)| best.as_ref().is_some_and(|best| best.equity > equity))
+        {
+            return;
+        }
+        let play = make_play();
+        for (best, equity) in self.best.iter_mut().zip(equities) {
+            if best.as_ref().is_none_or(|best| {
+                equity > best.equity
+                    || (equity == best.equity && cmp_play(&play, &best.play).is_lt())
+            }) {
+                *best = Some(ValuedMove {
+                    equity,
+                    play: play.clone(),
+                });
+            }
+        }
+        if let [Some(first), Some(second)] = &self.best {
+            threshold.set(first.equity.min(second.equity));
+        }
     }
 }
 
@@ -10876,13 +10998,13 @@ impl Kept for KeptOne {
 // a move offered to what a capped generation keeps: one worse than the
 // threshold, once the cap is reached, is turned away before it is made
 #[inline(always)]
-fn push_kept<K: Kept, F: FnMut() -> Play>(
+fn push_kept<K: Kept, F: FnOnce() -> Play>(
     found_moves: &mut K,
     equity_pred: &mut EquityPredicate<'_>,
     threshold: &std::cell::Cell<equity::Equity>,
     max_gen: usize,
     equity: equity::Equity,
-    mut construct_play: F,
+    construct_play: F,
 ) {
     if found_moves.len() >= max_gen && threshold.get() > equity {
         return;
@@ -10900,6 +11022,103 @@ fn push_kept<K: Kept, F: FnMut() -> Play>(
         if found_moves.len() >= max_gen {
             threshold.set(found_moves.worst_equity());
         }
+    }
+}
+
+struct CappedMoves<'a, 'p, K> {
+    kept: K,
+    predicate: EquityPredicate<'p>,
+    pair: Option<&'a mut PairedHasty>,
+    threshold: &'a std::cell::Cell<equity::Equity>,
+    max_gen: usize,
+}
+
+impl<K: Kept> CappedMoves<'_, '_, K> {
+    #[inline(always)]
+    fn offer(
+        &mut self,
+        leaves: &klv::MultiLeaves,
+        score: equity::Equity,
+        leave: equity::Equity,
+        tiles: impl Iterator<Item = u8>,
+        make_play: impl FnOnce() -> Play,
+    ) {
+        if let Some(pair) = self.pair.as_deref_mut() {
+            pair.offer(
+                self.threshold,
+                leaves,
+                score.raw(),
+                leave.raw(),
+                tiles,
+                make_play,
+            );
+        } else {
+            push_kept(
+                &mut self.kept,
+                &mut self.predicate,
+                self.threshold,
+                self.max_gen,
+                equity::Equity::new(score.raw() + leave.raw()),
+                make_play,
+            );
+        }
+    }
+
+    #[inline]
+    fn finish<N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool, S: BoardStore>(
+        mut self,
+        params: &GenMovesParams<'_, N, L>,
+        buffer: &mut WorkingBuffer<G, BAG_TERM, S>,
+        leaves: &klv::MultiLeaves,
+    ) -> Vec<ValuedMove> {
+        let board = params.board_snapshot;
+        if self.threshold.get()
+            <= best_exchange_equity::<BAG_TERM>(
+                board.game_config,
+                &buffer.best_leave_values,
+                leaves,
+            )
+        {
+            kurnia_gen_exchange_moves(
+                board,
+                buffer,
+                leaves,
+                params.num_exchanges_by_this_player,
+                |tiles, leave| {
+                    self.offer(
+                        leaves,
+                        equity::Equity::new(0),
+                        leave,
+                        tiles.iter().copied(),
+                        || Play::Exchange {
+                            tiles: tiles.into(),
+                        },
+                    );
+                },
+            );
+        }
+        let empty = self
+            .pair
+            .as_ref()
+            .map_or_else(|| self.kept.is_empty(), |pair| pair.best[0].is_none());
+        if params.pass_policy.emits_unconditionally() || empty {
+            let leave = if leaves.is_dense() {
+                leaves.pass_leave_value()
+            } else {
+                board.klv.leave_value_from_tally(&buffer.rack_tally)
+            };
+            self.offer(
+                leaves,
+                equity::Equity::new(0),
+                leave,
+                std::iter::empty(),
+                || Play::Exchange {
+                    tiles: (&buffer.exchange_buffer[..]).into(),
+                },
+            );
+        }
+        buffer.jumbled.splits.out_of_memory |= self.kept.refused();
+        self.kept.into_sorted_vec()
     }
 }
 
@@ -15238,6 +15457,92 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn two_leave_tables_choose_as_their_separate_walks_do() {
+        let game = game_config::make_english_game_config();
+        let kwg = test_kwg_of(&game, &["AT", "CAT", "COAT", "COT", "TA", "TO"]);
+        let [first, second] = [
+            klv::make_klv2(&[(&[1, 3], 80.0), (&[26], 50.0)]),
+            klv::make_klv2(&[(&[15], 80.0), (&[17], 50.0)]),
+        ]
+        .map(|bytes| klv::kbwg_from_bytes_alloc(bytes).unwrap());
+        let mut board = vec![0; 225];
+        let mut paired = PairedHasty::default();
+        for lean in [false, true] {
+            let tables = anagrams::ArmTables::build(&kwg, &game, lean).unwrap();
+            let mut shared = KurniaMoveGenerator::new(&game);
+            let mut separate = KurniaMoveGenerator::new(&game);
+            for (i, (rack, exchanges)) in [
+                (&[1, 3, 15, 20][..], 0),
+                (&[17, 26][..], 0),
+                (&[17, 26][..], i16::MAX),
+                (&[0, 1, 3, 15, 20][..], 0),
+                (&[15][..], 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                board.fill(0);
+                if i == 4 {
+                    board[112..114].copy_from_slice(&[1, 20]);
+                }
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board,
+                    game_config: &game,
+                    kwg: &kwg,
+                    anagrams: tables.anagrams(),
+                    rack_lengths: tables.rack_lengths(),
+                    klv: &first,
+                };
+                let params = GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack,
+                    max_gen: 1,
+                    num_exchanges_by_this_player: exchanges,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                };
+                let actual = shared.gen_best_moves_for_two_leaves(
+                    &params,
+                    klv::LeavePair::new([&first, &second]),
+                    &mut paired,
+                    lean,
+                );
+                for (actual, klv) in actual.iter().zip([&first, &second]) {
+                    let snapshot = BoardSnapshot {
+                        klv,
+                        ..board_snapshot
+                    };
+                    let params = GenMovesParams {
+                        board_snapshot: &snapshot,
+                        ..params
+                    };
+                    if lean {
+                        separate.gen_moves_unfiltered_lean(&params);
+                    } else {
+                        separate.gen_moves_unfiltered(&params);
+                    }
+                    let expected = &separate.plays[0].play;
+                    assert!(
+                        actual == expected,
+                        "lean={lean}, rack={rack:?}: {} vs {}",
+                        actual.fmt(&snapshot),
+                        expected.fmt(&snapshot)
+                    );
+                }
+                if i <= 1 {
+                    assert!(
+                        actual[0] != actual[1],
+                        "the two tables should choose different plays"
+                    );
+                }
+                if i == 2 {
+                    assert!(matches!(&actual[0], Play::Exchange { tiles } if tiles.is_empty()));
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(super) fn test_kad(
         gc: &game_config::GameConfig,
@@ -19001,6 +19306,7 @@ mod tests {
             klv::AdjustLeave::Identity,
             None,
             working_buffer.multi_leaves.dense_most(),
+            None,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let empty = working_buffer.num_tiles_on_board == 0;
