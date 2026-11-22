@@ -2729,16 +2729,18 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                         let mut turn_idx = 0u32;
                         let mut base_turn: Option<u32> = None;
-                        loop {
+                        while !game_state.bag.is_empty() {
                             let board_tiles_count =
                                 game_state.board_tiles.iter().filter(|&&t| t != 0).count();
 
                             let pool_count = (num_tiles as usize).saturating_sub(board_tiles_count);
+                            if pool_count < pool_min {
+                                // the unseen pool cannot grow as tiles are placed
+                                break;
+                            }
 
-                            let at_snapshot = pool_count >= pool_min
-                                && pool_count <= pool_max
+                            let at_snapshot = pool_count <= pool_max
                                 && board_tiles_count > 0
-                                && !game_state.bag.is_empty()
                                 && (turn_idx - *base_turn.get_or_insert(turn_idx))
                                     .is_multiple_of(turn_stride);
                             if at_snapshot && forcing {
