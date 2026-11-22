@@ -106,11 +106,9 @@ struct Budget {
     refused: bool,
 }
 
-// what an anagram tables' build keeps for the next one: the words keyed, the
-// keys and pairs of each length, where each word's letters go, a length's
-// pairs, a walk's word, a dawg's word counts and the marks of its walk, tables
-// emptied, and the lists of the tables built before, with their layout (lent
-// to the next build, which takes their memory)
+// an Anagrams build's scratch: its keyed words, the counts by length, the word
+// offsets, the blank pairs, and the buffers of its graph walks. On a rebuild
+// it also keeps the previous tables and their layout.
 #[derive(Default)]
 pub struct ArmScratch {
     keyed: Vec<(u8, KeyBytes, u32)>,
@@ -121,7 +119,6 @@ pub struct ArmScratch {
     word: Vec<u8>,
     counts: Vec<u32>,
     marks: Vec<u8>,
-    tables: Vec<Table<u32>>,
     outs: AnagramsLists,
     layout: Option<alphagram::KeyLayout>,
     keep: bool, // the build's buffers kept for a rebuild, else freed as counted
@@ -454,7 +451,6 @@ impl Anagrams {
             at,
             pairs,
             word,
-            tables,
             outs,
             keep,
             ..
@@ -502,21 +498,13 @@ impl Anagrams {
         at.resize(index as usize, u32::MAX);
         let mut letters = 0usize;
         budget.take(2 * lengths * std::mem::size_of::<Table<u32>>())?;
-        // the tables before, emptied, for these to take their memory from
-        tables.append(&mut outs.groups);
-        tables.append(&mut outs.blanked);
+        // each length's pair of tables keeps its own memory on a rebuild
         let mut groups = std::mem::take(&mut outs.groups);
         let mut blanked = std::mem::take(&mut outs.blanked);
-        groups.reserve_exact(lengths);
-        blanked.reserve_exact(lengths);
-        let mut table_of = |capacity: usize| match tables.pop() {
-            Some(mut table) => {
-                table.clear();
-                table.reserve(capacity);
-                table
-            }
-            None => Table::with_capacity_and_hasher(capacity, Default::default()),
-        };
+        groups.reserve_exact(lengths.saturating_sub(groups.len()));
+        blanked.reserve_exact(lengths.saturating_sub(blanked.len()));
+        groups.resize_with(lengths, Table::default);
+        blanked.resize_with(lengths, Table::default);
         let all_pairs = pairs_of.iter().sum::<usize>();
         budget.take(all_pairs * (std::mem::size_of::<u32>() + std::mem::size_of::<u8>()))?;
         let mut answer_ats = std::mem::take(&mut outs.answer_ats);
@@ -532,7 +520,9 @@ impl Anagrams {
         let mut merge = Vec::new();
         for len in 0..lengths {
             budget.take(table_bytes::<(KeyBytes, u32)>(keys_of[len]))?;
-            let mut table = table_of(keys_of[len]);
+            let table = &mut groups[len];
+            table.clear();
+            table.reserve(keys_of[len]);
             let pair_bytes = pairs_of[len] * std::mem::size_of::<(KeyBytes, u32, u8)>();
             budget.take(pair_bytes)?;
             pairs.clear();
@@ -553,14 +543,15 @@ impl Anagrams {
                     }
                 }
             }
-            groups.push(table);
 
             // within a group, removing each tile gives a different key.
             // a length's pairs, emptied before the next length's are made
             sort_blank_pairs(pairs, &mut merge, parallel_sort);
             let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
             budget.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
-            let mut table = table_of(blank_keys);
+            let table = &mut blanked[len];
+            table.clear();
+            table.reserve(blank_keys);
             for group in pairs.chunk_by(|a, b| a.0 == b.0) {
                 table.insert(group[0].0, u32::try_from(answer_ats.len()).ok()?);
                 answer_ats.extend(group.iter().map(|&(_, at, _)| at));
@@ -569,7 +560,6 @@ impl Anagrams {
                     *last |= LAST;
                 }
             }
-            blanked.push(table);
             pairs.clear();
             if !keep {
                 *pairs = Vec::new();
@@ -1550,6 +1540,21 @@ mod tests {
         let kwg = kwg::kbwg_from_bytes_alloc(looping.to_vec(), false).unwrap();
         for lean in [false, true] {
             assert!(ArmTables::build(&kwg, &gc, lean).is_err());
+        }
+    }
+
+    #[test]
+    fn rebuilding_tables_keeps_their_memory_by_kind_and_length() {
+        let mut words = three_letter_words();
+        words.extend([vec![1, 2], vec![1, 2, 3, 4, 5]]);
+        let graph = graph_of(&words);
+        let game = crate::game_config::make_english_game_config();
+        let mut tables = ArmTables::build(&graph, &game, false).unwrap();
+        let bytes = tables.bytes();
+        let mut scratch = ArmScratch::default();
+        for _ in 0..3 {
+            tables.rebuild(&graph, &game, false, &mut scratch).unwrap();
+            assert_eq!(tables.bytes(), bytes);
         }
     }
 
