@@ -454,6 +454,11 @@ struct Census {
         help = "also write the full-length leaves (what dynamic leaves read)"
     )]
     full: bool,
+    #[arg(
+        long,
+        help = "weight racks by draws after setting aside the kept leave"
+    )]
+    completion_weights: bool,
     #[arg(long, help = "print no progress")]
     quiet: bool,
 }
@@ -1163,6 +1168,7 @@ fn run(
                     keep_state: a.keep_state,
                     continue_state: a.continue_state,
                     full: a.full,
+                    completion_weights: a.completion_weights,
                     quiet: a.quiet,
                 },
             )
@@ -3653,6 +3659,7 @@ struct CensusParams {
     keep_state: bool,
     continue_state: Option<String>,
     full: bool,
+    completion_weights: bool,
     quiet: bool,
 }
 
@@ -3892,6 +3899,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         keep_state,
         continue_state,
         full,
+        completion_weights,
         quiet,
     }: CensusParams,
 ) -> error::Returns<()> {
@@ -4072,6 +4080,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         (0, run_stamp(), None)
     };
     let (resumed_ever, resumed_exact) = resumed.unzip();
+    let apportion = if completion_weights {
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "census: weighting draws after setting aside each leave",
+        )?;
+        census::apportion_fused_completions::<i64>
+    } else {
+        census::apportion_fused::<i64>
+    };
+    let apportion_wide = if completion_weights {
+        census::apportion_fused_completions::<i128>
+    } else {
+        census::apportion_fused::<i128>
+    };
 
     if start_gen >= gens {
         return Err(format!(
@@ -4246,7 +4268,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         null_leave,
                         scatter,
                     };
-                    let narrow = census::apportion_fused(
+                    let narrow = apportion(
                         &lat,
                         &add_table,
                         &board,
@@ -4261,7 +4283,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if !narrow {
                         wide_board.resize(lo, 0);
                         wide_board.fill(0);
-                        assert!(census::apportion_fused(
+                        assert!(apportion_wide(
                             &lat,
                             &add_table,
                             &board,
