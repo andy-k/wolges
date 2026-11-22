@@ -4111,9 +4111,8 @@ fn gen_classic_place_moves_lean<
                                     leave_idx: 0,
                                 }
                             } else {
-                                let tile_value = env.alphabet.score(tile) as i32
-                                    * equity::SCALE
-                                    * tile_multiplier as i32;
+                                let tile_value =
+                                    env.alphabet.scaled_score(tile).raw() * tile_multiplier as i32;
                                 Accumulator {
                                     main_score: acc.main_score + tile_value,
                                     perpendicular_cumulative_score: acc
@@ -4376,9 +4375,8 @@ fn gen_classic_place_moves_lean<
                                     leave_idx: 0,
                                 }
                             } else {
-                                let tile_value = env.alphabet.score(tile) as i32
-                                    * equity::SCALE
-                                    * tile_multiplier as i32;
+                                let tile_value =
+                                    env.alphabet.scaled_score(tile).raw() * tile_multiplier as i32;
                                 Accumulator {
                                     main_score: acc.main_score + tile_value,
                                     perpendicular_cumulative_score: acc
@@ -6956,7 +6954,7 @@ fn gen_jumbled_place_moves_walk<
                 let real = env.unplaced[tile as usize].min(env.params.rack_tally[tile as usize]);
                 for k in 0..env.unplaced[tile as usize] {
                     scores[m] = if k < real {
-                        env.alphabet.score(tile) as i32 * equity::SCALE
+                        env.alphabet.scaled_score(tile).raw()
                     } else {
                         env.alphabet.scaled_score(0).raw()
                     };
@@ -7008,8 +7006,7 @@ fn gen_jumbled_place_moves_walk<
             }
             if env.params.rack_tally[tile as usize] > 0 {
                 env.params.rack_tally[tile as usize] -= 1;
-                let tile_value =
-                    env.alphabet.score(tile) as i32 * equity::SCALE * tile_multiplier as i32;
+                let tile_value = env.alphabet.scaled_score(tile).raw() * tile_multiplier as i32;
                 env.params.word_strip_buffer[idx as usize] = tile;
                 fill_span::<BAG_TERM, _, _, _>(
                     env,
@@ -7314,7 +7311,7 @@ fn gen_jumbled_place_moves_walk<
                                     run_len = 1;
                                 }
                                 scores[i] = if run_len <= env.params.rack_tally[tile as usize] {
-                                    alphabet.score(tile) as i32 * equity::SCALE
+                                    alphabet.scaled_score(tile).raw()
                                 } else {
                                     alphabet.scaled_score(0).raw()
                                 };
@@ -11781,7 +11778,7 @@ fn gen_empty_board_place_moves_made<
                     let spent = (1u64 << tile) * (env.rack_tally[tile as usize] == 0) as u64;
                     env.rack_bits ^= spent;
                     env.word[depth] = tile;
-                    env.tile_values[depth] = env.alphabet.score(tile) as i32 * equity::SCALE;
+                    env.tile_values[depth] = env.alphabet.scaled_score(tile).raw();
                     let leave_idx = leave_idx.wrapping_sub(env.multi_leaves.place_value(tile));
                     if len >= 2 && node.accepts() {
                         lay::<SPELL_ONCE, BAG_TERM, _, _, _>(env, len, leave_idx);
@@ -12422,7 +12419,7 @@ fn kurnia_gen_one_tile_moves<
             0x80,
         )
     } else {
-        (1u64 << tile, alphabet.score(tile) as i32 * equity::SCALE, 0)
+        (1u64 << tile, alphabet.scaled_score(tile).raw(), 0)
     };
     working_buffer.rack_tally[tile as usize] -= 1;
     let leave_value = leave_value_of::<BAG_TERM, _>(
