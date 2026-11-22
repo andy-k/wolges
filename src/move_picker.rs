@@ -473,6 +473,8 @@ pub struct Simmer<
     dynamic_root: Option<klv::DynamicLeavesRef<'a>>,
     turn_time: Option<std::time::Duration>,
     turn_clock: Option<(std::time::Instant, std::time::Duration)>,
+    timed_decisions: u64,
+    decisions_without_rollouts: u64,
     prepared_pristine: game_state::GameState,
     quiet: bool,
     decision_t0: Option<std::time::Instant>, // set only when not quiet
@@ -699,6 +701,8 @@ impl<
             dynamic_root: None,
             turn_time: None,
             turn_clock: None,
+            timed_decisions: 0,
+            decisions_without_rollouts: 0,
             prepared_pristine: game_state::GameState::new(game_config),
             quiet: params.quiet,
             decision_t0: None,
@@ -740,6 +744,12 @@ impl<
     fn turn_time_up(&self) -> bool {
         self.turn_clock
             .is_some_and(|(began, time)| began.elapsed() >= time)
+    }
+
+    // the decisions it took under a time budget, and how many of them it took
+    // with no rollout done: its best root move, played for want of time
+    pub fn timed_decisions(&self) -> (u64, u64) {
+        (self.timed_decisions, self.decisions_without_rollouts)
     }
 
     #[inline(always)]
@@ -2749,6 +2759,12 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                         t0.elapsed(),
                     )
                     .ok();
+                }
+                if simmer.turn_time.is_some() {
+                    simmer.timed_decisions += 1;
+                    if simmer.iters_done == 0 && simmer.candidates.len() > 1 {
+                        simmer.decisions_without_rollouts += 1;
+                    }
                 }
                 let winner_play_index = if simmer.turn_time.is_some() && simmer.iters_done == 0 {
                     0

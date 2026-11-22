@@ -6610,6 +6610,7 @@ impl CompareTotals {
 struct GamePairStats {
     all: GameStats,
     divergent: GameStats,
+    timed: [(u64, u64); 2], // each seat's Simmer::timed_decisions
 }
 
 impl GamePairStats {
@@ -6617,6 +6618,7 @@ impl GamePairStats {
         Self {
             all: GameStats::new(),
             divergent: GameStats::new(),
+            timed: [(0, 0); 2],
         }
     }
 
@@ -6638,6 +6640,10 @@ impl GamePairStats {
     fn merge(&mut self, other: &GamePairStats) {
         self.all.merge(&other.all);
         self.divergent.merge(&other.divergent);
+        for (mine, theirs) in self.timed.iter_mut().zip(other.timed) {
+            mine.0 += theirs.0;
+            mine.1 += theirs.1;
+        }
     }
 
     fn print(&self) -> std::io::Result<()> {
@@ -10605,6 +10611,11 @@ fn compare_seats<
                     }
                 }
 
+                for (timed, driver) in stats.timed.iter_mut().zip([&driver_p0, &driver_p1]) {
+                    if let move_picker::MovePicker::Simmer(simmer) = driver {
+                        *timed = simmer.timed_decisions();
+                    }
+                }
                 Ok(stats)
             }));
         }
@@ -10615,6 +10626,14 @@ fn compare_seats<
         }
 
         writeln!(std::io::stdout())?;
+        for (seat, &(timed, without_rollouts)) in combined.timed.iter().enumerate() {
+            if timed > 0 {
+                writeln!(
+                    std::io::stdout(),
+                    "p{seat}'s simmer played its best root move with no rollout on {without_rollouts} of its {timed} timed decisions"
+                )?;
+            }
+        }
         combined.print()?;
 
         Ok(())
