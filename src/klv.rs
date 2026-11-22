@@ -867,6 +867,17 @@ impl MultiLeaves {
         dense_most: u32,
         bag_terms: impl Iterator<Item = i32>,
     ) {
+        self.init_from_saved_leaves::<true>(rack_tally, leaves, dense_most, bag_terms);
+    }
+
+    #[inline(always)]
+    pub(crate) fn init_from_saved_leaves<const COUNT_PLAYED: bool>(
+        &mut self,
+        rack_tally: &[u8],
+        leaves: &[u8],
+        dense_most: u32,
+        bag_terms: impl Iterator<Item = i32>,
+    ) {
         self.bag_terms.clear();
         self.bag_terms.extend(bag_terms);
         let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally, dense_most);
@@ -880,13 +891,15 @@ impl MultiLeaves {
                 .map(|value| i32::from_le_bytes(*value)),
         );
         self.num_playeds.clear();
-        self.num_playeds
-            .resize(self.leave_values.len(), num_tiles_on_rack);
-        for &tile in &self.unique_tiles {
-            let MultiLeavesDigit { count, place_value } = self.digits[tile as usize];
-            let place_value = place_value as usize;
-            for i in place_value..place_value * (count as usize + 1) {
-                self.num_playeds[i] = self.num_playeds[i - place_value] - 1;
+        if COUNT_PLAYED {
+            self.num_playeds
+                .resize(self.leave_values.len(), num_tiles_on_rack);
+            for &tile in &self.unique_tiles {
+                let MultiLeavesDigit { count, place_value } = self.digits[tile as usize];
+                let place_value = place_value as usize;
+                for i in place_value..place_value * (count as usize + 1) {
+                    self.num_playeds[i] = self.num_playeds[i - place_value] - 1;
+                }
             }
         }
     }
