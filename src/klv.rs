@@ -1043,7 +1043,10 @@ impl MultiLeaves {
     }
 
     #[inline(always)]
-    pub fn kurnia_gen_exchange_moves_unconditionally<'a, FoundExchangeMove: FnMut(&[u8], i32)>(
+    pub fn kurnia_gen_exchange_moves_unconditionally<
+        'a,
+        FoundExchangeMove: FnMut(&[u8], equity::Equity),
+    >(
         &self,
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
@@ -1051,14 +1054,14 @@ impl MultiLeaves {
         max_vec_len: usize,
     ) {
         exchange_buffer.clear(); // should be no-op
-        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], i32)> {
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], equity::Equity)> {
             multi_leaves: &'a MultiLeaves,
             found_exchange_move: FoundExchangeMove,
             rack_tally: &'a mut [u8],
             exchange_buffer: &'a mut Vec<u8>,
             max_vec_len: usize,
         }
-        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], i32)>(
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], equity::Equity)>(
             env: &mut ExchangeEnv<'_, FoundExchangeMove>,
             unique_tile_idx_offset: u8,
             leave_idx: u32,
@@ -1066,7 +1069,7 @@ impl MultiLeaves {
             if !env.exchange_buffer.is_empty() {
                 (env.found_exchange_move)(
                     env.exchange_buffer,
-                    env.multi_leaves.leave_values[leave_idx as usize],
+                    equity::Equity::new(env.multi_leaves.leave_values[leave_idx as usize]),
                 );
             }
             if env.exchange_buffer.len() < env.max_vec_len {
@@ -1108,7 +1111,11 @@ impl MultiLeaves {
     }
 
     #[inline(always)]
-    pub fn gen_exchange_moves_via_klv<'a, FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node>(
+    pub fn gen_exchange_moves_via_klv<
+        'a,
+        FoundExchangeMove: FnMut(&[u8], equity::Equity),
+        L: kwg::Node,
+    >(
         klv: &Klv<L>,
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
@@ -1116,7 +1123,7 @@ impl MultiLeaves {
         max_vec_len: usize,
     ) {
         exchange_buffer.clear();
-        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node> {
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], equity::Equity), L: kwg::Node> {
             rack_tally_len: u8,
             klv: &'a Klv<L>,
             found_exchange_move: FoundExchangeMove,
@@ -1124,12 +1131,12 @@ impl MultiLeaves {
             exchange_buffer: &'a mut Vec<u8>,
             max_vec_len: usize,
         }
-        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node>(
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], equity::Equity), L: kwg::Node>(
             env: &mut ExchangeEnv<'_, FoundExchangeMove, L>,
             tile_offset: u8,
         ) {
             if !env.exchange_buffer.is_empty() {
-                let leave_value = env.klv.leave_value_from_tally(env.rack_tally).raw();
+                let leave_value = env.klv.leave_value_from_tally(env.rack_tally);
                 (env.found_exchange_move)(env.exchange_buffer, leave_value);
             }
             if env.exchange_buffer.len() < env.max_vec_len {

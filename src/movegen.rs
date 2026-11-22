@@ -69,7 +69,8 @@ type EquityFn<'a> = &'a mut dyn FnMut(equity::Equity, &Play) -> bool;
 
 // a generation's found_place_move behind a dyn: handed a play as a walk finds
 // it, it hands back the threshold
-type FoundPlaceMoveFn<'a> = &'a mut dyn FnMut(bool, i8, i8, &[u8], i32, i32) -> i32;
+type FoundPlaceMoveFn<'a> =
+    &'a mut dyn FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32;
 
 pub enum EquityPredicate<'a> {
     AcceptAll,
@@ -96,11 +97,11 @@ pub enum PlacePredicate<'a> {
 
 impl PlacePredicate<'_> {
     #[inline(always)]
-    fn test(&mut self, down: bool, lane: i8, idx: i8, word: &[u8], score: i32) -> bool {
+    fn test(&mut self, down: bool, lane: i8, idx: i8, word: &[u8], score: equity::Equity) -> bool {
         match self {
             PlacePredicate::AcceptAll => true,
             PlacePredicate::RejectAll => false,
-            PlacePredicate::Dyn(f) => f(down, lane, idx, word, equity::Equity::new(score)),
+            PlacePredicate::Dyn(f) => f(down, lane, idx, word, score),
         }
     }
 }
@@ -7170,7 +7171,7 @@ fn gen_place_moves_lean<
 struct GenPlaceMovesAtParams<
     'a,
     R: RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -7192,7 +7193,7 @@ fn gen_place_moves_at_lean<
     'a,
     const D: usize,
     R: RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -7301,8 +7302,8 @@ fn gen_place_moves_at_lean<
                     placement.lane,
                     idx,
                     word,
-                    score,
-                    leave_value,
+                    equity::Equity::new(score),
+                    equity::Equity::new(leave_value),
                 )
             },
             multi_leaves,
@@ -7325,7 +7326,7 @@ fn gen_place_moves_at<
     const D: usize,
     W: LaneBits,
     T: TablePlaces,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -7464,8 +7465,8 @@ fn gen_place_moves_at<
                     placement.lane,
                     idx,
                     word,
-                    score,
-                    leave_value,
+                    equity::Equity::new(score),
+                    equity::Equity::new(leave_value),
                 )
             },
             leave_values: multi_leaves.leave_values(),
@@ -8647,26 +8648,28 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         fn cut<T: RawStop>(stop: &T, moves: &[ValuedMove], room: usize, grown: usize) -> bool {
             moves.len() == room && stop.passed(room.max(1), grown)
         }
-        let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: i32| {
-                if T::STOPS
-                    && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes))
-                {
-                    stopped = true;
-                    return i32::MAX;
-                }
-                vec_moves.push(ValuedMove {
-                    equity: equity::Equity::ZERO,
-                    play: Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word: word.into(),
-                        score: equity::Equity::new(score),
-                    },
-                });
-                i32::MIN
-            };
+        let found_place_move = |down: bool,
+                                lane: i8,
+                                idx: i8,
+                                word: &[u8],
+                                score: equity::Equity,
+                                _leave_value: equity::Equity| {
+            if T::STOPS && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes)) {
+                stopped = true;
+                return i32::MAX;
+            }
+            vec_moves.push(ValuedMove {
+                equity: equity::Equity::ZERO,
+                play: Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word: word.into(),
+                    score,
+                },
+            });
+            i32::MIN
+        };
         // the copy for any side in G, or (a generator with none: the wasm's)
         // the copy compiled for the board's side
         let dim = board_snapshot.game_config.board_layout().dim();
@@ -8729,7 +8732,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             working_buffer,
             &multi_leaves,
             num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], _leave_value: i32| {
+            |exchanged_tiles: &[u8], _leave_value: equity::Equity| {
                 if T::STOPS
                     && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes))
                 {
@@ -8841,26 +8844,30 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         }
 
         // an empty board's leave value comes with the opening's penalty
-        let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                if place_move_predicate.test(down, lane, idx, word, score) {
-                    push_kept(
-                        &mut found_moves,
-                        &mut equity_predicate,
-                        &threshold,
-                        max_gen,
-                        equity::Equity::new(score + leave_value),
-                        || Play::Place {
-                            down,
-                            lane,
-                            idx,
-                            word: word.into(),
-                            score: equity::Equity::new(score),
-                        },
-                    );
-                }
-                threshold.get().raw()
-            };
+        let found_place_move = |down: bool,
+                                lane: i8,
+                                idx: i8,
+                                word: &[u8],
+                                score: equity::Equity,
+                                leave_value: equity::Equity| {
+            if place_move_predicate.test(down, lane, idx, word, score) {
+                push_kept(
+                    &mut found_moves,
+                    &mut equity_predicate,
+                    &threshold,
+                    max_gen,
+                    equity::Equity::new(score.raw() + leave_value.raw()),
+                    || Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    },
+                );
+            }
+            threshold.get().raw()
+        };
         // a rack of one tile has its plays from the cross sets, with no walk
         if working_buffer.num_tiles_on_rack == 1 {
             lean_cross_sets::<0, _, _, _, _, _>(params.board_snapshot, working_buffer);
@@ -8911,13 +8918,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 working_buffer,
                 &multi_leaves,
                 params.num_exchanges_by_this_player,
-                |exchanged_tiles: &[u8], leave_value: i32| {
+                |exchanged_tiles: &[u8], leave_value: equity::Equity| {
                     push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
                         max_gen,
-                        equity::Equity::new(leave_value),
+                        leave_value,
                         || Play::Exchange {
                             tiles: exchanged_tiles.into(),
                         },
@@ -9888,44 +9895,49 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             threshold.set(floor);
         }
 
-        let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                if place_move_predicate.test(down, lane, idx, word, score) {
-                    let other_adjustments = if num_tiles_on_board == 0 {
-                        (idx..)
-                            .zip(word)
-                            .filter(|&(ref i, &tile)| {
-                                tile != 0
-                                    && alphabet.is_vowel(tile)
-                                    && if down {
-                                        board_layout.danger_star_down(*i)
-                                    } else {
-                                        board_layout.danger_star_across(*i)
-                                    }
-                            })
-                            .count() as i32
-                            * -equity::OPENING_HOTSPOT_PENALTY
-                    } else {
-                        0
-                    };
-                    let equity = equity::Equity::new(score + leave_value + other_adjustments);
-                    push_kept(
-                        &mut found_moves,
-                        &mut equity_predicate,
-                        &threshold,
-                        max_gen,
-                        equity,
-                        || Play::Place {
-                            down,
-                            lane,
-                            idx,
-                            word: word.into(),
-                            score: equity::Equity::new(score),
-                        },
-                    );
-                }
-                threshold.get().raw()
-            };
+        let found_place_move = |down: bool,
+                                lane: i8,
+                                idx: i8,
+                                word: &[u8],
+                                score: equity::Equity,
+                                leave_value: equity::Equity| {
+            if place_move_predicate.test(down, lane, idx, word, score) {
+                let other_adjustments = if num_tiles_on_board == 0 {
+                    (idx..)
+                        .zip(word)
+                        .filter(|&(ref i, &tile)| {
+                            tile != 0
+                                && alphabet.is_vowel(tile)
+                                && if down {
+                                    board_layout.danger_star_down(*i)
+                                } else {
+                                    board_layout.danger_star_across(*i)
+                                }
+                        })
+                        .count() as i32
+                        * -equity::OPENING_HOTSPOT_PENALTY
+                } else {
+                    0
+                };
+                let equity =
+                    equity::Equity::new(score.raw() + leave_value.raw() + other_adjustments);
+                push_kept(
+                    &mut found_moves,
+                    &mut equity_predicate,
+                    &threshold,
+                    max_gen,
+                    equity,
+                    || Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    },
+                );
+            }
+            threshold.get().raw()
+        };
         // steered (Steer): the lanes the walk may take narrowed to those
         // touched and those of the others whose best equity is the best
         let lanes_before = (working_buffer.lane_rows, working_buffer.lane_cols);
@@ -10005,13 +10017,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 working_buffer,
                 &multi_leaves,
                 params.num_exchanges_by_this_player,
-                |exchanged_tiles: &[u8], leave_value: i32| {
+                |exchanged_tiles: &[u8], leave_value: equity::Equity| {
                     push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
                         max_gen,
-                        equity::Equity::new(leave_value),
+                        leave_value,
                         || Play::Exchange {
                             tiles: exchanged_tiles.into(),
                         },
@@ -10173,26 +10185,30 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
 
         // an empty board's leave value comes with the opening's penalty
-        let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                if place_move_predicate.test(down, lane, idx, word, score) {
-                    push_kept(
-                        &mut found_moves,
-                        &mut equity_predicate,
-                        &threshold,
-                        max_gen,
-                        equity::Equity::new(score + leave_value),
-                        || Play::Place {
-                            down,
-                            lane,
-                            idx,
-                            word: word.into(),
-                            score: equity::Equity::new(score),
-                        },
-                    );
-                }
-                threshold.get().raw()
-            };
+        let found_place_move = |down: bool,
+                                lane: i8,
+                                idx: i8,
+                                word: &[u8],
+                                score: equity::Equity,
+                                leave_value: equity::Equity| {
+            if place_move_predicate.test(down, lane, idx, word, score) {
+                push_kept(
+                    &mut found_moves,
+                    &mut equity_predicate,
+                    &threshold,
+                    max_gen,
+                    equity::Equity::new(score.raw() + leave_value.raw()),
+                    || Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    },
+                );
+            }
+            threshold.get().raw()
+        };
         let can_accept = |best_possible_equity: i32| {
             threshold.get() <= equity::Equity::new(best_possible_equity)
         };
@@ -10278,13 +10294,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 working_buffer,
                 &multi_leaves,
                 params.num_exchanges_by_this_player,
-                |exchanged_tiles: &[u8], leave_value: i32| {
+                |exchanged_tiles: &[u8], leave_value: equity::Equity| {
                     push_kept(
                         &mut found_moves,
                         &mut equity_predicate,
                         &threshold,
                         max_gen,
-                        equity::Equity::new(leave_value),
+                        leave_value,
                         || Play::Exchange {
                             tiles: exchanged_tiles.into(),
                         },
@@ -10760,7 +10776,7 @@ fn best_exchange_equity<const BAG_TERM: bool>(
 #[inline]
 fn kurnia_gen_exchange_moves<
     'a,
-    FoundExchangeMove: FnMut(&[u8], i32),
+    FoundExchangeMove: FnMut(&[u8], equity::Equity),
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -10781,10 +10797,12 @@ fn kurnia_gen_exchange_moves<
             if BAG_TERM {
                 let mut found_exchange_move = found_exchange_move;
                 multi_leaves.kurnia_gen_exchange_moves_unconditionally(
-                    |exchanged_tiles: &[u8], leave_value: i32| {
+                    |exchanged_tiles: &[u8], leave_value: equity::Equity| {
                         found_exchange_move(
                             exchanged_tiles,
-                            leave_value - multi_leaves.bag_term(exchanged_tiles.len()),
+                            equity::Equity::new(
+                                leave_value.raw() - multi_leaves.bag_term(exchanged_tiles.len()),
+                            ),
                         )
                     },
                     &mut working_buffer.rack_tally,
@@ -10967,8 +10985,8 @@ fn walk_jumbled_star_lanes<
                 lane,
                 idx,
                 word,
-                score,
-                leave_value + hotspot_penalty(game_config, down, idx, word),
+                equity::Equity::new(score),
+                equity::Equity::new(leave_value + hotspot_penalty(game_config, down, idx, word)),
             );
             threshold
         };
@@ -11056,7 +11074,7 @@ fn gen_empty_board_place_moves<
     'a,
     const D: usize,
     R: RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -11211,8 +11229,13 @@ fn gen_empty_board_place_moves_made<
                         lane.lane,
                         start as i8,
                         word,
-                        0,
-                        hotspot_penalty(game_config, lane.down, start as i8, word),
+                        equity::Equity::new(0),
+                        equity::Equity::new(hotspot_penalty(
+                            game_config,
+                            lane.down,
+                            start as i8,
+                            word,
+                        )),
                     );
                 }
             }
@@ -11254,8 +11277,10 @@ fn gen_empty_board_place_moves_made<
                     lane.lane,
                     start as i8,
                     word,
-                    score,
-                    leave_value + hotspot_penalty(game_config, lane.down, start as i8, word),
+                    equity::Equity::new(score),
+                    equity::Equity::new(
+                        leave_value + hotspot_penalty(game_config, lane.down, start as i8, word),
+                    ),
                 );
             }
         }
@@ -11437,7 +11462,7 @@ fn gen_empty_board_place_moves_made<
 struct KurniaIterParams<
     'a,
     R: RunLetters,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -11461,7 +11486,7 @@ fn kurnia_gen_place_moves_iter_lean<
     const D: usize,
     W: LaneBits,
     R: 'a + RunLetters,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -11645,9 +11670,9 @@ fn kurnia_gen_place_moves_iter_lean<
                               lane: i8,
                               idx: i8,
                               word: &[u8],
-                              score: i32,
-                              leave_value: i32| {
-                            let this_best = score + leave_value;
+                              score: equity::Equity,
+                              leave_value: equity::Equity| {
+                            let this_best = score.raw() + leave_value.raw();
                             debug_assert!(
                                 this_best <= placement.best_possible_equity,
                                 "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
@@ -11685,7 +11710,7 @@ fn kurnia_gen_raw_place_moves<
     const D: usize,
     W: LaneBits,
     R: 'a + RunLetters,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -11864,7 +11889,14 @@ fn kurnia_gen_raw_place_moves<
                     leftmost,
                     rightmost,
                     callback: |idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                        found_place_move(down, lane, idx, word, score, leave_value)
+                        found_place_move(
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            equity::Equity::new(score),
+                            equity::Equity::new(leave_value),
+                        )
                     },
                     multi_leaves,
                     num_tiles_in_bag: working_buffer.num_tiles_in_bag,
@@ -11897,7 +11929,7 @@ fn kurnia_gen_raw_place_moves<
 #[inline]
 fn kurnia_gen_one_tile_moves<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     N: kwg::Node,
     L: kwg::Node,
     G: LaneBits,
@@ -12035,8 +12067,8 @@ fn kurnia_gen_one_tile_moves<
                     lane as i8,
                     word_start as i8,
                     &word_buffer[word_start..word_end],
-                    score,
-                    leave_value,
+                    equity::Equity::new(score),
+                    equity::Equity::new(leave_value),
                 );
             }
         };
@@ -12769,7 +12801,7 @@ fn kurnia_gen_place_moves_iter<
     const D: usize,
     W: LaneBits,
     T: 'a + TablePlaces,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -13095,9 +13127,9 @@ fn kurnia_gen_place_moves_iter<
                                   lane: i8,
                                   idx: i8,
                                   word: &[u8],
-                                  score: i32,
-                                  leave_value: i32| {
-                                let this_best = score + leave_value;
+                                  score: equity::Equity,
+                                  leave_value: equity::Equity| {
+                                let this_best = score.raw() + leave_value.raw();
                                 debug_assert!(
                                     this_best <= placement.best_possible_equity,
                                     "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
@@ -18670,41 +18702,45 @@ mod tests {
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let empty = working_buffer.num_tiles_on_board == 0;
         let mut plays = Vec::new();
-        let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                let other_adjustments = if empty && !raw {
-                    (idx..)
-                        .zip(word)
-                        .filter(|&(i, &tile)| {
-                            tile != 0
-                                && alphabet.is_vowel(tile)
-                                && if down {
-                                    board_layout.danger_star_down(i)
-                                } else {
-                                    board_layout.danger_star_across(i)
-                                }
-                        })
-                        .count() as i32
-                        * -equity::OPENING_HOTSPOT_PENALTY
-                } else {
-                    0
-                };
-                plays.push(ValuedMove {
-                    equity: equity::Equity::new(if raw {
-                        0
-                    } else {
-                        score + leave_value + other_adjustments
-                    }),
-                    play: Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word: word.into(),
-                        score: equity::Equity::new(score),
-                    },
-                });
-                i32::MIN
+        let found_place_move = |down: bool,
+                                lane: i8,
+                                idx: i8,
+                                word: &[u8],
+                                score: equity::Equity,
+                                leave_value: equity::Equity| {
+            let other_adjustments = if empty && !raw {
+                (idx..)
+                    .zip(word)
+                    .filter(|&(i, &tile)| {
+                        tile != 0
+                            && alphabet.is_vowel(tile)
+                            && if down {
+                                board_layout.danger_star_down(i)
+                            } else {
+                                board_layout.danger_star_across(i)
+                            }
+                    })
+                    .count() as i32
+                    * -equity::OPENING_HOTSPOT_PENALTY
+            } else {
+                0
             };
+            plays.push(ValuedMove {
+                equity: equity::Equity::new(if raw {
+                    0
+                } else {
+                    score.raw() + leave_value.raw() + other_adjustments
+                }),
+                play: Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word: word.into(),
+                    score,
+                },
+            });
+            i32::MIN
+        };
         if raw {
             kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _, _, _>(
                 (),
