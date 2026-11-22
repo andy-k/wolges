@@ -201,6 +201,17 @@ impl Clone for Game {
     }
 }
 
+// a move the board shows: the board before it, the move, the seat that made
+// it, each seat's rack as it stood then, and whether it was an exchange of
+// tiles no one saw
+struct ShownMove {
+    board_before: Vec<u8>,
+    play: movegen::Play,
+    seat: usize,
+    racks: Vec<Vec<u8>>,
+    hidden: bool,
+}
+
 // a game a what-if cut away: the racks set before its first move, and its moves
 #[derive(Clone)]
 struct Line {
@@ -321,7 +332,7 @@ pub struct Session {
     played_words: Vec<String>, // that command's words, kept from play to play
     spare_unseen: std::cell::Cell<Vec<u8>>, // the tiles show last counted unseen
     game_before: Option<Game>, // the game before the last change, its memory kept
-    spare_board: Vec<u8>, // a board before a last turn, for the next rebuild
+    spare_shown: Vec<ShownMove>, // the boards and racks for the next rebuild
     readers: Readers,    // the rules' alphabet's, made when the rules are
     play_tiles: Vec<u8>, // a play's tiles as read, for the next
     kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
@@ -336,7 +347,7 @@ pub struct Session {
     infer_tables: Option<infer::InferTables>, // for klv, built at its first use
     game: Option<Game>,
     state: game_state::GameState,
-    board_before_last: Option<(Vec<u8>, movegen::Play)>,
+    moves_shown: Vec<ShownMove>,
     final_scores: Option<Vec<i32>>,
     loser: Option<usize>, // the seat that lost the game on a challenge
     move_generator: movegen::KurniaMoveGenerator,
@@ -542,7 +553,7 @@ impl Session {
             game_before: None,
             readers: Readers::new(game_config),
             play_tiles: Vec::new(),
-            spare_board: Vec::new(),
+            spare_shown: Vec::new(),
             kwg: None,
             klv: none,
             kwgs_read: Default::default(),
@@ -554,7 +565,7 @@ impl Session {
             infer_tables: None,
             game: None,
             state: game_state::GameState::new(game_config),
-            board_before_last: None,
+            moves_shown: Vec::new(),
             final_scores: None,
             loser: None,
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
@@ -872,10 +883,11 @@ impl Session {
                     if !matches!(turn.play, movegen::Play::Place { .. }) {
                         return Err("the last move made no word to challenge".into());
                     }
-                    let (board_before, _) = self
-                        .board_before_last
-                        .as_ref()
-                        .ok_or("no move to challenge")?;
+                    let board_before = &self
+                        .moves_shown
+                        .last()
+                        .ok_or("no move to challenge")?
+                        .board_before;
                     let board_snapshot = &movegen::BoardSnapshot {
                         board_tiles: board_before,
                         game_config: self.game_config,
@@ -1593,7 +1605,8 @@ impl Session {
         self.arm_tables_built.clear();
         self.endgame_solvers.clear();
         self.infer_tables = None;
-        self.board_before_last = None;
+        self.moves_shown.clear();
+        self.spare_shown.clear();
         self.final_scores = None;
         self.loser = None;
         self.racks_given = [false; 2];
@@ -1850,18 +1863,34 @@ impl Session {
         };
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut final_scores = None;
-        // the board before the last turn, in one buffer, and that turn
-        let mut board_before = std::mem::take(&mut self.spare_board);
-        let mut last_turn = None;
+        let mut moves_shown = std::mem::take(&mut self.spare_shown);
         let mut loser = None;
-        for turn in game.turns[..game.at].iter() {
+        for (at, turn) in game.turns[..game.at].iter().enumerate() {
             if final_scores.is_some() {
                 return Err("the game is over".into());
             }
             let held = replay.ready_rack(self.game_config, turn)?;
-            board_before.clear();
-            board_before.extend_from_slice(&replay.state.board_tiles);
-            last_turn = Some(turn);
+            let play = turn.played();
+            let players = &replay.state.players;
+            if let Some(shown) = moves_shown.get_mut(at) {
+                shown
+                    .board_before
+                    .copy_from_slice(&replay.state.board_tiles);
+                shown.play.clone_from(&play);
+                shown.seat = replay.state.turn as usize;
+                for (rack, player) in shown.racks.iter_mut().zip(players.iter()) {
+                    rack.clone_from(&player.rack);
+                }
+                shown.hidden = turn.hidden;
+            } else {
+                moves_shown.push(ShownMove {
+                    board_before: replay.state.board_tiles.to_vec(),
+                    play: play.into_owned(),
+                    seat: replay.state.turn as usize,
+                    racks: players.iter().map(|player| player.rack.clone()).collect(),
+                    hidden: turn.hidden,
+                });
+            }
             replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
             loser = turn.loser();
@@ -1869,13 +1898,7 @@ impl Session {
                 replay.state.next_turn();
             }
         }
-        let board_before_last = match last_turn {
-            Some(turn) => Some((board_before, turn.played().into_owned())),
-            None => {
-                self.spare_board = board_before;
-                None
-            }
-        };
+        moves_shown.truncate(game.at);
         if final_scores.is_none() {
             let to_move = replay.state.turn as usize;
             let given = self.seats[to_move] == Seat::Given;
@@ -1894,9 +1917,7 @@ impl Session {
         self.racks_given = replay.given;
         let was = std::mem::replace(&mut self.state, replay.state);
         self.spare_state.set(Some(was));
-        if let Some((was, _)) = std::mem::replace(&mut self.board_before_last, board_before_last) {
-            self.spare_board = was;
-        }
+        self.spare_shown = std::mem::replace(&mut self.moves_shown, moves_shown);
         self.final_scores = final_scores;
         self.loser = loser;
         Ok(())
@@ -2458,19 +2479,15 @@ impl Session {
             .map_or(0, |game| game.seed.wrapping_add(game.at as u64))
     }
 
-    // the leaves the opponent's last move says they kept, each with its weight,
-    // for a sim to draw their rack from; none before the first move
+    // the leaves the opponent's moves say they kept, each with its weight, for
+    // a sim to draw their rack from: each move of the last mover's inferred in
+    // turn from what the one before carried; none before the first move
     fn kept_leaves(&mut self) -> error::Returns<Vec<(Vec<u8>, f64)>> {
-        let Some((board_before, last)) = &self.board_before_last else {
+        let Some(last) = self.moves_shown.last() else {
             return Ok(Vec::new());
         };
-        // the watcher's rack is taken from what they cannot see: none for the
-        // public view
-        let watcher: &[u8] = if self.public_view {
-            &[]
-        } else {
-            &self.state.current_player().rack
-        };
+        let (mover, last_at) = (last.seat, self.moves_shown.len() - 1);
+        let watcher_seat = self.state.turn as usize;
         let kwg = self.kwg()?;
         let tables = match &mut self.infer_tables {
             Some(tables) => tables,
@@ -2479,22 +2496,62 @@ impl Session {
                 tables.insert(infer::InferTables::new(self.game_config, self.klv)?)
             }
         };
-        infer::kept_leaves(
-            tables,
-            &mut self.infer_generator,
-            &movegen::BoardSnapshot {
-                board_tiles: board_before,
-                game_config: self.game_config,
-                kwg,
-                anagrams: None,
-                rack_lengths: None,
-                klv: self.klv,
-            },
-            watcher,
-            last,
-            infer::FUZZ,
-            parallelism::available(),
-        )
+        let mut leaves = infer::PackedLeaves::new();
+        let (mut carried, mut next) = (infer::Carried::default(), infer::Carried::default());
+        // the tiles the watcher has put back in the bag since the mover's last
+        // move, and whether they are known (an exchange no one saw is not)
+        let mut put_back = Vec::new();
+        let mut known = true;
+        for (at, shown) in self.moves_shown.iter().enumerate() {
+            if shown.seat != mover {
+                if let movegen::Play::Exchange { tiles } = &shown.play
+                    && !self.public_view
+                {
+                    known &= !shown.hidden;
+                    put_back.extend_from_slice(tiles);
+                }
+                continue;
+            }
+            // the watcher's rack is taken from what they cannot see: none for
+            // the public view, and the one they hold now after the last move
+            let watcher: &[u8] = if self.public_view {
+                &[]
+            } else if at == last_at {
+                &self.state.current_player().rack
+            } else {
+                &shown.racks[watcher_seat]
+            };
+            let held = if known {
+                infer::Held::Kept(&carried, &put_back)
+            } else {
+                infer::Held::Any
+            };
+            infer::kept_leaves_carried_into(
+                tables,
+                &mut self.infer_generator,
+                &movegen::BoardSnapshot {
+                    board_tiles: &shown.board_before,
+                    game_config: self.game_config,
+                    kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: self.klv,
+                },
+                watcher,
+                (&shown.play, held),
+                infer::InferOptions {
+                    fuzz: infer::FUZZ,
+                    threads: parallelism::available(),
+                },
+                (&mut leaves, (at != last_at).then_some(&mut next)),
+            )?;
+            std::mem::swap(&mut carried, &mut next);
+            put_back.clear();
+            known = true;
+        }
+        Ok((0..leaves.len())
+            .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
+            .collect())
     }
 
     // the sim of the position shown, started if there is none, with the move
@@ -5606,12 +5663,17 @@ mod tests {
         state.bag.set_from_iter(std::iter::empty());
         state.players[0].rack = vec![1, 20];
         state.players[1].rack = vec![5];
-        session.board_before_last = Some((
-            state.board_tiles.to_vec(),
-            movegen::Play::Exchange {
+        session.moves_shown = vec![ShownMove {
+            board_before: state.board_tiles.to_vec(),
+            play: movegen::Play::Exchange {
                 tiles: [][..].into(),
             },
-        ));
+            seat: 1,
+            racks: (state.players.iter())
+                .map(|player| player.rack.clone())
+                .collect(),
+            hidden: false,
+        }];
         session.state = state;
         assert!(matches!(
             session.computer_move(Some(100.0)).unwrap(),
@@ -5657,6 +5719,130 @@ mod tests {
         assert!(!session.public_view);
         assert_eq!(session.kept_leaves().unwrap(), mover);
         assert!(run(&mut session, "infer both").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn the_inference_goes_through_each_of_the_movers_moves() {
+        // the game keeps each move it shows, with its seat and the racks then
+        let mut session = session();
+        for line in GAME {
+            run(&mut session, line).unwrap();
+        }
+        let seats = (session.moves_shown.iter())
+            .map(|shown| shown.seat)
+            .collect::<Vec<_>>();
+        assert_eq!(seats, [0, 1, 0]);
+        // late in a game, with 85 tiles down in the bag's order and the Z with
+        // the watcher: player 2 placed a Y, player 1 passed, and player 2
+        // placed a T. The leaves are the T's, inferred from what the Y kept,
+        // the watcher holding what they held at each move
+        let game_config = session.game_config;
+        let alphabet = game_config.alphabet();
+        let mut board = vec![0u8; 15 * 15];
+        let mut square = 0;
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                if square < 85 {
+                    board[square] = if tile == 0 { 0x81 } else { tile };
+                    square += 1;
+                }
+            }
+        }
+        let place = |lane: i8, tile: u8| movegen::Play::Place {
+            down: false,
+            lane,
+            idx: lane,
+            word: [tile][..].into(),
+            score: equity::Equity::ZERO,
+        };
+        let racks = vec![vec![26], Vec::new()];
+        let mut shown = vec![ShownMove {
+            board_before: board.clone(),
+            play: place(7, 25),
+            seat: 1,
+            racks: racks.clone(),
+            hidden: false,
+        }];
+        board[7 * 15 + 7] = 25;
+        shown.push(ShownMove {
+            board_before: board.clone(),
+            play: movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+            seat: 0,
+            racks: racks.clone(),
+            hidden: false,
+        });
+        shown.push(ShownMove {
+            board_before: board.clone(),
+            play: place(8, 20),
+            seat: 1,
+            racks,
+            hidden: false,
+        });
+        board[8 * 15 + 8] = 20;
+        session.state.board_tiles.copy_from_slice(&board);
+        session.state.turn = 0;
+        session.state.players[0].rack = vec![26];
+        session.moves_shown = shown;
+        let kwg = session.kwg().unwrap();
+        let klv = session.klv;
+        let mut tables = infer::InferTables::new(game_config, klv).unwrap();
+        let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+        for public in [false, true] {
+            session.public_view = public;
+            let watcher: &[u8] = if public { &[] } else { &[26] };
+            let mut infer_at = |at: usize, held: infer::Held<'_>| {
+                let shown = &session.moves_shown[at];
+                let mut leaves = infer::PackedLeaves::new();
+                let mut carried = infer::Carried::default();
+                infer::kept_leaves_carried_into(
+                    &mut tables,
+                    &mut move_generator,
+                    &movegen::BoardSnapshot {
+                        board_tiles: &shown.board_before,
+                        game_config,
+                        kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv,
+                    },
+                    watcher,
+                    (&shown.play, held),
+                    infer::InferOptions {
+                        fuzz: infer::FUZZ,
+                        threads: 1,
+                    },
+                    (&mut leaves, Some(&mut carried)),
+                )
+                .unwrap();
+                let leaves = (0..leaves.len())
+                    .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
+                    .collect::<Vec<_>>();
+                (leaves, carried)
+            };
+            let (first, carried) = infer_at(0, infer::Held::Any);
+            assert!(!first.is_empty() && !carried.is_empty());
+            let (chained, _) = infer_at(2, infer::Held::Kept(&carried, &[]));
+            let (last_alone, _) = infer_at(2, infer::Held::Any);
+            assert_ne!(chained, last_alone);
+            assert_eq!(session.kept_leaves().unwrap(), chained);
+            // an exchange of the watcher's that no one saw puts back tiles no
+            // one knows, so the move after it is weighed from any rack the
+            // unseen tiles could make
+            if !public {
+                session.moves_shown[1].play = movegen::Play::Exchange {
+                    tiles: [26][..].into(),
+                };
+                session.moves_shown[1].hidden = true;
+                assert_eq!(session.kept_leaves().unwrap(), last_alone);
+                session.moves_shown[1].play = movegen::Play::Exchange {
+                    tiles: [][..].into(),
+                };
+                session.moves_shown[1].hidden = false;
+            }
+        }
     }
 
     #[test]
@@ -5710,12 +5896,17 @@ mod tests {
         state.bag.set_from_iter(off[14..].iter().copied());
         session.state = state;
         run(&mut session, "reply 1").unwrap();
-        session.board_before_last = Some((
-            session.state.board_tiles.to_vec(),
-            movegen::Play::Exchange {
+        session.moves_shown = vec![ShownMove {
+            board_before: session.state.board_tiles.to_vec(),
+            play: movegen::Play::Exchange {
                 tiles: [][..].into(),
             },
-        ));
+            seat: 1 - session.state.turn as usize,
+            racks: (session.state.players.iter())
+                .map(|player| player.rack.clone())
+                .collect(),
+            hidden: false,
+        }];
         run(&mut session, "reply 1").unwrap();
         assert!(run(&mut session, "reply x").is_err());
         assert!(run(&mut session, "reply 1 2").is_err());
