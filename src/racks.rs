@@ -91,11 +91,11 @@ impl RackTable {
         game_config: &game_config::GameConfig,
         threads: usize,
     ) -> error::Returns<Self> {
+        game_config.supports(game_config::Op::Tables)?;
         let alphabet = game_config.alphabet();
         let counts = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<[u8]>>();
-        game_config.supports(game_config::Op::Tables)?;
         let rack_size = game_config.rack_size();
         let ways = Self::ways_of(&counts, rack_size);
         let mut table = Self {
@@ -166,6 +166,7 @@ impl RackTable {
 
     // a file write made, for this config's bag and rack size
     pub fn read(game_config: &game_config::GameConfig, bytes: &[u8]) -> error::Returns<Self> {
+        game_config.supports(game_config::Op::Tables)?;
         let alphabet = game_config.alphabet();
         let counts = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile))
@@ -223,6 +224,18 @@ impl RackTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_refuses_a_rack_too_large_for_a_table() {
+        let gc = game_config::make_hong_kong_english_game_config();
+        let error = RackTable::read(&gc, &[]).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            gc.supports(game_config::Op::Tables)
+                .unwrap_err()
+                .to_string()
+        );
+    }
 
     #[test]
     fn each_full_rack_has_its_own_rank() {
