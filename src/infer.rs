@@ -802,6 +802,79 @@ fn weights_by_leave(racks: &[(u32, i32, f64)], fuzz: f64, weighed: &mut Vec<(u32
     });
 }
 
+// every keep of this many tiles the rack (a tally) holds, to f(rank of the
+// keep, its gap): the rack's best equity less what the keep is worth
+#[inline]
+fn each_keep(
+    lat: &census::MultisetLattice,
+    leave: &[i32],
+    (rack, cur, cap): (&[u8], &mut [u8], &mut [usize]),
+    best: i32,
+    keep: usize,
+    f: &mut impl FnMut(u32, i32),
+) {
+    for t in (0..rack.len()).rev() {
+        cap[t] = cap[t + 1] + rack[t] as usize;
+    }
+    each_tally_of_size(rack, cap, 0, keep, cur, &mut |kept| {
+        let kept = lat.rank(kept);
+        f(kept, best - leave[kept as usize]);
+    });
+}
+
+// as weights_by_leave, for an exchange keeping keep tiles: each rack (its
+// rank, its best equity, and the log of its chance before the move) weighed at
+// every keep it holds, each by its own gap, summed by keep in the order the
+// racks come in a table of the leaves of that size, so that no list holds a
+// rack's every keep: (leave, 0, weight)
+#[inline]
+fn weights_by_keep(
+    lat: &census::MultisetLattice,
+    leave: &[i32],
+    racks: &[(u32, i32, f64)],
+    (keep, g0, fuzz): (usize, i32, f64),
+    scratch: &mut KeepScratch,
+    weighed: &mut Vec<(u32, usize, f64)>,
+) {
+    let KeepScratch {
+        rack,
+        keep: cur,
+        cap,
+        by_keep,
+    } = scratch;
+    let num_letters = lat.num_letters();
+    rack.clear();
+    rack.resize(num_letters, 0);
+    cur.clear();
+    cur.resize(num_letters, 0);
+    cap.clear();
+    cap.resize(num_letters + 1, 0);
+    let start = lat.size_start(keep);
+    by_keep.clear();
+    by_keep.resize(lat.size_start(keep + 1) - start, 0.0);
+    for &(rank, best, ln_prior) in racks {
+        lat.unrank_into(rank as usize, rack);
+        let prior = ln_prior.exp();
+        each_keep(
+            lat,
+            leave,
+            (rack, cur, cap),
+            best,
+            keep,
+            &mut |kept, gap| {
+                by_keep[kept as usize - start] += prior * fuzz_ln_weight(gap, g0, fuzz).exp();
+            },
+        );
+    }
+    weighed.clear();
+    weighed.extend(
+        (start as u32..)
+            .zip(by_keep.iter())
+            .filter(|&(_, &weight)| weight > 0.0)
+            .map(|(kept, &weight)| (kept, 0, weight)),
+    );
+}
+
 // the multiset lattice and its leave table, built by one inference and reused
 // by the next, the logs of the binomials up to the game's tiles, and the
 // scratch space an inference works in: the pool, the tiles the move placed,
@@ -825,6 +898,18 @@ pub struct InferTables {
     tiles: Vec<u8>,
     weigh: WeighScratch,
     ways: Vec<u64>,
+    keeps: KeepScratch,
+}
+
+// the scratch an exchange's keeps are summed in: a rack, a keep, the tiles
+// from each letter on (as each_keep walks them), and each keep's weight by its
+// place among the leaves of its size
+#[derive(Default)]
+struct KeepScratch {
+    rack: Vec<u8>,
+    keep: Vec<u8>,
+    cap: Vec<usize>,
+    by_keep: Vec<f64>,
 }
 
 impl InferTables {
@@ -855,6 +940,7 @@ impl InferTables {
             tiles: Vec::new(),
             weigh: WeighScratch::new(),
             ways: Vec::new(),
+            keeps: KeepScratch::default(),
         })
     }
 }
@@ -991,11 +1077,13 @@ impl PackedLeaves {
 // weight (not normalized). The board is the one before the move, and the pool
 // is what the watcher could not see then: the tiles not on that board, less the
 // rack the watcher still holds. A rack keeps the tiles it did not place: all of
-// them for a pass, and for an exchange (whose size alone is seen) the leave of
-// that size the table values most. Empty when there is nothing to weigh: the
-// bag is empty before the move, or its own draw empties it (the mover then
-// holds every unseen tile, whatever they kept), or no rack from the pool could
-// have made the move. The racks are weighed on this many threads.
+// them for a pass, and for an exchange (whose size alone is seen) every leave
+// of that size it holds, each weighed by what it gives up against the rack's
+// best (by the lean arm, the one the table values most). Empty when there is
+// nothing to weigh: the bag is empty before the move, or its own draw empties
+// it (the mover then holds every unseen tile, whatever they kept), or no rack
+// from the pool could have made the move. The racks are weighed on this many
+// threads.
 #[inline]
 pub fn kept_leaves<
     N: kwg::Node,
@@ -1216,6 +1304,7 @@ fn kept_leaves_packed_impl<
         kept,
         tiles: leave_tiles,
         weigh,
+        keeps,
         ..
     } = tables;
     game_config.tiles_off_board_into(board_tiles, pool)?;
@@ -1244,9 +1333,23 @@ fn kept_leaves_packed_impl<
         Some(n) => MoveTiles::Exchanged(n),
         None => MoveTiles::Placed(placed),
     };
-    // each rack as the walk finds it: the leave it kept, its gap, and the log of
-    // its chance to be dealt
+    // each rack as the walk finds it, with the log of its chance before the
+    // move: the leave it kept and its gap, or where every keep of an exchange
+    // is weighed (by all but the lean arm), the rack and its best equity, the
+    // smallest gap kept apart
+    let keep = match exchanged {
+        Some(n) if !LEAN => Some(rack_size.saturating_sub(n)),
+        _ => None,
+    };
+    let mut g0 = i32::MAX;
     racks.clear();
+    let mut add = |rank: u32, ln_prior: f64, gap: i32, kept: u32| match keep {
+        Some(_) => {
+            g0 = g0.min(gap.max(0));
+            racks.push((rank, gap + leave[kept as usize], ln_prior));
+        }
+        None => racks.push((kept, gap, ln_prior)),
+    };
     // the racks the move could have come from: few, when it leaves few tiles
     // unseen, and then each is generated on the board in place of the sheet
     let num_racks = match exchanged {
@@ -1282,7 +1385,7 @@ fn kept_leaves_packed_impl<
                 value: move_value,
             },
             weigh,
-            &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
+            &mut add,
         );
     } else {
         infer_sheet_for(
@@ -1311,10 +1414,13 @@ fn kept_leaves_packed_impl<
             move_value,
             threads,
             weigh,
-            &mut |_, ln_prior, gap, kept| racks.push((kept, gap, ln_prior)),
+            &mut add,
         );
     }
-    weights_by_leave(racks, fuzz, weighed);
+    match keep {
+        Some(keep) => weights_by_keep(lat, leave, racks, (keep, g0, fuzz), keeps, weighed),
+        None => weights_by_leave(racks, fuzz, weighed),
+    }
     kept.clear();
     kept.resize(num_letters, 0);
     for &(rank, _, weight) in weighed.iter() {
@@ -1899,6 +2005,183 @@ mod tests {
         for (leave, _) in leaves {
             assert_eq!(leave.len(), 7);
         }
+    }
+
+    #[test]
+    #[inline]
+    fn an_exchange_weighs_each_keep_by_what_it_gives_up() {
+        // a rack of AAB keeping one: B is worth 3.105 points more than A
+        let lat = census::MultisetLattice::new(3, 3).unwrap();
+        let mut leave = vec![0i32; lat.len()];
+        leave[lat.rank(&[0, 1, 0]) as usize] = 1_000;
+        leave[lat.rank(&[0, 0, 1]) as usize] = 4_105;
+        let mut keeps = Vec::new();
+        each_keep(
+            &lat,
+            &leave,
+            (&[0, 2, 1], &mut [0u8; 3], &mut [0usize; 4]),
+            4_112,
+            1,
+            &mut |kept, gap| keeps.push((lat.tally(kept as usize), gap)),
+        );
+        keeps.sort_unstable();
+        assert_eq!(keeps, [(vec![0, 0, 1], 7), (vec![0, 1, 0], 3_112)]);
+        let mut weighed = Vec::new();
+        weights_by_keep(
+            &lat,
+            &leave,
+            &[(lat.rank(&[0, 2, 1]), 4_112, 0.0)],
+            (1, 7, equity_fuzz(3.105).unwrap()),
+            &mut KeepScratch::default(),
+            &mut weighed,
+        );
+        assert_eq!(weighed.len(), 2);
+        let (hi, lo) = (
+            weighed[0].2.max(weighed[1].2),
+            weighed[0].2.min(weighed[1].2),
+        );
+        assert!((hi / lo / std::f64::consts::E - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    #[inline]
+    fn an_exchange_at_fuzz_0_keeps_every_keep_that_ties() {
+        // the empty klv values every leave alike, so every 4 of the pool ties
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        let mut pool = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        let mut on_board = 79u8;
+        for count in pool.iter_mut() {
+            let taken = (*count).min(on_board);
+            *count -= taken;
+            on_board -= taken;
+        }
+        pool[26] -= 1;
+        let exchange = movegen::Play::Exchange {
+            tiles: [0u8; 3][..].into(),
+        };
+        let leaves = leaves_after(79, &exchange, 0.0);
+        assert_eq!(leaves.len(), count_tallies_of_size(&pool, 4));
+    }
+
+    // summed by keep, an exchange's leaves weigh what a list of every keep of
+    // every rack weighs, bit for bit, on threads or one
+    #[test]
+    #[inline]
+    fn an_exchanges_keeps_summed_by_keep_are_its_keeps_listed() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let tables = InferTables::new(&game_config, &klv).unwrap();
+        let (lat, leave) = (&tables.lat, &tables.leave);
+        let mut board_tiles = vec![0u8; 15 * 15];
+        let mut square = 0;
+        for tile in 0..game_config.alphabet().len() {
+            for _ in 0..game_config.alphabet().freq(tile) {
+                if square < 70 {
+                    board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+                    square += 1;
+                }
+            }
+        }
+        let mut pool = game_config.tiles_off_board(&board_tiles).unwrap();
+        game_config.take_rack(&mut pool, &[26]).unwrap();
+        let ln_binom = LnBinom::new(pool.iter().map(|&c| c as usize).sum());
+        let mut sheet = Vec::new();
+        infer_sheet_for(
+            &mut movegen::KurniaMoveGenerator::new(&game_config),
+            &board_tiles,
+            SpellTables {
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &klv,
+                lat,
+            },
+            &pool,
+            true,
+            (&mut Vec::new(), &mut Vec::new()),
+            &mut sheet,
+        );
+        let is = InferSheet {
+            lat,
+            sheet: &sheet,
+            leave,
+            ln_binom: &ln_binom,
+        };
+        let fuzz = equity_fuzz(FUZZ).unwrap();
+        let (mut racks, mut listed) = (Vec::new(), Vec::new());
+        weigh_racks(
+            &is,
+            &pool,
+            MoveTiles::Exchanged(3),
+            0,
+            1,
+            &mut WeighScratch::new(),
+            &mut |rank, ln_prior, gap, kept| {
+                let best = gap + leave[kept as usize];
+                racks.push((rank, best, ln_prior));
+                each_keep(
+                    lat,
+                    leave,
+                    (
+                        &lat.tally(rank as usize),
+                        &mut vec![0u8; lat.num_letters()],
+                        &mut vec![0usize; lat.num_letters() + 1],
+                    ),
+                    best,
+                    4,
+                    &mut |kept, gap| listed.push((kept, gap, ln_prior)),
+                );
+            },
+        );
+        let mut by_list = Vec::new();
+        weights_by_leave(&listed, fuzz, &mut by_list);
+        let g0 = listed.iter().map(|&(_, gap, _)| gap.max(0)).min().unwrap();
+        let mut by_keep = Vec::new();
+        weights_by_keep(
+            lat,
+            leave,
+            &racks,
+            (4, g0, fuzz),
+            &mut KeepScratch::default(),
+            &mut by_keep,
+        );
+        assert!(by_keep.len() > 1);
+        assert_eq!(by_keep.len(), by_list.len());
+        for (a, b) in by_keep.iter().zip(&by_list) {
+            assert_eq!((a.0, a.2.to_bits()), (b.0, b.2.to_bits()));
+        }
+        let exchange = movegen::Play::Exchange {
+            tiles: [0u8; 3][..].into(),
+        };
+        let infer_on = |threads| {
+            kept_leaves(
+                &mut InferTables::new(&game_config, &klv).unwrap(),
+                &mut movegen::KurniaMoveGenerator::new(&game_config),
+                &movegen::BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                &[26],
+                &exchange,
+                FUZZ,
+                threads,
+            )
+            .unwrap()
+        };
+        let one = infer_on(1);
+        assert_eq!(one.len(), by_list.len());
+        for ((tiles, weight), b) in one.iter().zip(&by_list) {
+            assert_eq!(lat.rank_bytes(tiles), b.0);
+            assert_eq!(weight.to_bits(), b.2.to_bits());
+        }
+        assert_eq!(infer_on(4), one);
     }
 
     #[test]
