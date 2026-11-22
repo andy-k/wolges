@@ -996,6 +996,13 @@ impl KeyTable {
         self.keys.capacity() * std::mem::size_of::<u128>()
             + self.values.capacity() * std::mem::size_of::<u32>()
     }
+
+    // every slot made empty in place (a slot reads as empty by its value)
+    #[inline]
+    fn clear(&mut self) {
+        self.values.fill(NO_LIST);
+        self.held = 0;
+    }
 }
 
 // whether every tile of a sorted rack is in a sorted pool, as many times
@@ -1052,6 +1059,16 @@ struct Deal {
 // the share of the memory limit a search's lane pools may hold, one over this,
 // split alike among its threads
 const POOL_SHARE: usize = 8;
+
+// the room a lane pool has for a walk's lists (LanePool::room_for): enough,
+// none past its budget or what its ids number (full), or none the memory limit
+// leaves
+#[derive(Clone, Copy, PartialEq)]
+enum PoolRoom {
+    Enough,
+    Full,
+    NoMemory,
+}
 
 // the pool's version of a lane's moves, for a search with tiles in the bag:
 // made with the pool from the lane's tiles with its cross sets alone, every
@@ -1155,16 +1172,29 @@ impl LanePool {
             + of(&self.entries)
     }
 
-    // every list and move let go, the pool kept, each slot stale
-    fn let_go(&mut self) {
-        self.moves = Vec::new();
-        self.known = Vec::new();
-        self.keys = KeyTable::default();
-        self.contents = KeyTable::default();
-        self.lists = Vec::new();
-        self.needs = Vec::new();
-        self.ends = Vec::new();
-        self.entries = Vec::new();
+    // every list and move let go, the pool kept, each slot stale; with keep,
+    // the lists' buffers emptied in place for the lists made again while they
+    // fit the pool's budget, else freed
+    fn let_go(&mut self, keep: bool) {
+        if keep && self.bytes() <= self.deal.budget {
+            self.moves.clear();
+            self.known.iter_mut().for_each(KeyTable::clear);
+            self.keys.clear();
+            self.contents.clear();
+            self.lists.clear();
+            self.needs.clear();
+            self.ends.clear();
+            self.entries.clear();
+        } else {
+            self.moves = Vec::new();
+            self.known = Vec::new();
+            self.keys = KeyTable::default();
+            self.contents = KeyTable::default();
+            self.lists = Vec::new();
+            self.needs = Vec::new();
+            self.ends = Vec::new();
+            self.entries = Vec::new();
+        }
         self.slot_lists.fill(NO_LIST);
         self.scans.fill((NO_LIST, 0));
         for undone in self.undo.iter_mut() {
@@ -1176,19 +1206,21 @@ impl LanePool {
     // the pool's budget; the room left must hold whatever must grow for them
     // (at most as many groups and entries as moves, each move new to its slot),
     // within the budget. The ids are u32 whatever the memory allows, so the
-    // moves, groups, entries, and lists they number must stay below NO_LIST
+    // moves, groups, entries, and lists they number must stay below NO_LIST.
+    // Where they do not fit, whether the pool is full (its budget or its ids)
+    // or the memory limit has no room
     #[inline(always)]
-    fn room_for(&self, memory_limit: Option<MemoryLimit>, moves: usize, lanes: usize) -> bool {
+    fn room_for(&self, memory_limit: Option<MemoryLimit>, moves: usize, lanes: usize) -> PoolRoom {
         let below = |len: usize, more: usize| len + more < NO_LIST as usize;
         if !(below(self.moves.len(), moves)
             && below(self.ends.len(), moves)
             && below(self.entries.len(), moves)
             && below(self.lists.len(), lanes))
         {
-            return false;
+            return PoolRoom::Full;
         }
         let Some(limit) = memory_limit else {
-            return true;
+            return PoolRoom::Enough;
         };
         fn growth<T>(v: &Vec<T>, more: usize) -> usize {
             if v.len() + more <= v.capacity() {
@@ -1218,7 +1250,13 @@ impl LanePool {
             + table(&self.keys, lanes)
             + table(&self.contents, lanes)
             + known;
-        needed < limit.room() && self.bytes() + needed <= self.deal.budget
+        if needed >= limit.room() {
+            PoolRoom::NoMemory
+        } else if self.bytes() + needed > self.deal.budget {
+            PoolRoom::Full
+        } else {
+            PoolRoom::Enough
+        }
     }
 
     // the deal of a search, its racks holding at most most tiles; no pool when
@@ -1239,7 +1277,7 @@ impl LanePool {
             if kinds > Tiles::BITS / 4 || most > NIBBLE_MOST || deal.mover.len() > most {
                 self.deal.pool.clear();
             }
-            self.let_go();
+            self.let_go(false);
         }
     }
 
@@ -1295,20 +1333,20 @@ impl LanePool {
     // moves as walked found by their hashes among the lists made before, else
     // grouped by the tiles they place, each move found in the table, else put
     // in it; false, every list let go, where the memory limit has no room for
-    // them
+    // them. A pool full keeps the lists' buffers for those made again; the
+    // memory limit or the allocator refusing them, they are freed
     fn record(
         &mut self,
         plays: &[movegen::ValuedMove],
         memory_limit: Option<MemoryLimit>,
         num_rows: usize,
     ) -> bool {
-        if !self.room_for(memory_limit, plays.len(), self.fresh.len())
-            || !self.record_lists(plays, num_rows)
-        {
-            self.let_go();
-            return false;
+        let room = self.room_for(memory_limit, plays.len(), self.fresh.len());
+        if room == PoolRoom::Enough && self.record_lists(plays, num_rows) {
+            return true;
         }
-        true
+        self.let_go(room == PoolRoom::Full);
+        false
     }
 
     fn record_lists(&mut self, plays: &[movegen::ValuedMove], num_rows: usize) -> bool {
@@ -15051,6 +15089,55 @@ mod tests {
                 assert!(same_peg_move(&tight.best_move, &full.best_move));
             }
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_full_lane_pool_lets_go_of_its_lists_and_keeps_their_buffers() {
+        let mut pool = super::LanePool::new();
+        pool.deal = super::Deal {
+            pool: vec![1, 2, 8],
+            mover: vec![1],
+            budget: usize::MAX,
+        };
+        pool.moves.reserve(64);
+        pool.lists.push([0, 1, 0]);
+        pool.needs.push(1);
+        pool.ends.push(1);
+        pool.entries.push(0);
+        pool.known.push(super::KeyTable::default());
+        assert!(pool.keys.insert(7, 0));
+        assert!(pool.contents.insert(8, 0));
+        assert!(pool.known[0].insert(9, 0));
+        let held = pool.bytes();
+        pool.let_go(true);
+        // every list let go, each buffer kept for the lists made again
+        assert_eq!(pool.bytes(), held);
+        assert!(pool.moves.is_empty() && pool.lists.is_empty());
+        assert!(pool.needs.is_empty() && pool.ends.is_empty() && pool.entries.is_empty());
+        assert_eq!(
+            (pool.keys.get(7), pool.contents.get(8), pool.known[0].get(9)),
+            (None, None, None)
+        );
+        assert!(pool.keys.insert(7, 3));
+        assert_eq!(pool.keys.get(7), Some(3));
+        // past the budget they are freed, as they are when not kept
+        pool.deal.budget = held - 1;
+        pool.let_go(true);
+        assert_eq!(pool.bytes(), 0);
+        assert!(pool.keys.insert(7, 3));
+        pool.deal.budget = usize::MAX;
+        pool.let_go(false);
+        assert_eq!(pool.bytes(), 0);
+        // a walk the budget refuses finds the pool full, and one the memory
+        // limit refuses finds no memory, whatever the budget
+        let limit = |bytes| Some(super::MemoryLimit { bytes, held: || 0 });
+        assert!(pool.room_for(limit(1 << 40), 1, 1) == super::PoolRoom::Enough);
+        pool.deal.budget = 0;
+        assert!(pool.room_for(limit(1 << 40), 1, 1) == super::PoolRoom::Full);
+        assert!(pool.room_for(limit(1), 1, 1) == super::PoolRoom::NoMemory);
+        pool.deal.budget = usize::MAX;
+        assert!(pool.room_for(limit(1), 1, 1) == super::PoolRoom::NoMemory);
     }
 
     #[test]
