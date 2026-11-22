@@ -344,6 +344,22 @@ fn read_klv_pair(
     Ok((klv0, klv1))
 }
 
+#[inline]
+fn read_klv_with_racks(
+    game_config: &game_config::GameConfig,
+    path: &str,
+    racks: Option<&str>,
+) -> error::Returns<klv::Klv<kwg::Node24>> {
+    let klv = read_klv(game_config, path)?;
+    Ok(match racks {
+        None => klv,
+        Some(racks) => klv.with_racks(racks::RackTable::from_bytes_alloc(
+            game_config,
+            read_input(racks)?,
+        )?),
+    })
+}
+
 #[derive(clap::Args)]
 struct SelfPlay {
     #[arg(help = "the word graph (- for stdin)")]
@@ -623,6 +639,12 @@ struct HarvestBoards {
     stride: u32,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "read a full rack's leaves and subracks' order from this file the racks task wrote from the leaves"
+    )]
+    racks: Option<String>,
     #[arg(long, help = "print no progress")]
     quiet: bool,
 }
@@ -947,7 +969,7 @@ enum Task {
     #[command(about = "play game pairs between two seats, each with its own leaves and picker")]
     Compare(Compare),
     #[command(
-        about = "write every full rack's leaves and subracks' order from these leaves, which compare --racks reads"
+        about = "write every full rack's leaves and subracks' order from these leaves, which compare and harvest-boards read with --racks"
     )]
     Racks(Racks),
     #[command(about = "combine compare reports by summing their games")]
@@ -1221,9 +1243,7 @@ fn run(
                             "--racks reads one table, for seats with the same leaves".to_string()
                         );
                     }
-                    let klv = read_klv(&game_config, &a.klv0)?.with_racks(
-                        racks::RackTable::from_bytes_alloc(&game_config, read_input(racks)?)?,
-                    );
+                    let klv = read_klv_with_racks(&game_config, &a.klv0, Some(racks))?;
                     let klv = std::sync::Arc::new(klv);
                     (std::sync::Arc::clone(&klv), klv)
                 }
@@ -1360,7 +1380,7 @@ fn run(
         }
         Task::HarvestBoards(a) => {
             let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
-            let klv = read_klv(&game_config, &a.leave)?;
+            let klv = read_klv_with_racks(&game_config, &a.leave, a.racks.as_deref())?;
             harvest_boards(
                 game_config,
                 kwg,
@@ -11695,6 +11715,102 @@ WCMP_P1_SCORE 402.000000
             known > 100 && unknown > 0,
             "{known} known, {unknown} unknown"
         );
+    }
+
+    #[test]
+    fn harvest_boards_writes_the_same_boards_with_a_rack_table() {
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let game_config = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            rack_size: 5,
+            ..english
+        });
+        let mut words = [
+            "AE", "AI", "AN", "AR", "AS", "AT", "EA", "EN", "ER", "ES", "ET", "IN", "IS", "IT",
+            "NA", "NE", "NO", "ON", "OR", "OS", "RE", "SO", "TA", "TE", "TI", "TO", "ANT", "ATE",
+            "EAT", "EON", "ERA", "ETA", "ION", "ITS", "NET", "NIT", "NOR", "NOT", "ONE", "ORE",
+            "RAN", "RAT", "ROE", "SAT", "SEA", "SET", "SIT", "TAN", "TEA", "TEN", "TIE", "TIN",
+            "TOE", "TON", "NOTE", "RAIN", "RATE", "REST", "SEAT", "STAR", "TEAR", "TONE", "STONE",
+            "TEARS",
+        ]
+        .iter()
+        .map(|word| word.bytes().map(|c| c - b'A' + 1).collect::<Vec<u8>>()[..].into())
+        .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let tiles = game_config.alphabet().len();
+        let mut leaves = Vec::<bites::Bites>::new();
+        for a in 0..tiles {
+            leaves.push([a][..].into());
+            for b in a..tiles {
+                leaves.push([a, b][..].into());
+            }
+        }
+        let leaves_kwg = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &leaves,
+        )
+        .unwrap();
+        let mut klv_bytes = Vec::new();
+        klv_bytes.extend_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+        klv_bytes.extend_from_slice(&leaves_kwg);
+        klv_bytes.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
+        for v in 0..leaves.len() {
+            klv_bytes.extend_from_slice(&((v % 9) as f32 - 4.0).to_le_bytes());
+        }
+        let dir = format!(
+            "{}/target/harvest_boards-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let leaves_path = format!("{dir}/leaves.klv2");
+        std::fs::write(&leaves_path, &klv_bytes).unwrap();
+        let mut table = Vec::new();
+        racks::RackTable::build(
+            &read_klv(&game_config, &leaves_path).unwrap(),
+            &game_config,
+            1,
+        )
+        .unwrap()
+        .write(&mut table)
+        .unwrap();
+        let racks_path = format!("{dir}/leaves.racks");
+        std::fs::write(&racks_path, table).unwrap();
+        let boards_path = format!("{dir}/boards");
+        for lean in [false, true] {
+            let boards = |racks: Option<&str>| {
+                harvest_boards(
+                    game_config.clone(),
+                    kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+                    read_klv_with_racks(&game_config, &leaves_path, racks).unwrap(),
+                    &boards_path,
+                    HarvestParams {
+                        num_games: 4,
+                        seed: 1,
+                        stride: 1,
+                        lean,
+                        quiet: true,
+                    },
+                )
+                .unwrap();
+                std::fs::read_to_string(&boards_path).unwrap()
+            };
+            let walked = boards(None);
+            assert!(walked.contains(char::is_alphabetic), "lean {lean}");
+            assert_eq!(boards(Some(racks_path.as_str())), walked, "lean {lean}");
+        }
+        for path in [&boards_path, &racks_path, &leaves_path] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     fn each_mangling(
