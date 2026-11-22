@@ -361,6 +361,7 @@ struct Solving {
     scoreless: [u16; 2],
     peg_model: endgame::PegModel,
     peg_estimates: bool,
+    peg_exact_pass: bool,
 }
 
 // the models of a search with two or more tiles in the bag (endgame::PegModel)
@@ -633,6 +634,12 @@ struct Cli {
         help = "for positions with two or more tiles in the bag, estimate lines that still have tiles in the bag at each pass's cutoff"
     )]
     peg_estimates: bool,
+    #[arg(
+        long,
+        conflicts_with = "peg_estimates",
+        help = "value root moves exactly in one score-ordered pass for positions with two or more tiles in the bag"
+    )]
+    peg_exact_pass: bool,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -671,6 +678,7 @@ fn main() -> error::Returns<()> {
         quiet: cli.quiet,
         scoreless: [cli.passes, cli.zeros],
         peg_estimates: cli.peg_estimates,
+        peg_exact_pass: cli.peg_exact_pass,
         peg_model: match cli.peg_model {
             PegModelArg::InfoSets => endgame::PegModel::InfoSets,
             PegModelArg::RandomDraws => endgame::PegModel::RandomDraws,
@@ -1669,6 +1677,9 @@ fn solve_position<N: kwg::Node>(
                     ..endgame::PegBagChoices::WHOLE
                 },
             )?;
+            if solving.peg_exact_pass {
+                progress = progress.with_exact_pass()?;
+            }
             let named = |play: &movegen::Play| match play {
                 movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
                 movegen::Play::Exchange { tiles } => {
