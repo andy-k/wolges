@@ -800,34 +800,27 @@ impl MultiLeaves {
                         }
                         let leave_idx = leave_idx_offset + env.digits[tile_usize].place_value;
                         env.num_playeds[leave_idx as usize] = num_played;
+                        let mut child = 0;
+                        let mut child_idx = 0;
                         if p != 0 {
                             idx -= env.klv.count(p);
                             let node = env.klv.kwg(p);
-                            let leave_val = if node.tile() == tile && node.accepts() {
-                                env.klv.leave(idx).raw()
-                            } else {
-                                0
-                            };
-                            env.leave_values[leave_idx as usize] = leave_val;
-                            precompute_leaves(
-                                env,
-                                node.arc_index(),
-                                idx + node.accepts() as u32,
-                                leave_idx,
-                                unique_tile_idx as u8,
-                                num_played,
-                            );
-                        } else {
-                            env.leave_values[leave_idx as usize] = 0;
-                            precompute_leaves(
-                                env,
-                                p,
-                                idx,
-                                leave_idx,
-                                unique_tile_idx as u8,
-                                num_played,
-                            );
+                            if node.tile() == tile {
+                                if node.accepts() {
+                                    env.leave_values[leave_idx as usize] = env.klv.leave(idx).raw();
+                                }
+                                child = node.arc_index();
+                                child_idx = idx + node.accepts() as u32;
+                            }
                         }
+                        precompute_leaves(
+                            env,
+                            child,
+                            child_idx,
+                            leave_idx,
+                            unique_tile_idx as u8,
+                            num_played,
+                        );
                         env.digits[tile_usize].count += 1;
                     }
                 }
@@ -1249,6 +1242,27 @@ pub(crate) fn make_klv2(leaves: &[(&[u8], f32)]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_dense_walk_keeps_only_matching_leave_prefixes() {
+        let klv = kbwg_from_bytes_alloc(make_klv2(&[(&[2, 3], 7.25)])).unwrap();
+        let rack = [0, 1, 1, 1];
+        let mut dense = MultiLeaves::new();
+        dense.init(
+            &rack,
+            &klv,
+            true,
+            AdjustLeave::Identity,
+            dense.dense_most(),
+            std::iter::empty(),
+        );
+        for kept in [[0, 1, 0, 1], [0, 0, 1, 1]] {
+            let idx = (1..kept.len())
+                .map(|tile| u32::from(kept[tile]) * dense.place_value(tile as u8))
+                .sum();
+            assert_eq!(dense.leave_value(idx), klv.leave_value_from_tally(&kept));
+        }
+    }
 
     #[test]
     #[inline]
