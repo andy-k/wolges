@@ -2569,16 +2569,7 @@ impl<
         self.racks[0].extend_from_slice(racks[0]);
         self.racks[1].clear();
         self.racks[1].extend_from_slice(racks[1]);
-        self.set_scoreless_turns(passes, zeros);
-    }
-
-    // the passes and the scoreless turns before the position, as the game counts
-    // them, for a search given its position another way (the peg's)
-    pub fn set_scoreless_turns(&mut self, passes: u16, zeros: u16) {
-        self.scoreless = [
-            passes.min(u8::MAX as u16) as u8,
-            zeros.min(u8::MAX as u16) as u8,
-        ];
+        self.scoreless = scoreless_counts([passes, zeros]);
     }
 
     // reset the position searched to the one to solve, computing its key afresh
@@ -5727,7 +5718,7 @@ impl<
         limits: &Limits,
     ) -> error::Returns<Result<PegResult, PegUnsupported>> {
         self.resume_peg_one_in_bag(
-            &mut PegProgress::new(mover, board, mover_rack, unseen_tally, score_diff),
+            &mut PegProgress::new(mover, board, mover_rack, unseen_tally, score_diff, [0, 0]),
             limits,
         )
     }
@@ -5886,14 +5877,9 @@ impl<
         };
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, threads);
+        let scoreless = scoreless_counts(position.scoreless);
         let result = Self::peg_bag_by(
-            &mut sub,
-            &self.klv,
-            &mut mg,
-            progress,
-            self.scoreless,
-            &limits,
-            threads,
+            &mut sub, &self.klv, &mut mg, progress, scoreless, &limits, threads,
         );
         if progress.state.answer.is_none() {
             // the pass under way is the answer, and it may have valued more
@@ -5944,7 +5930,7 @@ impl<
         BagArena::at_least(arenas, 1, gc.alphabet().len() as usize, position.bag_size);
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, 1);
-        let scoreless = self.scoreless;
+        let scoreless = scoreless_counts(position.scoreless);
         let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
             position.after_split(scoreless, opp_rack, bag, pos)
         };
@@ -6581,7 +6567,7 @@ impl<
         let exchange_memo = &mut progress.exchange_memo;
         // each tile's value to the pass's depth, from the positions the pass
         // has valued already
-        let scoreless = self.scoreless;
+        let scoreless = progress.scoreless;
         let mut pass = |this: &mut Self| -> error::Returns<(PegResult, Vec<equity::Equity>)> {
             if exchange_memo.0 != limits.depth.get() {
                 *exchange_memo = (limits.depth.get(), BagTable::default());
@@ -6699,7 +6685,7 @@ impl<
                 mover_rack: &progress.mover_rack,
                 unseen: &unseen,
                 tiles: progress.unseen_tally.len(),
-                scoreless: self.scoreless,
+                scoreless: progress.scoreless,
             },
             progress.score_diff.raw() as f32,
             limits,
@@ -6761,7 +6747,7 @@ impl<
         let or = &mut sub.racks[(mover ^ 1) as usize];
         or.clear();
         or.extend_from_slice(opp_rack);
-        sub.set_scoreless_turns(0, 0);
+        sub.scoreless = [0, 0];
         Ok(*score as f32 - sub.solve_in_bag(mover ^ 1, limits, exact)?)
     }
 
@@ -7250,14 +7236,14 @@ fn peg_result(
 // a search with a tile in the bag that goes on across solves, its position in
 // it: a caller keeps it (as a wasm32 page solving in steps keeps it with the
 // solver's table), and a solve given it starts where the last one stopped,
-// keeping what the passes before found. Each solve reads the solver's scoreless
-// turns, which a caller sets alike for every one
+// keeping what the passes before found. The position holds its scoreless turns
 pub struct PegProgress {
     mover: u8,
     board: Vec<u8>,
     mover_rack: Vec<u8>,
     unseen_tally: Vec<u8>,
     score_diff: equity::Equity,
+    scoreless: [u8; 2],
     committed: PegCommitted,
     clairvoyant: Option<PegResult>, // the deepest pass that valued every tile
     clairvoyant_margins: Vec<equity::Equity>, // its margin a tile, by tile
@@ -7270,8 +7256,8 @@ pub struct PegProgress {
 }
 
 impl PegProgress {
-    // a search of the position, mover to move with score_diff the lead, not yet
-    // begun
+    // a search of the position before play resumes, with score_diff the
+    // mover's lead and scoreless the passes and scoreless turns so far
     #[inline]
     pub fn new(
         mover: u8,
@@ -7279,6 +7265,7 @@ impl PegProgress {
         mover_rack: &[u8],
         unseen_tally: &[u8],
         score_diff: equity::Equity,
+        scoreless: [u16; 2],
     ) -> Self {
         Self {
             mover,
@@ -7286,6 +7273,7 @@ impl PegProgress {
             mover_rack: mover_rack.to_vec(),
             unseen_tally: unseen_tally.to_vec(),
             score_diff,
+            scoreless: scoreless_counts(scoreless),
             committed: Default::default(),
             clairvoyant: None,
             clairvoyant_margins: Vec::new(),
@@ -7550,8 +7538,9 @@ impl std::fmt::Display for PegUnsupported {
 
 // a position with tiles in the bag to search: the mover, the board, the mover's
 // rack, the tiles they cannot see (a count per tile), how many of those are in
-// the bag (the rest on the opponent's rack), the mover's lead, each player's
-// exchanges so far, and what the search takes each player to know
+// the bag (the rest on the opponent's rack), the mover's lead, the passes and
+// scoreless turns so far, each player's exchanges, and what the search takes
+// each player to know
 #[derive(Clone)]
 pub struct PegBagPosition {
     pub mover: u8,
@@ -7560,6 +7549,7 @@ pub struct PegBagPosition {
     pub unseen_tally: Vec<u8>,
     pub bag_size: usize,
     pub score_diff: equity::Equity,
+    pub scoreless: [u16; 2],
     pub exchanges: [i16; 2],
     pub model: PegModel,
 }
@@ -8161,6 +8151,11 @@ struct PegPosition<'a> {
     unseen: &'a [(u8, u32)],
     tiles: usize,
     scoreless: [u8; 2],
+}
+
+#[inline(always)]
+fn scoreless_counts(counts: [u16; 2]) -> [u8; 2] {
+    counts.map(|count| count.min(u8::MAX as u16) as u8)
 }
 
 #[inline(always)]
@@ -10607,7 +10602,7 @@ mod tests {
             limits: &super::Limits,
         ) -> crate::error::Returns<Result<Solved, super::PegUnsupported>> {
             let mut progress =
-                super::PegProgress::new(mover, board, mover_rack, unseen_tally, score_diff);
+                super::PegProgress::new(mover, board, mover_rack, unseen_tally, score_diff, [0, 0]);
             let result = self.resume_peg_one_in_bag(&mut progress, limits)?;
             Ok(result.map(|result| solved(&progress, result)))
         }
@@ -11306,7 +11301,7 @@ mod tests {
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
             let mut progress =
-                super::PegProgress::new(0, board, rack, unseen_tally, equity::Equity::ZERO);
+                super::PegProgress::new(0, board, rack, unseen_tally, equity::Equity::ZERO, [0, 0]);
             let result = egs
                 .resume_peg_one_in_bag_on_threads(&mut progress, &super::Limits::NONE, threads)
                 .unwrap()
@@ -14651,6 +14646,7 @@ mod tests {
                         &mover_rack,
                         &unseen_tally,
                         equity::Equity::ZERO,
+                        [0, 0],
                     );
                     let mut kept = None;
                     let mut last: Option<Solved> = None;
@@ -14828,6 +14824,7 @@ mod tests {
                 &[1, 2], // A B
                 &unseen_tally,
                 equity::Equity::ZERO,
+                [0, 0],
             );
             assert_eq!(progress.searched(), (0, 0));
             assert!(progress.moves().is_none());
@@ -16141,17 +16138,19 @@ mod tests {
             EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut solve = |passes, zeros| {
-            egs.set_scoreless_turns(passes, zeros);
-            egs.solve_peg_one_in_bag_full(
+            let mut progress = super::PegProgress::new(
                 0,
                 &board,
                 &mover_rack,
                 &unseen_tally,
                 equity::Equity::ZERO,
-                &super::Limits::NONE,
-            )
-            .unwrap()
-            .expect("english one-in-bag is always solvable")
+                [passes, zeros],
+            );
+            let result = egs
+                .resume_peg_one_in_bag(&mut progress, &super::Limits::NONE)
+                .unwrap()
+                .expect("english one-in-bag is always solvable");
+            solved(&progress, result)
         };
         let result = solve(5, 5);
         assert_eq!(result.hypotheses, vec![(1, 2, e(4000)), (8, 1, e(1000))]);
@@ -16277,18 +16276,19 @@ mod tests {
         // the next pass or exchange ends the game. With a blank in the bag we
         // exchange B for it and win by two against HT.
         for zeros in [2, u16::MAX] {
-            solver.set_scoreless_turns(0, zeros);
+            let mut progress = super::PegProgress::new(
+                0,
+                &empty_board(),
+                &[2, 2], // BB
+                &unseen,
+                equity::Equity::ZERO,
+                [0, zeros],
+            );
             let result = solver
-                .solve_peg_one_in_bag_full(
-                    0,
-                    &empty_board(),
-                    &[2, 2], // BB
-                    &unseen,
-                    equity::Equity::ZERO,
-                    &super::Limits::NONE,
-                )
+                .resume_peg_one_in_bag(&mut progress, &super::Limits::NONE)
                 .unwrap()
                 .unwrap();
+            let result = solved(&progress, result);
             let e = equity::Equity::new;
             assert_eq!(
                 result.hypotheses,
@@ -16518,6 +16518,7 @@ mod tests {
                             mrack,
                             &unseen_tally,
                             equity::Equity::ZERO,
+                            [0, 0],
                         ),
                         &super::BagLimits::new(&super::Limits::NONE, None),
                     )
@@ -16591,6 +16592,7 @@ mod tests {
             unseen_tally: unseen_tally.to_vec(),
             bag_size,
             score_diff,
+            scoreless: [0, 0],
             exchanges: [0, 0],
             model: super::PegModel::RandomDraws,
         }
@@ -17542,8 +17544,8 @@ mod tests {
             // two in the bag, the other holding one of the A, H, and T (1, 4,
             // and 1)
             for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
-                egs.set_scoreless_turns(passes, 1);
                 let mut position = bag_position(&board, &[q], &unseen_tally, 2, e(0));
+                position.scoreless = [passes, 1];
                 position.model = model;
                 let result = egs
                     .solve_peg(position, &super::Limits::NONE, 1)
@@ -17568,13 +17570,10 @@ mod tests {
         assert_eq!(egs.solve(0).unwrap(), e(-9000));
         egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], 5, 5);
         assert_eq!(egs.solve_one_in_bag(0, h).unwrap(), e(-9000));
-        egs.set_scoreless_turns(5, 5);
+        let mut position = bag_position(&board, &[q], &unseen_tally, 2, e(0));
+        position.scoreless = [5, 5];
         let result = egs
-            .solve_peg(
-                bag_position(&board, &[q], &unseen_tally, 2, e(0)),
-                &super::Limits::NONE,
-                1,
-            )
+            .solve_peg(position, &super::Limits::NONE, 1)
             .unwrap()
             .unwrap();
         assert_eq!(result.expected_margin, e(-8000));
@@ -18613,8 +18612,14 @@ mod tests {
             };
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
-            let mut progress =
-                super::PegProgress::new(0, &board, &[1, 2], &unseen_tally, equity::Equity::ZERO);
+            let mut progress = super::PegProgress::new(
+                0,
+                &board,
+                &[1, 2],
+                &unseen_tally,
+                equity::Equity::ZERO,
+                [0, 0],
+            );
             let best = egs.resume_peg_one_in_bag_best(&mut progress, &limits, 1);
             let best = best.unwrap().unwrap();
             assert!(best.moves.is_empty());
