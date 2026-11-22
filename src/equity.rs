@@ -9,18 +9,6 @@ pub const OPENING_HOTSPOT_PENALTY: i32 = 700; // 0.7 * SCALE
 
 pub const ENDGAME_PENALTY_BASE: i32 = 10_000; // 10 * SCALE
 
-// scores are accumulated in millipoints, so convert at every display boundary and
-// nowhere else.
-#[inline(always)]
-pub fn descale_score(millipoints: i32) -> i32 {
-    millipoints / SCALE
-}
-
-#[inline(always)]
-pub fn scale_score(points: i32) -> i32 {
-    points * SCALE
-}
-
 impl Equity {
     pub const NEG_INFINITY: Self = Self(i32::MIN);
     pub const INFINITY: Self = Self(i32::MAX);
@@ -34,6 +22,13 @@ impl Equity {
     #[inline(always)]
     pub const fn raw(self) -> i32 {
         self.0
+    }
+
+    // scores are accumulated in millipoints, so convert at every display
+    // boundary and nowhere else.
+    #[inline(always)]
+    pub const fn descaled(self) -> Points {
+        Points(self.0 / SCALE)
     }
 
     // a sum or a difference of two scores, none past what an i32 holds
@@ -268,6 +263,8 @@ mod tests {
         assert_eq!([p(1), p(2), p(3)].into_iter().sum::<Points>(), p(6));
         assert_eq!(p(32).scaled(), Equity::new(32000));
         assert_eq!(p(-5).scaled(), Equity::new(-5000));
+        assert_eq!(Equity::new(32999).descaled(), p(32));
+        assert_eq!(Equity::new(-5999).descaled(), p(-5));
         assert_eq!(format!("{} {:4} {:?}", p(-7), p(32), p(0)), "-7   32 0");
     }
 

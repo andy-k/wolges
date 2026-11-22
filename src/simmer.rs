@@ -1097,9 +1097,12 @@ impl<
                     .rack
                     .len();
                 let opp = racks_total - my;
-                if let Some(win_prob) =
-                    table.get_opt(equity::descale_score(final_spread), bag, my, opp)
-                {
+                if let Some(win_prob) = table.get_opt(
+                    equity::Equity::new(final_spread).descaled().raw(),
+                    bag,
+                    my,
+                    opp,
+                ) {
                     return win_prob as f64;
                 }
             }

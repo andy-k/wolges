@@ -93,7 +93,7 @@ fn woogles_peg_draw_outcomes() {
         before.zero_turns = req.zero_turns;
         before.players[mover].rack = req.rack;
         for (player, score) in before.players.iter_mut().zip(req.scores) {
-            player.score = equity::Equity::new(equity::scale_score(score));
+            player.score = equity::Points::new(score).scaled();
         }
         let snapshot = movegen::BoardSnapshot {
             board_tiles: &before.board_tiles,
@@ -160,7 +160,7 @@ fn woogles_peg_draw_outcomes() {
                 let margin = lead - solved.value.unwrap();
                 assert_eq!(
                     margin,
-                    equity::Equity::new(equity::scale_score(candidate.margins[&draw])),
+                    equity::Points::new(candidate.margins[&draw]).scaled(),
                     "{name}, draw {draw}",
                 );
                 hypotheses.push((count, margin));

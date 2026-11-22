@@ -634,7 +634,7 @@ fn do_it(
 
         display::print_game_state(game_config, &game_state, Some(&timers))?;
         for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
-            *d = equity::descale_score(f);
+            *d = equity::Equity::new(f).descaled().raw();
         }
         writeln!(std::io::stdout(), "Final scores: {display_scores:?}")?;
         let mut has_time_adjustment = false;
@@ -656,7 +656,7 @@ fn do_it(
         }
         if has_time_adjustment {
             for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
-                *d = equity::descale_score(f);
+                *d = equity::Equity::new(f).descaled().raw();
             }
             writeln!(std::io::stdout(), "Really final scores: {display_scores:?}")?;
         }

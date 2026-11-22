@@ -47,7 +47,7 @@ impl From<&movegen::Play> for JsonPlay {
                     lane: *lane,
                     idx: *idx,
                     word: word_played.into(),
-                    score: equity::descale_score(score.raw()),
+                    score: score.descaled().raw(),
                 }
             }
         }
@@ -135,7 +135,7 @@ impl serde::Serialize for JsonPlayRef<'_> {
                 play.serialize_field("lane", &lane)?;
                 play.serialize_field("idx", &idx)?;
                 play.serialize_field("word", &SignedWord(word))?;
-                play.serialize_field("score", &equity::descale_score(score.raw()))?;
+                play.serialize_field("score", &score.descaled().raw())?;
                 play.end()
             }
         }
