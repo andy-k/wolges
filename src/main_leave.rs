@@ -7257,33 +7257,25 @@ struct RecallOne {
 
 // a sim's decision of the position on a field of this many tile plays, by a
 // driver kept for the run, reseeded
+struct RecallBudget {
+    field: usize,
+    iters: u64,
+}
+
 #[inline]
-#[allow(clippy::too_many_arguments)]
 fn sim_decide<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
-    game_config: &game_config::GameConfig,
-    kwg: &kwg::Kwg<N>,
-    arm_tables: &anagrams::ArmTables,
-    klv: &klv::Klv<L>,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     game_state: &game_state::GameState,
     move_generator: &mut movegen::KurniaMoveGenerator,
     driver: &mut move_picker::Simmer<'_, N, L, false>,
     scratch: &mut Vec<movegen::ValuedMove>,
-    field: usize,
-    iters: u64,
+    RecallBudget { field, iters }: RecallBudget,
     seed: u64,
 ) -> error::Returns<movegen::Play> {
-    let board_snapshot = movegen::BoardSnapshot {
-        board_tiles: &game_state.board_tiles,
-        game_config,
-        kwg,
-        anagrams: arm_tables.anagrams(),
-        rack_lengths: arm_tables.rack_lengths(),
-        klv,
-    };
     move_picker::gen_simmer_candidates(
         &mut move_filter::GenMoves::Unfiltered,
         move_generator,
-        &board_snapshot,
+        board_snapshot,
         &game_state.current_player().rack,
         game_state.current_player().num_exchanges,
         move_picker::FieldShape {
@@ -7334,15 +7326,16 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
     let mut scratch = Vec::new();
     let mut ranked = Vec::new(); // each position's plays, best first
     while (tally.len() as u64) < a.positions {
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config,
+            kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv,
+        };
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-            board_snapshot: &movegen::BoardSnapshot {
-                board_tiles: &game_state.board_tiles,
-                game_config,
-                kwg,
-                anagrams: arm_tables.anagrams(),
-                rack_lengths: arm_tables.rack_lengths(),
-                klv,
-            },
+            board_snapshot: &board_snapshot,
             rack: &game_state.current_player().rack,
             max_gen: usize::MAX,
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
@@ -7354,29 +7347,27 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
         let static_best = ranked[0].clone();
         if game_state.bag.len() >= game_config.rack_size() as usize {
             let reference = sim_decide(
-                game_config,
-                kwg,
-                &arm_tables,
-                klv,
+                &board_snapshot,
                 &game_state,
                 &mut move_generator,
                 &mut reference_driver,
                 &mut scratch,
-                a.reference_field,
-                a.reference_iters,
+                RecallBudget {
+                    field: a.reference_field,
+                    iters: a.reference_iters,
+                },
                 rng.next_u64(),
             )?;
             let chosen = sim_decide(
-                game_config,
-                kwg,
-                &arm_tables,
-                klv,
+                &board_snapshot,
                 &game_state,
                 &mut move_generator,
                 &mut chosen_driver,
                 &mut scratch,
-                a.field,
-                a.iters,
+                RecallBudget {
+                    field: a.field,
+                    iters: a.iters,
+                },
                 rng.next_u64(),
             )?;
             tally.push(RecallOne {
