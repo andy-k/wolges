@@ -13946,12 +13946,10 @@ fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: 
 // run of squares of takes, (first, len), and the longest comes first. Each word
 // is added to found and marked in bits. The walk's tables are kept in buffers
 // from one prune to the next; each growth is taken within memory, if given
-#[allow(clippy::too_many_arguments)]
 fn lone_words<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     available: &mut [u8],
-    takes: &[u64],
-    shapes: &[(usize, usize)],
+    LoneGeometry { takes, shapes }: LoneGeometry<'_>,
     found: &mut FoundWords,
     bits: &mut Vec<u64>,
     buffers: &mut LoneBuffers,
@@ -14005,6 +14003,11 @@ fn lone_words<N: kwg::Node>(
         0,
     );
     found.refused()
+}
+
+struct LoneGeometry<'a> {
+    takes: &'a [u64],
+    shapes: &'a [(usize, usize)],
 }
 
 // lone_words' tables: by depth and letter the shapes that take it, by depth
@@ -14368,8 +14371,10 @@ fn gen_remaining_jumbled_words<
     lone_words(
         board_snapshot.kwg,
         &mut working_buffer.used_letters_tally,
-        lone_takes,
-        &[(0, longest)],
+        LoneGeometry {
+            takes: lone_takes,
+            shapes: &[(0, longest)],
+        },
         found,
         kept,
         lone,
@@ -14613,8 +14618,10 @@ fn gen_remaining_words<
     lone_words(
         board_snapshot.kwg,
         available,
-        takes,
-        kept_shapes,
+        LoneGeometry {
+            takes,
+            shapes: kept_shapes,
+        },
         found,
         kept,
         lone,
