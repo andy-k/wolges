@@ -9749,22 +9749,37 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
     out_path: &str,
+    params: HarvestParams,
+) -> error::Returns<()> {
+    if params.lean {
+        harvest_boards_impl::<N, L, true>(game_config, kwg, klv, out_path, params)
+    } else {
+        harvest_boards_impl::<N, L, false>(game_config, kwg, klv, out_path, params)
+    }
+}
+
+#[inline]
+fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    out_path: &str,
     HarvestParams {
         num_games,
         seed,
         stride,
-        lean,
         quiet,
+        ..
     }: HarvestParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let mut ticked = 0u64;
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut generator = CompareMoveGenerator::<LEAN>::new(&game_config);
     let mut game_state = game_state::GameState::new(&game_config);
     let mut final_scores = vec![0i32; game_config.num_players() as usize];
     let mut out = std::io::BufWriter::new(make_writer(out_path)?);
@@ -9773,22 +9788,19 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
         game_state.reset_and_draw_tiles(&game_config, &mut rng);
         let mut ply = 0u32;
         loop {
-            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                board_snapshot: &movegen::BoardSnapshot {
-                    board_tiles: &game_state.board_tiles,
-                    game_config: &game_config,
-                    kwg: &kwg,
-                    anagrams,
-                    rack_lengths,
-                    klv: &klv,
-                },
-                rack: &game_state.current_player().rack,
-                max_gen: 1,
-                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
-            game_state.play(&game_config, &mut rng, &move_generator.plays[0].play)?;
+            let board_snapshot = movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams,
+                rack_lengths,
+                klv: &klv,
+            };
+            let play = generator.best(&compare_hasty_params(
+                &board_snapshot,
+                game_state.current_player(),
+            ));
+            game_state.play(&game_config, &mut rng, play)?;
             ply += 1;
             if stride > 0 && ply.is_multiple_of(stride) {
                 writeln!(
