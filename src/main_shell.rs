@@ -6,7 +6,7 @@ mod game_args;
 mod rlhelper;
 mod shell_session;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 // --help says what the shell takes, --version which commit it was built from
 #[derive(clap::Parser)]
@@ -37,6 +37,11 @@ fn main() -> error::Returns<()> {
         Box::leak(Box::new(std::sync::Arc::new(cli.game.make_game_config()?))),
     )?;
     let mut rl = rlhelper::new_rl_editor()?;
+    let prompt = if std::io::stdin().is_terminal() {
+        ">> "
+    } else {
+        ""
+    };
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     // the lines of commands run, emptied, for the next ones typed
     let mut spare_lines = Vec::<String>::new();
@@ -104,7 +109,7 @@ fn main() -> error::Returns<()> {
             }
             spare_lines.push(line);
         } else {
-            match rl.readline(">> ") {
+            match rl.readline(prompt) {
                 Ok(text) => {
                     // a paste of several lines comes back as one: each line is
                     // a command of its own, run in the order pasted
