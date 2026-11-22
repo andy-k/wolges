@@ -3740,10 +3740,10 @@ impl Replay {
         let mover = state.turn as usize;
         // a misscore goes with the move, and is taken back with it
         let adjust = if turn.withdrawn() { 0 } else { turn.adjust() };
-        state.players[mover].score = state.players[mover]
-            .score
-            .checked_add(equity::Points::new(turn.bonus().unwrap_or(0)).scaled())
-            .and_then(|score| score.checked_add(equity::Points::new(adjust).scaled()))
+        let scaled = |points| equity::Points::new(points).checked_scaled();
+        state.players[mover].score = scaled(turn.bonus().unwrap_or(0))
+            .and_then(|bonus| state.players[mover].score.checked_add(bonus))
+            .and_then(|score| score.checked_add(scaled(adjust)?))
             .ok_or("score overflow")?;
         Ok(())
     }
@@ -3823,8 +3823,8 @@ impl Replay {
         }
         // then what time cost each player
         for (score, &lost) in final_scores.iter_mut().zip(turn.time().iter()) {
-            *score = score
-                .checked_sub(equity::Points::new(lost).scaled().raw())
+            *score = (equity::Points::new(lost).checked_scaled())
+                .and_then(|lost| score.checked_sub(lost.raw()))
                 .ok_or("score overflow")?;
         }
         Ok(Some(final_scores))
