@@ -1768,7 +1768,7 @@ mod tests {
             lane: 7,
             idx: 7,
             word: [1, 20][..].into(),
-            score: 0,
+            score: equity::Equity::new(0),
         };
         for fuzz in [0.0, 3.0] {
             let want = leaves_under(&classic, &tiny_kwg(), 0, &at, fuzz);
@@ -1840,7 +1840,7 @@ mod tests {
             lane: 7,
             idx: 7,
             word: [1, 20][..].into(),
-            score: 0,
+            score: equity::Equity::new(0),
         };
         let leaves = leaves_after(0, &play, 0.0);
         assert!(!leaves.is_empty());
@@ -1889,7 +1889,7 @@ mod tests {
             lane: 7,
             idx: 7,
             word: [25][..].into(),
-            score: 0,
+            score: equity::Equity::new(0),
         };
         assert!(leaves_after(91, &y, 3.0).is_empty());
         // a pass leaves the bag as it was, so its leaves are weighed
@@ -2535,7 +2535,7 @@ mod tests {
             lane: 0,
             idx: 11,
             word: [0, 1][..].into(),
-            score: 2,
+            score: equity::Equity::new(2),
         };
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
@@ -2638,7 +2638,7 @@ mod tests {
             lane: 0,
             idx: 11,
             word: [0, 0x81][..].into(),
-            score: 0,
+            score: equity::Equity::ZERO,
         };
         assert!(
             reply_on(
@@ -2670,7 +2670,7 @@ mod tests {
             lane: 0,
             idx: 11,
             word: [0, 1, 5, 20][..].into(),
-            score: 0,
+            score: equity::Equity::new(0),
         };
         let board_tiles = reply_board(&game_config, &small, &mover);
         assert_eq!(

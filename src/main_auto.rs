@@ -520,7 +520,7 @@ fn do_it(
                             }
                             let movegen_score = match &play.play {
                                 movegen::Play::Exchange { .. } => 0,
-                                movegen::Play::Place { score, .. } => *score,
+                                movegen::Play::Place { score, .. } => score.raw(),
                             };
                             let recounted_score = ps.compute_score(board_snapshot, &play.play);
                             if movegen_score != recounted_score {

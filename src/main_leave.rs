@@ -2291,7 +2291,7 @@ fn generate_autoplay_logs<
 
                         let play_score = match &play.play {
                             movegen::Play::Exchange { .. } => 0,
-                            movegen::Play::Place { score, .. } => *score,
+                            movegen::Play::Place { score, .. } => score.raw(),
                         };
 
                         let tiles_played = match &play.play {
@@ -7864,11 +7864,11 @@ fn parse_infer_play<N: kwg::Node, L: kwg::Node>(
                 lane,
                 idx,
                 word: word[..].into(),
-                score: 0,
+                score: equity::Equity::new(0),
             };
             let scored = play_scorer::PlayScorer::new().compute_score(board_snapshot, &play);
             if let movegen::Play::Place { score, .. } = &mut play {
-                *score = scored;
+                *score = equity::Equity::new(scored);
             }
             Ok(play)
         }
@@ -11154,7 +11154,7 @@ WCMP_P1_SCORE 402.000000
                 lane: 7,
                 idx: 7,
                 word: [17u8, 0, 19][..].into(),
-                score: 0,
+                score: equity::Equity::new(0),
             },
             &mut after,
         );

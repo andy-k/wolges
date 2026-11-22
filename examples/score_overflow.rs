@@ -3,7 +3,7 @@
 #![cfg(test)]
 
 use rand::SeedableRng;
-use wolges::{game_config, game_state, movegen};
+use wolges::{equity, game_config, game_state, movegen};
 
 const A: u8 = 1;
 const Z: u8 = 26;
@@ -20,7 +20,7 @@ fn a_play_errs_when_the_total_would_overflow() {
         lane: 7,
         idx: 7,
         word: (&[A][..]).into(),
-        score: 10,
+        score: equity::Equity::new(10),
     };
     assert!(game_state.play(&game_config, &mut rng, &play).is_err());
 }

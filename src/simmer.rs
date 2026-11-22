@@ -805,7 +805,7 @@ impl<
                 self.plies_played.push(match &next_play {
                     movegen::Play::Exchange { .. } => PlyPlayed { score: 0, tiles: 0 },
                     movegen::Play::Place { word, score, .. } => PlyPlayed {
-                        score: *score,
+                        score: score.raw(),
                         tiles: word.iter().filter(|&&tile| tile != 0).count() as u8,
                     },
                 });
@@ -2201,7 +2201,7 @@ mod tests {
                 }
                 let mut gained = [0, 0];
                 if let movegen::Play::Place { score, .. } = candidate {
-                    gained[turn] = *score;
+                    gained[turn] = score.raw();
                 }
                 for (i, ply) in plies.iter().enumerate() {
                     gained[(turn + 1 + i) % 2] += ply.score;

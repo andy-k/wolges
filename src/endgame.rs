@@ -713,7 +713,7 @@ impl RootMoves {
             }
             match &play {
                 movegen::Play::Place { score, .. }
-                    if *score != scorer.compute_score(snapshot, &play) =>
+                    if score.raw() != scorer.compute_score(snapshot, &play) =>
                 {
                     return Err(format!("root_moves[{i}]: wrong score").into());
                 }
@@ -764,7 +764,11 @@ fn add_placement(
     } = play
     {
         let plays_out = placed == rack_len;
-        let valuation = if plays_out { score + out_bonus } else { *score };
+        let valuation = if plays_out {
+            score.raw() + out_bonus
+        } else {
+            score.raw()
+        };
         ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
         list.push(Candidate {
             play: play.clone(),
@@ -797,7 +801,7 @@ const OUT_SLOTS: usize = 4;
 // from another
 #[derive(Clone, Copy)]
 struct Out {
-    score: i32,
+    score: equity::Equity,
     zone: zone::Squares,
     down: bool,
     lane: i8,
@@ -824,7 +828,7 @@ impl Default for OutReplies {
             floor: u64::MAX,
             len: 0,
             slots: [Out {
-                score: 0,
+                score: equity::Equity::new(0),
                 zone: zone::Squares::NONE,
                 down: false,
                 lane: 0,
@@ -1005,7 +1009,7 @@ fn mix_move(key: u128, play: &movegen::Play) -> u128 {
         return key;
     };
     let mix = |key: u128, part: u64| (key ^ part as u128).wrapping_mul(FNV128_PRIME);
-    let head = (*score as u32 as u64) << 32
+    let head = (score.raw() as u32 as u64) << 32
         | (word.len() as u64) << 24
         | (*idx as u8 as u64) << 16
         | (*lane as u8 as u64) << 8
@@ -2909,7 +2913,7 @@ impl<
             singles.sort_unstable_by_key(|&at| {
                 std::cmp::Reverse(match &list[at as usize].play {
                     movegen::Play::Place { score, .. } => *score,
-                    movegen::Play::Exchange { .. } => i32::MIN,
+                    movegen::Play::Exchange { .. } => equity::Equity::NEG_INFINITY,
                 })
             });
         }
@@ -2927,7 +2931,7 @@ impl<
                 && let Some(&tile) = word.iter().find(|&&t| t != 0)
                 && held_tile(tile) == left
             {
-                best = best.max(score + out_bonus);
+                best = best.max(score.raw() + out_bonus);
                 break;
             }
         }
@@ -2957,7 +2961,7 @@ impl<
         }
         for valued in work_buffer.movegen.plays.iter() {
             if let movegen::Play::Place { score, .. } = &valued.play {
-                best = best.max(score + out_bonus);
+                best = best.max(score.raw() + out_bonus);
             }
         }
         equity::Equity::new(best)
@@ -3093,7 +3097,7 @@ impl<
             .map(|&tile| alphabet.scaled_score(held_tile(tile)).raw())
             .sum();
         let kept = work_buffer.rack_scores[player_idx as usize] - spent;
-        let cap = score - equity::Equity::new(outs.slots[k].score + 2 * kept);
+        let cap = score - (outs.slots[k].score + equity::Equity::new(2 * kept));
         (cap <= alpha).then_some((k, cap))
     }
 
@@ -5158,7 +5162,7 @@ impl<
                 equity.raw()
                     - match play {
                         movegen::Play::Exchange { .. } => 0,
-                        movegen::Play::Place { score, .. } => *score,
+                        movegen::Play::Place { score, .. } => score.raw(),
                     },
             ));
             writeln!(
@@ -5650,7 +5654,7 @@ impl<
                     Err(e) => return Err(Self::stopped_at(search, key, place - 1, *best, e)),
                 };
 
-                let val = equity::Equity::new(*score) - v;
+                let val = *score - v;
                 if val > *best {
                     *best = val;
                 }
@@ -5797,7 +5801,7 @@ impl<
                 let v = search
                     .sub
                     .solve_in_bag(opp, search.limits, &mut search.exact)?;
-                let val = equity::Equity::new(*score) - v;
+                let val = *score - v;
                 if val > best {
                     best = val;
                 }
@@ -6300,7 +6304,7 @@ impl<
                 order.sort_unstable_by_key(|&i| {
                     let score = match &moves[i] {
                         movegen::Play::Place { score, .. } => *score,
-                        _ => i32::MIN,
+                        _ => equity::Equity::NEG_INFINITY,
                     };
                     (std::cmp::Reverse(score), i)
                 });
@@ -6966,7 +6970,7 @@ impl<
         or.clear();
         or.extend_from_slice(opp_rack);
         sub.scoreless = [0, 0];
-        Ok(equity::Equity::new(*score) - sub.solve_in_bag(mover ^ 1, limits, exact)?)
+        Ok(*score - sub.solve_in_bag(mover ^ 1, limits, exact)?)
     }
 
     // a place a limit stopped is left none
@@ -7203,7 +7207,7 @@ impl<
                 state.order.sort_unstable_by_key(|&i| {
                     let score = match &state.moves[i] {
                         PegMove::Place(movegen::Play::Place { score, .. }) => *score,
-                        _ => i32::MIN,
+                        _ => equity::Equity::NEG_INFINITY,
                     };
                     (std::cmp::Reverse(score), i)
                 });
@@ -9941,9 +9945,11 @@ impl<
         asked.clear();
         asked.extend(0..moves.len());
         asked.sort_unstable_by_key(|&i| match &moves[i] {
-            play if first.as_ref() == Some(play) => (false, std::cmp::Reverse(i32::MAX), i),
+            play if first.as_ref() == Some(play) => {
+                (false, std::cmp::Reverse(equity::Equity::INFINITY), i)
+            }
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
-            _ => (true, std::cmp::Reverse(i32::MIN), i),
+            _ => (true, std::cmp::Reverse(equity::Equity::NEG_INFINITY), i),
         });
         let found = (self.node_best(pos, moves, asked)).map(|(value, i)| (value, moves[i].clone()));
         self.arena.give_lists(self.ply, lists);
@@ -9976,7 +9982,7 @@ impl<
                 {
                     // the best so far, or a tie with it coming first, needs the
                     // next mover's endgame worth score - best at most
-                    let room = *score as f64 - best.0;
+                    let room = score.raw() as f64 - best.0;
                     let most = if i < best.1 {
                         room.floor()
                     } else {
@@ -9985,7 +9991,7 @@ impl<
                     (self.after_emptying(pos, &moves[i], |this, next| {
                         this.endgame_below(next, most + 1.0)
                     })?)
-                    .map(|theirs| *score as f64 - theirs)
+                    .map(|theirs| score.raw() as f64 - theirs)
                 }
                 play if best.1 != usize::MAX && self.cannot_beat(pos, play, best, i)? => None,
                 play => Some(self.move_value(pos, play)?),
@@ -10037,7 +10043,7 @@ impl<
                 if !bounded {
                     return Ok(false);
                 }
-                *score as f64 - sum / total as f64
+                score.raw() as f64 - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 if pos.a_pass_ends(self.gc) {
@@ -10106,7 +10112,7 @@ impl<
                 let Some(play) =
                     (plays.filter(|play| empties(play))).max_by_key(|play| match play {
                         movegen::Play::Place { score, .. } => *score,
-                        movegen::Play::Exchange { .. } => i32::MIN,
+                        movegen::Play::Exchange { .. } => equity::Equity::NEG_INFINITY,
                     })
                 else {
                     return Ok(None);
@@ -10118,7 +10124,7 @@ impl<
             unreachable!("a placement empties the bag");
         };
         let theirs = self.after_emptying(pos, &play, |this, next| this.endgame(next))?;
-        Ok(Some(score as f64 - theirs))
+        Ok(Some(score.raw() as f64 - theirs))
     }
 
     // the value to its mover of a position whose bag is empty: its endgame
@@ -10231,7 +10237,8 @@ impl<
                 let n = word.iter().filter(|&&tile| tile != 0).count();
                 if n < pos.bag_len() && self.at_horizon() {
                     let turn = pos.place(self.gc, play);
-                    let value = self.estimate(*score as f64, &pos.racks[pos.mover as usize], &[]);
+                    let value =
+                        self.estimate(score.raw() as f64, &pos.racks[pos.mover as usize], &[]);
                     pos.unplace(self.gc, play, turn);
                     self.each_draw_at_root(pos, n, |drawn, ways| each(drawn, ways, value));
                     return Ok(value);
@@ -10245,14 +10252,14 @@ impl<
                     pos.next_turn();
                     pos.undraw(drawn);
                     let theirs = theirs?;
-                    each(drawn, ways, *score as f64 - theirs);
+                    each(drawn, ways, score.raw() as f64 - theirs);
                     sum += ways as f64 * theirs;
                     total += ways;
                     Ok(true)
                 });
                 pos.unplace(self.gc, play, turn);
                 walked?;
-                Ok(*score as f64 - sum / total as f64)
+                Ok(score.raw() as f64 - sum / total as f64)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 // the game's end where the pass answers a pass the line made or
@@ -10334,7 +10341,7 @@ impl<
     ) -> error::Returns<f64> {
         match play {
             movegen::Play::Place { word, score, .. } => {
-                let score = *score as f64;
+                let score = score.raw() as f64;
                 let n = word.iter().filter(|&&tile| tile != 0).count();
                 if n < pos.bag_len() && self.at_horizon() {
                     let turn = pos.place(self.gc, play);
@@ -10489,9 +10496,11 @@ impl<
         asked.clear();
         asked.extend(0..moves.len());
         asked.sort_unstable_by_key(|&i| match &moves[i] {
-            play if first.as_ref() == Some(play) => (false, std::cmp::Reverse(i32::MAX), i),
+            play if first.as_ref() == Some(play) => {
+                (false, std::cmp::Reverse(equity::Equity::INFINITY), i)
+            }
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
-            _ => (true, std::cmp::Reverse(i32::MIN), i),
+            _ => (true, std::cmp::Reverse(equity::Equity::NEG_INFINITY), i),
         });
         let splits = &splits[..*num_splits];
         let found = (self.info_best(info, (moves, asked, splits), valued, margins))
@@ -10644,12 +10653,12 @@ impl<
             next.next_turn();
             // a win or a tie leaves the next mover the lead with the score at
             // most, every endgame value a whole number of millipoints
-            let most = info.lead as f64 + *score as f64;
+            let most = info.lead as f64 + score.raw() as f64;
             let below = self.endgame_below(&next, most + 1.0);
             self.arena.give_pos(self.ply, next);
             return Ok(match below? {
                 Some(theirs) => {
-                    let margin = *score as f64 - theirs;
+                    let margin = score.raw() as f64 - theirs;
                     (beats(info.lead as f64 + margin, 0.0), Some(margin))
                 }
                 None => (0.0, None),
@@ -10688,11 +10697,12 @@ impl<
                     pos.next_turn();
                     let ev = self.endgame(&pos);
                     self.arena.give_pos(self.ply, pos);
-                    let margin = *score as f64 - ev?;
+                    let margin = score.raw() as f64 - ev?;
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
                 if self.at_horizon() {
-                    let margin = self.estimate(*score as f64, &pos.racks[info.mover as usize], &[]);
+                    let margin =
+                        self.estimate(score.raw() as f64, &pos.racks[info.mover as usize], &[]);
                     self.arena.give_pos(self.ply, pos);
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
@@ -10704,14 +10714,14 @@ impl<
                     zeros: 0,
                     answering: false,
                     exchanges: info.exchanges,
-                    lead: -(info.lead + *score),
+                    lead: -(info.lead + score.raw()),
                 };
                 info.theirs(&mut next, (&pos.board, other, bag, leave), turn);
                 self.arena.give_pos(self.ply, pos);
                 let found = self.deeper(|this| this.info_value(&next));
                 self.arena.give_next(self.ply, next);
                 let (w, m) = found?;
-                Ok((1.0 - w, *score as f64 - m))
+                Ok((1.0 - w, score.raw() as f64 - m))
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 // the game's end where the pass answers a pass the line made or
@@ -11032,12 +11042,12 @@ mod tests {
             {
                 let placed = word.iter().filter(|&&t| t != 0).count();
                 let val = if placed == racks[mover].len() {
-                    (*score + 2 * alphabet.scaled_rack_score(&racks[opp]).raw()) as f32
+                    (score.raw() + 2 * alphabet.scaled_rack_score(&racks[opp]).raw()) as f32
                 } else {
                     let mut nb = board.to_vec();
                     let mut nr = racks.clone();
                     apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
-                    *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false)
+                    score.raw() as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false)
                 };
                 if val > best {
                     best = val;
@@ -11131,7 +11141,7 @@ mod tests {
                 apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
 
-                let val = *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false);
+                let val = score.raw() as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false);
                 if val > best {
                     best = val;
                 }
@@ -11233,7 +11243,7 @@ mod tests {
                 let mut nr = racks.clone();
                 apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
-                let val = *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false);
+                let val = score.raw() as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false);
                 if val > best {
                     best = val;
                 }
@@ -11723,7 +11733,7 @@ mod tests {
                     let replied = reply.solve(mover ^ 1).unwrap();
                     assert_eq!(
                         first.value,
-                        Some(equity::Equity::new(score - replied.raw())),
+                        Some(*score - replied),
                         "[{name}] mover {mover}"
                     );
                     checked += 1;
@@ -12008,7 +12018,7 @@ mod tests {
                     let placed = word.iter().filter(|&&tile| tile != 0).count();
                     let out = placed == racks[mover].len();
                     let got = if out {
-                        (*score + 2 * alphabet.scaled_rack_score(&racks[opp]).raw()) as f32
+                        (score.raw() + 2 * alphabet.scaled_rack_score(&racks[opp]).raw()) as f32
                     } else {
                         let mut next_board = board.clone();
                         let mut next_racks = racks.clone();
@@ -12021,7 +12031,7 @@ mod tests {
                             *idx,
                             word,
                         );
-                        let got = *score as f32
+                        let got = score.raw() as f32
                             - reference(fixed, &next_board, &next_racks, opp, 0, 0, false);
                         (board, racks) = (next_board, next_racks);
                         got
@@ -15461,7 +15471,7 @@ mod tests {
                             word,
                             score,
                         } => {
-                            realized += sign * (*score as f32);
+                            realized += sign * (score.raw() as f32);
                             apply_place(
                                 &gc,
                                 &mut board,
@@ -16844,7 +16854,7 @@ mod tests {
                             apply_place(&gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                             nr[mover].push(drawn);
                             nr[opp] = opp_rack;
-                            *score as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false)
+                            score.raw() as f32 - reference(fixed, &nb, &nr, opp, 0, 0, false)
                         }
                         _ => {
                             let nr = [mover_rack.to_vec(), opp_rack];
@@ -17154,9 +17164,8 @@ mod tests {
                 word,
                 score,
             } => Some((*down, *lane, *idx, word[..].to_vec(), *score)),
-            movegen::Play::Exchange { tiles } => {
-                (!tiles.is_empty()).then(|| (false, -1, -1, tiles[..].to_vec(), 0))
-            }
+            movegen::Play::Exchange { tiles } => (!tiles.is_empty())
+                .then(|| (false, -1, -1, tiles[..].to_vec(), equity::Equity::ZERO)),
         };
         let splits = whole_rows[0].hypotheses.len();
         assert!(splits > 1, "{splits} splits");
@@ -18250,7 +18259,7 @@ mod tests {
                         if draws > 1 {
                             unequal += 1;
                         }
-                        let value = *score as f64 - theirs.raw() as f64 + lead;
+                        let value = score.raw() as f64 - theirs.raw() as f64 + lead;
                         let drawn_here = &split_draws[draw_at];
                         draw_at += 1;
                         assert_eq!(drawn_here.ways, draws);
@@ -18393,7 +18402,7 @@ mod tests {
                     sum += ways as f64 * theirs;
                     total += ways;
                 }
-                *score as f64 - sum / total as f64
+                score.raw() as f64 - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 // a pass answering a pass ends the game, as one bringing the
@@ -18432,7 +18441,7 @@ mod tests {
                 let placed = placed(pos, gc, play);
                 let n = word.iter().filter(|&&tile| tile != 0).count();
                 if n < pos.bag_len() && horizon {
-                    return *score as f64;
+                    return score.raw() as f64;
                 }
                 let (mut sum, mut total) = (0.0, 0u64);
                 let mut draws = Vec::new();
@@ -18451,7 +18460,7 @@ mod tests {
                     sum += ways as f64 * theirs;
                     total += ways;
                 }
-                *score as f64 - sum / total as f64
+                score.raw() as f64 - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 if pos.a_pass_ends(gc) {
@@ -18685,7 +18694,7 @@ mod tests {
                     }
                     r.own.init(&placed.board, [&racks[0], &racks[1]]);
                     let ev = r.own.solve(info.mover ^ 1).unwrap().raw() as f64;
-                    let margin = *score as f64 - ev;
+                    let margin = score.raw() as f64 - ev;
                     return (super::beats(lead + margin, 0.0), margin);
                 }
                 let next = theirs(
@@ -18694,10 +18703,10 @@ mod tests {
                     info.bag_len - n,
                     [0, 0],
                     false,
-                    -(info.lead + *score),
+                    -(info.lead + score.raw()),
                 );
                 let (w, m) = info_reference(r, &next);
-                (1.0 - w, *score as f64 - m)
+                (1.0 - w, score.raw() as f64 - m)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 let scoreless = [info.passes + 1, info.zeros + 1];

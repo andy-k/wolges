@@ -7500,7 +7500,7 @@ pub enum Play {
         lane: i8,
         idx: i8,
         word: bites::Bites,
-        score: i32,
+        score: equity::Equity,
     },
 }
 
@@ -7717,7 +7717,7 @@ impl<N: kwg::Node, L: kwg::Node> WriteablePlay<'_, N, L> {
                 if inside {
                     write!(f, ")")?;
                 }
-                write!(f, " {}", equity::descale_score(*score))?;
+                write!(f, " {}", equity::descale_score(score.raw()))?;
             }
         }
         Ok(())
@@ -8662,7 +8662,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                         lane,
                         idx,
                         word: word.into(),
-                        score,
+                        score: equity::Equity::new(score),
                     },
                 });
                 i32::MIN
@@ -8855,7 +8855,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                             lane,
                             idx,
                             word: word.into(),
-                            score,
+                            score: equity::Equity::new(score),
                         },
                     );
                 }
@@ -9915,7 +9915,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                             lane,
                             idx,
                             word: word.into(),
-                            score,
+                            score: equity::Equity::new(score),
                         },
                     );
                 }
@@ -10181,7 +10181,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                             lane,
                             idx,
                             word: word.into(),
-                            score,
+                            score: equity::Equity::new(score),
                         },
                     );
                 }
@@ -15257,7 +15257,7 @@ mod tests {
                                         })
                                         .collect::<Vec<_>>();
                                     key.sort_unstable();
-                                    Some((key, *score))
+                                    Some((key, score.raw()))
                                 }
                                 _ => None,
                             })
@@ -15718,7 +15718,14 @@ mod tests {
                 idx,
                 word,
                 score,
-            } => (*equity, 1 + *down as u8, *lane, *idx, word.to_vec(), *score),
+            } => (
+                *equity,
+                1 + *down as u8,
+                *lane,
+                *idx,
+                word.to_vec(),
+                score.raw(),
+            ),
         };
         let mut sorted = plays_from(build::BuildOrder::Sorted);
         let mut reordered = plays_from(build::BuildOrder::Reordered);
@@ -15912,7 +15919,7 @@ mod tests {
             lane,
             idx,
             word: w.clone(),
-            score,
+            score: equity::Equity::new(score),
         };
         vec![
             place(false, 7, 7, &word, 24),
@@ -16240,7 +16247,7 @@ mod tests {
                             *idx,
                             word.len(),
                             letters,
-                            *score,
+                            score.raw(),
                             p.equity.raw(),
                         );
                         Some((key, placed))
@@ -17185,7 +17192,7 @@ mod tests {
                     idx,
                     word,
                     score,
-                } => Some((*down != transposed, *lane, *idx, word.to_vec(), *score)),
+                } => Some((*down != transposed, *lane, *idx, word.to_vec(), score.raw())),
                 Play::Exchange { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -17458,7 +17465,7 @@ mod tests {
                 } = &p.play
                     && word.iter().filter(|&&t| t != 0).count() <= rack_size
                 {
-                    add(&mut want, *down, *lane, *idx, word, *score);
+                    add(&mut want, *down, *lane, *idx, word, score.raw());
                     let tiles = word.iter().filter(|&&t| t != 0);
                     let mut letters = tiles.clone().map(|&t| t & 0x7f).collect::<Vec<_>>();
                     letters.sort_unstable();
@@ -17468,7 +17475,15 @@ mod tests {
                         .map(|&t| t & 0x7f)
                         .collect::<Vec<_>>();
                     blanked.sort_unstable();
-                    let key = (*down, *lane, *idx, word.len(), letters, blanked, *score);
+                    let key = (
+                        *down,
+                        *lane,
+                        *idx,
+                        word.len(),
+                        letters,
+                        blanked,
+                        score.raw(),
+                    );
                     let tiles = tiles.copied().collect::<Vec<_>>();
                     let kept = smallest.entry(key).or_insert_with(|| tiles.clone());
                     if tiles < *kept {
@@ -18675,7 +18690,7 @@ mod tests {
                         lane,
                         idx,
                         word: word.into(),
-                        score,
+                        score: equity::Equity::new(score),
                     },
                 });
                 i32::MIN
@@ -18725,9 +18740,14 @@ mod tests {
                     idx,
                     word,
                     score,
-                } if ((if *down { cols } else { rows }) >> lane) & 1 != 0 => {
-                    Some((*down, *lane, *idx, word.to_vec(), *score, p.equity.raw()))
-                }
+                } if ((if *down { cols } else { rows }) >> lane) & 1 != 0 => Some((
+                    *down,
+                    *lane,
+                    *idx,
+                    word.to_vec(),
+                    score.raw(),
+                    p.equity.raw(),
+                )),
                 _ => None,
             })
             .collect::<Vec<_>>();

@@ -47,7 +47,7 @@ impl From<&movegen::Play> for JsonPlay {
                     lane: *lane,
                     idx: *idx,
                     word: word_played.into(),
-                    score: equity::descale_score(*score),
+                    score: equity::descale_score(score.raw()),
                 }
             }
         }
@@ -76,7 +76,7 @@ pub enum JsonPlayRef<'a> {
         lane: i8,
         idx: i8,
         word: &'a [u8],
-        score: i32,
+        score: equity::Equity,
     },
 }
 
@@ -135,7 +135,7 @@ impl serde::Serialize for JsonPlayRef<'_> {
                 play.serialize_field("lane", &lane)?;
                 play.serialize_field("idx", &idx)?;
                 play.serialize_field("word", &SignedWord(word))?;
-                play.serialize_field("score", &equity::descale_score(score))?;
+                play.serialize_field("score", &equity::descale_score(score.raw()))?;
                 play.end()
             }
         }
@@ -172,7 +172,7 @@ impl From<&JsonPlay> for movegen::Play {
                     lane: *lane,
                     idx: *idx,
                     word: word_played[..].into(),
-                    score: *score * equity::SCALE,
+                    score: equity::Points::new(*score).scaled(),
                 }
             }
         }
@@ -466,14 +466,14 @@ mod tests {
                 lane: 7,
                 idx: 3,
                 word: [3, 0, 0x81, 20, 0x9a][..].into(),
-                score: 27 * equity::SCALE,
+                score: equity::Points::new(27).scaled(),
             },
             movegen::Play::Place {
                 down: false,
                 lane: 0,
                 idx: 14,
                 word: [1][..].into(),
-                score: 0,
+                score: equity::Equity::ZERO,
             },
         ];
         for play in &plays {

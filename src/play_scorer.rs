@@ -717,7 +717,7 @@ mod tests {
             lane: 7,
             idx,
             word: [1, 20][..].into(),
-            score: 0,
+            score: equity::Equity::ZERO,
         };
         let mut play_scorer = PlayScorer::new();
         // F8 is a hole on this board; G8 and H8 take the star
