@@ -4150,9 +4150,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut blank_deltas = Vec::<(u8, i32)>::new();
 
                 let lo = lat.full_rack_start();
-                let mut num_board = vec![0f64; lo];
-                let mut den_board = vec![0f64; lo];
-                let mut ways_board = vec![0f64; lat_len - lo];
+                let mut num_board = vec![0i64; lo];
+                let mut den_board = vec![0u64; lo];
+                let mut ways_board = vec![0u64; lat_len - lo];
+                // a board's sums when i64 cannot hold them, made the first
+                // time a board's do not fit
+                let mut wide_board = Vec::<i128>::new();
 
                 let mut maxsheet = vec![0i32; lat_len];
 
@@ -4227,46 +4230,67 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
 
                     let ts = std::time::Instant::now();
-                    num_board.iter_mut().for_each(|x| *x = 0.0);
-                    den_board.iter_mut().for_each(|x| *x = 0.0);
-                    ways_board.iter_mut().for_each(|x| *x = 0.0);
+                    num_board.fill(0);
+                    den_board.fill(0);
+                    ways_board.fill(0);
 
                     let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                    census::apportion_fused(
+                    let board = census::ApportionBoard {
+                        sheet: &sheet,
+                        leave,
+                        leave_max,
+                        unseen: &unseen_tally,
+                    };
+                    let mode = || census::ApportionMode {
+                        zeta: pool >= zeta_pool_min,
+                        null_leave,
+                        scatter,
+                    };
+                    let narrow = census::apportion_fused(
                         &lat,
                         &add_table,
-                        &census::ApportionBoard {
-                            sheet: &sheet,
-                            leave,
-                            leave_max,
-                            unseen: &unseen_tally,
-                        },
+                        &board,
                         census::ApportionOut {
                             num: &mut num_board,
                             den: &mut den_board,
                             ways: &mut ways_board,
                         },
                         &mut maxsheet,
-                        census::ApportionMode {
-                            zeta: pool >= zeta_pool_min,
-                            null_leave,
-                            scatter,
-                        },
+                        mode(),
                     );
+                    if !narrow {
+                        wide_board.resize(lo, 0);
+                        wide_board.fill(0);
+                        assert!(census::apportion_fused(
+                            &lat,
+                            &add_table,
+                            &board,
+                            census::ApportionOut {
+                                num: &mut wide_board,
+                                den: &mut den_board,
+                                ways: &mut ways_board,
+                            },
+                            &mut maxsheet,
+                            mode(),
+                        ));
+                    }
                     // each multiset's mean on this board, in the buffer
                     // apportion_fused is done with: a full rack drawn keeps its
                     // best there, which is its mean
                     let contrib = &mut maxsheet;
                     let (below, full) = contrib.split_at_mut(lo);
                     for (idx, slot) in below.iter_mut().enumerate() {
-                        *slot = if den_board[idx] > 0.0 {
-                            (num_board[idx] / den_board[idx]).round() as i32
-                        } else {
+                        let den = den_board[idx];
+                        *slot = if den == 0 {
                             census::UNPLAYABLE.raw()
+                        } else if narrow {
+                            census::ApportionSum::mean(num_board[idx], den)
+                        } else {
+                            census::ApportionSum::mean(wide_board[idx], den)
                         };
                     }
                     for (slot, &ways) in full.iter_mut().zip(&ways_board) {
-                        if ways == 0.0 {
+                        if ways == 0 {
                             *slot = census::UNPLAYABLE.raw();
                         }
                     }
