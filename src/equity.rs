@@ -163,6 +163,12 @@ impl Points {
     pub const fn scaled(self) -> Equity {
         Equity(self.0 * SCALE)
     }
+
+    // scaled, none past what an i32 holds
+    #[inline(always)]
+    pub fn checked_scaled(self) -> Option<Equity> {
+        self.0.checked_mul(SCALE).map(Equity)
+    }
 }
 
 impl std::ops::Add for Points {
@@ -284,6 +290,8 @@ mod tests {
         assert_eq!([p(1), p(2), p(3)].into_iter().sum::<Points>(), p(6));
         assert_eq!(p(32).scaled(), Equity::new(32000));
         assert_eq!(p(-5).scaled(), Equity::new(-5000));
+        assert_eq!(p(-5).checked_scaled(), Some(Equity::new(-5000)));
+        assert_eq!(p(i32::MAX).checked_scaled(), None);
         assert_eq!(Equity::new(32999).descaled(), p(32));
         assert_eq!(Equity::new(-5999).descaled(), p(-5));
         assert_eq!(format!("{} {:4} {:?}", p(-7), p(32), p(0)), "-7   32 0");
