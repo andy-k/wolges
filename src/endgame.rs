@@ -6092,6 +6092,24 @@ impl<
         Ok(result)
     }
 
+    // resume and report the leader of each pass before the next one starts.
+    pub fn resume_peg_reporting(
+        &mut self,
+        progress: &mut PegBagProgress,
+        limits: &Limits,
+        threads: usize,
+        mut report: impl FnMut(PegBagPass) -> error::Returns<()>,
+    ) -> error::Returns<Result<PegBagResult, PegUnsupported>>
+    where
+        N: Sync,
+    {
+        let mut result = self.resume_peg_best_with(progress, limits, threads, Some(&mut report))?;
+        if let Ok(result) = &mut result {
+            result.moves = progress.answer_moves(0..usize::MAX);
+        }
+        Ok(result)
+    }
+
     // the search as resume_peg, its answer without the moves (moves empty),
     // which progress.answer_moves then lists as far as asked
     #[inline]
@@ -6100,6 +6118,19 @@ impl<
         progress: &mut PegBagProgress,
         limits: &Limits,
         threads: usize,
+    ) -> error::Returns<Result<PegBagResult, PegUnsupported>>
+    where
+        N: Sync,
+    {
+        self.resume_peg_best_with(progress, limits, threads, None)
+    }
+
+    fn resume_peg_best_with(
+        &mut self,
+        progress: &mut PegBagProgress,
+        limits: &Limits,
+        threads: usize,
+        report: Option<&mut dyn FnMut(PegBagPass) -> error::Returns<()>>,
     ) -> error::Returns<Result<PegBagResult, PegUnsupported>>
     where
         N: Sync,
@@ -6135,7 +6166,7 @@ impl<
             &self.klv,
             &mut mg,
             progress,
-            self.root_priority,
+            (self.root_priority, report),
             &limits,
             threads,
         );
@@ -6267,7 +6298,7 @@ impl<
         klv: &klv::Klv<L>,
         mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         progress: &mut PegBagProgress,
-        priority: &[movegen::Play],
+        (priority, mut report): PegBagWatch<'_, '_>,
         limits: &BagLimits,
         threads: usize,
     ) -> error::Returns<PegBagResult>
@@ -6483,6 +6514,19 @@ impl<
             state.answered_searched = state.searched.shared(limits.memory);
             state.searched.deepen();
             state.depth += 1;
+            if let Some(report) = report.as_mut() {
+                let value = state.answered[best].as_ref().unwrap();
+                report(PegBagPass {
+                    depth: state.depth - 1,
+                    moves: state.moves.len(),
+                    leader: PegBagMove {
+                        play: state.moves[best].clone(),
+                        win_pct: value.win,
+                        expected_margin: equity::Equity::new(value.marg.round() as i32),
+                        exact: value.exact,
+                    },
+                })?;
+            }
         }
         let Some((best, depth)) = state.answer else {
             unreachable!("the first move of the first pass is always valued");
@@ -8330,6 +8374,18 @@ pub struct PegBagMove {
     pub expected_margin: equity::Equity,
     pub exact: bool,
 }
+
+// the leader and coverage of a completed pass before the next pass starts.
+pub struct PegBagPass {
+    pub depth: i8,
+    pub moves: usize,
+    pub leader: PegBagMove,
+}
+
+type PegBagWatch<'priority, 'report> = (
+    &'priority [movegen::Play],
+    Option<&'report mut dyn FnMut(PegBagPass) -> error::Returns<()>>,
+);
 
 // a search's answer with tiles in the bag: the best move's share of wins and
 // mean margin; the move, none if a limit stopped the search before it valued

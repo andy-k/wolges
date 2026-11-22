@@ -1669,14 +1669,6 @@ fn solve_position<N: kwg::Node>(
                     ..endgame::PegBagChoices::WHOLE
                 },
             )?;
-            let result = egs.resume_peg(&mut progress, &solving.limits, solving.threads)?;
-            let result = match result {
-                Ok(result) => result,
-                Err(unsupported) => {
-                    writeln!(std::io::stdout(), "peg: {unsupported}")?;
-                    return Ok(());
-                }
-            };
             let named = |play: &movegen::Play| match play {
                 movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
                 movegen::Play::Exchange { tiles } => {
@@ -1703,6 +1695,37 @@ fn solve_position<N: kwg::Node>(
                         }
                     }
                     format!("{coord} {word_str} (scores {})", *score)
+                }
+            };
+            let result = if solving.quiet {
+                egs.resume_peg(&mut progress, &solving.limits, solving.threads)?
+            } else {
+                let began = std::time::Instant::now();
+                egs.resume_peg_reporting(
+                    &mut progress,
+                    &solving.limits,
+                    solving.threads,
+                    |pass| {
+                        writeln!(
+                            std::io::stdout(),
+                            "peg: depth {} ranked all {} moves after {:.2?}; leader {}: win% {:.4}, expected game margin {}{}",
+                            pass.depth,
+                            pass.moves,
+                            began.elapsed(),
+                            named(&pass.leader.play),
+                            pass.leader.win_pct * 100.0,
+                            pass.leader.expected_margin,
+                            if pass.leader.exact { "" } else { " (provisional)" },
+                        )?;
+                        Ok(())
+                    },
+                )?
+            };
+            let result = match result {
+                Ok(result) => result,
+                Err(unsupported) => {
+                    writeln!(std::io::stdout(), "peg: {unsupported}")?;
+                    return Ok(());
                 }
             };
             writeln!(
