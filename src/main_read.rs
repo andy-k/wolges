@@ -1894,6 +1894,26 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             &make_alphabet()?,
             AnagramMode::Super,
         ),
+        Task::WoadwageAnagram {
+            graph_file,
+            out,
+            rack,
+        } => {
+            let alphabet = make_alphabet()?;
+            let (_, graph) = graph_file.load_with_graph(Some(&alphabet))?;
+            let reader = alphabet::AlphabetReader::new_for_racks(&alphabet);
+            let mut tiles = Vec::new();
+            reader.set_word(&rack, &mut tiles)?;
+            let mut writer = std::io::BufWriter::new(make_writer(&out)?);
+            for spelling in woadwage::anagrams(&graph, &tiles) {
+                for tile in spelling {
+                    writer.write_all(alphabet.of_board(tile).ok_or("invalid tile")?.as_bytes())?;
+                }
+                writeln!(writer)?;
+            }
+            writer.flush()?;
+            Ok(())
+        }
         Task::WoadwageCheck { graph_file, words } => {
             let alphabet = make_alphabet()?;
             let (_, graph) = graph_file.load_with_graph(Some(&alphabet))?;
@@ -3187,6 +3207,15 @@ enum Task {
         about = "list all words with superanagram (using dawg)"
     )]
     KwgAnagramSuper {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the words to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(about = "list Woadwage words using all the rack's tiles")]
+    WoadwageAnagram {
         #[command(flatten)]
         graph_file: WordGraph,
         #[arg(help = "the words to write")]
