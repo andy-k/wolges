@@ -13,7 +13,9 @@
 //   reply-cv <kwg> <klv2> <candidates> <iterations> <plies|max> <seed:turns>...
 use rand::prelude::*;
 use std::time::Instant;
-use wolges::{anagrams, error, game_config, game_state, infer, klv, kwg, movegen, simmer};
+use wolges::{
+    anagrams, error, game_config, game_state, infer, klv, kwg, move_picker, movegen, simmer,
+};
 
 type Kwg = kwg::Kwg<kwg::Node24>;
 type Klv = klv::Klv<kwg::Node24>;
@@ -341,7 +343,7 @@ fn main() -> error::Returns<()> {
         for iteration in 1..=iterations {
             sim.restore_prepared(pristine);
             sim.reseed(iteration_seed(seed, iteration));
-            sim.prepare_iteration();
+            sim.prepare_iteration(Some(move_picker::stratum_at(seed, iteration)));
             for (c, candidate) in candidates.iter().enumerate() {
                 let ended = sim.simulate_lean(&gc, &kwg, no_tables, &klv, &candidate.play)?;
                 let final_spread = sim.final_equity_spread()?;
