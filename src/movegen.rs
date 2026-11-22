@@ -11870,6 +11870,9 @@ fn kurnia_gen_place_moves_iter_lean<
     placement_order.sort_unstable_by_key(|&(equity, _)| equity);
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
+    // the classic census spells placements. Its caller scores them separately.
+    let spells_only = working_buffer.is_census
+        && matches!(game_config.game_rules(), game_config::GameRules::Classic);
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
             if can_accept(equity::Equity::new(equity)) {
@@ -11892,7 +11895,7 @@ fn kurnia_gen_place_moves_iter_lean<
                               leave_value: equity::Equity| {
                             let this_best = score.raw() + leave_value.raw();
                             debug_assert!(
-                                this_best <= placement.best_possible_equity,
+                                spells_only || this_best <= placement.best_possible_equity,
                                 "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
                                 this_best,
                                 placement.best_possible_equity,
@@ -18252,6 +18255,39 @@ mod tests {
         }
         assert!(squares_with_plays > 0);
         assert!(windowed > 0);
+    }
+
+    #[test]
+    fn a_late_lane_census_scores_words_it_spelled() {
+        let gc = game_config::make_english_game_config();
+        let alphabet = gc.alphabet();
+        let kwg = test_kwg_of(&gc, &["AT", "TA"]);
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let rack = parse_test_rack(alphabet, "AQZ");
+        let mut board = vec![0; 225];
+        let tiles = (1..alphabet.len()).flat_map(|tile| {
+            let kept = rack.contains(&tile) || tile == 20;
+            std::iter::repeat_n(tile, (alphabet.freq(tile) - u8::from(kept)) as usize)
+        });
+        for (cell, tile) in board[..86].iter_mut().zip(tiles) {
+            *cell = tile;
+        }
+        board[7 * 15 + 7] = 20;
+        let snapshot = BoardSnapshot {
+            board_tiles: &board,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: tables.anagrams(),
+            rack_lengths: tables.rack_lengths(),
+            klv: &klv,
+        };
+        let mut generator = KurniaMoveGenerator::new(&gc);
+        let census = generator.lane_census(&snapshot, tables.anagrams().unwrap(), &rack);
+        assert!(generator.num_tiles_in_bag() <= 0);
+        let key = alphagram::Nibble.place_value(1);
+        let lanes = census.lanes_of(key).unwrap();
+        assert!(lanes.contains(&equity::scale_score(2)));
     }
 
     #[test]
