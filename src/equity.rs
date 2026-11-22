@@ -36,6 +36,17 @@ impl Equity {
         self.0
     }
 
+    // a sum or a difference of two scores, none past what an i32 holds
+    #[inline(always)]
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        self.0.checked_add(other.0).map(Self)
+    }
+
+    #[inline(always)]
+    pub fn checked_sub(self, other: Self) -> Option<Self> {
+        self.0.checked_sub(other.0).map(Self)
+    }
+
     #[inline(always)]
     pub fn as_f64(self) -> f64 {
         self.0 as f64 / SCALE as f64

@@ -385,11 +385,11 @@ impl<
         }
         self.initial_game_state.clone_from(game_state);
         self.game_state.clone_from(game_state);
-        self.initial_score_spread = game_state.current_player().score
+        self.initial_score_spread = game_state.current_player().score.raw()
             - (0..)
                 .zip(game_state.players.iter())
                 .filter(|&(i, _)| i != game_state.turn)
-                .map(|(_, player)| player.score)
+                .map(|(_, player)| player.score.raw())
                 .max()
                 .unwrap_or(0);
         self.wants_win_prob = choices.report_win_prob;
@@ -842,7 +842,7 @@ impl<
                 _ => {
                     // game has ended, move leave values to actual score
                     for (i, player) in self.game_state.players.iter_mut().enumerate() {
-                        player.score = self.final_scores[i];
+                        player.score = equity::Equity::new(self.final_scores[i]);
                     }
                     self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
                     return Ok(true);
@@ -1015,6 +1015,7 @@ impl<
             if i != self.initial_game_state.turn {
                 let opponent_equity = player
                     .score
+                    .raw()
                     .checked_add(self.last_seen_leave_values[i as usize])
                     .ok_or("score overflow")?;
                 if opponent_equity > best_opponent_equity {
@@ -1024,6 +1025,7 @@ impl<
         }
         let mut this_equity = self.game_state.players[self.initial_game_state.turn as usize]
             .score
+            .raw()
             .checked_add(self.last_seen_leave_values[self.initial_game_state.turn as usize])
             .ok_or("score overflow")?;
         if best_opponent_equity != i32::MIN {
@@ -1045,6 +1047,7 @@ impl<
             if i != mover {
                 let opponent_equity = player
                     .score
+                    .raw()
                     .checked_add(self.last_seen_leave_values[i])
                     .ok_or("score overflow")?;
                 if best_opponent.is_none_or(|(best, _)| opponent_equity > best) {
@@ -1052,12 +1055,12 @@ impl<
                 }
             }
         }
-        let score = self.game_state.players[mover].score;
+        let score = self.game_state.players[mover].score.raw();
         let leave = self.last_seen_leave_values[mover];
         Ok(match best_opponent {
             Some((_, opponent)) => (
                 score
-                    .checked_sub(self.game_state.players[opponent].score)
+                    .checked_sub(self.game_state.players[opponent].score.raw())
                     .ok_or("score overflow")?,
                 leave
                     .checked_sub(self.last_seen_leave_values[opponent])
@@ -1267,8 +1270,8 @@ mod tests {
     fn final_equity_spread_takes_the_best_opponent_from_the_mover() {
         let (mut simmer, _, _, _) = prepared_simmer();
         let turn = simmer.initial_game_state.turn as usize;
-        simmer.game_state.players[turn].score = 300 * equity::SCALE;
-        simmer.game_state.players[1 - turn].score = 250 * equity::SCALE;
+        simmer.game_state.players[turn].score = equity::Equity::new(300 * equity::SCALE);
+        simmer.game_state.players[1 - turn].score = equity::Equity::new(250 * equity::SCALE);
         simmer.last_seen_leave_values[turn] = 5 * equity::SCALE;
         simmer.last_seen_leave_values[1 - turn] = 0;
         assert_eq!(simmer.final_equity_spread().unwrap(), 55 * equity::SCALE);
@@ -1283,9 +1286,9 @@ mod tests {
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
-        game_state.players[0].score = 300 * equity::SCALE;
-        game_state.players[1].score = 250 * equity::SCALE;
-        game_state.players[2].score = 270 * equity::SCALE;
+        game_state.players[0].score = equity::Equity::new(300 * equity::SCALE);
+        game_state.players[1].score = equity::Equity::new(250 * equity::SCALE);
+        game_state.players[2].score = equity::Equity::new(270 * equity::SCALE);
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]));
         assert_eq!(simmer.initial_game_state.turn, 0);
@@ -1305,8 +1308,8 @@ mod tests {
     fn final_spread_and_leaves_sum_to_final_equity_spread() {
         let (mut simmer, _, _, _) = prepared_simmer();
         let turn = simmer.initial_game_state.turn as usize;
-        simmer.game_state.players[turn].score = 300 * equity::SCALE;
-        simmer.game_state.players[1 - turn].score = 250 * equity::SCALE;
+        simmer.game_state.players[turn].score = equity::Equity::new(300 * equity::SCALE);
+        simmer.game_state.players[1 - turn].score = equity::Equity::new(250 * equity::SCALE);
         simmer.last_seen_leave_values[turn] = 5 * equity::SCALE;
         simmer.last_seen_leave_values[1 - turn] = 12 * equity::SCALE;
         assert_eq!(
@@ -2212,7 +2215,8 @@ mod tests {
                 }
                 for (seat, gained) in gained.iter().enumerate() {
                     assert_eq!(
-                        simmer.game_state.players[seat].score - game_state.players[seat].score,
+                        (simmer.game_state.players[seat].score - game_state.players[seat].score)
+                            .raw(),
                         *gained,
                         "seed {seed}, seat {seat}"
                     );
@@ -2486,7 +2490,7 @@ mod tests {
     fn final_equity_spread_errs_when_a_sum_would_overflow() {
         let (mut simmer, _, _, _) = prepared_simmer();
         let turn = simmer.initial_game_state.turn as usize;
-        simmer.game_state.players[turn].score = i32::MAX - 5;
+        simmer.game_state.players[turn].score = equity::Equity::new(i32::MAX - 5);
         simmer.last_seen_leave_values[turn] = 10;
         assert!(simmer.final_equity_spread().is_err());
     }

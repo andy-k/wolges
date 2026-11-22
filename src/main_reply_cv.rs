@@ -287,7 +287,7 @@ fn main() -> error::Returns<()> {
             rack,
             real.players
                 .iter()
-                .map(|p| p.score / 1000)
+                .map(|p| p.score.raw() / 1000)
                 .collect::<Vec<_>>()
         );
         mg.gen_moves_unfiltered_lean(&movegen::GenMovesParams {

@@ -2346,7 +2346,7 @@ fn generate_autoplay_logs<
                                 {
 
                                     for (i, p) in game_state.players.iter().enumerate() {
-                                        final_scores[i] = p.score;
+                                        final_scores[i] = p.score.raw();
                                     }
                                     game_state::CheckGameEnded::PlayedOut
                                 }
@@ -2454,14 +2454,14 @@ fn generate_autoplay_logs<
                                     &play_fmt,
                                     equity::descale_score(play_score),
                                     equity::descale_score(
-                                        game_state.players[old_turn as usize].score,
+                                        game_state.players[old_turn as usize].score.raw(),
                                     ),
                                     tiles_played,
                                     &aft_rack_ser,
                                     &equity_fmt,
                                     old_bag_len,
                                     equity::descale_score(
-                                        game_state.players[new_turn as usize].score,
+                                        game_state.players[new_turn as usize].score.raw(),
                                     ),
                                 ))
                                 .unwrap();
@@ -6592,8 +6592,8 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     loop {
         let mover = game_state.turn as usize;
         let other = 1 - mover;
-        let lead = equity::descale_score(game_state.players[mover].score)
-            - equity::descale_score(game_state.players[other].score);
+        let lead = equity::descale_score(game_state.players[mover].score.raw())
+            - equity::descale_score(game_state.players[other].score.raw());
         snapshots.push((
             game_state.bag.len(),
             game_state.players[mover].rack.len(),

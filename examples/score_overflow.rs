@@ -13,7 +13,7 @@ fn a_play_errs_when_the_total_would_overflow() {
     let game_config = game_config::make_english_game_config();
     let mut game_state = game_state::GameState::new(&game_config);
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
-    game_state.players[0].score = i32::MAX - 5;
+    game_state.players[0].score = equity::Equity::new(i32::MAX - 5);
     game_state.players[0].rack = vec![A];
     let play = movegen::Play::Place {
         down: false,
@@ -29,7 +29,7 @@ fn a_play_errs_when_the_total_would_overflow() {
 fn going_out_adds_twice_the_rack_left() {
     let game_config = game_config::make_english_game_config();
     let mut game_state = game_state::GameState::new(&game_config);
-    game_state.players[0].score = 100_000;
+    game_state.players[0].score = equity::Equity::new(100_000);
     game_state.players[1].rack = vec![Z];
     let mut final_scores = vec![0; 2];
     assert!(matches!(
@@ -43,7 +43,7 @@ fn going_out_adds_twice_the_rack_left() {
 fn going_out_errs_when_the_total_would_overflow() {
     let game_config = game_config::make_english_game_config();
     let mut game_state = game_state::GameState::new(&game_config);
-    game_state.players[0].score = i32::MAX - 5;
+    game_state.players[0].score = equity::Equity::new(i32::MAX - 5);
     game_state.players[1].rack = vec![Z];
     let mut final_scores = vec![0; 2];
     assert!(

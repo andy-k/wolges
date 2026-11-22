@@ -2011,7 +2011,7 @@ impl Session {
                 Seat::Bot(None) => write!(out, "bot")?,
                 Seat::Bot(Some(ms)) => write!(out, "bot sim {ms}")?,
             }
-            write!(out, "): {}", equity::descale_score(player.score))?;
+            write!(out, "): {}", equity::descale_score(player.score.raw()))?;
             if !player.rack.is_empty() {
                 write!(out, " {}", self.rack_shown(i, &player.rack))?;
             }
@@ -2101,7 +2101,7 @@ impl Session {
                 writeln!(
                     out,
                     " (total {})",
-                    equity::descale_score(replay.state.players[mover].score),
+                    equity::descale_score(replay.state.players[mover].score.raw()),
                 )?;
                 // its notes, under it
                 for after in &turn.after {
@@ -2322,7 +2322,7 @@ impl Session {
                     clock: None,
                 };
                 let play = listened(&mut solver, self.quiet, |solver| {
-                    solver.best_move_to_win(endgame_state.turn, equity::Equity::new(lead), &limits)
+                    solver.best_move_to_win(endgame_state.turn, lead, &limits)
                 });
                 self.keep_endgame_solver(solver)?;
                 return Ok(play?.ok_or("the solve found no move")?);
@@ -2898,7 +2898,7 @@ impl Session {
                 // a time penalty's total is its player's final score
                 let total = match (&gcg_move.kind, &self.final_scores) {
                     (GcgKind::Time(_), Some(final_scores)) => final_scores[seat],
-                    _ => self.state.players[seat].score,
+                    _ => self.state.players[seat].score.raw(),
                 };
                 let total = equity::descale_score(total);
                 if (score, total) != (gcg_move.score, gcg_move.total) {
@@ -3048,7 +3048,7 @@ impl Session {
                 &held_tiles[..]
             };
             let rack = rack_text(self.game_config, turn.given, known, held_tiles);
-            let before = equity::descale_score(board.players[mover].score);
+            let before = equity::descale_score(board.players[mover].score.raw());
             // a misscore: the move as scored, then the board's score in a note
             // after its line (a note is about the line before it)
             let scored = score + turn.adjust();
@@ -3735,11 +3735,14 @@ impl Replay {
         let mover = state.turn as usize;
         // a misscore goes with the move, and is taken back with it
         let adjust = if turn.withdrawn() { 0 } else { turn.adjust() };
-        state.players[mover].score = state.players[mover]
-            .score
-            .checked_add(equity::scale_score(turn.bonus().unwrap_or(0)))
-            .and_then(|score| score.checked_add(equity::scale_score(adjust)))
-            .ok_or("score overflow")?;
+        state.players[mover].score = equity::Equity::new(
+            state.players[mover]
+                .score
+                .raw()
+                .checked_add(equity::scale_score(turn.bonus().unwrap_or(0)))
+                .and_then(|score| score.checked_add(equity::scale_score(adjust)))
+                .ok_or("score overflow")?,
+        );
         Ok(())
     }
 
@@ -3783,7 +3786,11 @@ impl Replay {
         {
             return Ok(None);
         }
-        let mut final_scores = state.players.iter().map(|p| p.score).collect::<Vec<_>>();
+        let mut final_scores = state
+            .players
+            .iter()
+            .map(|p| p.score.raw())
+            .collect::<Vec<_>>();
         if turn.loser().is_none() {
             let set_none = |seat| shown.iter().any(|(s, t)| *s == seat && t.is_empty());
             let none = (0..state.players.len()).find(|&seat| {
@@ -3801,11 +3808,12 @@ impl Replay {
                         .scaled_rack_score(&state.players[1 - seat].rack)
                         .raw()
                         .checked_mul(2)
-                        .and_then(|bonus| player.score.checked_add(bonus))
+                        .and_then(|bonus| player.score.raw().checked_add(bonus))
                         .ok_or("score overflow")?,
-                    Some(_) => player.score,
+                    Some(_) => player.score.raw(),
                     None => player
                         .score
+                        .raw()
                         .checked_sub(alphabet.scaled_rack_score(&player.rack).raw())
                         .ok_or("score overflow")?,
                 };
@@ -4191,7 +4199,7 @@ mod tests {
         let counted = |session: &Session| {
             let players = session.state.players.iter();
             players
-                .map(|player| player.score - alphabet.scaled_rack_score(&player.rack).raw())
+                .map(|player| player.score.raw() - alphabet.scaled_rack_score(&player.rack).raw())
                 .collect::<Vec<_>>()
         };
         assert_eq!(first.state.players[1].rack, [5, 5]);
@@ -4204,7 +4212,7 @@ mod tests {
         // player 2, with no tiles, gets twice player 1's, and player 1 loses
         // nothing
         run(&mut first, "rack 2 -").unwrap();
-        let score = |seat: usize| first.state.players[seat].score;
+        let score = |seat: usize| first.state.players[seat].score.raw();
         let twice = 2 * alphabet
             .scaled_rack_score(&first.state.players[0].rack)
             .raw();
@@ -4233,7 +4241,7 @@ mod tests {
         let left = alphabet
             .scaled_rack_score(&first.state.players[0].rack)
             .raw();
-        let score = first.state.players[0].score;
+        let score = first.state.players[0].score.raw();
         assert_eq!(first.final_scores, Some(vec![score - left, 0]));
         run(&mut first, "rack 2 EE").unwrap();
         let ee = alphabet.scaled_rack_score(&[5, 5]).raw();
@@ -4379,7 +4387,7 @@ mod tests {
         let alphabet = fifth.game_config.alphabet();
         let player = &fifth.state.players[0];
         let left = alphabet.scaled_rack_score(&player.rack).raw();
-        assert_eq!(fifth.final_scores, Some(vec![player.score - left, 0]));
+        assert_eq!(fifth.final_scores, Some(vec![player.score.raw() - left, 0]));
     }
 
     // a state, for comparing: the board, each score and rack (sorted), the bag
@@ -4398,7 +4406,7 @@ mod tests {
                 .map(|p| {
                     let mut rack = p.rack.clone();
                     rack.sort_unstable();
-                    (p.score, rack)
+                    (p.score.raw(), rack)
                 })
                 .collect(),
             bag,
@@ -4432,7 +4440,7 @@ mod tests {
         assert_eq!(snapshot(&first), snapshot(&second));
         // the first mover's moves: AT, doubled on the star, for 4, and TEA for
         // 3
-        assert_eq!(first.state.players[0].score, equity::scale_score(7));
+        assert_eq!(first.state.players[0].score.raw(), equity::scale_score(7));
     }
 
     #[test]
@@ -5183,7 +5191,7 @@ mod tests {
         // AT through the star makes 4; its player was given 5
         assert!(run(&mut first, "adjust 0").is_err());
         run(&mut first, "adjust 1").unwrap();
-        assert_eq!(first.state.players[0].score, equity::scale_score(5));
+        assert_eq!(first.state.players[0].score.raw(), equity::scale_score(5));
         let turn = &first.game.as_ref().unwrap().turns[0];
         let four = equity::scale_score(4);
         assert!(matches!(turn.play, movegen::Play::Place { score, .. } if score.raw() == four));
@@ -5214,7 +5222,7 @@ mod tests {
         assert_eq!(fourth.gcg_text().unwrap(), text);
         // undo takes it back
         run(&mut first, "undo").unwrap();
-        assert_eq!(first.state.players[0].score, four);
+        assert_eq!(first.state.players[0].score.raw(), four);
     }
 
     #[test]
@@ -5317,7 +5325,7 @@ mod tests {
         run(&mut first, "challenge AE ta").unwrap();
         assert_eq!(
             first.state.players[1].score,
-            before + equity::scale_score(10)
+            before + equity::Points::new(10).scaled()
         );
         let text = round_trip(&first);
         assert!(text.contains(" (challenge) +10 "), "{text}");
@@ -5722,7 +5730,7 @@ mod tests {
         run(&mut session, "challenge").unwrap();
         assert_eq!(
             session.state.players[0].score - points,
-            equity::scale_score(5)
+            equity::Points::new(5).scaled()
         );
         assert_eq!(session.state.turn, 1);
         // a move is challenged only once: once it stands, there is no second

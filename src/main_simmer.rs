@@ -2,8 +2,8 @@
 
 use std::io::Write;
 use wolges::{
-    alphabet, anagrams, bites, build, display, error, fash, game_config, game_state, klv, kwg,
-    move_picker, movegen,
+    alphabet, anagrams, bites, build, display, equity, error, fash, game_config, game_state, klv,
+    kwg, move_picker, movegen,
 };
 
 // its counting allocator and --max-memory; its endgame watching goes unused
@@ -241,7 +241,7 @@ fn simulate(
         wolges::return_error!(format!("the question scores {} players", scores.len()));
     }
     for (i, &score) in scores.iter().enumerate() {
-        game_state.players[i].score = score;
+        game_state.players[i].score = equity::Equity::new(score);
     }
     game_state.board_tiles[..].clone_from_slice(&board_tiles);
     game_state.set_current_rack(&question.rack);

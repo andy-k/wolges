@@ -226,8 +226,8 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
         wolges::return_error!("the question scores two players".to_string());
     }
     // temp hardcode
-    game_state.players[0].score = equity::scale_score(16);
-    game_state.players[1].score = equity::scale_score(44);
+    game_state.players[0].score = equity::Points::new(16).scaled();
+    game_state.players[1].score = equity::Points::new(44).scaled();
 
     let mut kibitzer = kibitzer::Kibitzer::new();
     kibitzer.prepare(game_config, &question.rack, &question.board_tiles)?;
