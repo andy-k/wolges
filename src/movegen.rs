@@ -12589,8 +12589,16 @@ fn rcs_placements<
         num_rack_tiles += 1;
     }
     let rack_tiles = &rack_tiles[..num_rack_tiles];
-    // each square's cap (none but a lane's hooked squares'), made once a turn
-    let mut caps = [i32::MAX; u64::BITS as usize];
+    // an open square can take the rack's highest scoring tile.
+    //
+    // 64 caps fit in an i32 even at the highest face score.
+    let unrestricted_cap = working_buffer
+        .descending_scores
+        .first()
+        .copied()
+        .unwrap_or(0)
+        .max(0);
+    let mut caps = [unrestricted_cap; u64::BITS as usize];
     // the walks' lists of a lane found again (RcsGeometry::find), made once a
     // turn
     let mut lists = RcsLists::new();
@@ -12738,6 +12746,7 @@ fn rcs_placements<
             rack_bits,
             rack_tiles,
             &mut caps,
+            unrestricted_cap,
             check,
             &working_buffer.descending_scores,
             &working_buffer.best_leave_values,
@@ -12761,6 +12770,7 @@ fn rcs_lane_placements(
     rack_bits: u64,
     rack_tiles: &[(u64, i32)],
     caps: &mut [i32; u64::BITS as usize],
+    unrestricted_cap: i32,
     mut check: Option<KeyCheck<'_>>,
     descending_scores: &[i32],
     best_leave_values: &[i32],
@@ -12804,12 +12814,12 @@ fn rcs_lane_placements(
             &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
         let mut bound = span.fixed + best_leave_values[span.num_played as usize];
         let mut best_scores = 0i32;
-        let mut capped = 0i64;
+        let mut capped = 0i32;
         let mut least = 0i32;
         for (&score, &taken) in descending_scores.iter().zip(multipliers) {
             best_scores += score;
-            capped += caps[taken.idx() % caps.len()] as i64;
-            let next_least = (best_scores as i64).min(capped) as i32;
+            capped += caps[taken.idx() % caps.len()];
+            let next_least = best_scores.min(capped);
             bound += taken.multiplier() * (next_least - least);
             least = next_least;
         }
@@ -12827,7 +12837,7 @@ fn rcs_lane_placements(
     // the lane's caps back to none for the next
     let mut hooks = kept.hooks;
     while hooks != 0 {
-        caps[hooks.trailing_zeros() as usize] = i32::MAX;
+        caps[hooks.trailing_zeros() as usize] = unrestricted_cap;
         hooks &= hooks - 1;
     }
 }
