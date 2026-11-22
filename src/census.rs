@@ -1,6 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-pub const UNPLAYABLE: i32 = i32::MIN / 2;
+use super::equity;
+
+pub const UNPLAYABLE: equity::Equity = equity::Equity::new(i32::MIN / 2);
 
 pub const MAX_LETTERS: usize = 64;
 
@@ -206,10 +208,10 @@ pub fn naive_best_equity(
     sheet: &[i32],
     leave: &[i32],
     rack_tally: &[u8],
-) -> (i32, Vec<u8>) {
+) -> (equity::Equity, Vec<u8>) {
     let n = lat.num_letters();
     let mut played = vec![0u8; n];
-    let mut best = UNPLAYABLE;
+    let mut best = UNPLAYABLE.raw();
     let mut best_kept = vec![0u8; n];
 
     struct Ctx<'a> {
@@ -273,7 +275,7 @@ pub fn naive_best_equity(
             kept_tiles.push(t as u8);
         }
     }
-    (best, kept_tiles)
+    (equity::Equity::new(best), kept_tiles)
 }
 
 // the nonzero letters are added high-to-low, so each letter's suffix size is
@@ -342,7 +344,7 @@ impl SplitCtx<'_> {
 // the letters ascending and the counts summing to at most rack_size
 #[inline(always)]
 fn best_split_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], nz: &[(usize, u8)]) -> i32 {
-    let mut best = UNPLAYABLE;
+    let mut best = UNPLAYABLE.raw();
     SplitCtx {
         nz,
         n: lat.num_letters(),
@@ -361,7 +363,12 @@ fn best_split_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], nz: &[(usi
 // no rank for a rack holding fewer than keep tiles, a tally the lattice does
 // not hold, or a leave table not the lattice's size
 #[inline]
-pub fn best_keep_of(lat: &MultisetLattice, leave: &[i32], tally: &[u8], keep: usize) -> (i32, u32) {
+pub fn best_keep_of(
+    lat: &MultisetLattice,
+    leave: &[i32],
+    tally: &[u8],
+    keep: usize,
+) -> (equity::Equity, u32) {
     if leave.len() != lat.len()
         || tally.len() != lat.num_letters()
         || tally.iter().map(|&c| c as usize).sum::<usize>() > lat.rack_size()
@@ -379,7 +386,7 @@ pub fn best_keep_of(lat: &MultisetLattice, leave: &[i32], tally: &[u8], keep: us
             m += 1;
         }
     }
-    let mut best = (UNPLAYABLE, !0);
+    let mut best = (UNPLAYABLE.raw(), !0);
     if keep <= below[m] {
         KeepCtx {
             nz: &nz[..m],
@@ -391,7 +398,7 @@ pub fn best_keep_of(lat: &MultisetLattice, leave: &[i32], tally: &[u8], keep: us
         }
         .rec(m, 0, 0, keep);
     }
-    best
+    (equity::Equity::new(best.0), best.1)
 }
 
 // as SplitCtx, with kept tiles only: the letters are added high-to-low, and of
@@ -458,7 +465,12 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
 // its tally; UNPLAYABLE for a tally the lattice does not hold, or for a sheet or
 // a leave table not the lattice's size (its reads are unchecked)
 #[inline]
-pub fn best_equity_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], tally: &[u8]) -> i32 {
+pub fn best_equity_of(
+    lat: &MultisetLattice,
+    sheet: &[i32],
+    leave: &[i32],
+    tally: &[u8],
+) -> equity::Equity {
     if sheet.len() != lat.len()
         || leave.len() != lat.len()
         || tally.len() != lat.num_letters()
@@ -474,7 +486,7 @@ pub fn best_equity_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], tally
             m += 1;
         }
     }
-    best_split_of(lat, sheet, leave, &nz[..m])
+    equity::Equity::new(best_split_of(lat, sheet, leave, &nz[..m]))
 }
 
 #[inline]
@@ -1106,7 +1118,7 @@ pub fn apportion_fused(
                     // maxsheet's length (apportion_fused checks it).
                     unsafe { *self.maxsheet.get_unchecked(idx) }
                 } else {
-                    let mut b = UNPLAYABLE;
+                    let mut b = UNPLAYABLE.raw();
                     self.rec_max(m, 0, 0, &mut b);
                     self.maxsheet[idx] = b;
                     b
@@ -1258,7 +1270,7 @@ pub fn leave_value_by_draw(
     best: &[i32],
     unseen: &[u8],
     s_tally: &[u8],
-) -> i32 {
+) -> equity::Equity {
     // the walk's reads of best are unchecked: it is the lattice's size
     assert_eq!(best.len(), lat.len());
     let n = lat.num_letters();
@@ -1337,7 +1349,7 @@ pub fn leave_value_by_draw(
     if den == 0 {
         UNPLAYABLE
     } else {
-        (num / den) as i32
+        equity::Equity::new((num / den) as i32)
     }
 }
 
@@ -1349,7 +1361,7 @@ pub fn dynamic_leave_value(
     pool: &[u8],
     s_ridx: usize,
     draw: usize,
-) -> i32 {
+) -> equity::Equity {
     // the walk's reads of full_v are unchecked: it is the lattice's size, and
     // the walk starts at one of the lattice's ranks and adds by add's
     assert!(full_v.len() == lat.len() && s_ridx < lat.len() && add.made_for(lat));
@@ -1369,7 +1381,7 @@ pub fn dynamic_leave_value(
     }
     .aggregate(0, draw, 1.0, s_ridx, &mut num, &mut den);
     if den > 0.0 {
-        (num / den) as i32
+        equity::Equity::new((num / den) as i32)
     } else {
         UNPLAYABLE
     }
@@ -1426,7 +1438,7 @@ fn n_choose_k(n: u64, k: u64) -> u64 {
 pub fn record_blank_variants(
     lat: &MultisetLattice,
     sheet: &mut [i32],
-    real_score: i32,
+    real_score: equity::Equity,
     placed: &mut [(u8, i32)],
     unseen_tally: &[u8],
     num_blanks_eff: usize,
@@ -1535,7 +1547,7 @@ pub fn record_blank_variants(
         size: n,
         size_start: lat.size_start(n),
         sheet,
-        real_score,
+        real_score: real_score.raw(),
     }
     .rec(num_runs, leftover, 0, 0, 0, 0);
 }
@@ -1614,7 +1626,7 @@ mod tests {
         leave[lat.rank(&[0, 1]) as usize] = 1_000;
 
         let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
-        assert_eq!(eq, 7_000);
+        assert_eq!(eq, equity::Equity::new(7_000));
         assert_eq!(kept, vec![0u8]);
     }
 
@@ -1632,14 +1644,14 @@ mod tests {
             }
             leave[idx] = h.rem_euclid(8_000) - 4_000;
         }
-        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut best = vec![UNPLAYABLE.raw(); lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
 
         for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
             let tally = lat.tally(idx);
             assert_eq!(tally.iter().map(|&c| c as usize).sum::<usize>(), 4);
             let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
-            assert_eq!(b, naive, "mismatch at idx {idx} tally {tally:?}");
+            assert_eq!(b, naive.raw(), "mismatch at idx {idx} tally {tally:?}");
         }
     }
 
@@ -1657,7 +1669,7 @@ mod tests {
             }
             leave[idx] = h.rem_euclid(8_000) - 4_000;
         }
-        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut best = vec![UNPLAYABLE.raw(); lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
 
         for (idx, &b) in best.iter().enumerate() {
@@ -1666,7 +1678,7 @@ mod tests {
             let one = best_equity_of(&lat, &sheet, &leave, &tally);
             assert_eq!(one, naive, "mismatch at idx {idx} tally {tally:?}");
             if idx >= lat.full_rack_start() {
-                assert_eq!(one, b, "table differs at idx {idx} tally {tally:?}");
+                assert_eq!(one.raw(), b, "table differs at idx {idx} tally {tally:?}");
             }
         }
         assert_eq!(
@@ -1719,8 +1731,9 @@ mod tests {
                 let mut cur = vec![0u8; 4];
                 each_sub(&tally, 0, keep, &mut cur, &mut |kept| {
                     let kr = lat.rank(kept);
-                    if leave[kr as usize] > want.0 {
-                        want = (leave[kr as usize], kr);
+                    let value = equity::Equity::new(leave[kr as usize]);
+                    if value > want.0 {
+                        want = (value, kr);
                     }
                 });
                 assert_eq!(
@@ -1761,7 +1774,7 @@ mod tests {
             std::thread::Builder::new()
                 .stack_size(256 << 10)
                 .spawn_scoped(s, || {
-                    let mut best = vec![UNPLAYABLE; lat.len()];
+                    let mut best = vec![UNPLAYABLE.raw(); lat.len()];
                     best_equity_table(&lat, &sheet, &leave, &mut best);
                     let mut num = vec![0f64; lat.len()];
                     let mut den = vec![0f64; lat.len()];
@@ -1769,14 +1782,21 @@ mod tests {
                     let tally = vec![0u8; 27];
                     let value = leave_value_by_draw(&lat, &best, &unseen, &tally);
                     let mut placed = vec![(1u8, 5i32), (2, 7), (3, 9)];
-                    record_blank_variants(&lat, &mut sheet, 40_000, &mut placed, &unseen, 1);
+                    record_blank_variants(
+                        &lat,
+                        &mut sheet,
+                        equity::Equity::new(40_000),
+                        &mut placed,
+                        &unseen,
+                        1,
+                    );
                     (best[lat.full_rack_start()], value)
                 })
                 .unwrap()
                 .join()
                 .unwrap()
         });
-        assert_ne!(full, UNPLAYABLE);
+        assert_ne!(full, UNPLAYABLE.raw());
         assert_ne!(value, UNPLAYABLE);
     }
 
@@ -1793,10 +1813,10 @@ mod tests {
         best[lat.rank(&[0, 1]) as usize] = 200;
 
         let e = leave_value_by_draw(&lat, &best, &unseen, &[0u8, 0u8]);
-        assert_eq!(e, 6_000);
+        assert_eq!(e, equity::Equity::new(6_000));
 
         let f = leave_value_by_draw(&lat, &best, &unseen, &[1u8, 1u8]);
-        assert_eq!(f, 6_000);
+        assert_eq!(f, equity::Equity::new(6_000));
     }
 
     #[test]
@@ -1805,7 +1825,7 @@ mod tests {
         let lat = MultisetLattice::new(3, 3).unwrap();
         let add = AddTable::new(&lat);
         let pool = [3u8, 2u8, 2u8];
-        let mut full_v = vec![UNPLAYABLE; lat.len()];
+        let mut full_v = vec![UNPLAYABLE.raw(); lat.len()];
         for (idx, slot) in full_v.iter_mut().enumerate() {
             let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
@@ -1829,7 +1849,7 @@ mod tests {
     fn apportion_table_matches_naive() {
         let lat = MultisetLattice::new(3, 3).unwrap();
         let unseen = [4u8, 3u8, 2u8];
-        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut best = vec![UNPLAYABLE.raw(); lat.len()];
         for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
             let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
@@ -1902,7 +1922,7 @@ mod tests {
                 }
                 leave[idx] = h.rem_euclid(8_000) - 4_000;
             }
-            let mut best = vec![UNPLAYABLE; lat.len()];
+            let mut best = vec![UNPLAYABLE.raw(); lat.len()];
             best_equity_table(&lat, &sheet, &leave, &mut best);
             let tables = [
                 AddTable::new(&lat),
@@ -1924,7 +1944,7 @@ mod tests {
                             let mut den_b = vec![0f64; lo];
                             let mut ways_b = vec![0f64; lat.len() - lo];
                             // what a board before leaves there, never read back
-                            maxsheet.fill(UNPLAYABLE);
+                            maxsheet.fill(UNPLAYABLE.raw());
                             apportion_fused(
                                 &lat,
                                 add,
@@ -1981,7 +2001,7 @@ mod tests {
                 *slot = h.rem_euclid(20_000);
             }
         }
-        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut best = vec![UNPLAYABLE.raw(); lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
         let tables = [
             AddTable::new(&lat),
@@ -2003,7 +2023,7 @@ mod tests {
                         let mut den_b = vec![0f64; lo];
                         let mut ways_b = vec![0f64; lat.len() - lo];
                         // what a board before leaves there, never read back
-                        maxsheet.fill(UNPLAYABLE);
+                        maxsheet.fill(UNPLAYABLE.raw());
                         apportion_fused(
                             &lat,
                             add,
@@ -2052,7 +2072,7 @@ mod tests {
     fn record_blank_variants_by_rank(
         lat: &MultisetLattice,
         sheet: &mut [i32],
-        real_score: i32,
+        real_score: equity::Equity,
         placed: &[(u8, i32)],
         unseen: &[u8],
         num_blanks_eff: usize,
@@ -2077,7 +2097,7 @@ mod tests {
             {
                 let mut tally = vec![0u8; lat.num_letters()];
                 tally[0] = blanks.iter().sum::<usize>() as u8;
-                let mut val = real_score;
+                let mut val = real_score.raw();
                 for (i, &(letter, _, run)) in runs.iter().enumerate() {
                     tally[letter as usize] = (run.len() - blanks[i]) as u8;
                     val -= run[..blanks[i]].iter().map(|e| e.1).sum::<i32>();
@@ -2109,7 +2129,7 @@ mod tests {
         for _ in 0..3000 {
             let unseen = (0..6).map(|_| rng.random_range(0..5u8)).collect::<Vec<_>>();
             let num_blanks_eff = rng.random_range(0..4usize);
-            let real_score = rng.random_range(0..200i32);
+            let real_score = equity::Equity::new(rng.random_range(0..200i32));
             let mut placed = (0..rng.random_range(1..=7usize))
                 .map(|_| (rng.random_range(1..=5u8), rng.random_range(0..30i32)))
                 .collect::<Vec<_>>();
@@ -2142,6 +2162,7 @@ mod tests {
         let key = |tally: &[u8]| lat.rank(tally) as usize;
         let run = |placed: &mut [(u8, i32)], unseen: &[u8], blanks: usize, real_score: i32| {
             let mut sheet = vec![0i32; lat.len()];
+            let real_score = equity::Equity::new(real_score);
             record_blank_variants(&lat, &mut sheet, real_score, placed, unseen, blanks);
             sheet
         };
@@ -2169,7 +2190,7 @@ mod tests {
         record_blank_variants(
             &lat,
             &mut sheet,
-            100,
+            equity::Equity::new(100),
             &mut [(1, 10), (1, 4)],
             &[0, 2, 0, 0],
             1,
@@ -2177,7 +2198,7 @@ mod tests {
         record_blank_variants(
             &lat,
             &mut sheet,
-            120,
+            equity::Equity::new(120),
             &mut [(1, 10), (1, 4)],
             &[0, 2, 0, 0],
             1,
