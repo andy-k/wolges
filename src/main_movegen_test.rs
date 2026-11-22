@@ -167,7 +167,7 @@ static TEST_CASES: &[TestCase] = &[
     },
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
-        rack: "??AAAAAAAAABBCDDDDEEEEEEEEEEEEFFGGGHHIIIIIIIIIJKLLLLMMNNNNNNOOOOOOOOPPQRRRRRRSSSSTTTTTTUVVWWXYYZ",
+        rack: "ABCDEFGHIJKLMNOPQRSTU", // more leaves than klv::DENSE_LEAVES_MOST
         max_gen: 5,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         num_exchanges_by_this_player: i16::MAX, // skip exchanges for threat analysis
