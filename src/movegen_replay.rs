@@ -36,6 +36,12 @@ pub(crate) struct ReplayArgs {
     cold: bool,
     #[arg(long, help = "maximum static moves retained per position")]
     top: std::num::NonZeroUsize,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "write the untimed move lists as JSON lines"
+    )]
+    moves: Option<std::path::PathBuf>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -211,6 +217,17 @@ fn replay_using<const N: usize>(
     }
 
     let mut generator = movegen::InlineGenerator::<N>::try_new(&engine.game)?;
+    let mut moves = args
+        .moves
+        .as_ref()
+        .map(|path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        })
+        .transpose()?
+        .map(std::io::BufWriter::new);
     let mut ties = 0;
     let mut elapsed = Vec::with_capacity(args.passes.get());
     for pass in 0..=args.passes.get() {
@@ -244,11 +261,28 @@ fn replay_using<const N: usize>(
                 ties += usize::from(
                     best.play.fmt(&entry.snapshot).to_string() != entry.position.reference,
                 );
+                if let Some(moves) = &mut moves {
+                    let list = generator
+                        .plays
+                        .iter()
+                        .map(|item| {
+                            (
+                                item.equity.raw(),
+                                item.play.fmt(&entry.snapshot).to_string(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    serde_json::to_writer(&mut *moves, &list)?;
+                    writeln!(moves)?;
+                }
             }
         }
         if pass != 0 {
             elapsed.push(search_time.as_nanos());
         }
+    }
+    if let Some(moves) = &mut moves {
+        moves.flush()?;
     }
     writeln!(
         std::io::stdout().lock(),
