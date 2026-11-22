@@ -7809,7 +7809,7 @@ pub enum PegMove {
 #[derive(Clone)]
 pub struct PegMoveValue {
     pub play: PegMove,
-    pub win_pct: f32,
+    pub win_pct: f64,
     pub expected_margin: equity::Equity,
     pub row: usize,
     pub exact: bool,
@@ -7819,7 +7819,7 @@ pub struct PegMoveValue {
 // clairvoyant model, or before a move was valued
 #[derive(Clone)]
 pub struct PegResult {
-    pub win_pct: f32,
+    pub win_pct: f64,
     pub expected_margin: equity::Equity,
     pub row: Option<usize>,
     pub best_move: Option<PegMove>,
@@ -7835,7 +7835,7 @@ pub struct PegResult {
 // was searched to its end; each tile's margin is in the search's margins
 #[derive(Clone)]
 struct PegValue {
-    win: f32,
+    win: f64,
     marg: f64,
     exact: bool,
 }
@@ -8613,18 +8613,18 @@ impl PegOutcomes {
     }
 
     #[inline]
-    fn averages(&self) -> (f32, f64) {
+    fn averages(&self) -> (f64, f64) {
         if self.deals == 0 {
             (0.0, 0.0)
         } else {
             let deals = self.deals as f64;
-            ((self.wins / deals) as f32, self.margin / deals)
+            (self.wins / deals, self.margin / deals)
         }
     }
 }
 
 #[inline]
-pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f32, equity::Equity) {
+pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f64, equity::Equity) {
     let mut outcomes = PegOutcomes::default();
     for &(weight, value) in hypotheses {
         outcomes.record(weight, i64::from(value.raw()));
@@ -10965,7 +10965,7 @@ mod tests {
     // margins, as the tests compare them
     #[derive(Clone)]
     struct Solved {
-        win_pct: f32,
+        win_pct: f64,
         expected_margin: equity::Equity,
         hypotheses: Vec<(u8, u32, equity::Equity)>,
         best_move: Option<PegMove>,
@@ -10978,7 +10978,7 @@ mod tests {
     #[derive(Clone)]
     struct SolvedMove {
         play: PegMove,
-        win_pct: f32,
+        win_pct: f64,
         expected_margin: equity::Equity,
         hypotheses: Vec<(u8, u32, equity::Equity)>,
         exact: bool,
@@ -12203,7 +12203,7 @@ mod tests {
                         got.expected_margin.raw() as f64,
                         full.expected_margin.raw() as f64,
                     );
-                    tally(1, got.win_pct as f64, full.win_pct as f64);
+                    tally(1, got.win_pct, full.win_pct);
                 }
             }
         }
@@ -17205,7 +17205,7 @@ mod tests {
             mg: &mut mg,
             memo: Default::default(),
         };
-        let mut worst_gap = 0.0f32;
+        let mut worst_gap = 0.0f64;
         let mut n_gap = 0;
         let mut n_gap_place = 0;
         let mut report = String::new();
@@ -17248,7 +17248,7 @@ mod tests {
                 assert!(got.best_move.is_some(), "committed result must name a move");
                 assert!(got.exact && clair.exact, "an unlimited solve is exact");
                 assert!(
-                    (got.win_pct - ref_win).abs() < 1e-6,
+                    (got.win_pct - f64::from(ref_win)).abs() < 1e-6,
                     "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
                     a.fmt_rack(mrack),
                     got.win_pct,
@@ -17731,7 +17731,7 @@ mod tests {
                             any_hyps.sort_unstable();
                             // the margins in each split are those of the move each
                             // picked; the moves agree, so the splits do
-                            assert!((any.win_pct - one.win_pct as f64).abs() < 1e-6, "{case:?}");
+                            assert!((any.win_pct - one.win_pct).abs() < 1e-6, "{case:?}");
                             assert_eq!(any.expected_margin, one.expected_margin, "{case:?}");
                             match one.best_move {
                                 Some(PegMove::Pass) => assert!(

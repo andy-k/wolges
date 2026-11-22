@@ -167,7 +167,7 @@ fn woogles_peg_draw_outcomes() {
             let (win, _) = endgame::peg_aggregate(&hypotheses);
             assert_eq!(
                 win,
-                candidate.win_deals as f32 / case.deals as f32,
+                candidate.win_deals as f64 / case.deals as f64,
                 "{name}"
             );
         }
