@@ -670,14 +670,7 @@ impl MultiLeaves {
         }
     }
 
-    // the most leaves the next racks may have to be kept as a table
-    // (DENSE_LEAVES_MOST until set); the leaves already kept stay
-    #[inline(always)]
-    pub fn set_dense_most(&mut self, dense_most: u32) {
-        self.dense_most = dense_most;
-    }
-
-    // the most leaves a rack's tiles may have to be kept as a table
+    // the most leaves a rack's tiles may have to be kept as a table, as made
     #[inline(always)]
     pub fn dense_most(&self) -> u32 {
         self.dense_most
@@ -687,7 +680,7 @@ impl MultiLeaves {
     // value in the leave index): whether the leaves are dense (no more than
     // dense_most of them), how many, and the rack's tiles
     #[inline(always)]
-    fn set_digits(&mut self, rack_tally: &[u8]) -> (bool, u32, u8) {
+    fn set_digits(&mut self, rack_tally: &[u8], dense_most: u32) -> (bool, u32, u8) {
         // every digit none: the last rack's tiles' put back (the others are
         // none already), or all of them anew for an alphabet of another length
         for &tile in &self.unique_tiles {
@@ -707,7 +700,6 @@ impl MultiLeaves {
                 },
             );
         }
-        let dense_most = self.dense_most;
         let mut place_value = 1u32;
         let mut num_tiles_on_rack = 0u8;
         let mut dense = true;
@@ -732,14 +724,20 @@ impl MultiLeaves {
     }
 
     // the rack's digits alone, with no leaves: for a caller that reads no leave
-    // value, as a raw generation. Each init takes the rack's bag terms by tiles
+    // value, as a raw generation. Each init takes the most leaves the rack may
+    // have to be kept as a table (dense_most) and the rack's bag terms by tiles
     // played (index 0 must be 0: a pass or an exchange gets none), empty for
     // none
     #[inline(always)]
-    pub fn init_digits(&mut self, rack_tally: &[u8], bag_terms: impl Iterator<Item = i32>) {
+    pub fn init_digits(
+        &mut self,
+        rack_tally: &[u8],
+        dense_most: u32,
+        bag_terms: impl Iterator<Item = i32>,
+    ) {
         self.bag_terms.clear();
         self.bag_terms.extend(bag_terms);
-        self.set_digits(rack_tally);
+        self.set_digits(rack_tally, dense_most);
         self.leave_values.clear();
         self.num_playeds.clear();
     }
@@ -753,11 +751,12 @@ impl MultiLeaves {
         klv: &Klv<L>,
         use_klv: bool,
         adjust_leave_value: AdjustLeave,
+        dense_most: u32,
         bag_terms: impl Iterator<Item = i32>,
     ) {
         self.bag_terms.clear();
         self.bag_terms.extend(bag_terms);
-        let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally);
+        let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally, dense_most);
         self.leave_values.clear();
         self.num_playeds.clear();
         if dense {
@@ -865,11 +864,12 @@ impl MultiLeaves {
         &mut self,
         rack_tally: &[u8],
         leaves: &[u8],
+        dense_most: u32,
         bag_terms: impl Iterator<Item = i32>,
     ) {
         self.bag_terms.clear();
         self.bag_terms.extend(bag_terms);
-        let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally);
+        let (dense, place_value, num_tiles_on_rack) = self.set_digits(rack_tally, dense_most);
         debug_assert!(dense && place_value as usize * 4 == leaves.len());
         self.leave_values.clear();
         self.leave_values.extend(

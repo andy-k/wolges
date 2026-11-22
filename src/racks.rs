@@ -127,6 +127,7 @@ impl RackTable {
                                 klv,
                                 true,
                                 klv::AdjustLeave::Identity,
+                                multi_leaves.dense_most(),
                                 std::iter::empty(),
                             );
                             let at = data.len();
@@ -323,9 +324,10 @@ mod tests {
                 &klv,
                 true,
                 klv::AdjustLeave::Identity,
+                walked.dense_most(),
                 std::iter::empty(),
             );
-            read.init_from_leaves(&rack, setup_leaves, std::iter::empty());
+            read.init_from_leaves(&rack, setup_leaves, read.dense_most(), std::iter::empty());
             assert_eq!(read.leave_values(), walked.leave_values());
             assert_eq!(read.num_playeds(), walked.num_playeds());
             movegen::subrack_order(&walked, &rack, &mut order);

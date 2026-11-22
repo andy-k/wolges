@@ -1109,6 +1109,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         rack: &[u8],
         adjust_leave_value: klv::AdjustLeave,
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
+        dense_most: u32,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
         self.anagrams_fit_config = board_snapshot
@@ -1281,13 +1282,14 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             if !LEAVES {
                 // no leave is read: the digits alone, and no table
                 self.multi_leaves
-                    .init_digits(&self.rack_tally, std::iter::empty());
+                    .init_digits(&self.rack_tally, dense_most, std::iter::empty());
             } else {
                 self.multi_leaves.init(
                     &self.rack_tally,
                     board_snapshot.klv,
                     false,
                     adjust_leave_value,
+                    dense_most,
                     std::iter::empty(),
                 );
                 if self.multi_leaves.is_dense() {
@@ -1326,15 +1328,18 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 })
             });
             match setup {
-                Some((leaves, _)) => {
-                    self.multi_leaves
-                        .init_from_leaves(&self.rack_tally, leaves, bag_terms)
-                }
+                Some((leaves, _)) => self.multi_leaves.init_from_leaves(
+                    &self.rack_tally,
+                    leaves,
+                    dense_most,
+                    bag_terms,
+                ),
                 None => self.multi_leaves.init(
                     &self.rack_tally,
                     board_snapshot.klv,
                     true,
                     adjust_leave_value,
+                    dense_most,
                     bag_terms,
                 ),
             }
@@ -8647,6 +8652,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             rack,
             klv::AdjustLeave::Identity,
             None,
+            working_buffer.multi_leaves.dense_most(),
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
@@ -8846,6 +8852,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             params.rack,
             adjust_leave_value,
             params.dynamic_leaves,
+            working_buffer.multi_leaves.dense_most(),
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
@@ -9675,10 +9682,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             }
             None => params,
         };
-        let dense_most = self.working_buffer.multi_leaves.dense_most();
-        if no_leaves {
-            self.working_buffer.multi_leaves.set_dense_most(0);
-        }
         self.working_buffer.is_census = is_census;
         self.gen_moves_filtered_lean_by_side(
             params,
@@ -9687,7 +9690,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             equity_predicate,
         );
         self.working_buffer.is_census = false;
-        self.working_buffer.multi_leaves.set_dense_most(dense_most);
         self.empty_klvs = empty_klvs;
     }
 
@@ -9880,6 +9882,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             params.rack,
             adjust_leave_value,
             params.dynamic_leaves,
+            working_buffer.multi_leaves.dense_most(),
         );
         // what the arm plays: a classic turn its tables take (by nibble keys,
         // once its tables fit the game's counts as init asked them and init
@@ -10177,11 +10180,19 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         let working_buffer = &mut self.working_buffer;
+        // a generation keeping no play reads no leave, so keeps no leaves'
+        // table
+        let dense_most = if matches!(equity_predicate, EquityPredicate::RejectAll) {
+            0
+        } else {
+            working_buffer.multi_leaves.dense_most()
+        };
         working_buffer.init::<D, true, ByLayout, _, _>(
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
             params.dynamic_leaves,
+            dense_most,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         if let Some(floor) = sure_floor(params, working_buffer, &multi_leaves, &equity_predicate) {
@@ -10467,6 +10478,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             &[],
             klv::AdjustLeave::Identity,
             None,
+            working_buffer.multi_leaves.dense_most(),
         );
         working_buffer.prev_board_tiles.fill(0xff);
         let pruned = gen_remaining_words(board_snapshot, working_buffer, memory, found_word);
@@ -10493,6 +10505,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             &[],
             klv::AdjustLeave::Identity,
             None,
+            working_buffer.multi_leaves.dense_most(),
         );
         let dim = board_snapshot.game_config.board_layout().dim();
         let transposed_dim = matrix::Dim {
@@ -18711,6 +18724,7 @@ mod tests {
             rack,
             klv::AdjustLeave::Identity,
             None,
+            working_buffer.multi_leaves.dense_most(),
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let empty = working_buffer.num_tiles_on_board == 0;
