@@ -5,19 +5,37 @@ use rand::SeedableRng;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
-use wolges::{anagrams, display, error, game_config, game_state, klv, kwg, movegen, return_error};
+use wolges::{
+    anagrams, display, error, game_config, game_state, klv, kwg, movegen, racks, return_error,
+};
 
 #[derive(clap::Args)]
-#[command(about = "time top-one static move generation on a frozen chronological trace")]
-pub(crate) struct ReplayArgs {
+struct EngineArgs {
     kwg: String,
     klv: String,
+    #[arg(long, help = "generate on the lean arm")]
+    lean: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "read the rack table built for these leaves"
+    )]
+    racks: Option<std::path::PathBuf>,
+}
+
+#[derive(clap::Args)]
+#[command(about = "time static move generation on a frozen chronological trace")]
+pub(crate) struct ReplayArgs {
+    #[command(flatten)]
+    engine: EngineArgs,
     #[arg(help = "the trace as JSON lines")]
     trace: String,
     #[arg(long)]
     passes: std::num::NonZeroUsize,
     #[arg(long, help = "start each position with a fresh generator")]
     cold: bool,
+    #[arg(long, help = "maximum static moves retained per position")]
+    top: std::num::NonZeroUsize,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -41,27 +59,31 @@ struct Engine {
 }
 
 impl Engine {
-    fn load(
-        options: &game_args::GameArgs,
-        kbwg: bool,
-        kwg_path: &str,
-        klv_path: &str,
-    ) -> error::Returns<Self> {
+    fn load(options: &game_args::GameArgs, kbwg: bool, args: &EngineArgs) -> error::Returns<Self> {
         let game = options.make_game_config()?;
         game.supports(game_config::Op::Generation)?;
         let dim = game.board_layout().dim();
-        if (dim.rows, dim.cols, game.num_players()) != (15, 15, 2) {
+        if game.num_players() != 2 || !matches!((dim.rows, dim.cols), (15, 15) | (21, 21)) {
             return_error!(
-                "the chronological trace uses a 15 by 15 board and two players".to_string()
+                "the chronological trace uses a standard or super board and two players"
+                    .to_string()
             );
         }
-        let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
+        let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&args.kwg)?, kbwg)?;
         if !kwg.fits_alphabet(game.alphabet().len()) {
-            return_error!(format!("{kwg_path} has tiles outside the game's alphabet"));
+            return_error!(format!(
+                "{} has tiles outside the game's alphabet",
+                args.kwg
+            ));
         }
-        let klv = klv::kbwg_from_bytes_alloc(std::fs::read(klv_path)?)?;
+        let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args.klv)?)?;
         game.check_klv(&klv)?;
-        let tables = anagrams::ArmTables::build(&kwg, &game, false)?;
+        let klv = if let Some(path) = &args.racks {
+            klv.with_racks(racks::RackTable::read(&game, &std::fs::read(path)?)?)
+        } else {
+            klv
+        };
+        let tables = anagrams::ArmTables::build(&kwg, &game, args.lean)?;
         Ok(Self {
             game,
             kwg,
@@ -85,16 +107,17 @@ impl Engine {
     }
 }
 
-fn generate(
-    generator: &mut movegen::InlineGenerator<225>,
+fn generate<const N: usize>(
+    generator: &mut movegen::InlineGenerator<N>,
     snapshot: &movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
     rack: &[u8],
     exchanges: i16,
+    max_gen: usize,
 ) {
     generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot: snapshot,
         rack,
-        max_gen: 1,
+        max_gen,
         num_exchanges_by_this_player: exchanges,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
@@ -113,8 +136,19 @@ pub(crate) fn replay(
     args: &ReplayArgs,
 ) -> error::Returns<()> {
     let started = Instant::now();
-    let engine = Engine::load(options, kbwg, &args.kwg, &args.klv)?;
+    let engine = Engine::load(options, kbwg, &args.engine)?;
     let setup = started.elapsed();
+    match engine.game.board_layout().dim().rows {
+        15 => replay_using::<225>(&engine, args, setup),
+        _ => replay_using::<441>(&engine, args, setup),
+    }
+}
+
+fn replay_using<const N: usize>(
+    engine: &Engine,
+    args: &ReplayArgs,
+    setup: std::time::Duration,
+) -> error::Returns<()> {
     let alphabet = engine.game.alphabet();
     let mut parser = display::BoardFenParser::new(alphabet, engine.game.board_layout());
     let mut positions = Vec::new();
@@ -173,7 +207,7 @@ pub(crate) fn replay(
         });
     }
 
-    let mut generator = movegen::InlineGenerator::<225>::try_new(&engine.game)?;
+    let mut generator = movegen::InlineGenerator::<N>::try_new(&engine.game)?;
     let mut ties = 0;
     let mut elapsed = Vec::with_capacity(args.passes.get());
     for pass in 0..=args.passes.get() {
@@ -188,6 +222,7 @@ pub(crate) fn replay(
                 &entry.snapshot,
                 &entry.rack,
                 entry.position.exchanges,
+                args.top.get(),
             );
             search_time += started.elapsed();
             if pass == 0 {
@@ -221,6 +256,9 @@ pub(crate) fn replay(
             "setup_ns": setup.as_nanos(),
             "search_ns": elapsed,
             "cold": args.cold,
+            "lean": args.engine.lean,
+            "rack_table": args.engine.racks.is_some(),
+            "top": args.top.get(),
         }),
     )?;
     Ok(())
@@ -229,17 +267,17 @@ pub(crate) fn replay(
 #[derive(clap::Args)]
 #[command(about = "write the positions and best static moves of seeded games as JSON lines")]
 pub(crate) struct CaptureArgs {
-    kwg: String,
-    klv: String,
+    #[command(flatten)]
+    engine: EngineArgs,
     #[arg(long)]
     games: std::num::NonZeroU64,
     #[arg(long)]
     seed: u64,
 }
 
-fn play_game(
+fn play_game<const N: usize>(
     engine: &Engine,
-    generator: &mut movegen::InlineGenerator<225>,
+    generator: &mut movegen::InlineGenerator<N>,
     state: &mut game_state::GameState,
     rng: &mut rand_xoshiro::Xoshiro256PlusPlus,
     mut on_turn: impl FnMut(
@@ -255,7 +293,7 @@ fn play_game(
     for ply in 0.. {
         let mover = state.current_player();
         let snapshot = engine.snapshot(&state.board_tiles);
-        generate(generator, &snapshot, &mover.rack, mover.num_exchanges);
+        generate(generator, &snapshot, &mover.rack, mover.num_exchanges, 1);
         let chosen = &generator.plays[0];
         on_turn(ply, state, &snapshot, chosen)?;
         state.play(gc, rng, &chosen.play)?;
@@ -279,17 +317,24 @@ pub(crate) fn capture(
     kbwg: bool,
     args: &CaptureArgs,
 ) -> error::Returns<()> {
-    let engine = Engine::load(options, kbwg, &args.kwg, &args.klv)?;
+    let engine = Engine::load(options, kbwg, &args.engine)?;
+    match engine.game.board_layout().dim().rows {
+        15 => capture_using::<225>(&engine, args),
+        _ => capture_using::<441>(&engine, args),
+    }
+}
+
+fn capture_using<const N: usize>(engine: &Engine, args: &CaptureArgs) -> error::Returns<()> {
     let gc = &engine.game;
     check_game_ends(gc)?;
     let alphabet = gc.alphabet();
     let mut state = game_state::GameState::new(gc);
-    let mut generator = movegen::InlineGenerator::<225>::try_new(gc)?;
+    let mut generator = movegen::InlineGenerator::<N>::try_new(gc)?;
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(args.seed);
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
     for game in 0..args.games.get() {
         play_game(
-            &engine,
+            engine,
             &mut generator,
             &mut state,
             &mut rng,
@@ -327,8 +372,8 @@ pub(crate) fn capture(
 #[derive(clap::Args)]
 #[command(about = "time independent games played with top-one static move generation")]
 pub(crate) struct ThroughputArgs {
-    kwg: String,
-    klv: String,
+    #[command(flatten)]
+    engine: EngineArgs,
     #[arg(long)]
     games: std::num::NonZeroUsize,
     #[arg(long)]
@@ -343,21 +388,31 @@ pub(crate) fn throughput(
     args: &ThroughputArgs,
 ) -> error::Returns<()> {
     let started = Instant::now();
-    let engine = Engine::load(options, kbwg, &args.kwg, &args.klv)?;
+    let engine = Engine::load(options, kbwg, &args.engine)?;
     let setup = started.elapsed();
+    match engine.game.board_layout().dim().rows {
+        15 => throughput_using::<225>(&engine, args, setup),
+        _ => throughput_using::<441>(&engine, args, setup),
+    }
+}
+
+fn throughput_using<const N: usize>(
+    engine: &Engine,
+    args: &ThroughputArgs,
+    setup: std::time::Duration,
+) -> error::Returns<()> {
     check_game_ends(&engine.game)?;
     let begun = Instant::now();
     let games = args.games.get();
     let threads = args.threads.get().min(games);
     let next_game = AtomicUsize::new(0);
     let turns = std::thread::scope(|scope| -> error::Returns<u64> {
-        let engine = &engine;
         let workers = (0..threads)
             .map(|_| {
                 let next_game = &next_game;
                 scope.spawn(move || -> error::Returns<u64> {
                     let mut state = game_state::GameState::new(&engine.game);
-                    let mut generator = movegen::InlineGenerator::<225>::try_new(&engine.game)?;
+                    let mut generator = movegen::InlineGenerator::<N>::try_new(&engine.game)?;
                     let mut turns = 0;
                     while let Ok(game) =
                         next_game.try_update(Ordering::Relaxed, Ordering::Relaxed, |game| {
@@ -390,6 +445,8 @@ pub(crate) fn throughput(
             "games": games,
             "turns": turns,
             "threads": threads,
+            "lean": args.engine.lean,
+            "rack_table": args.engine.racks.is_some(),
             "setup_ns": setup.as_nanos(),
             "play_ns": begun.elapsed().as_nanos(),
         }),
