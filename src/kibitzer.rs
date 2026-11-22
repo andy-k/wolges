@@ -182,52 +182,18 @@ impl From<&JsonPlay> for movegen::Play {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct JsonPlayWithEquity {
     #[serde(serialize_with = "equity_as_printed")]
-    pub equity: f32,
+    pub equity: f64,
     #[serde(flatten)]
     pub play: JsonPlay,
 }
 
-// an equity in json as the f32 prints itself with {}: "32" where serde would
-// write "32.0", and "71.303" where an f64 made from the f32 would write
-// "71.3030014038086"; one that is not finite stays serde's null
-fn equity_as_printed<S: serde::Serializer>(equity: &f32, serializer: S) -> Result<S::Ok, S::Error> {
-    if !equity.is_finite() {
-        serializer.serialize_f32(*equity)
-    } else if equity.fract() == 0.0 && equity.abs() < i64::MAX as f32 {
+// an equity in json as its shortest decimal, "32" for a whole one where serde
+// would write "32.0"; one that is not finite stays serde's null
+fn equity_as_printed<S: serde::Serializer>(equity: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+    if equity.is_finite() && equity.fract() == 0.0 && equity.abs() < i64::MAX as f64 {
         serializer.serialize_i64(*equity as i64)
     } else {
-        let mut printed = PrintedF32 {
-            room: [0; PRINTED_F32_ROOM],
-            len: 0,
-        };
-        let parsed = match std::fmt::Write::write_fmt(&mut printed, format_args!("{equity}")) {
-            Ok(()) => (std::str::from_utf8(&printed.room[..printed.len]).ok())
-                .and_then(|text| text.parse().ok()),
-            Err(_) => equity.to_string().parse().ok(),
-        };
-        serializer.serialize_f64(parsed.unwrap_or(*equity as f64))
-    }
-}
-
-// room for a finite f32 as {} prints it, which is with no exponent: a sign,
-// "0.", the zeros down to the smallest normal power of ten, and no more digits
-// than its mantissa has bits. Past it (which no f32 reaches),
-// equity_as_printed prints to a string.
-const PRINTED_F32_ROOM: usize = 3 + (1 - f32::MIN_10_EXP) as usize + f32::MANTISSA_DIGITS as usize;
-
-// an f32 printed on the stack, so that writing an equity allocates nothing
-struct PrintedF32 {
-    room: [u8; PRINTED_F32_ROOM],
-    len: usize,
-}
-
-impl std::fmt::Write for PrintedF32 {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        let end = self.len + text.len();
-        let room = self.room.get_mut(self.len..end).ok_or(std::fmt::Error)?;
-        room.copy_from_slice(text.as_bytes());
-        self.len = end;
-        Ok(())
+        serializer.serialize_f64(*equity)
     }
 }
 
@@ -235,7 +201,7 @@ impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
     #[inline(always)]
     fn from(play: &movegen::ValuedMove) -> Self {
         Self {
-            equity: play.equity.as_f64() as f32,
+            equity: play.equity.as_f64(),
             play: (&play.play).into(),
         }
     }
@@ -245,7 +211,7 @@ impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
 #[derive(serde::Serialize, Clone, Copy)]
 pub struct JsonPlayRefWithEquity<'a> {
     #[serde(serialize_with = "equity_as_printed")]
-    pub equity: f32,
+    pub equity: f64,
     #[serde(flatten)]
     pub play: JsonPlayRef<'a>,
 }
@@ -254,7 +220,7 @@ impl<'a> From<&'a movegen::ValuedMove> for JsonPlayRefWithEquity<'a> {
     #[inline(always)]
     fn from(play: &'a movegen::ValuedMove) -> Self {
         Self {
-            equity: play.equity.as_f64() as f32,
+            equity: play.equity.as_f64(),
             play: (&play.play).into(),
         }
     }
@@ -264,7 +230,7 @@ impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
     #[inline(always)]
     fn from(play: &JsonPlayWithEquity) -> Self {
         Self {
-            equity: equity::Equity::new((play.equity * equity::SCALE as f32).round() as i32),
+            equity: equity::Equity::new((play.equity * equity::SCALE as f64).round() as i32),
             play: (&play.play).into(),
         }
     }
@@ -387,19 +353,20 @@ impl Default for Kibitzer {
 #[cfg(test)]
 mod tests {
     use super::{
-        JsonPlay, JsonPlayRef, JsonPlayRefWithEquity, JsonPlayWithEquity, PRINTED_F32_ROOM,
-        PrintedF32, equity, movegen,
+        JsonPlay, JsonPlayRef, JsonPlayRefWithEquity, JsonPlayWithEquity, equity, movegen,
     };
 
     #[test]
     #[inline]
-    fn an_equity_goes_into_json_as_the_f32_prints_itself() {
+    fn an_equity_goes_into_json_as_its_shortest_decimal() {
         for (equity, written) in [
             (32.0, "32"),
             (-87.25, "-87.25"),
             (71.303, "71.303"),
             (0.001, "0.001"),
             (0.0, "0"),
+            (16384.001, "16384.001"),
+            (-2147483.648, "-2147483.648"),
         ] {
             let play = JsonPlayWithEquity {
                 equity,
@@ -427,27 +394,21 @@ mod tests {
 
     #[test]
     #[inline]
-    fn an_f32_printed_on_the_stack_is_as_its_string() {
-        let extremes = [
-            f32::MAX,
-            f32::MIN,
-            f32::MIN_POSITIVE,
-            -f32::MIN_POSITIVE,
-            f32::from_bits(1),
-            -f32::from_bits(1),
-            f32::from_bits(f32::MIN_POSITIVE.to_bits() - 1),
-            -f32::from_bits(f32::MIN_POSITIVE.to_bits() - 1),
-            f32::EPSILON,
-        ];
-        // every 65537th bit pattern, which reaches every exponent
-        let every = (0..=u32::MAX).step_by(65537).map(f32::from_bits);
-        for x in extremes.into_iter().chain(every).filter(|x| x.is_finite()) {
-            let mut printed = PrintedF32 {
-                room: [0; PRINTED_F32_ROOM],
-                len: 0,
-            };
-            assert!(std::fmt::Write::write_fmt(&mut printed, format_args!("{x}")).is_ok());
-            assert_eq!(&printed.room[..printed.len], x.to_string().as_bytes());
+    fn an_equity_read_from_json_keeps_its_millipoints() {
+        for (json, millipoints) in [
+            (r#"{"equity":71.303,"action":"exchange","tiles":[]}"#, 71303),
+            (
+                r#"{"equity":16384.001,"action":"exchange","tiles":[]}"#,
+                16384001,
+            ),
+            (
+                r#"{"equity":-2147483.648,"action":"exchange","tiles":[]}"#,
+                i32::MIN,
+            ),
+        ] {
+            let play = serde_json::from_str::<JsonPlayWithEquity>(json).unwrap();
+            let valued = movegen::ValuedMove::from(&play);
+            assert_eq!(valued.equity, equity::Equity::new(millipoints), "{json}");
         }
     }
 
@@ -483,7 +444,7 @@ mod tests {
             );
             for equity in [32.0, -87.25, 71.303, 0.001, 0.0] {
                 let valued = movegen::ValuedMove {
-                    equity: equity::Equity::new((equity * equity::SCALE as f32).round() as i32),
+                    equity: equity::Equity::new((equity * equity::SCALE as f64).round() as i32),
                     play: play.clone(),
                 };
                 assert_eq!(

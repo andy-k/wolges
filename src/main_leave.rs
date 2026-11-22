@@ -3185,7 +3185,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
             }
             if i16::from_str(&record[10])? > 0 {
                 let millipoints =
-                    (f32::from_str(&record[9])? as f64 * equity::SCALE as f64).round() as i64;
+                    (f64::from_str(&record[9])? * equity::SCALE as f64).round() as i64;
                 //let score = i16::from_str(&record[5])? as i64;
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
