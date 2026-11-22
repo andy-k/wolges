@@ -149,7 +149,7 @@ fn read_leaves_kbwg(path: &str) -> error::Returns<Vec<(bites::Bites, f32)>> {
 #[inline(always)]
 fn leave_value(leave: &str, value: &str) -> error::Returns<f32> {
     let v = f32::from_str(value)?;
-    let milli = (v * equity::SCALE as f32).round() as f64;
+    let milli = (f64::from(v) * equity::SCALE as f64).round();
     if (i32::MIN as f64..=i32::MAX as f64).contains(&milli) {
         Ok(v)
     } else {
@@ -1468,11 +1468,11 @@ mod tests {
     fn a_leave_value_is_a_number_a_leave_table_holds() {
         assert_eq!(leave_value("QU", "-3.5").unwrap(), -3.5);
         let held = |v: f32| {
-            let milli = (v * equity::SCALE as f32).round();
+            let milli = (f64::from(v) * equity::SCALE as f64).round();
             milli as i32 as i64 == milli as i64
         };
         for (value, ok) in [
-            ("-2147483.648", true),
+            ("-2147483.648", false),
             ("2147483.5", true),
             ("2147483.648", false),
             ("-2147484", false),
