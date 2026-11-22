@@ -416,6 +416,13 @@ impl<L: kwg::Node> Klv<L> {
         Self::from_bytes_alloc(&buf)
     }
 
+    #[inline]
+    pub fn held_bytes(&self) -> usize {
+        self.kwg.0.capacity() * std::mem::size_of::<L>()
+            + std::mem::size_of_val(&*self.counts)
+            + std::mem::size_of_val(&*self.leaves)
+    }
+
     // whether it reads as the table of no leaves: none listed and no table of
     // full racks
     #[inline(always)]

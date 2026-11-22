@@ -1139,9 +1139,7 @@ impl LanePool {
     // the rack's and its second the pool's, so a lane met once makes no list
     #[inline(always)]
     fn sighted(&mut self, key: u128) -> bool {
-        if self.seen.is_empty() {
-            self.seen = vec![0; SIGHTED];
-        }
+        debug_assert_eq!(self.seen.len(), SIGHTED);
         let mixed = (key as u64).wrapping_mul(SPLITMIX64_GAMMA);
         let at = (mixed >> (64 - SIGHTED.trailing_zeros())) as usize;
         let tag = (key >> 64) as u64 | 1;
@@ -1151,6 +1149,26 @@ impl LanePool {
             self.seen[at] = tag;
             false
         }
+    }
+
+    #[inline(always)]
+    fn sees_within(&mut self, memory_limit: Option<MemoryLimit>) -> bool {
+        !self.seen.is_empty() || self.see_within(memory_limit)
+    }
+
+    #[cold]
+    fn see_within(&mut self, memory_limit: Option<MemoryLimit>) -> bool {
+        let bytes = SIGHTED * std::mem::size_of::<u64>();
+        let Some(_room) = reserve_in(memory_limit.as_ref(), bytes) else {
+            return false;
+        };
+        let mut seen = Vec::new();
+        if seen.try_reserve_exact(SIGHTED).is_err() {
+            return false;
+        }
+        seen.resize(SIGHTED, 0);
+        self.seen = seen;
+        true
     }
 
     // the bytes its lists hold
@@ -1217,13 +1235,6 @@ impl LanePool {
         let Some(limit) = memory_limit else {
             return Ok(Reserved::NONE);
         };
-        fn growth<T>(v: &Vec<T>, more: usize) -> usize {
-            if v.len() + more <= v.capacity() {
-                0
-            } else {
-                ((2 * v.capacity()).max(v.len() + more) + v.capacity()) * std::mem::size_of::<T>()
-            }
-        }
         let table = |table: &KeyTable, more: usize| {
             if 2 * (table.held + more) > table.keys.len() {
                 3 * table.bytes().max(1 << 14)
@@ -1909,6 +1920,15 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         self.movegen_cut = false;
     }
 
+    #[inline(always)]
+    fn limit_memory(&mut self, memory: Option<MemoryLimit>) {
+        self.memory_limit = memory;
+        self.movegen.begin_within(memory);
+        if let Some((_, walker)) = &mut self.pool_walker {
+            walker.begin_within(memory);
+        }
+    }
+
     // whether the memory limit has passed, the buckets a growing table leaves
     // not counted
     #[inline(always)]
@@ -2356,6 +2376,20 @@ impl BagLimits {
         }
     }
 
+    #[inline(always)]
+    fn room<T>(&self, list: &mut Vec<T>, more: usize) -> error::Returns<()> {
+        if list.capacity() - list.len() >= more {
+            Ok(())
+        } else {
+            self.grow(list, more)
+        }
+    }
+
+    #[cold]
+    fn grow<T>(&self, list: &mut Vec<T>, more: usize) -> error::Returns<()> {
+        room_in(self.memory.as_ref(), list, more).map_err(|_| self.stop_refused())
+    }
+
     // the search stopped by the memory limit before it took what passes it
     // (stopped and refused set): the error it stops with
     #[inline(never)]
@@ -2375,10 +2409,14 @@ impl BagLimits {
     // memory is looked at last, and noted as the one past only when no other
     // is
     #[inline(always)]
-    fn passed(&self, table: &Table) -> bool {
-        if self.time.is_some_and(|time| self.t0.elapsed() >= time)
+    fn other_passed(&self, table: &Table) -> bool {
+        self.time.is_some_and(|time| self.t0.elapsed() >= time)
             || self.states.is_some_and(|states| table.held >= states)
-        {
+    }
+
+    #[inline(always)]
+    fn passed(&self, table: &Table) -> bool {
+        if self.other_passed(table) {
             return true;
         }
         let memory = (self.memory).is_some_and(|memory| memory.passed(table.leaving()));
@@ -2761,6 +2799,24 @@ impl<
         })
     }
 
+    pub fn with_generator_within(
+        game_config: &'a game_config::GameConfig,
+        kwg: &'a kwg::Kwg<N>,
+        arm_tables: &'a anagrams::ArmTables,
+        run_letters: kwg::RunLetters<'a>,
+        movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+        (like, memory): (&klv::Klv<L>, Option<MemoryLimit>),
+    ) -> error::Returns<Option<Self>> {
+        let rest = std::mem::size_of::<Option<KeptSolver<L, G, JUMPS, ANY_SIDE>>>()
+            + std::mem::size_of::<klv::Klv<L>>()
+            + 2 * like.held_bytes()
+            + std::mem::size_of::<[u64; 8]>();
+        let Some(_rest) = reserve_in(memory.as_ref(), rest) else {
+            return Ok(None);
+        };
+        Self::with_generator(game_config, kwg, arm_tables, run_letters, movegen).map(Some)
+    }
+
     // the solver as with_generator made it, for one kept from search to
     // search, what it holds of its generator and its lists kept
     // (WorkBuffer::renew)
@@ -2799,7 +2855,11 @@ impl<
     }
 
     // a helper thread's kept solver, made whole again with what it borrows and
-    // renewed for its next search, or one just made
+    // renewed for its next search, or one just made within memory (none: no
+    // limit), refused (MemoryRefused) where it has no room: its generator, its
+    // kept sub-solver's box and its leaves' box, its leaves (empty, as like's,
+    // made through a buffer no larger than they are), and its table's bucket;
+    // like is none only where a helper is given
     #[inline]
     fn of_helper(
         game_config: &'a game_config::GameConfig,
@@ -2807,15 +2867,23 @@ impl<
         arm_tables: &'a anagrams::ArmTables,
         run_letters: &kwg::RunLetters<'a>,
         helper: Option<Helper<L, G, JUMPS, ANY_SIDE>>,
+        (like, memory): (Option<&klv::Klv<L>>, Option<MemoryLimit>),
     ) -> error::Returns<Self> {
         let Some(helper) = helper else {
-            return Self::with_generator(
+            let Some(movegen) = movegen::KurniaMoveGenerator::new_within(game_config, memory)
+            else {
+                return Err(Box::new(MemoryRefused));
+            };
+            let like = like.ok_or("a solver made afresh needs leaves to be like")?;
+            let made = Self::with_generator_within(
                 game_config,
                 kwg,
                 arm_tables,
                 run_letters.clone(),
-                movegen::KurniaMoveGenerator::new_in(game_config),
-            );
+                movegen,
+                (like, memory),
+            )?;
+            return made.ok_or_else(|| Box::new(MemoryRefused) as error::BoxAnyError);
         };
         let mut own = Self {
             game_config,
@@ -2878,16 +2946,20 @@ impl<
             return Err("a kept solver is given back only to its own tables".into());
         }
         run_letters.of(kwg)?;
-        let mut own = Self::of_helper(game_config, kwg, arm_tables, &run_letters, Some(kept.own))?;
+        let mut own = Self::of_helper(
+            game_config,
+            kwg,
+            arm_tables,
+            &run_letters,
+            Some(kept.own),
+            (None, None),
+        )?;
         own.helpers = kept.helpers;
         Ok(own)
     }
 
-    // the solver of this one's bag searches, made at the first and kept for
-    // the next: each takes it as with_generator made it, with what it holds of
-    // its generator and its lists kept (WorkBuffer::renew)
     #[inline]
-    fn take_sub(&mut self) -> error::Returns<Self> {
+    fn take_sub(&mut self, limits: &BagLimits) -> error::Returns<Self> {
         let kept = self.kept_sub.take();
         let (own, helpers) = match kept {
             Some(kept) => (Some(kept.own), kept.helpers),
@@ -2899,7 +2971,15 @@ impl<
             self.arm_tables,
             &self.run_letters,
             own,
-        )?;
+            (Some(&self.klv), limits.memory),
+        )
+        .map_err(|e| {
+            if e.is::<MemoryRefused>() {
+                limits.stop_refused()
+            } else {
+                e
+            }
+        })?;
         sub.helpers = helpers;
         Ok(sub)
     }
@@ -2910,12 +2990,33 @@ impl<
         *self.kept_sub = Some(sub.into_kept());
     }
 
-    // the generator of this one's bag searches, made at the first and kept for
-    // the next
     #[inline(always)]
-    fn take_mg(&mut self) -> movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE> {
-        (self.kept_mg.take())
-            .unwrap_or_else(|| movegen::KurniaMoveGenerator::new_in(self.game_config))
+    fn take_mg(
+        &mut self,
+        limits: &BagLimits,
+    ) -> error::Returns<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>> {
+        let mut mg = match self.kept_mg.take() {
+            Some(mg) => mg,
+            None => movegen::KurniaMoveGenerator::new_within(self.game_config, limits.memory)
+                .ok_or_else(|| limits.stop_refused())?,
+        };
+        mg.begin_within(limits.memory);
+        Ok(mg)
+    }
+
+    #[inline]
+    fn take_both(
+        &mut self,
+        limits: &BagLimits,
+    ) -> error::Returns<(Self, movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>)> {
+        let sub = self.take_sub(limits)?;
+        match self.take_mg(limits) {
+            Ok(mg) => Ok((sub, mg)),
+            Err(e) => {
+                self.keep_sub(sub);
+                Err(e)
+            }
+        }
     }
 
     // set the position to solve, with no scoreless turns before it; the table
@@ -3512,15 +3613,17 @@ impl<
         // inside a search with tiles in the bag (LanePool), each lane to walk
         // takes its moves from its key's list, the pool's walk made into one
         // the second time the key is met (the first is the rack's walk); where
-        // the memory limit or the pool's budget leaves no room for a list,
-        // every lane is walked with the rack, as outside one. The lean arm
-        // pools nothing, so its builds carry no pool
+        // the memory limit or the pool's budget leaves no room for a list (or
+        // the limit for the keys walked once), every lane is walked with the
+        // rack, as outside one. The lean arm pools nothing, so its builds
+        // carry no pool
         let mut pooled = !LEAN && walks && {
             let rack = &work_buffer.racks[player_idx as usize];
-            let lane_pool = &work_buffer.lane_pool;
+            let lane_pool = &mut work_buffer.lane_pool;
             !lane_pool.deal.pool.is_empty()
                 && rack.len() <= self.game_config.rack_size() as usize
                 && within(rack, &lane_pool.deal.pool)
+                && lane_pool.sees_within(work_buffer.memory_limit)
         };
         let (mut rack_rows, mut rack_cols) = (0u128, 0u128);
         if pooled {
@@ -3570,20 +3673,22 @@ impl<
                 // held to the pool's budget, and to the bound others keep
                 let dense_most = (lane_pool.deal.budget / klv::LEAVE_BYTES)
                     .min(klv::DENSE_LEAVES_MOST as usize) as u32;
-                // the walker kept, unless it was made for another bound
                 let pool_walker = &mut work_buffer.pool_walker;
-                if pool_walker
-                    .as_ref()
-                    .is_some_and(|&(made_for, _)| made_for != dense_most)
-                {
-                    *pool_walker = None;
-                }
-                let (_, walker) = pool_walker.get_or_insert_with(|| {
-                    (
-                        dense_most,
-                        movegen::KurniaMoveGenerator::new_in_dense(self.game_config, dense_most),
-                    )
-                });
+                let walker = match pool_walker.take() {
+                    Some((made_for, walker)) if made_for == dense_most => walker,
+                    Some((_, walker)) => walker.with_dense_most(dense_most),
+                    None => {
+                        let memory = work_buffer.memory_limit;
+                        let Some(walker) =
+                            movegen::KurniaMoveGenerator::new_within(self.game_config, memory)
+                        else {
+                            work_buffer.movegen_cut = true;
+                            return;
+                        };
+                        walker.with_dense_most(dense_most)
+                    }
+                };
+                let walker = &mut pool_walker.insert((dense_most, walker)).1;
                 work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                     walker,
                     work_buffer.run_letter_bits.as_deref(),
@@ -3855,7 +3960,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
-        work_buffer.memory_limit = limits.memory;
+        work_buffer.limit_memory(limits.memory);
         work_buffer.can_grow = true;
         work_buffer.searched = 0;
         work_buffer.memory_cut = false;
@@ -4402,7 +4507,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
-        work_buffer.memory_limit = limits.memory;
+        work_buffer.limit_memory(limits.memory);
         work_buffer.check_limits =
             limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         // the move wins when its reply is worth less than valuation - margin
@@ -4517,7 +4622,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
-        work_buffer.memory_limit = limits.memory;
+        work_buffer.limit_memory(limits.memory);
         work_buffer.check_limits =
             limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         let mut found = Ok((None, false));
@@ -4947,7 +5052,7 @@ impl<
             .memory
             .map_or(room, |limit| room.min(limit.room() / threads));
         let (gc, kwg, arm_tables) = (self.game_config, self.kwg, self.arm_tables);
-        let run_letters = &self.run_letters;
+        let (run_letters, like) = (&self.run_letters, &*self.klv);
         let (board_tiles, racks, scoreless) = (
             &self.work_buffer.board_tiles,
             &self.work_buffer.racks,
@@ -4957,7 +5062,9 @@ impl<
         // each lane's solver, made at its first pass and kept for the next
         let lane = move |lane: usize, table: Option<KeptTable>, helper| {
             let mut found = Vec::new();
-            let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper) else {
+            let fresh = (Some(like), limits.memory);
+            let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper, fresh)
+            else {
                 return (lane, found, table, None);
             };
             if let Some(table) = table {
@@ -5745,9 +5852,7 @@ impl<
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
 
-        let mut sub = self.take_sub()?;
-
-        let mut mg = self.take_mg();
+        let (mut sub, mut mg) = self.take_both(limits)?;
 
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
@@ -6370,8 +6475,18 @@ impl<
         let mut limits = BagLimits::new(limits, self.progress.take());
         limits.estimates = progress.estimates;
         limits.exact_pass = progress.exact_pass;
-        let mut sub = self.take_sub()?;
-        let mut mg = self.take_mg();
+        let (mut sub, mut mg) = match self.take_both(&limits) {
+            Ok(both) => both,
+            Err(_) if limits.stopped.get() => {
+                self.progress = limits.progress.take();
+                let memory = !limits.other_passed(&self.work_buffer.table);
+                return Ok(Ok(peg_bag_answer(&progress.state, memory)));
+            }
+            Err(e) => {
+                self.progress = limits.progress.take();
+                return Err(e);
+            }
+        };
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -6436,17 +6551,24 @@ impl<
         limits.depth.set(depth);
         limits.may_stop.set(true);
         let gc = self.game_config;
-        let mut sub = self.take_sub()?;
+        let (mut sub, mut mg) = match self.take_both(&limits) {
+            Ok(both) => both,
+            Err(_) if limits.stopped.get() => {
+                return Ok(Err(PegBagRowsMissing::Stopped {
+                    out_of_memory: true,
+                }));
+            }
+            Err(e) => return Err(e),
+        };
         self.swap_tables(&mut sub)?;
         std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
         let position = &progress.position;
         let arenas = &mut progress.arenas;
-        BagArena::at_least(arenas, 1, gc.alphabet().len() as usize, position.bag_size);
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
         sub.pool_lanes(rack, unseen, limits.memory, 1);
         let scoreless = scoreless_counts(position.scoreless);
-        let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
-            position.after_split(scoreless, opp_rack, bag, pos)
+        let at = |limits: &BagLimits, opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
+            position.after_split(limits, scoreless, opp_rack, bag, pos)
         };
         let score_diff = position.score_diff.raw() as f64;
         let state = &progress.state;
@@ -6459,12 +6581,14 @@ impl<
             std::mem::swap(&mut sub.work_buffer.lane_pool, &mut progress.lanes);
             self.swap_tables(&mut sub)?;
             self.keep_sub(sub);
+            self.kept_mg = Some(mg);
             return Ok(Err(PegBagRowsMissing::Stopped {
                 out_of_memory: true,
             }));
         };
-        let mut mg = self.take_mg();
         let found = (|| {
+            let tiles = gc.alphabet().len() as usize;
+            BagArena::at_least(arenas, 1, tiles, position.bag_size, &limits)?;
             let mut search = BagSearch {
                 gc,
                 kwg: self.kwg,
@@ -6487,6 +6611,10 @@ impl<
                 let (value, win) =
                     value_root_split(&mut search, split, &at, play, score_diff, Some(&mut draws))?;
                 let (_, bag, ways) = split;
+                limits.room(&mut found.hypotheses, 1)?;
+                limits.room(&mut found.wins, 1)?;
+                limits.room(&mut found.draws, 1)?;
+                let _tiles = limits.reserve(bag.iter().map(|&count| count as usize).sum())?;
                 (found.hypotheses).push((
                     tiles_of(bag),
                     *ways,
@@ -6548,10 +6676,17 @@ impl<
             lanes: _,
             arenas,
         } = progress;
-        BagArena::at_least(arenas, 1, gc.alphabet().len() as usize, position.bag_size);
+        let tiles = gc.alphabet().len() as usize;
+        match BagArena::at_least(arenas, 1, tiles, position.bag_size, limits) {
+            Ok(()) => {}
+            Err(_) if limits.stopped.get() => {
+                return Ok(peg_bag_answer(state, limits.out_of_memory()));
+            }
+            Err(e) => return Err(e),
+        }
         let scoreless = scoreless_counts(position.scoreless);
-        let at = |opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
-            position.after_split(scoreless, opp_rack, bag, pos)
+        let at = |limits: &BagLimits, opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
+            position.after_split(limits, scoreless, opp_rack, bag, pos)
         };
         // a wasm build has no threads
         let threads = if cfg!(target_family = "wasm") {
@@ -6570,7 +6705,7 @@ impl<
             // step tries again
             let lists = (|| -> error::Returns<_> {
                 let mut pos = InBag::default();
-                at(opp_rack, bag, &mut pos);
+                at(limits, opp_rack, bag, &mut pos)?;
                 let moves = if let Some(selected) = selected {
                     let mut moves = list_in_room(limits, selected.plays.len())?;
                     for play in &selected.plays {
@@ -6590,15 +6725,18 @@ impl<
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
+                    (list_in_room(limits, n)?, list_in_room(limits, n)?),
                 ))
             })();
-            let (moves, mut order, mut valued, answered, reached) = match lists {
+            let (moves, mut order, mut valued, answered, reached, ranks) = match lists {
                 Ok(lists) => lists,
                 // out of memory only when no other limit has passed, as passed
                 // notes it
                 Err(_) if limits.stopped.get() => {
-                    let timed_out = (limits.time).is_some_and(|time| limits.t0.elapsed() >= time);
-                    return Ok(peg_bag_result(&[], &[], None, 0, false, !timed_out));
+                    return Ok(peg_bag_answer(
+                        state,
+                        !limits.other_passed(&sub.work_buffer.table),
+                    ));
                 }
                 Err(e) => return Err(e),
             };
@@ -6615,6 +6753,7 @@ impl<
             valued.resize_with(moves.len(), || None);
             (state.moves, state.order, state.valued) = (moves, order, valued);
             (state.answered, state.reached) = (answered, reached);
+            (state.ranked, state.places) = ranks;
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
@@ -6705,16 +6844,7 @@ impl<
                 if state.answer.is_none() {
                     // no pass valued every move: the best of those valued, if
                     // any
-                    let best = (!state.reached.is_empty())
-                        .then(|| peg_bag_best(&state.reached, &state.valued));
-                    return Ok(peg_bag_result(
-                        &state.moves,
-                        &state.valued,
-                        best,
-                        0,
-                        false,
-                        limits.out_of_memory(),
-                    ));
+                    return Ok(peg_bag_answer(state, limits.out_of_memory()));
                 }
                 break;
             }
@@ -6758,18 +6888,10 @@ impl<
                 })?;
             }
         }
-        let Some((best, depth)) = state.answer else {
+        if state.answer.is_none() {
             unreachable!("the first move of the first pass is always valued");
-        };
-        let exact = state.done && state.pass_exact;
-        Ok(peg_bag_result(
-            &state.moves,
-            &state.answered,
-            Some(best),
-            depth,
-            exact,
-            limits.out_of_memory(),
-        ))
+        }
+        Ok(peg_bag_answer(state, limits.out_of_memory()))
     }
 
     // a pass's moves from state.next on, valued on threads. Each thread takes
@@ -6781,7 +6903,7 @@ impl<
     // sharing what they value below the moves (state.searched). Whether a limit
     // stopped the pass; the moves it valued in every split then go first in the
     // order, so a solve resuming the pass goes on after them
-    fn value_on_threads<At: Fn(&[u8], &[u8], &mut InBag) + Sync>(
+    fn value_on_threads<At: Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()> + Sync>(
         sub: &mut Self,
         klv: &klv::Klv<L>,
         mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
@@ -6815,7 +6937,13 @@ impl<
         let bag_len = (splits.first()).map_or(0, |(_, bag, _)| {
             bag.iter().map(|&count| count as usize).sum()
         });
-        BagArena::at_least(arenas, threads, tiles, bag_len);
+        match BagArena::at_least(arenas, threads, tiles, bag_len, limits) {
+            Ok(()) => {}
+            Err(_) if limits.stopped.get() => {
+                return Ok(true); // stopped, nothing valued
+            }
+            Err(e) => return Err(e),
+        }
         let (mine, theirs) = arenas.split_at_mut(1);
         let tasks = rest * num_splits;
         // what each move took, none where the memory limit had no room for it
@@ -6864,6 +6992,11 @@ impl<
         // split's), with the value, the chance to win, whether it was exact, and
         // the time it took; and whether a limit stopped it
         type Share = (Vec<(usize, f64, f64, bool, std::time::Duration)>, bool);
+        let stopped_by = |limits: &BagLimits| {
+            stop.store(true, Relaxed);
+            refused.fetch_or(limits.refused.get(), Relaxed);
+            memory_stopped.fetch_or(limits.memory_stopped.get(), Relaxed);
+        };
         let work = |search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
                     limits: &BagLimits|
          -> error::Returns<Share> {
@@ -6892,7 +7025,7 @@ impl<
                     search.hand_over = None;
                     handing.fetch_sub(1, Relaxed);
                 }
-                match valued {
+                match valued.and_then(|found| limits.room(&mut mine, 1).map(|()| found)) {
                     Ok((value, win)) => {
                         let took = limits.t0.elapsed().saturating_sub(began);
                         mine.push((task, value, win, search.exact, took));
@@ -6901,9 +7034,7 @@ impl<
                         }
                     }
                     Err(_) if limits.stopped.get() => {
-                        stop.store(true, Relaxed);
-                        refused.fetch_or(limits.refused.get(), Relaxed);
-                        memory_stopped.fetch_or(limits.memory_stopped.get(), Relaxed);
+                        stopped_by(limits);
                         return Ok((mine, true));
                     }
                     Err(e) => {
@@ -6944,9 +7075,7 @@ impl<
                 match helped {
                     Ok(_) => {}
                     Err(_) if limits.stopped.get() => {
-                        stop.store(true, Relaxed);
-                        refused.fetch_or(limits.refused.get(), Relaxed);
-                        memory_stopped.fetch_or(limits.memory_stopped.get(), Relaxed);
+                        stopped_by(limits);
                         return Ok((mine, true));
                     }
                     Err(e) => {
@@ -6960,6 +7089,18 @@ impl<
         };
         let valued = &state.searched;
         let hand_overs = &hand_overs[..];
+        let memory = limits.memory;
+        let others = threads - 1;
+        let pool = &sub.work_buffer.lane_pool.deal;
+        let Ok(_others) = limits.reserve(
+            pool.pool.len()
+                + pool.mover.len()
+                + growth(&state.tables, others.saturating_sub(state.tables.len()))
+                + growth(&state.lanes, others.saturating_sub(state.lanes.len()))
+                + growth(&sub.helpers, others.saturating_sub(sub.helpers.len())),
+        ) else {
+            return Ok(true); // stopped, nothing valued
+        };
         let deal = &sub.work_buffer.lane_pool.deal.clone();
         // each other thread's table and lane pool as the pass before left them
         let mut kept = std::mem::take(&mut state.tables);
@@ -6978,7 +7119,9 @@ impl<
             .map(|(((table, lanes), helper), arena)| {
                 let work = &work;
                 s.spawn(move || {
-                    let mut own = match Self::of_helper(gc, kwg, arm_tables, run_letters, helper) {
+                    let fresh = (Some(klv), memory);
+                    let own = Self::of_helper(gc, kwg, arm_tables, run_letters, helper, fresh);
+                    let mut own = match own {
                         Ok(own) => own,
                         Err(e) => return (Err(e), table, lanes, None),
                     };
@@ -6990,8 +7133,15 @@ impl<
                     if !LEAN {
                         own.pool_lanes_as(deal);
                     }
-                    let mut mg = own.take_mg();
                     let limits = BagLimits::on_the_clock(on_one_clock);
+                    let mut mg = match own.take_mg(&limits) {
+                        Ok(mg) => mg,
+                        Err(e) => {
+                            let lanes = std::mem::take(&mut own.work_buffer.lane_pool);
+                            let table = own.take_table();
+                            return (Err(e), Some(table), lanes, Some(own.into_helper()));
+                        }
+                    };
                     let mut search = BagSearch {
                         gc,
                         kwg,
@@ -7205,8 +7355,13 @@ impl<
         progress: &mut PegProgress,
         limits: &BagLimits,
     ) -> error::Returns<PegResult> {
-        let mut sub = self.take_sub()?;
-        let mut mg = self.take_mg();
+        let (mut sub, mut mg) = match self.take_both(limits) {
+            Ok(both) => both,
+            Err(_) if limits.stopped.get() => {
+                return Ok(peg_committed_answer(&mut progress.committed));
+            }
+            Err(e) => return Err(e),
+        };
         // the endgames keep what they learn in this solver's table, lent to the
         // one solving them, so each knows what the others found
         self.swap_tables(&mut sub)?;
@@ -7305,7 +7460,7 @@ impl<
         let mut helpers = std::mem::take(&mut sub.helpers);
         helpers.resize_with(sub.work_buffer.threads, || None);
         let (gc, kwg, arm_tables) = (sub.game_config, sub.kwg, sub.arm_tables);
-        let run_letters = &sub.run_letters;
+        let (run_letters, like) = (&sub.run_letters, &*sub.klv);
         let clock = limits.on_one_clock();
         let deal = &sub.work_buffer.lane_pool.deal;
         let buckets = sub.work_buffer.table.buckets.len();
@@ -7318,7 +7473,9 @@ impl<
                         // each move found's margins, a run each, in turn
                         let mut runs = Vec::new();
                         let limits = BagLimits::on_the_clock(clock);
-                        let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper)
+                        let fresh = (Some(like), limits.memory);
+                        let Ok(mut own) =
+                            Self::of_helper(gc, kwg, arm_tables, run_letters, helper, fresh)
                         else {
                             return (found, runs, 0, 0, None);
                         };
@@ -7475,6 +7632,7 @@ impl<
                     moves.push(PegMove::Pass);
                     for vm in &mg.plays {
                         if matches!(vm.play, movegen::Play::Place { .. }) {
+                            let _copy = limits.reserve(play_bytes(&vm.play))?;
                             moves.push(PegMove::Place(vm.play.clone()));
                         }
                     }
@@ -7490,30 +7648,19 @@ impl<
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
                     list_in_room(limits, n)?,
-                    list_in_room(limits, runs)?,
-                    list_in_room(limits, runs)?,
+                    (list_in_room(limits, runs)?, list_in_room(limits, runs)?),
+                    (list_in_room(limits, n)?, list_in_room(limits, n)?),
                 ))
             })();
-            let (moves, order, valued, reached, answered, margins, answered_margins) = match lists {
+            let (moves, order, valued, reached, answered, margins, ranks) = match lists {
                 Ok(lists) => lists,
-                Err(_) if limits.stopped.get() => {
-                    return Ok(PegResult {
-                        win_pct: 0.0,
-                        expected_margin: equity::Equity::ZERO,
-                        row: None,
-                        best_move: None,
-                        moves: Vec::new(),
-                        committed: true,
-                        exact: false,
-                        depth: 0,
-                        out_of_memory: false,
-                    });
-                }
+                Err(_) if limits.stopped.get() => return Ok(peg_committed_answer(state)),
                 Err(e) => return Err(e),
             };
             (state.moves, state.order, state.valued) = (moves, order, valued);
             (state.reached, state.answered) = (reached, answered);
-            (state.margins, state.answered_margins) = (margins, answered_margins);
+            (state.margins, state.answered_margins) = margins;
+            (state.ranked, state.places) = ranks;
             let runs = state.moves.len() * tiles;
             state.margins.resize(runs, equity::Equity::ZERO);
             state.answered_margins.resize(runs, equity::Equity::ZERO);
@@ -7656,25 +7803,9 @@ impl<
                 }
             }
             if stopped {
-                if state.answer.is_none() && state.reached.is_empty() {
-                    return Ok(PegResult {
-                        win_pct: 0.0,
-                        expected_margin: equity::Equity::ZERO,
-                        row: None,
-                        best_move: None,
-                        moves: Vec::new(),
-                        committed: true,
-                        exact: false,
-                        depth: 0,
-                        out_of_memory: false,
-                    });
-                }
                 if state.answer.is_none() {
                     // no pass valued every move: the best of those valued
-                    let best = peg_best(&mut state.reached, &state.valued);
-                    state.rank_answer();
-                    let value = state.valued[best].as_ref().unwrap();
-                    return Ok(peg_result(&state.moves, best, value, 0, false));
+                    return Ok(peg_committed_answer(state));
                 }
                 break;
             }
@@ -7703,12 +7834,37 @@ impl<
             state.passing = Default::default();
             state.depth += 1;
         }
-        let Some((best, depth)) = state.answer else {
+        if state.answer.is_none() {
             unreachable!("the first move of the first pass is always valued");
-        };
-        let exact = state.done && state.pass_exact;
-        let value = state.answered[best].as_ref().unwrap();
-        Ok(peg_result(&state.moves, best, value, depth, exact))
+        }
+        Ok(peg_committed_answer(state))
+    }
+}
+
+fn peg_committed_answer(state: &mut PegCommitted) -> PegResult {
+    match state.answer {
+        Some((best, depth)) => {
+            let exact = state.done && state.pass_exact;
+            let value = state.answered[best].as_ref().unwrap();
+            peg_result(&state.moves, best, value, depth, exact)
+        }
+        None if state.reached.is_empty() => PegResult {
+            win_pct: 0.0,
+            expected_margin: equity::Equity::ZERO,
+            row: None,
+            best_move: None,
+            moves: Vec::new(),
+            committed: true,
+            exact: false,
+            depth: 0,
+            out_of_memory: false,
+        },
+        None => {
+            let best = peg_best(&mut state.reached, &state.valued);
+            state.rank_answer();
+            let value = state.valued[best].as_ref().unwrap();
+            peg_result(&state.moves, best, value, 0, false)
+        }
     }
 }
 
@@ -8145,17 +8301,25 @@ pub enum PegModel {
 impl PegBagPosition {
     // the position after a split (the other's rack and the bag), after these
     // scoreless turns, its mover to move, made in pos
-    fn after_split(&self, scoreless: [u8; 2], opp_rack: &[u8], bag: &[u8], pos: &mut InBag) {
+    fn after_split(
+        &self,
+        limits: &BagLimits,
+        scoreless: [u8; 2],
+        opp_rack: &[u8],
+        bag: &[u8],
+        pos: &mut InBag,
+    ) -> error::Returns<()> {
         let mover = self.mover;
         let mut racks: [&[u8]; 2] = [&[], &[]];
         racks[mover as usize] = &self.mover_rack;
         racks[(mover ^ 1) as usize] = opp_rack;
-        pos.fill(&self.board, racks, bag);
+        pos.fill(limits, &self.board, racks, bag)?;
         pos.mover = mover;
         pos.passes = scoreless[0];
         pos.zeros = scoreless[1];
         pos.answering = scoreless[0] > 0; // the game's last turn a pass
         pos.exchanges = self.exchanges;
+        Ok(())
     }
 }
 
@@ -8384,7 +8548,7 @@ fn value_root_move<
 >(
     search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
     splits: &[(Vec<u8>, Vec<u8>, u64)],
-    at: &impl Fn(&[u8], &[u8], &mut InBag),
+    at: &impl Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()>,
     play: &movegen::Play,
     score_diff: f64,
 ) -> error::Returns<PegBagValue> {
@@ -8412,7 +8576,7 @@ fn value_root_split<
 >(
     search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
     (opp_rack, bag, _): &(Vec<u8>, Vec<u8>, u64),
-    at: &impl Fn(&[u8], &[u8], &mut InBag),
+    at: &impl Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()>,
     play: &movegen::Play,
     score_diff: f64,
     draws: Option<&mut Vec<PegBagDraw>>,
@@ -8420,10 +8584,10 @@ fn value_root_split<
     // the split's position, and what the mover knows there, in the arena's
     // room for the root
     let mut pos = std::mem::take(&mut search.arena.root);
-    at(opp_rack, bag, &mut pos);
+    at(search.limits, opp_rack, bag, &mut pos)?;
     if search.model == PegModel::InfoSets {
         let mut info = std::mem::take(&mut search.arena.root_info);
-        info.of(&pos, score_diff as i32);
+        info.of(search.limits, &pos, score_diff as i32)?;
         search.arena.root = pos;
         let found = search.info_split(&info, play, opp_rack, bag);
         search.arena.root_info = info;
@@ -8452,16 +8616,31 @@ fn value_root_draws<
     score_diff: f64,
     mut draws: Option<&mut Vec<PegBagDraw>>,
 ) -> error::Returns<(f64, f64)> {
+    let limits = search.limits;
+    let mut refused = false;
     let value = search.move_value_each(pos, play, |drawn, ways, value| {
-        if let Some(draws) = draws.as_deref_mut() {
-            draws.push(PegBagDraw {
-                tiles: tiles_of(drawn),
-                ways,
-                margin: equity::Equity::new((value + score_diff).round() as i32),
-                win: 0.0,
-            })
+        let Some(draws) = draws.as_deref_mut() else {
+            return;
+        };
+        if refused {
+            return;
         }
+        let tiles = drawn.iter().map(|&count| count as usize).sum::<usize>();
+        let room = (limits.room(draws, 1)).and_then(|()| limits.reserve(tiles));
+        let Ok(_tiles) = room else {
+            refused = true;
+            return;
+        };
+        draws.push(PegBagDraw {
+            tiles: tiles_of(drawn),
+            ways,
+            margin: equity::Equity::new((value + score_diff).round() as i32),
+            win: 0.0,
+        })
     })? + score_diff;
+    if refused {
+        return Err(limits.stop_refused());
+    }
     let mut at_draw = 0;
     let win = search.move_win_each(pos, play, -score_diff, |_, _, win| {
         if let Some(draws) = draws.as_deref_mut() {
@@ -8473,12 +8652,14 @@ fn value_root_draws<
     Ok((value, win))
 }
 
-// a tally's tiles, each as many times as it counts
 fn tiles_of(tally: &[u8]) -> Vec<u8> {
-    (0u8..)
-        .zip(tally.iter())
-        .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
-        .collect()
+    let mut tiles = Vec::with_capacity(tally.iter().map(|&count| count as usize).sum());
+    tiles.extend(
+        (0u8..)
+            .zip(tally.iter())
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
+    );
+    tiles
 }
 
 // a move's value, summed over its splits weighed by the deals giving them, and
@@ -8496,7 +8677,7 @@ fn peg_bag_value(win: f64, marg: f64, total: u64, exact: bool) -> PegBagValue {
 // what a pass values each move against: each split of the unseen tiles (the
 // other's rack, the bag, and the deals that give it), the position a split
 // makes (at), the mover's lead, and the threads' arenas
-struct PegBagRoot<'r, At: Fn(&[u8], &[u8], &mut InBag) + Sync> {
+struct PegBagRoot<'r, At: Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()> + Sync> {
     splits: &'r [(Vec<u8>, Vec<u8>, u64)],
     at: &'r At,
     score_diff: f64,
@@ -8645,6 +8826,24 @@ pub struct PegBagResult {
     pub exact: bool,
     pub depth: i8,
     pub out_of_memory: bool, // the memory limit stopped the search, before it grew past it
+}
+
+fn peg_bag_answer(state: &PegBagState, out_of_memory: bool) -> PegBagResult {
+    match state.answer {
+        Some((best, depth)) => peg_bag_result(
+            &state.moves,
+            &state.answered,
+            Some(best),
+            depth,
+            state.done && state.pass_exact,
+            out_of_memory,
+        ),
+        None => {
+            let best =
+                (!state.reached.is_empty()).then(|| peg_bag_best(&state.reached, &state.valued));
+            peg_bag_result(&state.moves, &state.valued, best, 0, false, out_of_memory)
+        }
+    }
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
@@ -8894,17 +9093,27 @@ struct InBag {
 }
 
 impl InBag {
-    // made over as this board, these racks, and this bag, keeping its buffers
     #[inline(always)]
-    fn fill(&mut self, board: &[u8], racks: [&[u8]; 2], bag: &[u8]) {
+    fn fill(
+        &mut self,
+        limits: &BagLimits,
+        board: &[u8],
+        racks: [&[u8]; 2],
+        bag: &[u8],
+    ) -> error::Returns<()> {
+        let bag_len = bag.iter().map(|&count| count as usize).sum::<usize>();
         self.board.clear();
+        limits.room(&mut self.board, board.len())?;
         self.board.extend_from_slice(board);
         for (rack, from) in self.racks.iter_mut().zip(racks) {
             rack.clear();
+            limits.room(rack, from.len() + bag_len)?;
             rack.extend_from_slice(from);
         }
         self.bag.clear();
+        limits.room(&mut self.bag, bag.len())?;
         self.bag.extend_from_slice(bag);
+        Ok(())
     }
 
     // the position's key: its board's tiles, each rack's counts, the bag's
@@ -9161,13 +9370,14 @@ struct InfoSet {
 impl InfoSet {
     // made over as what the mover of pos knows, with this lead, keeping its
     // buffers
-    fn of(&mut self, pos: &InBag, lead: i32) {
+    fn of(&mut self, limits: &BagLimits, pos: &InBag, lead: i32) -> error::Returns<()> {
         self.fill(
+            limits,
             &pos.board,
             &pos.racks[pos.mover as usize],
             &pos.bag,
             &pos.racks[(pos.mover ^ 1) as usize],
-        );
+        )?;
         self.bag_len = pos.bag_len();
         self.mover = pos.mover;
         self.passes = pos.passes;
@@ -9175,21 +9385,33 @@ impl InfoSet {
         self.answering = pos.answering;
         self.exchanges = pos.exchanges;
         self.lead = lead;
+        Ok(())
     }
 
     // made over with this board and rack, what it cannot see the bag's counts
-    // with the tiles of unseen, keeping its buffers
+    // with the tiles of unseen, keeping its buffers, within the limits
     #[inline(always)]
-    fn fill(&mut self, board: &[u8], rack: &[u8], bag: &[u8], unseen: &[u8]) {
+    fn fill(
+        &mut self,
+        limits: &BagLimits,
+        board: &[u8],
+        rack: &[u8],
+        bag: &[u8],
+        unseen: &[u8],
+    ) -> error::Returns<()> {
         self.board.clear();
+        limits.room(&mut self.board, board.len())?;
         self.board.extend_from_slice(board);
         self.rack.clear();
+        limits.room(&mut self.rack, rack.len())?;
         self.rack.extend_from_slice(rack);
         self.unseen.clear();
+        limits.room(&mut self.unseen, bag.len())?;
         self.unseen.extend_from_slice(bag);
         for &tile in unseen {
             self.unseen[tile as usize] += 1;
         }
+        Ok(())
     }
 
     // its key: the board's tiles, the mover's rack's counts, the mover, the
@@ -9228,20 +9450,30 @@ impl InfoSet {
     // each_split's order, written over the first entries of splits (its
     // entries' buffers kept, one added where it has too few), drawn the room
     // to walk them in; how many
-    fn splits(&self, splits: &mut Vec<(Vec<u8>, Vec<u8>, u64)>, drawn: &mut Vec<u8>) -> usize {
+    fn splits(
+        &self,
+        limits: &BagLimits,
+        splits: &mut Vec<(Vec<u8>, Vec<u8>, u64)>,
+        drawn: &mut Vec<u8>,
+    ) -> error::Returns<usize> {
         let pool = &self.unseen;
         let unseen = pool.iter().map(|&count| count as usize).sum::<usize>();
+        let rack_len = unseen - self.bag_len;
         drawn.clear();
+        limits.room(drawn, pool.len())?;
         drawn.resize(pool.len(), 0);
         let mut num = 0;
-        let mut more = first_draw(pool, unseen - self.bag_len, drawn);
+        let mut more = first_draw(pool, rack_len, drawn);
         while more {
             if num == splits.len() {
+                limits.room(splits, 1)?;
                 splits.push(Default::default());
             }
             let (rack, bag, ways) = &mut splits[num];
             rack.clear();
             bag.clear();
+            limits.room(rack, rack_len)?;
+            limits.room(bag, pool.len())?;
             for (tile, (&count, &d)) in (0u8..).zip(pool.iter().zip(drawn.iter())) {
                 rack.extend(std::iter::repeat_n(tile, d as usize));
                 bag.push(count - d);
@@ -9250,20 +9482,27 @@ impl InfoSet {
             num += 1;
             more = next_draw(pool, drawn);
         }
-        num
+        Ok(num)
     }
 
     // the position of one split, everything known, made in pos
-    fn at(&self, other: &[u8], bag: &[u8], pos: &mut InBag) {
+    fn at(
+        &self,
+        limits: &BagLimits,
+        other: &[u8],
+        bag: &[u8],
+        pos: &mut InBag,
+    ) -> error::Returns<()> {
         let mut racks: [&[u8]; 2] = [&[], &[]];
         racks[self.mover as usize] = &self.rack;
         racks[(self.mover ^ 1) as usize] = other;
-        pos.fill(&self.board, racks, bag);
+        pos.fill(limits, &self.board, racks, bag)?;
         pos.mover = self.mover;
         pos.passes = self.passes;
         pos.zeros = self.zeros;
         pos.answering = self.answering;
         pos.exchanges = self.exchanges;
+        Ok(())
     }
 
     // what the other knows at one split (their rack other, the bag's counts)
@@ -9271,8 +9510,14 @@ impl InfoSet {
     // bag's, bag_len in the bag, these scoreless turns and exchanges, and this
     // lead; made in next
     #[inline(always)]
-    fn theirs(&self, next: &mut InfoSet, (board, other, bag, sees): Tiles4, turn: TheirTurn) {
-        next.fill(board, other, bag, sees);
+    fn theirs(
+        &self,
+        limits: &BagLimits,
+        next: &mut InfoSet,
+        (board, other, bag, sees): Tiles4,
+        turn: TheirTurn,
+    ) -> error::Returns<()> {
+        next.fill(limits, board, other, bag, sees)?;
         next.bag_len = turn.bag_len;
         next.mover = self.mover ^ 1;
         next.passes = turn.passes;
@@ -9280,6 +9525,7 @@ impl InfoSet {
         next.answering = turn.answering;
         next.exchanges = turn.exchanges;
         next.lead = turn.lead;
+        Ok(())
     }
 }
 
@@ -9318,8 +9564,8 @@ fn in_bag_moves<
     klv: &klv::Klv<L>,
     mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     pos: &InBag,
-    lists: &mut PlyLists,
-) {
+    (lists, limits): (&mut PlyLists, &BagLimits),
+) -> error::Returns<()> {
     let mover = pos.mover as usize;
     let (rack, made) = (&pos.racks[mover], pos.exchanges[mover]);
     moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
@@ -9335,13 +9581,15 @@ fn in_bag_moves<
         rack,
         made,
         pos.bag_len(),
-        &mut lists.moves,
-        &mut lists.scratch,
-    );
+        (&mut lists.moves, &mut lists.scratch),
+        limits,
+    )
 }
 
 // in_bag_moves's moves on the snapshot's board for this rack, the mover having
-// exchanged made times, with bag_len tiles in the bag, into moves (cleared)
+// exchanged made times, with bag_len tiles in the bag, into moves (cleared);
+// under a memory limit, each list grown and each play's tiles taken within it,
+// the placements moved out of the generator's list (root_moves's way)
 fn moves_of<
     const LEAN: bool,
     N: kwg::Node,
@@ -9355,11 +9603,49 @@ fn moves_of<
     rack: &[u8],
     made: i16,
     bag_len: usize,
-    moves: &mut Vec<movegen::Play>,
-    scratch: &mut Vec<u8>,
-) {
+    (moves, scratch): (&mut Vec<movegen::Play>, &mut Vec<u8>),
+    limits: &BagLimits,
+) -> error::Returns<()> {
     let gc = snapshot.game_config;
     moves.clear();
+    if let Some(memory) = limits.memory {
+        let cut = mg.gen_moves_raw_all_unsorted_held(
+            snapshot,
+            rack,
+            made,
+            movegen::PassPolicy::OnlyWhenForced,
+            movegen::HeldBytes { memory, kept: 0 },
+        );
+        if cut {
+            return Err(limits.stop_refused());
+        }
+        let places = (mg.plays.iter())
+            .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+            .count();
+        scratch.clear();
+        limits.room(scratch, 2 * gc.alphabet().len() as usize + rack.len())?;
+        let (mut exchanges, mut tiles) = (0, 0);
+        each_exchange(gc, rack, made, bag_len, scratch, |thrown| {
+            exchanges += 1;
+            tiles += bites::Bites::heap_bytes(thrown.len());
+        });
+        limits.room(moves, 1 + places + exchanges)?;
+        let _tiles = limits.reserve(tiles)?;
+        moves.push(movegen::Play::Exchange {
+            tiles: [][..].into(),
+        });
+        moves.extend(
+            (mg.plays.drain(..))
+                .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+                .map(|vm| vm.play),
+        );
+        each_exchange(gc, rack, made, bag_len, scratch, |tiles| {
+            moves.push(movegen::Play::Exchange {
+                tiles: tiles.into(),
+            })
+        });
+        return Ok(());
+    }
     moves.push(movegen::Play::Exchange {
         tiles: [][..].into(),
     });
@@ -9380,6 +9666,7 @@ fn moves_of<
             tiles: tiles.into(),
         })
     });
+    Ok(())
 }
 
 // the exchanges moves_of lists after the placements, each as its tiles: by how
@@ -9449,8 +9736,14 @@ fn root_moves<
     let Some(memory) = limits.memory else {
         let mut lists = PlyLists::default();
         in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-            gc, kwg, arm_tables, klv, mg, pos, &mut lists,
-        );
+            gc,
+            kwg,
+            arm_tables,
+            klv,
+            mg,
+            pos,
+            (&mut lists, limits),
+        )?;
         return Ok(lists.moves);
     };
     let mover = pos.mover as usize;
@@ -9508,6 +9801,14 @@ pub(crate) fn play_bytes(play: &movegen::Play) -> usize {
         movegen::Play::Place { word, .. } => word.len(),
         movegen::Play::Exchange { tiles } => tiles.len(),
     })
+}
+
+fn growth<T>(v: &Vec<T>, more: usize) -> usize {
+    if v.len() + more <= v.capacity() {
+        0
+    } else {
+        ((2 * v.capacity()).max(v.len() + more) + v.capacity()) * std::mem::size_of::<T>()
+    }
 }
 
 // an empty list with room for n, under the memory limit: refused (the search
@@ -9628,11 +9929,21 @@ const DRAW: usize = 1;
 const TALLY: usize = 2;
 
 impl BagArena {
-    // arenas at least this many, those made sized as new sizes them
-    fn at_least(arenas: &mut Vec<Self>, n: usize, tiles: usize, bag_len: usize) {
+    fn at_least(
+        arenas: &mut Vec<Self>,
+        n: usize,
+        tiles: usize,
+        bag_len: usize,
+        limits: &BagLimits,
+    ) -> error::Returns<()> {
         if arenas.len() < n {
+            let made = n - arenas.len();
+            limits.room(arenas, made)?;
+            let room = std::mem::size_of::<PlyRoom>() + 3 * tiles;
+            let _plies = limits.reserve(made.saturating_mul(bag_len + 1).saturating_mul(room))?;
             arenas.resize_with(n, || Self::new(tiles, bag_len));
         }
+        Ok(())
     }
 
     fn new(tiles: usize, bag_len: usize) -> Self {
@@ -10301,10 +10612,11 @@ impl<
             self.klv,
             self.mg,
             pos,
-            &mut lists,
-        );
+            (&mut lists, self.limits),
+        )?;
         let PlyLists { moves, asked, .. } = &mut lists;
         asked.clear();
+        self.limits.room(asked, moves.len())?;
         asked.extend(0..moves.len());
         asked.sort_unstable_by_key(|&i| match &moves[i] {
             play if first.as_ref() == Some(play) => {
@@ -10313,12 +10625,16 @@ impl<
             movegen::Play::Place { score, .. } => (true, std::cmp::Reverse(*score), i),
             _ => (true, std::cmp::Reverse(equity::Equity::NEG_INFINITY), i),
         });
-        let found = (self.node_best(pos, moves, asked)).map(|(value, i)| (value, moves[i].clone()));
+        let limits = self.limits;
+        let found = (self.node_best(pos, moves, asked)).and_then(|(value, i)| {
+            let _copies = limits.reserve(2 * play_bytes(&moves[i]))?;
+            Ok((value, moves[i].clone(), moves[i].clone()))
+        });
         self.arena.give_lists(self.ply, lists);
-        let (value, play) = found?;
+        let (value, play, kept) = found?;
         let exact = self.exact;
         self.exact = was_exact && exact;
-        let entry = BagEntry::Valued(value, play.clone(), exact);
+        let entry = BagEntry::Valued(value, kept, exact);
         let memory = self.limits.memory;
         (self.valued).write(key, |shard| {
             shard.nodes.keep(key, entry, memory, BagEntry::worth)
@@ -10851,11 +11167,12 @@ impl<
             &info.rack,
             made,
             info.bag_len,
-            moves,
-            scratch,
-        );
-        *num_splits = info.splits(splits, scratch);
+            (moves, scratch),
+            self.limits,
+        )?;
+        *num_splits = info.splits(self.limits, splits, scratch)?;
         asked.clear();
+        self.limits.room(asked, moves.len())?;
         asked.extend(0..moves.len());
         asked.sort_unstable_by_key(|&i| match &moves[i] {
             play if first.as_ref() == Some(play) => {
@@ -10865,8 +11182,13 @@ impl<
             _ => (true, std::cmp::Reverse(equity::Equity::NEG_INFINITY), i),
         });
         let splits = &splits[..*num_splits];
-        let found = (self.info_best(info, (moves, asked, splits), valued, margins))
-            .map(|(win, margin, i)| (win, margin, moves[i].clone()));
+        let limits = self.limits;
+        let found = (self.info_best(info, (moves, asked, splits), valued, margins)).and_then(
+            |(win, margin, i)| {
+                let _copy = limits.reserve(play_bytes(&moves[i]))?;
+                Ok((win, margin, moves[i].clone()))
+            },
+        );
         self.arena.give_lists(self.ply, lists);
         let (win, margin, play) = found?;
         let exact = self.exact;
@@ -10896,8 +11218,19 @@ impl<
         let help = self.hand_over.take().map(|task| &hand_overs[task]);
         let num_asked = asked.len();
         if let Some(help) = help {
+            let bytes = (info.board.len() + info.rack.len() + info.unseen.len())
+                + (asked.iter())
+                    .map(|&i| std::mem::size_of::<movegen::Play>() + play_bytes(&moves[i]))
+                    .sum::<usize>()
+                + (splits.iter())
+                    .map(|(rack, bag, _)| std::mem::size_of::<Split>() + rack.len() + bag.len())
+                    .sum::<usize>()
+                + 2 * std::mem::size_of::<usize>() // the Arc's two counts
+                + std::mem::size_of::<HandOverWork>();
+            let room = self.limits.reserve(bytes)?;
             let work = asked.iter().map(|&i| moves[i].clone()).collect();
             help.put((info.clone(), work, splits.to_vec()));
+            drop(room);
         }
         valued.clear();
         margins.clear();
@@ -10924,6 +11257,7 @@ impl<
                 margins.truncate(at);
                 continue;
             }
+            self.limits.room(valued, 1)?;
             valued.push((i, win));
         }
         if let Some(help) = help {
@@ -11009,7 +11343,7 @@ impl<
             && word.iter().filter(|&&tile| tile != 0).count() >= info.bag_len
         {
             let mut next = self.arena.take_pos(self.ply);
-            info.at(other, bag, &mut next);
+            info.at(self.limits, other, bag, &mut next)?;
             next.place(self.gc, play);
             next.draw(bag);
             next.next_turn();
@@ -11052,7 +11386,7 @@ impl<
                 let n = word.iter().filter(|&&tile| tile != 0).count();
                 // the split's position after the move, in the ply's room
                 let mut pos = self.arena.take_pos(self.ply);
-                info.at(other, bag, &mut pos);
+                info.at(self.limits, other, bag, &mut pos)?;
                 pos.place(self.gc, play);
                 if n >= info.bag_len {
                     pos.draw(bag);
@@ -11078,7 +11412,12 @@ impl<
                     exchanges: info.exchanges,
                     lead: -(info.lead + score.raw()),
                 };
-                info.theirs(&mut next, (&pos.board, other, bag, leave), turn);
+                info.theirs(
+                    self.limits,
+                    &mut next,
+                    (&pos.board, other, bag, leave),
+                    turn,
+                )?;
                 self.arena.give_pos(self.ply, pos);
                 let found = self.deeper(|this| this.info_value(&next));
                 self.arena.give_next(self.ply, next);
@@ -11111,7 +11450,12 @@ impl<
                     exchanges: info.exchanges,
                     lead: -info.lead,
                 };
-                info.theirs(&mut next, (&info.board, other, bag, &info.rack), turn);
+                info.theirs(
+                    self.limits,
+                    &mut next,
+                    (&info.board, other, bag, &info.rack),
+                    turn,
+                )?;
                 let found = self.deeper(|this| this.info_value(&next));
                 self.arena.give_next(self.ply, next);
                 let (w, m) = found?;
@@ -11131,7 +11475,7 @@ impl<
                     let put = self.thrown(tiles);
                     let (mut win, mut margin, mut total) = (0.0, 0.0, 0u64);
                     let mut pos = self.arena.take_pos(self.ply);
-                    info.at(other, bag, &mut pos);
+                    info.at(self.limits, other, bag, &mut pos)?;
                     let walked = self.each_draw(&mut pos, tiles.len(), |this, pos, drawn, ways| {
                         pos.draw(drawn);
                         pos.put_back(&put);
@@ -11161,7 +11505,12 @@ impl<
                     exchanges,
                     lead: -info.lead,
                 };
-                info.theirs(&mut next, (&info.board, other, bag, &info.rack), turn);
+                info.theirs(
+                    self.limits,
+                    &mut next,
+                    (&info.board, other, bag, &info.rack),
+                    turn,
+                )?;
                 let found = self.deeper(|this| this.info_value(&next));
                 self.arena.give_next(self.ply, next);
                 let (w, m) = found?;
@@ -18469,10 +18818,12 @@ mod tests {
                 .sum::<usize>()
         };
         let kept_full = kept(&progress);
+        let arenas = std::mem::take(&mut progress.arenas);
         {
             let threads = 1;
             let mut progress =
                 super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE).unwrap();
+            progress.arenas = arenas;
             let held = egs
                 .resume_peg(&mut progress, &small, threads)
                 .unwrap()
@@ -18973,8 +19324,12 @@ mod tests {
             r.klv,
             r.mg,
             pos,
-            &mut lists,
-        );
+            (
+                &mut lists,
+                &super::BagLimits::new(&super::Limits::NONE, None),
+            ),
+        )
+        .unwrap();
         for play in lists.moves {
             value = value.max(bag_reference_move(r, pos, &play));
         }
@@ -19134,8 +19489,12 @@ mod tests {
             r.klv,
             r.mg,
             pos,
-            &mut lists,
-        );
+            (
+                &mut lists,
+                &super::BagLimits::new(&super::Limits::NONE, None),
+            ),
+        )
+        .unwrap();
         (lists.moves.iter())
             .map(|play| bag_reference_move_to(r, pos, play, ply, depth))
             .fold(f64::NEG_INFINITY, f64::max)
@@ -19253,9 +19612,10 @@ mod tests {
             &info.rack,
             made,
             info.bag_len,
-            &mut moves,
-            &mut Vec::new(),
-        );
+            (&mut moves, &mut Vec::new()),
+            &super::BagLimits::new(&super::Limits::NONE, None),
+        )
+        .unwrap();
         // the splits, as each_split gives them
         let unseen = info
             .unseen
@@ -19301,7 +19661,8 @@ mod tests {
         let gc = r.gc;
         let lead = info.lead as f64;
         let mut pos = super::InBag::default();
-        info.at(other, bag, &mut pos);
+        let limits = super::BagLimits::new(&super::Limits::NONE, None);
+        info.at(&limits, other, bag, &mut pos).unwrap();
         // what the other sees: their rack, and the mover's given tiles with the
         // bag's
         let theirs =
@@ -19453,7 +19814,8 @@ mod tests {
                         exchanges: [0, 0],
                     };
                     let mut info = super::InfoSet::default();
-                    info.of(&pos, lead.raw());
+                    let limits = super::BagLimits::new(&super::Limits::NONE, None);
+                    info.of(&limits, &pos, lead.raw()).unwrap();
                     let (w, m) = info_reference_split(&mut reference, &info, play, opp_rack, bag);
                     want_win += *ways as f64 * w;
                     want_margin += *ways as f64 * (m + lead.raw() as f64);
@@ -19996,5 +20358,32 @@ mod tests {
             let margin = valued.expected_margin.raw() as f64;
             assert!((margin - want).abs() <= 1.0, "{margin} against {want}");
         }
+    }
+
+    #[test]
+    fn a_bag_search_refused_memory_past_its_state_limit_is_not_out_of_memory() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [1u8, 8, 20, 20] {
+            unseen_tally[tile as usize] += 1;
+        }
+        let position = bag_position(&board, &[1, 2], &unseen_tally, 3, equity::Equity::ZERO);
+        let limits = super::Limits {
+            states: Some(0),
+            memory: Some(super::MemoryLimit {
+                bytes: 1,
+                held: || usize::MAX,
+                reserved: None,
+            }),
+            ..super::Limits::NONE
+        };
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let result = egs.solve_peg(position, &limits, 1).unwrap().unwrap();
+        assert!(!result.out_of_memory);
     }
 }
