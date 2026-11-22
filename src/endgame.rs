@@ -730,7 +730,7 @@ impl RootMoves {
             }
             checked.push(play);
         }
-        let key = std::hash::RandomState::new().hash_one(&checked).max(1);
+        let key = hasher.hash_one(&checked).max(1);
         Ok(Self {
             plays: checked,
             pass,
