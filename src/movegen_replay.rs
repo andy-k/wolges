@@ -75,24 +75,33 @@ impl Engine {
                     .to_string()
             );
         }
-        let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&args.kwg)?, kbwg)?;
-        if !kwg.fits_alphabet(game.alphabet().len()) {
-            return_error!(format!(
-                "{} has tiles outside the game's alphabet",
-                args.kwg
-            ));
-        }
-        let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args.klv)?)?;
-        game.check_klv(&klv)?;
-        let klv = if let Some(path) = &args.racks {
-            klv.with_racks(racks::RackTable::from_bytes_alloc(
-                &game,
-                std::fs::read(path)?,
-            )?)
-        } else {
-            klv
+        let load = || -> error::Returns<_> {
+            let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&args.kwg)?, kbwg)?;
+            if !kwg.fits_alphabet(game.alphabet().len()) {
+                return_error!(format!(
+                    "{} has tiles outside the game's alphabet",
+                    args.kwg
+                ));
+            }
+            let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args.klv)?)?;
+            game.check_klv(&klv)?;
+            let tables = anagrams::ArmTables::build(&kwg, &game, args.lean)?;
+            Ok((kwg, klv, tables))
         };
-        let tables = anagrams::ArmTables::build(&kwg, &game, args.lean)?;
+        let (kwg, klv, tables) = if let Some(path) = &args.racks {
+            std::thread::scope(|scope| -> error::Returns<_> {
+                let racks = std::thread::Builder::new().spawn_scoped(scope, || {
+                    racks::RackTable::from_bytes_alloc(&game, std::fs::read(path)?)
+                })?;
+                let loaded = load();
+                let racks = racks.join().map_err(|_| "rack table loader panicked");
+                let (kwg, klv, tables) = loaded?;
+                let klv = klv.with_racks(racks??);
+                Ok((kwg, klv, tables))
+            })?
+        } else {
+            load()?
+        };
         Ok(Self {
             game,
             kwg,
