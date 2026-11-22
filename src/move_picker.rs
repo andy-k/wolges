@@ -558,6 +558,19 @@ impl SimRows {
         self.win_rate.clear();
     }
 
+    #[inline(always)]
+    fn room_for<const OBSERVE: bool>(
+        &mut self,
+        memory: Option<&endgame::MemoryLimit>,
+        size: usize,
+    ) -> bool {
+        let room = |list: &mut Vec<f64>| {
+            endgame::room_in(memory, list, size.saturating_sub(list.len())).is_ok()
+        };
+        room(&mut self.objective)
+            && (!OBSERVE || (room(&mut self.equity) && room(&mut self.win_rate)))
+    }
+
     // append a copy of the rows of the iterations that follow these
     #[inline(always)]
     fn extend_from(&mut self, later: &SimRows) {
@@ -584,12 +597,14 @@ struct RowsOf<'a, 'g, N: kwg::Node, L: kwg::Node> {
     win_pct_table: Option<&'a win_pct::WinPctTable>,
     decision_seed: u64,
     late_graph: Option<&'g (kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
+    memory: Option<endgame::MemoryLimit>, // what the program stays within
 }
 
 impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
     // the rows of the iterations after lo up to hi for plays, in place of
     // those held, on a simmer prepared as pristine is, which each iteration is
-    // restored to
+    // restored to; the rows and the rollouts within the memory limit, the
+    // block refused out of memory where it has no room for them
     #[inline]
     fn push_rows<const OBSERVE: bool, R: rand::Rng + SeedableRng + simmer::CopyState>(
         &self,
@@ -601,6 +616,11 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
         rows: &mut SimRows,
     ) -> error::Returns<()> {
         rows.clear();
+        let size = (hi - lo) as usize * plays.len();
+        if !rows.room_for::<OBSERVE>(self.memory.as_ref(), size) {
+            return Err(out_of_memory());
+        }
+        simmer.begin_within(self.memory);
         for sim_iter in lo + 1..=hi {
             simmer.restore_prepared(pristine);
             simmer.reseed(mix(self.decision_seed, sim_iter));
@@ -632,9 +652,17 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
                     rows.win_rate.push(win_prob);
                 }
             }
+            if simmer.out_of_memory() {
+                return Err(out_of_memory());
+            }
         }
         Ok(())
     }
+}
+
+#[inline(never)]
+fn out_of_memory() -> error::BoxAnyError {
+    error::new("out_of_memory".into()).into()
 }
 
 // what a sim's caller does at a look (Simmer::resume_looking): given the
@@ -2032,6 +2060,8 @@ impl<
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
         let start = self.iters_done;
+        let memory = self.memory;
+        self.simmer.begin_within(memory);
         for sim_iter in (start + 1)..=(start + count) {
             self.iters_done = sim_iter;
             self.simmer.restore_prepared(&self.prepared_pristine);
@@ -2060,6 +2090,9 @@ impl<
                         self.win_pct_table.map(|table| &**table),
                     )?,
                 };
+                if endgame::room_in(memory.as_ref(), &mut candidate.objectives, 1).is_err() {
+                    return Err(out_of_memory());
+                }
                 candidate.stats.update(value);
                 candidate.objectives.push(value);
                 if OBSERVE {
@@ -2068,6 +2101,9 @@ impl<
                         .update(simmer::spread_points(sim_spread));
                     candidate.win_rate_stats.update(win_prob);
                 }
+            }
+            if self.simmer.out_of_memory() {
+                return Err(out_of_memory());
             }
             tick(
                 self.decision_t0,
@@ -2169,6 +2205,7 @@ impl<
             win_pct_table: self.win_pct_table.map(|table| &**table),
             decision_seed: self.decision_seed,
             late_graph,
+            memory: self.memory,
         }
     }
 
@@ -2189,6 +2226,13 @@ impl<
             || (OBSERVE && (rows.equity.len() != size || rows.win_rate.len() != size))
         {
             return Err("the rows are not the block's the simmer is at".into());
+        }
+        let more = (block.hi - block.lo) as usize;
+        let memory = self.memory.as_ref();
+        if !(self.candidates.iter_mut())
+            .all(|candidate| endgame::room_in(memory, &mut candidate.objectives, more).is_ok())
+        {
+            return Err(out_of_memory());
         }
         for (candidate_index, candidate) in self.candidates.iter_mut().enumerate() {
             for k in (candidate_index..size).step_by(num_candidates) {
@@ -2301,8 +2345,12 @@ impl<
                 }
                 made?;
                 // the first thread's rows, the others' appended in order (the
-                // first's next rows replace them all)
+                // first's next rows replace them all), within the memory limit
                 let mut first = workers[0].2.lock().map_err(|_| stopped())?;
+                let size = (block.hi - block.lo) as usize * block.plays.len();
+                if !first.1.room_for::<OBSERVE>(self.memory.as_ref(), size) {
+                    return Err(out_of_memory());
+                }
                 for (_, _, later, ..) in &workers[1..] {
                     let later = later.lock().map_err(|_| stopped())?;
                     first.1.extend_from(&later.1);
@@ -2347,6 +2395,7 @@ impl<
         let arm_tables = std::sync::Arc::clone(self.arm_tables);
         let klv = std::sync::Arc::clone(self.klv);
         let win_pct_table = self.win_pct_table.cloned();
+        let memory = self.memory;
         let (plays, late) = match shared {
             Some((.., plays, late)) => (std::sync::Arc::clone(plays), std::sync::Arc::clone(late)),
             None => Default::default(),
@@ -2368,6 +2417,7 @@ impl<
                         win_pct_table: win_pct_table.as_deref(),
                         decision_seed,
                         late_graph: late.as_ref(),
+                        memory,
                     };
                     rows_of.push_rows::<OBSERVE, R>(simmer, pristine, lo, hi, &plays, rows)
                 })();
@@ -2489,7 +2539,7 @@ impl<
             .count();
         // a decision with no room left under the memory limit is refused
         if self.memory.is_some_and(|memory| !memory.has_room(1)) {
-            return Err(error::new("out_of_memory".into()).into());
+            return Err(out_of_memory());
         }
         // under a memory limit the late graph is pruned within it, and only
         // for a sim of no arm tables (whose memory the limit cannot foresee)
@@ -3573,10 +3623,7 @@ mod tests {
             &mut Vec::new(),
         );
         assert!(move_generator.plays.len() > 2);
-        // a sim under a limit with no room for the late graph walks the whole
-        // one, one with room the late one, and both decide as with none; a
-        // limit with no room left at all refuses the decision
-        let decide = |memory: Option<endgame::MemoryLimit>| {
+        let made = |memory: Option<endgame::MemoryLimit>| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
                 &kwg,
@@ -3593,6 +3640,10 @@ mod tests {
             )
             .unwrap();
             simmer.reseed(11);
+            simmer
+        };
+        let decide = |memory: Option<endgame::MemoryLimit>| {
+            let mut simmer = made(memory);
             let decided = simmer.begin_decision(&move_generator, &game_state, 32, &[]);
             (simmer, decided.is_ok())
         };
@@ -3605,11 +3656,23 @@ mod tests {
         };
         let (free, _) = decide(None);
         let (roomy, roomy_ok) = decide(limit(usize::MAX));
-        let (tight, tight_ok) = decide(limit(64));
+        let (small, small_ok) = decide(limit(64));
         let (_, none_ok) = decide(limit(0));
         assert!(free.late_graph.is_some() && roomy.late_graph.is_some());
-        assert!(tight.late_graph.is_none());
-        assert!(roomy_ok && tight_ok && !none_ok);
+        assert!(small.late_graph.is_none());
+        assert!(roomy_ok && !small_ok && !none_ok);
+        let reserved: &'static std::sync::atomic::AtomicUsize =
+            Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(0)));
+        let mut tight = made(Some(endgame::MemoryLimit {
+            bytes: 1 << 20,
+            held: || 0,
+            reserved: Some(reserved),
+        }));
+        reserved.store((1 << 20) - 64, std::sync::atomic::Ordering::Relaxed);
+        let pruned = tight.begin_decision(&move_generator, &game_state, 0, &[]);
+        reserved.store(0, std::sync::atomic::Ordering::Relaxed);
+        let rolled = tight.resume(&move_generator, 32);
+        assert!(pruned.is_ok() && rolled.is_ok() && tight.late_graph.is_none());
         let board = |simmer: &Simmer<'_, _, _, true>| simmer.leaderboard(usize::MAX);
         assert_eq!(board(&roomy), board(&free));
         assert_eq!(board(&tight), board(&free));
