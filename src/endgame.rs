@@ -688,9 +688,13 @@ impl RootMoves {
         if plays.is_empty() || plays.len() > PASS_PLAY as usize {
             return Err(format!("root_moves: expected 1 to {PASS_PLAY} plays").into());
         }
+        use std::hash::BuildHasher;
         let mut scorer = play_scorer::PlayScorer::new();
         let mut checked = Vec::new();
         checked.try_reserve_exact(plays.len())?;
+        let hasher = fash::MyHasherDefault::default();
+        let mut hashes = fash::MyHashSet::default();
+        hashes.try_reserve(plays.len())?;
         let mut pass = false;
         for (i, play) in plays.into_iter().enumerate() {
             if let movegen::Play::Exchange { tiles } = &play
@@ -720,12 +724,12 @@ impl RootMoves {
                 movegen::Play::Exchange { tiles } if tiles.is_empty() => pass = true,
                 _ => {}
             }
-            if checked.contains(&play) {
+            // only a play whose hash was seen before can equal an earlier one
+            if !hashes.insert(hasher.hash_one(&play)) && checked.contains(&play) {
                 return Err(format!("root_moves[{i}]: duplicate play").into());
             }
             checked.push(play);
         }
-        use std::hash::BuildHasher;
         let key = std::hash::RandomState::new().hash_one(&checked).max(1);
         Ok(Self {
             plays: checked,
@@ -12602,6 +12606,49 @@ mod tests {
         assert_eq!(selected[0].value, pass.value);
         assert!(full.give_table(restricted.take_table()).is_ok());
         assert_eq!(full.solve(0).unwrap(), best);
+    }
+
+    #[test]
+    fn selected_first_moves_refuse_a_play_named_twice() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut state = crate::game_state::GameState::new(&gc);
+        state.bag.set_from_iter([]);
+        state.players[0].rack.extend([1, 2]); // AB
+        state.players[1].rack.push(8); // H
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        solver.init(
+            &state.board_tiles,
+            [&state.players[0].rack, &state.players[1].rack],
+        );
+        let plays = (solver.value_first_moves(0, &super::Limits::NONE).unwrap())
+            .into_iter()
+            .map(|first| first.play)
+            .collect::<Vec<_>>();
+        assert!(plays.len() >= 2);
+        let snapshot = movegen::BoardSnapshot {
+            board_tiles: &state.board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        assert!(super::RootMoves::checked(&snapshot, &state, plays.clone()).is_ok());
+        for play in &plays {
+            let mut named = plays.clone();
+            named.push(play.clone());
+            let error = super::RootMoves::checked(&snapshot, &state, named)
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.to_string(),
+                format!("root_moves[{}]: duplicate play", plays.len())
+            );
+        }
     }
 
     #[test]
