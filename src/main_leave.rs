@@ -4,7 +4,7 @@ use rand::prelude::*;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
-use wolges::glance::{Glance, board_after, glance_at};
+use wolges::glance::{Glance, board_after, glance_at, premium_reaches, reach_into};
 use wolges::infer::{
     BoardPhase, Carried, Held, InferSheet, LnBinom, MoveTiles, SpellPool, SpellTables,
     WeighScratch, bag_size, build_sheet_spell_once, each_tally_of_size, equity_fuzz,
@@ -777,6 +777,27 @@ struct OpennessMoves {
 }
 
 #[derive(clap::Args)]
+struct PositionalFit {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves both players use (- for none)")]
+    klv: String,
+    #[arg(help = "the values file to write")]
+    out: String,
+    #[arg(help = "games a seed")]
+    games: u64,
+    #[arg(help = "the first seed; prints the one it picks if omitted")]
+    seed: Option<u64>,
+    #[arg(
+        long,
+        help = "the seeds, the first and those after it, each also fitted alone for the weights' errors"
+    )]
+    seeds: std::num::NonZeroU64,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
+
+#[derive(clap::Args)]
 struct Position {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -1018,6 +1039,10 @@ enum Task {
         about = "play hasty games and weigh, at every move, the candidates near its best by how open each leaves the board for the opponent, exactly, and how well each glance at the board orders them"
     )]
     OpennessMoves(OpennessMoves),
+    #[command(
+        about = "play hasty games, play each of deft's moves out by hasty at every turn with tiles in the bag, and fit the positional term's values to how each did against its equity"
+    )]
+    PositionalFit(PositionalFit),
     #[command(
         about = "one board given as fen: the board, the tiles not on it, its words and its shape; with a rack, the rack's moves and dynamic leaves"
     )]
@@ -1487,6 +1512,23 @@ fn run(
                 },
             )
         }
+        Task::PositionalFit(a) => {
+            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            positional_fit(
+                game_config,
+                kwg,
+                klv,
+                PositionalFitParams {
+                    out: a.out,
+                    num_games: a.games,
+                    seed: a.seed,
+                    num_seeds: a.seeds.get(),
+                    threads,
+                    quiet: a.quiet,
+                },
+            )
+        }
         Task::Position(a) => {
             let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
@@ -1748,19 +1790,21 @@ fn run(
     }
 }
 
-// args are the ones the command line was parsed from, read once a run.
-fn write_run_line(args: &[std::ffi::OsString]) -> error::Returns<()> {
-    let mut out = boxed_stdout_or_stderr();
-    write!(out, "run: {}", wolges::VERSION)?;
+fn run_line(args: &[std::ffi::OsString]) -> String {
+    let mut line = format!("run: {}", wolges::VERSION);
     for arg in args {
-        write!(out, " {arg:?}")?;
+        write!(line, " {arg:?}").ok();
     }
     if let Ok(digests) = INPUT_DIGESTS.lock() {
         for digest in digests.iter() {
-            write!(out, " {digest}")?;
+            write!(line, " {digest}").ok();
         }
     }
-    writeln!(out)?;
+    line
+}
+
+fn write_run_line(args: &[std::ffi::OsString]) -> error::Returns<()> {
+    writeln!(boxed_stdout_or_stderr(), "{}", run_line(args))?;
     Ok(())
 }
 
@@ -9297,6 +9341,605 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 }
 
 #[inline]
+fn every_count_divides(field: usize) -> i64 {
+    (1..=field as i64).fold(1, |multiple, k| {
+        let (mut a, mut b) = (multiple, k);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        multiple / a * k
+    })
+}
+
+#[derive(Clone)]
+struct WithinSums {
+    xx: Vec<i128>,
+    xy: Vec<i128>,
+    yy: i128,
+    rows: u64,
+    positions: u64,
+}
+
+#[derive(Default)]
+struct WithinScratch {
+    column_sums: Vec<i64>,
+    nonzero: Vec<(usize, i128)>,
+}
+
+impl WithinSums {
+    fn new(columns: usize) -> Self {
+        Self {
+            xx: vec![0; columns * columns],
+            xy: vec![0; columns],
+            yy: 0,
+            rows: 0,
+            positions: 0,
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        for (sum, part) in self.xx.iter_mut().zip(&other.xx) {
+            *sum += part;
+        }
+        for (sum, part) in self.xy.iter_mut().zip(&other.xy) {
+            *sum += part;
+        }
+        self.yy += other.yy;
+        self.rows += other.rows;
+        self.positions += other.positions;
+    }
+
+    #[inline]
+    fn add_position(&mut self, xs: &[i64], ys: &[i64], scale: i64, scratch: &mut WithinScratch) {
+        let n = self.xy.len();
+        let k = ys.len();
+        debug_assert!(k > 0 && xs.len() == k * n && scale % k as i64 == 0);
+        let (scale, per) = (scale as i128, (scale / k as i64) as i128);
+        let WithinScratch {
+            column_sums,
+            nonzero,
+        } = scratch;
+        column_sums.clear();
+        column_sums.resize(n, 0);
+        for row in xs.chunks_exact(n) {
+            for (sum, &x) in column_sums.iter_mut().zip(row) {
+                *sum += x;
+            }
+        }
+        let y_sum = ys.iter().sum::<i64>() as i128;
+        for (row, &y) in xs.chunks_exact(n).zip(ys) {
+            nonzero.clear();
+            nonzero.extend((row.iter().zip(column_sums.iter()).enumerate()).filter_map(
+                |(j, (&x, &sum))| {
+                    let d = scale * x as i128 - per * sum as i128;
+                    (d != 0).then_some((j, d))
+                },
+            ));
+            let dy = scale * y as i128 - per * y_sum;
+            for (at, &(a, da)) in nonzero.iter().enumerate() {
+                self.xy[a] += da * dy;
+                for &(b, db) in &nonzero[at..] {
+                    self.xx[a * n + b] += da * db;
+                }
+            }
+            self.yy += dy * dy;
+        }
+        self.rows += k as u64;
+        self.positions += 1;
+    }
+}
+
+struct WithinFit {
+    weights: Vec<f64>,
+    varies: Vec<bool>,
+    errors: Vec<f64>,
+    shares: Vec<f64>,
+}
+
+#[inline]
+fn fit_within(sums: &WithinSums, scale: i64) -> error::Returns<WithinFit> {
+    let n = sums.xy.len();
+    let square = scale as f64 * scale as f64;
+    let varies = (0..n).map(|j| sums.xx[j * n + j] != 0).collect::<Vec<_>>();
+    let on = (0..n).filter(|&j| varies[j]).collect::<Vec<_>>();
+    let m = on.len();
+    let table = |a: usize, b: usize| sums.xx[a.min(b) * n + a.max(b)] as f64 / square;
+    // the Cholesky factor of the table of the columns that vary, row by row
+    let mut lower = vec![0.0f64; m * m];
+    let mut shares = vec![0.0f64; n];
+    for j in 0..m {
+        let own = table(on[j], on[j]);
+        let rest = own - (0..j).map(|k| lower[j * m + k].powi(2)).sum::<f64>();
+        if rest <= 0.0 {
+            wolges::return_error!(format!(
+                "positional-fit: column {} is a sum of the columns before it",
+                on[j]
+            ));
+        }
+        shares[on[j]] = rest / own;
+        lower[j * m + j] = rest.sqrt();
+        for i in j + 1..m {
+            let dot = (0..j)
+                .map(|k| lower[i * m + k] * lower[j * m + k])
+                .sum::<f64>();
+            lower[i * m + j] = (table(on[i], on[j]) - dot) / lower[j * m + j];
+        }
+    }
+    let xy = on
+        .iter()
+        .map(|&j| sums.xy[j] as f64 / square)
+        .collect::<Vec<_>>();
+    let mut solved = vec![0.0f64; m];
+    for i in 0..m {
+        let dot = (0..i).map(|k| lower[i * m + k] * solved[k]).sum::<f64>();
+        solved[i] = (xy[i] - dot) / lower[i * m + i];
+    }
+    for i in (0..m).rev() {
+        let dot = (i + 1..m)
+            .map(|k| lower[k * m + i] * solved[k])
+            .sum::<f64>();
+        solved[i] = (solved[i] - dot) / lower[i * m + i];
+    }
+    let left = sums.yy as f64 / square - solved.iter().zip(&xy).map(|(w, v)| w * v).sum::<f64>();
+    let variance = left / (sums.rows as f64 - sums.positions as f64 - m as f64);
+    let mut weights = vec![0.0f64; n];
+    let mut errors = vec![f64::NAN; n];
+    let mut column = vec![0.0f64; m];
+    for j in 0..m {
+        weights[on[j]] = solved[j];
+        // the inverse's diagonal: the squared length of the inverse factor's
+        // column j
+        column.iter_mut().for_each(|v| *v = 0.0);
+        for i in j..m {
+            let dot = (j..i).map(|k| lower[i * m + k] * column[k]).sum::<f64>();
+            column[i] = ((i == j) as u8 as f64 - dot) / lower[i * m + i];
+        }
+        errors[on[j]] = (variance * column.iter().map(|v| v * v).sum::<f64>()).sqrt();
+    }
+    Ok(WithinFit {
+        weights,
+        varies,
+        errors,
+        shares,
+    })
+}
+
+#[inline]
+fn play_out_hasty<N: kwg::Node, L: kwg::Node>(
+    generator: &mut CompareMoveGenerator<false>,
+    (game_config, kwg, arm_tables, klv): PositionalTables<'_, N, L>,
+    state: &mut game_state::GameState,
+    rng: &mut GameRng,
+    first: &movegen::Play,
+    final_scores: &mut [i32],
+) -> error::Returns<()> {
+    state.play(game_config, rng, first)?;
+    while matches!(
+        state.check_game_ended(game_config, final_scores)?,
+        game_state::CheckGameEnded::NotEnded
+    ) {
+        state.next_turn();
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &state.board_tiles,
+            game_config,
+            kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv,
+        };
+        let play = generator.best(&compare_hasty_params(
+            &board_snapshot,
+            state.current_player(),
+        ));
+        state.play(game_config, rng, play)?;
+    }
+    Ok(())
+}
+
+struct PositionalColumns {
+    kinds: Vec<(i8, i8)>, // the layout's premium kinds, the most first
+    rack_size: usize,
+}
+
+impl PositionalColumns {
+    #[inline(always)]
+    fn premium(&self) -> usize {
+        self.kinds.len() * self.rack_size
+    }
+
+    #[inline(always)]
+    fn count(&self) -> usize {
+        self.premium() + 3 * self.rack_size + 1
+    }
+
+    #[inline(always)]
+    fn of(&self, (word, letter, reach): (i8, i8, u8)) -> Option<usize> {
+        (self.kinds.iter().position(|&kind| kind == (word, letter)))
+            .map(|k| k * self.rack_size + reach as usize - 1)
+    }
+
+    #[inline(always)]
+    fn lanes(&self) -> usize {
+        self.premium()
+    }
+
+    #[inline(always)]
+    fn exchange(&self) -> usize {
+        self.premium() + 1
+    }
+
+    #[inline(always)]
+    fn tiles(&self, placed: usize) -> usize {
+        self.premium() + placed
+    }
+
+    #[inline(always)]
+    fn bag(&self, after: i64) -> usize {
+        (self.premium() as i64 + 2 * self.rack_size as i64 + after) as usize
+    }
+
+    fn name(&self, j: usize) -> String {
+        let (premium, rack_size) = (self.premium(), self.rack_size);
+        if j < premium {
+            let (word, letter) = self.kinds[j / rack_size];
+            format!("premium {word} {letter} at reach {}", j % rack_size + 1)
+        } else if j == self.lanes() {
+            "bingo lanes".to_string()
+        } else if j == self.exchange() {
+            "an exchange or a pass".to_string()
+        } else if j <= premium + rack_size {
+            format!("{} tiles placed", j - premium)
+        } else {
+            let after = j as i64 - premium as i64 - 2 * rack_size as i64;
+            format!("{after} in the bag after")
+        }
+    }
+}
+
+struct PositionalWork {
+    hasty: CompareMoveGenerator<false>,
+    copy: game_state::GameState,
+    final_scores: Vec<i32>,
+    after: Vec<u8>,
+    reach: Vec<u8>,
+    before: Vec<i64>,
+    xs: Vec<i64>,
+    ys: Vec<i64>,
+}
+
+type PositionalTables<'a, N, L> = (
+    &'a game_config::GameConfig,
+    &'a kwg::Kwg<N>,
+    &'a anagrams::ArmTables,
+    &'a klv::Klv<L>,
+);
+
+#[inline]
+fn positional_rows<N: kwg::Node, L: kwg::Node>(
+    columns: &PositionalColumns,
+    tables: PositionalTables<'_, N, L>,
+    (state, rng): (&game_state::GameState, &GameRng),
+    plays: &[movegen::ValuedMove],
+    work: &mut PositionalWork,
+) -> error::Returns<()> {
+    let game_config = tables.0;
+    let n = columns.count();
+    let (bag, mover) = (state.bag.len() as i64, state.turn as usize);
+    let PositionalWork {
+        hasty,
+        copy,
+        final_scores,
+        after,
+        reach,
+        before,
+        xs,
+        ys,
+    } = work;
+    reach_into(game_config, &state.board_tiles, reach);
+    before.clear();
+    before.resize(columns.premium(), 0);
+    for key in premium_reaches(game_config, reach) {
+        if let Some(c) = columns.of(key) {
+            before[c] += 1;
+        }
+    }
+    let lanes_before = glance_at(game_config, &state.board_tiles).bingo_lanes as i64;
+    let spread_before = game_state::lead_over_best_opponent(
+        mover,
+        (state.players.iter()).map(|player| i64::from(player.score.raw())),
+    );
+    xs.clear();
+    xs.resize(plays.len() * n, 0);
+    ys.clear();
+    for (m, row) in plays.iter().zip(xs.chunks_exact_mut(n)) {
+        board_after(game_config, &state.board_tiles, &m.play, after);
+        reach_into(game_config, after, reach);
+        for key in premium_reaches(game_config, reach) {
+            if let Some(c) = columns.of(key) {
+                row[c] += 1;
+            }
+        }
+        for (x, count) in row.iter_mut().zip(before.iter()) {
+            *x -= count;
+        }
+        row[columns.lanes()] = glance_at(game_config, after).bingo_lanes as i64 - lanes_before;
+        let placed = match &m.play {
+            movegen::Play::Exchange { .. } => {
+                row[columns.exchange()] = 1;
+                0
+            }
+            movegen::Play::Place { word, .. } => word.iter().filter(|&&tile| tile != 0).count(),
+        };
+        if placed >= 2 {
+            row[columns.tiles(placed)] = 1;
+        }
+        let bag_after = bag - placed as i64;
+        if bag_after <= columns.rack_size as i64 {
+            row[columns.bag(bag_after)] = 1;
+        }
+        copy.clone_from(state);
+        let mut copy_rng = rng.copy_state();
+        play_out_hasty(hasty, tables, copy, &mut copy_rng, &m.play, final_scores)?;
+        let spread =
+            game_state::lead_over_best_opponent(mover, final_scores.iter().map(|&s| i64::from(s)));
+        ys.push(spread - spread_before - m.equity.raw() as i64);
+    }
+    Ok(())
+}
+
+struct PositionalFitParams {
+    out: String,
+    num_games: u64,
+    seed: Option<u64>,
+    num_seeds: u64,
+    threads: usize,
+    quiet: bool,
+}
+
+#[inline]
+fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    PositionalFitParams {
+        out,
+        num_games,
+        seed,
+        num_seeds,
+        threads,
+        quiet,
+    }: PositionalFitParams,
+) -> error::Returns<()> {
+    let seed = seed_or_random(seed)?;
+    use_writer(&out);
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
+    let rack_size = game_config.rack_size() as usize;
+    let mut kinds = (game_config.board_layout().premiums().iter())
+        .map(|premium| (premium.word_multiplier, premium.tile_multiplier))
+        .filter(|&kind| kind != (1, 1) && kind != (0, 0))
+        .collect::<Vec<_>>();
+    kinds.sort_unstable_by(|a, b| b.cmp(a));
+    kinds.dedup();
+    let columns = PositionalColumns { kinds, rack_size };
+    let most_in_bag = (game_config.alphabet().num_tiles() as usize)
+        .saturating_sub(game_config.num_players() as usize * rack_size);
+    let num_bands = most_in_bag.div_ceil(rack_size).max(1);
+    let scale = every_count_divides(move_picker::DEFT_FIELD);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false)?;
+    let t0 = std::time::Instant::now();
+    let total_games = num_seeds * num_games;
+    let claimed = std::sync::atomic::AtomicU64::new(0);
+    let tick = std::sync::atomic::AtomicU64::new(0);
+    let weighed = std::sync::atomic::AtomicU64::new(0);
+    let parts = num_seeds as usize * num_bands;
+    let sums = std::thread::scope(|s| -> error::Returns<Vec<WithinSums>> {
+        let mut thread_handles = Vec::new();
+        for _ in 0..threads {
+            let tables = (&game_config, &kwg, &arm_tables, &klv);
+            let (claimed, tick, weighed, columns) = (&claimed, &tick, &weighed, &columns);
+            thread_handles.push(s.spawn(move || -> error::Returns<Vec<WithinSums>> {
+                let (game_config, kwg, arm_tables, klv) = tables;
+                let mut candidates = movegen::KurniaMoveGenerator::new(game_config);
+                let mut game_state = game_state::GameState::new(game_config);
+                let mut work = PositionalWork {
+                    hasty: CompareMoveGenerator::<false>::new(game_config),
+                    copy: game_state.clone(),
+                    final_scores: vec![0; game_config.num_players() as usize],
+                    after: Vec::new(),
+                    reach: Vec::new(),
+                    before: Vec::new(),
+                    xs: Vec::new(),
+                    ys: Vec::new(),
+                };
+                let mut within = WithinScratch::default();
+                let mut play = None::<movegen::Play>;
+                let mut sums = vec![WithinSums::new(columns.count()); parts];
+                loop {
+                    let job = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if job >= total_games {
+                        break;
+                    }
+                    let (seed_at, game) = (job / num_games, job % num_games);
+                    let mut rng = GameRng::from_stream(seed.wrapping_add(seed_at), game);
+                    game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
+                    loop {
+                        let bag = game_state.bag.len();
+                        let board_snapshot = movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config,
+                            kwg,
+                            anagrams: arm_tables.anagrams(),
+                            rack_lengths: arm_tables.rack_lengths(),
+                            klv,
+                        };
+                        let player = game_state.current_player();
+                        if bag > 0 {
+                            candidates.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &player.rack,
+                                max_gen: move_picker::DEFT_FIELD,
+                                num_exchanges_by_this_player: player.num_exchanges,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            });
+                            if candidates.plays.len() >= 2 {
+                                let at = (&game_state, &rng);
+                                positional_rows(columns, tables, at, &candidates.plays, &mut work)?;
+                                let band = ((bag - 1) / rack_size).min(num_bands - 1);
+                                sums[seed_at as usize * num_bands + band].add_position(
+                                    &work.xs,
+                                    &work.ys,
+                                    scale,
+                                    &mut within,
+                                );
+                                weighed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        let params = compare_hasty_params(&board_snapshot, player);
+                        let best = work.hasty.best(&params);
+                        let play = match &mut play {
+                            Some(play) => {
+                                play.clone_from(best);
+                                play
+                            }
+                            None => play.insert(best.clone()),
+                        };
+                        game_state.play(game_config, &mut rng, play)?;
+                        match game_state.check_game_ended(game_config, &mut work.final_scores)? {
+                            game_state::CheckGameEnded::PlayedOut
+                            | game_state::CheckGameEnded::ZeroScores => break,
+                            game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+                        }
+                    }
+                    let secs = t0.elapsed().as_secs();
+                    if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs
+                    {
+                        writeln!(
+                            boxed_stdout_or_stderr(),
+                            "After {secs} seconds, have begun {} of {total_games} games, weighed {} positions",
+                            claimed.load(std::sync::atomic::Ordering::Relaxed).min(total_games),
+                            weighed.load(std::sync::atomic::Ordering::Relaxed),
+                        )
+                        .ok();
+                    }
+                }
+                Ok(sums)
+            }));
+        }
+        let mut merged = vec![WithinSums::new(columns.count()); parts];
+        for handle in thread_handles {
+            let theirs = handle
+                .join()
+                .map_err(|_| "a positional-fit thread panicked")??;
+            for (sum, part) in merged.iter_mut().zip(&theirs) {
+                sum.add(part);
+            }
+        }
+        Ok(merged)
+    })?;
+    let n = columns.count();
+    let mut by_seed = vec![WithinSums::new(n); num_seeds as usize];
+    let mut by_band = vec![WithinSums::new(n); num_bands];
+    let mut pooled = WithinSums::new(n);
+    for (i, part) in sums.iter().enumerate() {
+        by_seed[i / num_bands].add(part);
+        by_band[i % num_bands].add(part);
+        pooled.add(part);
+    }
+    let fit = fit_within(&pooled, scale)?;
+    let seed_fits = (by_seed.iter())
+        .filter_map(|part| fit_within(part, scale).ok())
+        .collect::<Vec<_>>();
+    let points = equity::SCALE as f64;
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "{num_games} games on each of {num_seeds} seeds from {seed}: {} positions, {} moves, in {:?}",
+        pooled.positions,
+        pooled.rows,
+        t0.elapsed(),
+    )?;
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "each column's weight in points, its error by the spread of the seeds' own fits and by least squares, and the share of its variation the columns before it leave"
+    )?;
+    for j in 0..n {
+        let theirs = (seed_fits.iter())
+            .filter(|seed_fit| seed_fit.varies[j])
+            .map(|seed_fit| seed_fit.weights[j])
+            .collect::<Vec<_>>();
+        let spread = if theirs.len() >= 2 {
+            let count = theirs.len() as f64;
+            let mean = theirs.iter().sum::<f64>() / count;
+            let variance = theirs.iter().map(|w| (w - mean).powi(2)).sum::<f64>() / (count - 1.0);
+            (variance / count).sqrt()
+        } else {
+            f64::NAN
+        };
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "  {:<28} {:>+10.3} {:>9.3} {:>9.3} {:>7.4}{}",
+            columns.name(j),
+            fit.weights[j] / points,
+            spread / points,
+            fit.errors[j] / points,
+            fit.shares[j],
+            if theirs.len() as u64 == num_seeds {
+                String::new()
+            } else {
+                format!(" ({} of the seeds' fits vary it)", theirs.len())
+            },
+        )?;
+    }
+    for (band, part) in by_band.iter().enumerate() {
+        if part.positions == 0 {
+            continue;
+        }
+        let (lo, hi) = (band * rack_size + 1, (band + 1) * rack_size);
+        match fit_within(part, scale) {
+            Err(e) => writeln!(
+                boxed_stdout_or_stderr(),
+                "with {lo} to {hi} in the bag before the move: {} positions, no fit: {e}",
+                part.positions,
+            )?,
+            Ok(band_fit) => {
+                writeln!(
+                    boxed_stdout_or_stderr(),
+                    "with {lo} to {hi} in the bag before the move: {} positions; the premium weights in points by reach, 1 to {rack_size}",
+                    part.positions,
+                )?;
+                for (k, &(word, letter)) in columns.kinds.iter().enumerate() {
+                    let mut line = format!("  {word} {letter}");
+                    for weight in &band_fit.weights[k * rack_size..(k + 1) * rack_size] {
+                        write!(line, " {:+.3}", weight / points).ok();
+                    }
+                    writeln!(boxed_stdout_or_stderr(), "{line}")?;
+                }
+            }
+        }
+    }
+    let mut text = String::new();
+    writeln!(text, "# word multiplier, letter multiplier, reach, points").ok();
+    for (k, &(word, letter)) in columns.kinds.iter().enumerate() {
+        for (r, weight) in fit.weights[k * rack_size..(k + 1) * rack_size]
+            .iter()
+            .enumerate()
+        {
+            let millipoints = weight.round() as i64;
+            writeln!(
+                text,
+                "{word} {letter} {} {:.3}",
+                r + 1,
+                millipoints as f64 / points
+            )
+            .ok();
+        }
+    }
+    let path = write_whole(&out, text.as_bytes())?;
+    writeln!(boxed_stdout_or_stderr(), "wrote {path}")?;
+    Ok(())
+}
+
+#[inline]
 fn full_rack_values<L: kwg::Node>(
     lat: &census::MultisetLattice,
     klv: &klv::Klv<L>,
@@ -11779,6 +12422,58 @@ WCMP_P1_SCORE 402.000000
     }
 
     #[test]
+    fn positional_fit_runs_on_a_board_with_no_premium_square() {
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let game_config = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            board_layout: board_layout::BoardLayout::new_static_from_text(
+                "|     |\n|     |\n|     |\n|     |\n|     |\nstar 2 2\n",
+            )
+            .unwrap(),
+            rack_size: 5,
+            ..english
+        });
+        let mut words = ["AE", "AT", "EAT", "TEA", "ATE", "TA", "TE"]
+            .iter()
+            .map(|word| word.bytes().map(|c| c - b'A' + 1).collect::<Vec<u8>>()[..].into())
+            .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let dir = format!(
+            "{}/target/positional_fit-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = format!("{dir}/fit");
+        positional_fit(
+            game_config,
+            kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+            klv::Klv::<kwg::Node24>::empty().unwrap(),
+            PositionalFitParams {
+                out: out.clone(),
+                num_games: 1,
+                seed: Some(1),
+                num_seeds: 1,
+                threads: 1,
+                quiet: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "# word multiplier, letter multiplier, reach, points\n"
+        );
+        std::fs::remove_file(&out).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
     fn harvest_boards_writes_the_same_boards_with_a_rack_table() {
         let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
         let game_config = game_config::GameConfig::Static(game_config::StaticGameConfig {
@@ -12070,5 +12765,42 @@ WCMP_P1_SCORE 402.000000
         std::fs::remove_file(part_path(&taken)).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_count_of_a_field_divides_its_scale() {
+        assert_eq!(every_count_divides(1), 1);
+        assert_eq!(every_count_divides(4), 12);
+        let scale = every_count_divides(move_picker::DEFT_FIELD);
+        assert!((1..=move_picker::DEFT_FIELD as i64).all(|k| scale % k == 0));
+    }
+
+    #[test]
+    fn a_fit_within_positions_finds_the_weights_its_rows_were_made_with() {
+        let scale = every_count_divides(move_picker::DEFT_FIELD);
+        let mut sums = WithinSums::new(3);
+        let mut scratch = WithinScratch::default();
+        for position in 0..60i64 {
+            let moves = 2 + position as usize % (move_picker::DEFT_FIELD - 1);
+            let (mut xs, mut ys) = (Vec::new(), Vec::new());
+            for i in 0..moves as i64 {
+                let (a, b) = ((i * 7 + position) % 5, (i * i + 2 * position) % 4);
+                xs.extend([a, b, position]);
+                ys.push(1000 * position + 2 * a - 3 * b);
+            }
+            sums.add_position(&xs, &ys, scale, &mut scratch);
+        }
+        let fit = fit_within(&sums, scale).unwrap();
+        assert!((fit.weights[0] - 2.0).abs() < 1e-9, "{}", fit.weights[0]);
+        assert!((fit.weights[1] + 3.0).abs() < 1e-9, "{}", fit.weights[1]);
+        assert_eq!((fit.weights[2], fit.varies[2]), (0.0, false));
+        let mut orders = (WithinSums::new(3), WithinSums::new(3));
+        orders
+            .0
+            .add_position(&[1, 0, 0, 0, 1, 0], &[5, 7], scale, &mut scratch);
+        orders
+            .1
+            .add_position(&[0, 1, 0, 1, 0, 0], &[7, 5], scale, &mut scratch);
+        assert!(orders.0.xx == orders.1.xx && orders.0.xy == orders.1.xy);
     }
 }
