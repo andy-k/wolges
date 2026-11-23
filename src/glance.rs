@@ -194,6 +194,18 @@ pub fn reach_into(game_config: &game_config::GameConfig, board_tiles: &[u8], out
     }
 }
 
+#[inline]
+pub fn premium_reaches<'a>(
+    game_config: &'a game_config::GameConfig,
+    reach: &'a [u8],
+) -> impl Iterator<Item = (i8, i8, u8)> + 'a {
+    let premiums = game_config.board_layout().premiums();
+    premiums.iter().zip(reach).filter_map(|(premium, &r)| {
+        let kind = (premium.word_multiplier, premium.tile_multiplier);
+        (r != 0 && kind != (1, 1)).then_some((kind.0, kind.1, r))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +264,22 @@ mod tests {
         let at = |row: i8, col: i8| reach[dim.at_row_col(row, col)];
         assert_eq!((at(0, 1), at(1, 0), at(1, 1), at(0, 7)), (1, 1, 2, 7));
         assert_eq!((at(7, 7), at(0, 8), at(14, 14)), (0, 0, 0));
+    }
+
+    #[test]
+    #[inline]
+    fn an_empty_board_reaches_the_premium_squares_of_the_stars_lanes() {
+        let game_config = game_config::make_english_game_config();
+        let dim = game_config.board_layout().dim();
+        let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let mut reach = Vec::new();
+        reach_into(&game_config, &board_tiles, &mut reach);
+        let mut found = premium_reaches(&game_config, &reach).collect::<Vec<_>>();
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            [(1, 2, 5), (1, 2, 5), (1, 2, 5), (1, 2, 5), (2, 1, 1)]
+        );
     }
 
     #[test]
