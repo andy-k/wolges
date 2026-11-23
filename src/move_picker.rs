@@ -1966,6 +1966,91 @@ fn out_in_two<N: kwg::Node, L: kwg::Node>(
     found
 }
 
+#[inline]
+fn field_of<T: std::str::FromStr>(field: &str, line: &str) -> error::Returns<T>
+where
+    T::Err: std::fmt::Display,
+{
+    field
+        .parse()
+        .map_err(|e| error::new(format!("{field:?} in {line:?}: {e}")).into())
+}
+
+// a premium square's word and letter multipliers and its reach, with a value
+// in millipoints
+pub type SquareValue = ((i8, i8, u8), i32);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PositionalTerm {
+    values: Box<[SquareValue]>, // by (word, letter, reach)
+}
+
+impl PositionalTerm {
+    pub fn new(mut values: Vec<SquareValue>) -> error::Returns<Self> {
+        values.sort_unstable_by_key(|&(key, _)| key);
+        if let Some(pair) = values.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return_error!(format!(
+                "the positional value for {:?} is given twice",
+                pair[0].0
+            ));
+        }
+        Ok(Self {
+            values: values.into_boxed_slice(),
+        })
+    }
+
+    // "word letter reach value" lines, a premium square's, value in points
+    // (blank lines and # comments skipped)
+    pub fn parse(text: &str) -> error::Returns<Self> {
+        let mut values = Vec::new();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut it = line.split_whitespace();
+            let (Some(word), Some(letter), Some(reach), Some(value), None) =
+                (it.next(), it.next(), it.next(), it.next(), it.next())
+            else {
+                return_error!(format!(
+                    "a positional line is \"word letter reach value\", not {line:?}"
+                ));
+            };
+            let key: (i8, i8, u8) = (
+                field_of(word, line)?,
+                field_of(letter, line)?,
+                field_of(reach, line)?,
+            );
+            let millipoints = (field_of::<f64>(value, line)? * equity::SCALE as f64).round();
+            if !(i32::MIN as f64..=i32::MAX as f64).contains(&millipoints) {
+                return_error!(format!("the positional value in {line:?} is out of range"));
+            }
+            if matches!((key.0, key.1), (1, 1) | (0, 0)) || key.2 == 0 {
+                continue;
+            }
+            values.push((key, millipoints as i32));
+        }
+        Self::new(values)
+    }
+
+    #[inline]
+    pub fn value_of(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        reach: &mut Vec<u8>,
+    ) -> i64 {
+        glance::reach_into(game_config, board_tiles, reach);
+        glance::premium_reaches(game_config, reach)
+            .map(|key| {
+                self.values
+                    .binary_search_by_key(&key, |&(k, _)| k)
+                    .map_or(0, |i| self.values[i].1 as i64)
+            })
+            .sum()
+    }
+}
+
 // the deft picker: its window, and out in two's scratch, made at its first use
 // (and made again for a board or an alphabet of another size), with the
 // board's rows and columns and the alphabet's size it was made for
@@ -5159,5 +5244,54 @@ mod tests {
             }
         }
         assert!(valued > 100, "only {valued} choices valued");
+    }
+
+    #[test]
+    #[inline]
+    fn a_positional_term_parses_its_values_file() {
+        let term =
+            PositionalTerm::parse("# by square\n3 1 7 -2\n\n2 1 1 -1.5 # the star\n1 2 5 0.0004\n")
+                .unwrap();
+        let want = vec![((1, 2, 5), 0), ((2, 1, 1), -1500), ((3, 1, 7), -2000)];
+        assert_eq!(term, PositionalTerm::new(want).unwrap());
+        for empty in ["", "# none\n"] {
+            assert_eq!(
+                PositionalTerm::parse(empty).unwrap(),
+                PositionalTerm::new(Vec::new()).unwrap()
+            );
+        }
+        assert_eq!(
+            PositionalTerm::parse("1 1 1 2\n0 0 1 2\n3 1 0 2\n2 1 1 -1\n").unwrap(),
+            PositionalTerm::new(vec![((2, 1, 1), -1000)]).unwrap()
+        );
+        assert_eq!(
+            PositionalTerm::parse("1 1 1 2\n").unwrap(),
+            PositionalTerm::new(Vec::new()).unwrap()
+        );
+        for refused in [
+            "3 1 1\n",
+            "3 1 1 2 5\n",
+            "x 1 1 2\n",
+            "3 1 256 2\n",
+            "3 1 1 2\n3 1 1 4\n",
+            "3 1 1 inf\n",
+            "3 1 1 NaN\n",
+            "3 1 1 3e9\n",
+        ] {
+            assert!(PositionalTerm::parse(refused).is_err(), "{refused:?}");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_positional_term_values_the_premium_squares_a_board_leaves_in_reach() {
+        let game_config = game_config::make_english_game_config();
+        let dim = game_config.board_layout().dim();
+        let term = PositionalTerm::parse("3 1 7 -2\n2 1 1 -1.5\n").unwrap();
+        let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let mut reach = Vec::new();
+        assert_eq!(term.value_of(&game_config, &board_tiles, &mut reach), -1500);
+        board_tiles[dim.at_row_col(7, 7)] = 1;
+        assert_eq!(term.value_of(&game_config, &board_tiles, &mut reach), -8000);
     }
 }
