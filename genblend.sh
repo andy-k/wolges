@@ -19,6 +19,8 @@ usage 4: (a small run of every stage)
 usage 5: (jumbled rules, whose word graph is a .kad)
   cp -ip ../.../CSW24.kad .
   ../genblend.sh --preset english --jumbled
+usage 6: (no self-play: the two censuses blended, W of the weighted one)
+  ../genblend.sh --preset english --census-blend W
 options:
   --recipe LIST     board counts for the census, comma separated, each N or KxN
                     (K generations of N boards). Default 3x256,2048.
@@ -27,6 +29,10 @@ options:
   --per-board-centering  center leaves on their own board in the census.
   --weight W        how much of the self-play table to take in the blend: 0 is
                     the census alone, 1 self-play alone. Default 0.5.
+  --census-blend W  play no self-play: run the census twice, as given
+                    (census.klv2) and with --completion-weights
+                    (census-weighted.klv2), and blend them, W of the second:
+                    0 is the first alone, 1 the second alone. No default.
   --census-seed S   fix the census's seed. Omitted means the census picks one
                     and prints it.
   --seed S          fix the self-play generations' seeds: S for the first, one
@@ -50,6 +56,8 @@ fi
 
 recipe="3x256,2048"
 weight="0.5"
+weight_given=false
+census_blend=""
 census_seed=""
 seed=""
 threads=""
@@ -79,6 +87,11 @@ while [ "$#" -gt 0 ]; do
       ;;
     --weight)
       weight="${2:?--weight needs a number}"
+      weight_given=true
+      shift 2
+      ;;
+    --census-blend)
+      census_blend="${2:?--census-blend needs a number}"
       shift 2
       ;;
     --census-seed)
@@ -131,6 +144,25 @@ if [ "$seed" ] && ! [[ "$seed" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+if [ "$census_blend" ]; then
+  if [ "$completion_weights" = true ]; then
+    echo "--census-blend runs the census with and without --completion-weights: drop --completion-weights" >&2
+    exit 1
+  fi
+  if [ "$weight_given" = true ]; then
+    echo "--census-blend takes its own weight: drop --weight" >&2
+    exit 1
+  fi
+  if [ "$seed" ]; then
+    echo "--census-blend plays no self-play: drop --seed" >&2
+    exit 1
+  fi
+  if [ "$#" -gt 0 ]; then
+    echo "--census-blend plays no self-play: drop the generations ($*)" >&2
+    exit 1
+  fi
+fi
+
 # buildlex reads the leaves with the game's tiles: --tiles, else the preset's
 # (a bundled preset's tiles have its name; a preset file names its own)
 buildlex_tiles="$tiles"
@@ -149,7 +181,7 @@ if [ ! "$buildlex_tiles" ]; then
   fi
 fi
 
-if [ "$#" -eq 0 ]; then
+if [ "$#" -eq 0 ] && [ ! "$census_blend" ]; then
   set -- 10000000 10000000
 fi
 
@@ -220,6 +252,25 @@ if [ ! -e census.klv2 ]; then
   fi
   echo "$census_file"
   cp -ipv "$census_file" census.klv2
+fi
+
+if [ "$census_blend" ]; then
+  if [ ! -e census-weighted.klv2 ]; then
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} \
+      "$census_subcommand" --completion-weights "${census_options[@]}" "$kwg" - - "$recipe" ${census_seed:+"$census_seed"}
+    census_file="$(ls -1td census-leaves-*.klv2 2>/dev/null | head -1)"
+    if [ ! "$census_file" ]; then
+      echo "the census wrote no leave table" >&2
+      exit 1
+    fi
+    echo "$census_file"
+    cp -ipv "$census_file" census-weighted.klv2
+  fi
+  time cargo run --release --bin buildlex -- --tiles "$buildlex_tiles" "$blend_subcommand" \
+    census.klv2 census-weighted.klv2 "$census_blend" blend.klv2
+  echo "blend.klv2 takes ${census_blend} of census-weighted.klv2 and the rest of census.klv2"
+  ls -l census.klv2 census-weighted.klv2 blend.klv2
+  exit 0
 fi
 
 # self-play, each generation seeded by the table before it
