@@ -6282,6 +6282,11 @@ impl JumbledMultisets {
     }
 }
 
+#[inline(always)]
+fn stops_walk(threshold: i32) -> bool {
+    threshold == equity::Equity::INFINITY.raw()
+}
+
 // BAG_TERM: the generator's, as leave_value_of's
 #[inline]
 fn gen_jumbled_place_moves<
@@ -6295,7 +6300,7 @@ fn gen_jumbled_place_moves<
     single_tile_plays: bool,
     opening: Option<bool>,
 ) {
-    if params.jumbled.splits.out_of_memory {
+    if params.jumbled.splits.out_of_memory || stops_walk(params.threshold) {
         return;
     }
     match params.jumbled.walk {
@@ -6595,6 +6600,9 @@ fn gen_jumbled_place_moves_walk<
                     score,
                     leave_value,
                 );
+                if stops_walk(env.params.threshold) {
+                    break;
+                }
             }
         }
         env.params.jumbled.splits = s;
@@ -6663,6 +6671,9 @@ fn gen_jumbled_place_moves_walk<
                         score,
                         leave_value,
                     );
+                    if stops_walk(env.params.threshold) {
+                        return;
+                    }
                     break;
                 }
             }
@@ -7034,7 +7045,7 @@ fn gen_jumbled_place_moves_walk<
                     .wrapping_sub(env.params.multi_leaves.place_value(0)),
             }
         });
-        while usable != 0 {
+        while usable != 0 && !stops_walk(env.params.threshold) {
             let tile = usable.trailing_zeros() as u8;
             usable &= usable - 1;
             env.unplaced[tile as usize] -= 1;
@@ -7362,6 +7373,9 @@ fn gen_jumbled_place_moves_walk<
                         }
                         if WALK != JUMBLED_EVERY_ARRANGEMENT {
                             walk_splits::<BAG_TERM, WALK, _, _, _>(&mut env, at, fixed);
+                            if stops_walk(env.params.threshold) {
+                                return;
+                            }
                             continue;
                         }
                         for offset in 0..num_played as usize {
@@ -7384,6 +7398,9 @@ fn gen_jumbled_place_moves_walk<
                             env.unplaced[tile as usize] -= 1;
                         }
                         env.unplaced_bits = 0;
+                        if stops_walk(env.params.threshold) {
+                            return;
+                        }
                     }
                 }
                 let next = idx_r + 1;
@@ -10973,7 +10990,7 @@ trait Kept {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn push(&mut self, candidate: ValuedMove);
+    fn push(&mut self, candidate: ValuedMove) -> bool;
     fn refused(&self) -> bool;
     // the candidate in place of the worst kept, false if it is no better
     fn replace_worst(&mut self, candidate: ValuedMove) -> bool;
@@ -10995,12 +11012,13 @@ impl Kept for KeptHeap {
     }
 
     #[inline(always)]
-    fn push(&mut self, candidate: ValuedMove) {
+    fn push(&mut self, candidate: ValuedMove) -> bool {
         if self.0.try_reserve(1).is_err() {
             self.1 = true;
-            return;
+            return false;
         }
         self.0.push(candidate);
+        true
     }
 
     #[inline(always)]
@@ -11048,9 +11066,10 @@ impl Kept for KeptOne {
     }
 
     #[inline(always)]
-    fn push(&mut self, candidate: ValuedMove) {
+    fn push(&mut self, candidate: ValuedMove) -> bool {
         debug_assert!(self.best.is_none());
         self.best = Some(candidate);
+        true
     }
 
     #[inline(always)]
@@ -11081,7 +11100,9 @@ impl Kept for KeptOne {
 }
 
 // a move offered to what a capped generation keeps: one worse than the
-// threshold, once the cap is reached, is turned away before it is made
+// threshold, once the cap is reached, is turned away before it is made. Once
+// what is kept is refused its room, the threshold is the infinite one that
+// stops the walk (stops_walk), and every later move is turned away
 #[inline(always)]
 fn push_kept<K: Kept, F: FnOnce() -> Play>(
     found_moves: &mut K,
@@ -11091,7 +11112,7 @@ fn push_kept<K: Kept, F: FnOnce() -> Play>(
     equity: equity::Equity,
     construct_play: F,
 ) {
-    if found_moves.len() >= max_gen && threshold.get() > equity {
+    if threshold.get() > equity && (found_moves.len() >= max_gen || found_moves.refused()) {
         return;
     }
     let play = construct_play();
@@ -11101,8 +11122,9 @@ fn push_kept<K: Kept, F: FnOnce() -> Play>(
             if !found_moves.replace_worst(candidate) {
                 return;
             }
-        } else {
-            found_moves.push(candidate);
+        } else if !found_moves.push(candidate) {
+            threshold.set(equity::Equity::INFINITY);
+            return;
         }
         if found_moves.len() >= max_gen {
             threshold.set(found_moves.worst_equity());
