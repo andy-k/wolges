@@ -23,7 +23,7 @@ pub const DEFAULT_NUM_SIM_PLIES: usize = 4;
 // one point
 pub const DEFAULT_DEFT_WINDOW: i32 = equity::SCALE;
 // how many moves deft generates to choose among
-const DEFT_FIELD: usize = 8;
+pub const DEFT_FIELD: usize = 8;
 // and how many once the bag holds a rack or less
 const DEFT_LATE_FIELD: usize = 64;
 // three points: how far below its best deft takes a move that leaves exactly
