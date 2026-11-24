@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, error, game_config, game_state, kwg, move_filter, movegen};
+use super::{equity, error, game_config, game_state, kwg, move_filter, movegen, woadwage};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
@@ -261,6 +261,14 @@ impl PlayScorer {
     }
 
     #[inline(always)]
+    fn woadwage_words_checker<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
+    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
+        move |word: &[u8]| woadwage::accepts(board_snapshot.kwg, word)
+    }
+
+    #[inline(always)]
     fn jumbled_words_checker<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
@@ -291,8 +299,12 @@ impl PlayScorer {
         play: &movegen::Play,
     ) -> bool {
         match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
+            game_config::GameRules::Classic => {
                 let checker = self.classic_words_checker(board_snapshot);
+                self.words_all(board_snapshot, play, checker)
+            }
+            game_config::GameRules::Woadwage => {
+                let checker = self.woadwage_words_checker(board_snapshot);
                 self.words_all(board_snapshot, play, checker)
             }
             game_config::GameRules::Jumbled => {
@@ -324,8 +336,13 @@ impl PlayScorer {
         save_invalid_word: impl FnMut(&[u8]),
     ) {
         match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
+            game_config::GameRules::Classic => {
                 let checker = self.classic_words_checker(board_snapshot);
+                let checker = self.collect_invalid_words(checker, save_invalid_word);
+                self.words_all(board_snapshot, play, checker)
+            }
+            game_config::GameRules::Woadwage => {
+                let checker = self.woadwage_words_checker(board_snapshot);
                 let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)
             }
@@ -685,7 +702,8 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bites, build, klv};
+    use crate::{bites, board_layout, build, klv, matrix};
+    use std::collections::BTreeSet;
 
     #[test]
     #[inline]
@@ -737,5 +755,118 @@ mod tests {
                 .validate_play(&board_snapshot, &game_state, &at(6))
                 .is_ok()
         );
+    }
+    #[test]
+    #[inline]
+    fn a_woadwage_play_takes_a_word_or_two_joined_words_in_every_word_it_forms() {
+        let words = [vec![1u8], vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 2, 1]];
+        let explicit = words
+            .iter()
+            .cloned()
+            .chain(
+                words
+                    .iter()
+                    .flat_map(|a| words.iter().map(|b| [a.as_slice(), b.as_slice()].concat())),
+            )
+            .collect::<BTreeSet<_>>();
+        let machine_words = words
+            .iter()
+            .map(|word| bites::Bites::from(word.as_slice()))
+            .collect::<Vec<_>>();
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &machine_words,
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let premiums = vec![
+            board_layout::Premium {
+                word_multiplier: 1,
+                tile_multiplier: 1,
+            };
+            49
+        ];
+        let game_config =
+            game_config::make_board_test_game_config(board_layout::make_test_board_layout(
+                premiums.into_boxed_slice(),
+                matrix::Dim { rows: 7, cols: 7 },
+                3,
+                3,
+            ))
+            .woadwage();
+        let mut board_tiles = vec![0u8; 49];
+        board_tiles[2 * 7 + 3] = 1;
+        board_tiles[4 * 7 + 3] = 2;
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let mut play_scorer = PlayScorer::new();
+        let mut cases = 0;
+        let mut strings = vec![Vec::new()];
+        for _ in 0..5 {
+            strings = strings
+                .iter()
+                .flat_map(|s: &Vec<u8>| (1..=4).map(move |t| [s.as_slice(), &[t]].concat()))
+                .collect();
+            for word in &strings {
+                if word.len() >= 2 {
+                    let play = movegen::Play::Place {
+                        down: false,
+                        lane: 0,
+                        idx: 0,
+                        word: word[..].into(),
+                        score: equity::Equity::ZERO,
+                    };
+                    assert_eq!(
+                        play_scorer.words_are_valid(&board_snapshot, &play),
+                        explicit.contains(word),
+                        "{word:?}"
+                    );
+                }
+                if word.len() <= 4 {
+                    let play = movegen::Play::Place {
+                        down: false,
+                        lane: 3,
+                        idx: 3,
+                        word: word[..].into(),
+                        score: equity::Equity::ZERO,
+                    };
+                    let cross = [1, word[0], 2];
+                    let mut invalid = Vec::new();
+                    play_scorer.find_invalid_words(&board_snapshot, &play, |w: &[u8]| {
+                        invalid.push(w.to_vec())
+                    });
+                    let mut expected = Vec::new();
+                    if !explicit.contains(word) {
+                        expected.push(word.clone());
+                    }
+                    if !explicit.contains(&cross[..]) {
+                        expected.push(cross.to_vec());
+                    }
+                    invalid.sort();
+                    expected.sort();
+                    assert_eq!(invalid, expected, "{word:?}");
+                    assert_eq!(
+                        play_scorer.words_are_valid(&board_snapshot, &play),
+                        expected.is_empty(),
+                        "{word:?}"
+                    );
+                }
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 4 + 16 + 64 + 256 + 1024);
     }
 }
