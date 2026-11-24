@@ -394,6 +394,8 @@ fn sort_blank_pairs(
 type Table<V> = std::collections::HashMap<KeyBytes, V, std::hash::BuildHasherDefault<KeyHasher>>;
 
 impl Anagrams {
+    // one-word rules only: its table holds the graph's words, though a
+    // woadwage game's caller may build it; ArmTables builds none for one
     #[inline(always)]
     pub fn build_for_config<N: kwg::Node>(
         g: &kwg::Kwg<N>,
@@ -414,6 +416,8 @@ impl Anagrams {
         }
     }
 
+    // one-word rules only: its table holds the graph's words, so its caller
+    // never builds it for a woadwage game
     pub fn build<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
@@ -851,6 +855,8 @@ pub struct RackLengths {
 }
 
 impl RackLengths {
+    // one-word rules only: its table holds the graph's words, though a
+    // woadwage game's caller may build it; ArmTables builds none for one
     #[inline(always)]
     pub fn build_for_config<N: kwg::Node>(
         g: &kwg::Kwg<N>,
@@ -974,7 +980,8 @@ impl ArmTables {
     // the tables of the arm the game config is detected for: with lean or for a
     // jumbled game, the lean arm's; else tables keyed by nibbles where they fit
     // the game (a classic game on a square board of a side in NIBBLE_SIDES),
-    // else by their layout; else none (the lean arm)
+    // else by their layout; else none (the lean arm). A woadwage game has none:
+    // a joined pair is in no table of the graph's words
     #[inline]
     pub fn build<N: kwg::Node>(
         kwg: &kwg::Kwg<N>,

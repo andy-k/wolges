@@ -9773,6 +9773,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // leave. That walk spells each word once with a real tile before a blank.
     // So each word is taken in its letters to score every designation the pool
     // allows.
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -9913,6 +9915,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         Some(walked)
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_through<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -9936,6 +9940,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_spans_through<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -9966,6 +9972,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.jumbled.splits.out_of_memory = out_of_memory;
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_spans_through_top<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -10029,6 +10037,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.plays.clear();
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_best_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -10096,6 +10106,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // as pool_plays_best_window, walking at most budget (1 or more) blank
     // choices, from where part says the walk before stopped if the window
     // starts there; part then says where this one stopped
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_best_part<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -10120,6 +10132,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         seen
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_top<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -10173,6 +10187,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // as pool_plays_top, a window of the lanes' multisets at a time, from the
     // threshold the windows before it reached (floor, carried in and out): the
     // windows of every lane, together, offer every play of the pool's top most
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_top_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -10250,6 +10266,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         seen
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -10272,6 +10290,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         seen
     }
 
+    // one-word rules only: it walks the graph's words, so its caller never
+    // gives it a woadwage game
     pub fn pool_plays_lanes<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
@@ -11100,6 +11120,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
 
     // each word the board can still take, whatever the racks and the bag hold:
     // found_word is called once for each, in ascending order
+    // it prunes to the graph's words, one word a play; a woadwage game's (a
+    // simmer's, an endgame's) it gives every word of the graph, unpruned, as a
+    // play's two words may split anywhere
     #[inline(always)]
     pub fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
         &mut self,
