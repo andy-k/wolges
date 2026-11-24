@@ -4,7 +4,7 @@
 // themselves, which save writes out and source replays to build the same state
 // again
 
-use crate::endgame_watch;
+use crate::{endgame_watch, run_line};
 use rand::{Rng, SeedableRng};
 use std::io::Write;
 use wolges::{
@@ -697,10 +697,14 @@ impl Session {
                         // is repacked into it as it loads
                         let kwg: &'static _ =
                             Box::leak(Box::new(std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
-                                std::fs::read(path)?,
+                                run_line::read_input(path)?,
                                 path.ends_with(".kbwg"),
                             )?)));
                         self.kwgs_read.insert(path.clone(), kwg);
+                        eprintln!(
+                            "{}",
+                            run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+                        );
                         kwg
                     }
                 };
@@ -721,11 +725,15 @@ impl Session {
                         let klv = if path == "-" {
                             klv::Klv::<kwg::Node24>::empty()?
                         } else {
-                            klv::kbwg_from_bytes_alloc(std::fs::read(path)?)?
+                            klv::kbwg_from_bytes_alloc(run_line::read_input(path)?)?
                         };
                         self.game_config.check_klv(&klv)?;
                         let klv: &'static _ = Box::leak(Box::new(std::sync::Arc::new(klv)));
                         self.klvs_read.insert(path.clone(), klv);
+                        eprintln!(
+                            "{}",
+                            run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+                        );
                         klv
                     }
                 };

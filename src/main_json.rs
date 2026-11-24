@@ -8,6 +8,7 @@ use wolges::{
 };
 
 mod game_args;
+mod run_line;
 
 // tile numbering follows alphabet order (not necessarily unicode order).
 // rack: array of numbers. 0 for blank, 1 for A.
@@ -54,14 +55,18 @@ fn main() -> error::Returns<()> {
     let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
-        klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
+        klv::kbwg_from_bytes_alloc(run_line::read_input(&cli.klv)?)?
     });
     game_config.check_klv(&klv)?;
     let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
-        std::fs::read(&cli.kwg)?,
+        run_line::read_input(&cli.kwg)?,
         cli.kbwg,
     )?);
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+    eprintln!(
+        "{}",
+        run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+    );
     answer(&kwg, &klv, &game_config, cli.lean)
 }
 

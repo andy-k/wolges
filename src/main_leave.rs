@@ -18,6 +18,8 @@ use wolges::{
 };
 
 mod game_args;
+mod run_line;
+use run_line::{note_input, read_input, run_line};
 
 static BASE62: &[u8; 62] = b"\
 0123456789\
@@ -211,28 +213,6 @@ fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     } else {
         Box::new(std::io::stdout())
     }
-}
-
-static INPUT_DIGESTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-#[inline]
-fn note_input(path: &str, len: usize, hasher: &wolges::fash::MyHasher) {
-    let digest = format!(
-        "{path:?}[{len} bytes {:016x}]",
-        std::hash::Hasher::finish(hasher)
-    );
-    if let Ok(mut digests) = INPUT_DIGESTS.lock() {
-        digests.push(digest);
-    }
-}
-
-#[inline]
-fn read_input(path: &str) -> Result<Vec<u8>, std::io::Error> {
-    let bytes = std::fs::read(path)?;
-    let mut hasher = wolges::fash::MyHasher::default();
-    std::hash::Hasher::write(&mut hasher, &bytes);
-    note_input(path, bytes.len(), &hasher);
-    Ok(bytes)
 }
 
 struct DigestReader<R: std::io::Read> {
@@ -1788,19 +1768,6 @@ fn run(
             )
         }
     }
-}
-
-fn run_line(args: &[std::ffi::OsString]) -> String {
-    let mut line = format!("run: {}", wolges::VERSION);
-    for arg in args {
-        write!(line, " {arg:?}").ok();
-    }
-    if let Ok(digests) = INPUT_DIGESTS.lock() {
-        for digest in digests.iter() {
-            write!(line, " {digest}").ok();
-        }
-    }
-    line
 }
 
 fn write_run_line(args: &[std::ffi::OsString]) -> error::Returns<()> {

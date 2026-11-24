@@ -10,6 +10,7 @@ use wolges::{
 #[allow(dead_code)]
 mod endgame_watch;
 mod game_args;
+mod run_line;
 
 // most of this is copied from main_endgame.
 // parsing board into Vec<Vec<i8>> then back into Vec<u8> does not make sense,
@@ -106,11 +107,15 @@ fn main() -> error::Returns<()> {
     let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
-        klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
+        klv::kbwg_from_bytes_alloc(run_line::read_input(&cli.klv)?)?
     });
     game_config.check_klv(&klv)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&cli.kwg)?, cli.kbwg)?;
+    let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(&cli.kwg)?, cli.kbwg)?;
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+    eprintln!(
+        "{}",
+        run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+    );
     simulate(
         &kwg,
         &klv,

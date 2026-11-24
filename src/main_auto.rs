@@ -13,6 +13,7 @@ use wolges::{
 #[allow(dead_code)]
 mod endgame_watch;
 mod game_args;
+mod run_line;
 
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
 type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
@@ -103,14 +104,18 @@ fn main() -> error::Returns<()> {
     let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
-        klv::kbwg_from_bytes_alloc(std::fs::read(&cli.klv)?)?
+        klv::kbwg_from_bytes_alloc(run_line::read_input(&cli.klv)?)?
     });
     game_config.check_klv(&klv)?;
     let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
-        std::fs::read(&cli.kwg)?,
+        run_line::read_input(&cli.kwg)?,
         cli.kbwg,
     )?);
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+    eprintln!(
+        "{}",
+        run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+    );
     do_it(
         &kwg,
         &klv,

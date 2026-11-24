@@ -4,6 +4,7 @@ use wolges::{alphabet, display, error, fash, game_config, klv, kwg, movegen, ret
 
 mod game_args;
 mod movegen_replay;
+mod run_line;
 
 const LEXICON_LINES: usize = 2;
 
@@ -336,12 +337,16 @@ fn main() -> error::Returns<()> {
         Task::Capture(args) => return movegen_replay::capture(&cli.game, cli.kbwg, args),
         Task::Throughput(args) => return movegen_replay::throughput(&cli.game, cli.kbwg, args),
     };
-    let kwg_bytes = std::fs::read(&files.kwg)?;
-    let klv_bytes = std::fs::read(&files.klv)?;
+    let kwg_bytes = run_line::read_input(&files.kwg)?;
+    let klv_bytes = run_line::read_input(&files.klv)?;
     let klv = klv::kbwg_from_bytes_alloc(klv_bytes.clone())?;
     let game_config = cli.game.make_game_config()?;
     game_config.check_klv(&klv)?;
     let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.clone(), cli.kbwg)?;
+    eprintln!(
+        "{}",
+        run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+    );
     run(
         &kwg,
         &klv,
