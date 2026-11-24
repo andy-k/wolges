@@ -32,6 +32,7 @@ pub mod game_state;
 pub mod game_timers;
 pub mod glance;
 pub mod infer;
+pub mod jumbled_woadwage;
 pub mod kibitzer;
 pub mod klv;
 pub mod kwg;
