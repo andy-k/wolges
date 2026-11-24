@@ -116,6 +116,12 @@ crate-type = ["lib"]
 test = true
 
 [[example]]
+name = "stable_api"
+path = "tests/stable_api.rs"
+crate-type = ["lib"]
+test = true
+
+[[example]]
 name = "peg_draws"
 path = "tests/peg_draws.rs"
 crate-type = ["lib"]
