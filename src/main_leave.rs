@@ -564,6 +564,16 @@ struct Compare {
     p1_fuzz_by_bag: bool,
     #[arg(
         long,
+        help = "seat p0's simmer values its rollouts' leaves by drawing from the tiles unseen at its decision (needs a --full table)"
+    )]
+    p0_rollout_pool: bool,
+    #[arg(
+        long,
+        help = "seat p1's simmer values its rollouts' leaves by drawing from the tiles unseen at its decision (needs a --full table)"
+    )]
+    p1_rollout_pool: bool,
+    #[arg(
+        long,
         value_name = "POINTS",
         help = "seat p0, when deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
     )]
@@ -1321,6 +1331,14 @@ fn run(
                     wolges::return_error!("fuzz by bag requires a simmer picker".to_string());
                 }
             }
+            for (picker, pool) in [
+                (a.p0_picker, a.p0_rollout_pool),
+                (a.p1_picker, a.p1_rollout_pool),
+            ] {
+                if pool && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot) {
+                    wolges::return_error!("a rollout pool requires a simmer picker".to_string());
+                }
+            }
             let params = CompareParams {
                 num_game_pairs: a.pairs,
                 seed: a.seed,
@@ -1336,6 +1354,7 @@ fn run(
                 p1_iters: a.p1_iters,
                 turn_times: [p0_time?, p1_time?],
                 fuzz_by_bag: [a.p0_fuzz_by_bag, a.p1_fuzz_by_bag],
+                rollout_pool: [a.p0_rollout_pool, a.p1_rollout_pool],
                 p0_window,
                 p1_window,
                 p0_endgame: a.p0_endgame,
@@ -10073,6 +10092,27 @@ fn print_rack_keeps<L: kwg::Node>(
     Ok(())
 }
 
+#[inline]
+fn rollout_pool_klv<L: kwg::Node>(
+    lat: &census::MultisetLattice,
+    add: &census::AddTable,
+    full_v: &[i32],
+    klv: &klv::Klv<L>,
+    pool: &[u8],
+) -> error::Returns<klv::Klv<L>> {
+    let value = dynamic_leaves_of_pool(lat, add, full_v, pool)?;
+    let baseline = value[0];
+    Ok(klv.revalued(lat.num_letters(), |tally, leave| {
+        let ridx = lat.rank(tally);
+        match value.get(ridx as usize) {
+            Some(&v) if ridx != !0 && v.is_finite() && baseline.is_finite() => {
+                (v - baseline).round() as i32
+            }
+            _ => leave,
+        }
+    }))
+}
+
 // each multiset's value once the tiles still to draw come from the pool less
 // itself, one draw at a time from the full racks down; NaN where the pool
 // cannot hold it.
@@ -10726,6 +10766,7 @@ struct CompareParams {
     p1_iters: u64,
     turn_times: [Option<std::time::Duration>; 2],
     fuzz_by_bag: [bool; 2], // each seat's simmer infers with infer::fitted_fuzz
+    rollout_pool: [bool; 2], // each seat's simmer values its rollouts' leaves from its decision's pool
     p0_window: i32,
     p1_window: i32,
     p0_endgame: Option<EndPicker>,
@@ -10997,6 +11038,7 @@ fn compare_seats<
         p1_iters,
         turn_times,
         fuzz_by_bag,
+        rollout_pool,
         p0_window,
         p1_window,
         p0_endgame,
@@ -11035,25 +11077,28 @@ fn compare_seats<
         if [p0_picker, p1_picker]
             .iter()
             .any(|picker| matches!(picker, SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot))
+            || rollout_pool.contains(&true)
         {
             let num_letters = game_config.alphabet().len() as usize;
             let rack_size = game_config.rack_size() as usize;
             census::check_letters(num_letters)?;
             let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-            let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
+            let full_v_of = |picker: SeatPicker, pool: bool, klv: &klv::Klv<L>| match picker {
                 SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot => full_rack_values(&lat, klv),
+                SeatPicker::Simmer if pool => full_rack_values(&lat, klv),
                 SeatPicker::Hasty | SeatPicker::Simmer | SeatPicker::Deft => Ok(Vec::new()),
             };
             let full_v = [
-                full_v_of(p0_picker, &arc_klv0)?,
-                full_v_of(p1_picker, &arc_klv1)?,
+                full_v_of(p0_picker, rollout_pool[0], &arc_klv0)?,
+                full_v_of(p1_picker, rollout_pool[1], &arc_klv1)?,
             ];
             let add = census::AddTable::new_with_threads(&lat, num_threads);
             Some((lat, add, full_v))
         } else {
             None
         };
-    let dyn_refs = dyn_ctx.as_ref().map(|(lat, add, full_v)| {
+    let dyn_ctx_ref = dyn_ctx.as_ref();
+    let dyn_refs = dyn_ctx_ref.map(|(lat, add, full_v)| {
         [0, 1].map(|seat| klv::DynamicLeavesRef {
             lat,
             add,
@@ -11294,6 +11339,27 @@ fn compare_seats<
                                             last_bag,
                                             start_bag,
                                             matches!(&last_play, Some(movegen::Play::Exchange { tiles }) if !tiles.is_empty()),
+                                        ));
+                                    }
+                                    let klv_seat = !is_p0_seat as usize;
+                                    if rollout_pool[klv_seat]
+                                        && let Some((lat, add, full_v)) = dyn_ctx_ref
+                                    {
+                                        let mut pool =
+                                            game_config.tiles_off_board(&game_state.board_tiles)?;
+                                        game_config.take_rack(
+                                            &mut pool,
+                                            &game_state.current_player().rack,
+                                        )?;
+                                        let klv = if is_p0_seat { &arc_klv0 } else { &arc_klv1 };
+                                        simmer_driver.set_rollout_klv(std::sync::Arc::new(
+                                            rollout_pool_klv(
+                                                lat,
+                                                add,
+                                                &full_v[klv_seat],
+                                                klv,
+                                                &pool,
+                                            )?,
                                         ));
                                     }
                                 }
@@ -12899,5 +12965,34 @@ WCMP_P1_SCORE 402.000000
             .1
             .add_position(&[0, 1, 0, 1, 0, 0], &[7, 5], scale, &mut scratch);
         assert!(orders.0.xx == orders.1.xx && orders.0.xy == orders.1.xy);
+    }
+
+    #[test]
+    #[inline]
+    fn rollout_pool_leaves_are_the_pools_dynamic_leaves() {
+        let lat = census::MultisetLattice::new(4, 3).unwrap();
+        let add = census::AddTable::new_with_threads(&lat, 1);
+        let made = |idx: usize| (idx as i64 * 7919 % 1000 - 500) as f64 * 10.0;
+        let (bin, _) = census_klv2_bytes(&lat, &made, 0.0, &|_| true, true).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(bin).unwrap();
+        let full_v = full_rack_values(&lat, &klv).unwrap();
+        let pool = [1u8, 2, 0, 3];
+        let value = dynamic_leaves_of_pool(&lat, &add, &full_v, &pool).unwrap();
+        let baseline = value[0];
+        assert!(baseline.is_finite());
+        let pooled = rollout_pool_klv(&lat, &add, &full_v, &klv, &pool).unwrap();
+        let (mut drawn, mut own) = (0, 0);
+        klv.for_each_tally_leave(4, |tally, leave| {
+            let ridx = lat.rank(tally) as usize;
+            let got = pooled.leave_value_from_tally(tally).raw();
+            if value[ridx].is_finite() {
+                assert_eq!(got, (value[ridx] - baseline).round() as i32, "{tally:?}");
+                drawn += 1;
+            } else {
+                assert_eq!(got, leave, "{tally:?} does not fit the pool");
+                own += 1;
+            }
+        });
+        assert!(drawn > 10 && own > 0, "{drawn} drawn, {own} own");
     }
 }

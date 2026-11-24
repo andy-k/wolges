@@ -487,6 +487,7 @@ pub struct Simmer<
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
     inferred: std::sync::Arc<infer::PackedLeaves>, // the opponent's kept leaves, in place
     infer_fuzz: (f64, f64), // the fuzz and prior mix its inference weighs with, the default unless set
+    rollout_klv: std::sync::Arc<klv::Klv<L>>, // the leaves its rollouts value with
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
     late_board: Box<[u8]>, // the board the late graph was pruned for
     late_prune: LatePrune, // what each late graph is pruned with
@@ -745,6 +746,7 @@ impl<
             infer: None,
             inferred: std::sync::Arc::default(),
             infer_fuzz: (infer::FUZZ, 0.0),
+            rollout_klv: std::sync::Arc::clone(klv),
             late_graph: None,
             late_board: Box::default(),
             memory: params.memory,
@@ -772,6 +774,15 @@ impl<
     #[inline]
     pub fn set_infer_fuzz(&mut self, fuzz: (f64, f64)) {
         self.infer_fuzz = fuzz;
+    }
+
+    #[inline]
+    pub fn set_rollout_klv(&mut self, klv: std::sync::Arc<klv::Klv<L>>) {
+        self.rollout_klv = klv;
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.sim_threads = 1;
+        }
     }
 
     // a decision's time budget, counted from before its candidates are
@@ -2196,7 +2207,7 @@ impl<
                         self.game_config,
                         kwg,
                         arm_tables,
-                        self.klv,
+                        &self.rollout_klv,
                         play,
                         self.win_pct_table.map(|table| &**table),
                     )?,
@@ -2205,7 +2216,7 @@ impl<
                         self.game_config,
                         self.kwg,
                         self.arm_tables,
-                        self.klv,
+                        &self.rollout_klv,
                         play,
                         self.win_pct_table.map(|table| &**table),
                     )?,
@@ -2313,15 +2324,15 @@ impl<
     // what a block's rows are rolled out by, apart from the simmer, on the
     // late graph given (the sim's own, or one taken out of it)
     #[inline(always)]
-    fn rows_of<'g>(
-        &self,
+    fn rows_of<'s, 'g>(
+        &'s self,
         late_graph: Option<&'g (kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
-    ) -> RowsOf<'a, 'g, N, L> {
+    ) -> RowsOf<'s, 'g, N, L> {
         RowsOf {
             game_config: self.game_config,
             kwg: self.kwg,
             arm_tables: self.arm_tables,
-            klv: self.klv,
+            klv: &self.rollout_klv,
             win_pct_table: self.win_pct_table.map(|table| &**table),
             decision_seed: self.decision_seed,
             late_graph,
@@ -2513,7 +2524,7 @@ impl<
         let game_config = std::sync::Arc::clone(self.game_config);
         let kwg = std::sync::Arc::clone(self.kwg);
         let arm_tables = std::sync::Arc::clone(self.arm_tables);
-        let klv = std::sync::Arc::clone(self.klv);
+        let klv = std::sync::Arc::clone(&self.rollout_klv);
         let win_pct_table = self.win_pct_table.cloned();
         let memory = self.memory;
         let (plays, late) = match shared {
@@ -5542,5 +5553,79 @@ mod tests {
             changed += (picked != sums[0].1) as usize;
         }
         assert!(changed > 0, "the term changed no pick");
+    }
+
+    #[test]
+    #[inline]
+    fn a_sims_rollouts_value_leaves_with_the_klv_it_is_given() {
+        let game_config = std::sync::Arc::new(game_config::make_english_game_config());
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap(),
+        );
+        let klv = std::sync::Arc::new(
+            klv::kbwg_from_bytes_alloc(klv::make_klv2(&[
+                (&[1], 3.5),
+                (&[1, 5], 4.0),
+                (&[5], 1.25),
+                (&[20], -2.0),
+            ]))
+            .unwrap(),
+        );
+        let arm_tables =
+            std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, false).unwrap());
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 20, 5, 5, 0, 1, 20]);
+        let rack = game_state.current_player().rack.clone();
+        let params = || SimmerParams {
+            num_sim_iters: 8,
+            num_sim_plies: 2,
+            sim_threads: 1,
+            win_pct_table: None,
+            quiet: true,
+            memory: None,
+        };
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let decide = |rollout_klv: Option<std::sync::Arc<klv::Klv<_>>>| {
+            let mut simmer =
+                Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params())
+                    .unwrap();
+            if let Some(rollout_klv) = rollout_klv {
+                simmer.set_rollout_klv(rollout_klv);
+            }
+            simmer.reseed(3);
+            let mut picker = MovePicker::Simmer(Box::new(simmer));
+            let mut picked = movegen::KurniaMoveGenerator::new(&game_config);
+            picker
+                .pick_a_move_after(
+                    &mut move_filter::GenMoves::Unfiltered,
+                    &mut picked,
+                    &board_snapshot,
+                    &game_state,
+                    &rack,
+                    (None, &mut infer::Carried::default()),
+                )
+                .unwrap();
+            let MovePicker::Simmer(simmer) = &picker else {
+                unreachable!()
+            };
+            (simmer.candidates.iter())
+                .map(|candidate| candidate.stats.mean())
+                .collect::<Vec<_>>()
+        };
+        let untold = decide(None);
+        assert!(untold.len() >= 2);
+        assert_eq!(decide(Some(std::sync::Arc::clone(&klv))), untold);
+        let num_letters = game_config.alphabet().len() as usize;
+        let other = klv.revalued(num_letters, |tally, leave| leave + 1000 * tally[1] as i32);
+        assert_ne!(decide(Some(std::sync::Arc::new(other))), untold);
     }
 }
