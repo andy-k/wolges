@@ -1036,7 +1036,11 @@ impl ArmTables {
         ledger: &mut Ledger,
     ) -> error::Returns<Self> {
         // a jumbled game is the lean arm's, whose walk beats the tables there
-        if lean || matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
+        let jumbled = match game_config.game_rules() {
+            game_config::GameRules::Classic => false,
+            game_config::GameRules::Jumbled => true,
+        };
+        if lean || jumbled {
             return Ok(
                 RackLengths::build_for_config_within(kwg, game_config, ledger)?
                     .map_or(Self::None, Self::RackLengths),
@@ -1058,8 +1062,11 @@ impl ArmTables {
     ) -> error::Returns<Self> {
         let mut ledger = Ledger::up_to(usize::MAX);
         // a jumbled game is the lean arm's, whatever arm is asked for
-        if matches!(game_config.game_rules(), game_config::GameRules::Jumbled) {
-            return Self::build_in(kwg, game_config, true, &mut ledger);
+        match game_config.game_rules() {
+            game_config::GameRules::Classic => {}
+            game_config::GameRules::Jumbled => {
+                return Self::build_in(kwg, game_config, true, &mut ledger);
+            }
         }
         Self::layout_in(kwg, game_config, &mut ledger)
     }

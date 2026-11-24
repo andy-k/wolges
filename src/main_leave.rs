@@ -5304,7 +5304,10 @@ fn spare_copy(spare: &mut Vec<Vec<bites::Bites>>, list: &[bites::Bites]) -> Vec<
 impl Losses {
     fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
-            jumbled: matches!(game_config.game_rules(), game_config::GameRules::Jumbled),
+            jumbled: match game_config.game_rules() {
+                game_config::GameRules::Classic => false,
+                game_config::GameRules::Jumbled => true,
+            },
             seeker: movegen::KurniaMoveGenerator::new(game_config),
             checker: move_filter::LimitedVocabChecker::new(),
             targets: Vec::new(),
@@ -5734,8 +5737,9 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         quiet,
     }: StudyParams<'_>,
 ) -> error::Returns<()> {
-    if !matches!(game_config.game_rules(), game_config::GameRules::Classic) {
-        return Err("study plays classic games".into());
+    match game_config.game_rules() {
+        game_config::GameRules::Classic => {}
+        game_config::GameRules::Jumbled => return Err("study plays classic games".into()),
     }
     let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
@@ -10235,7 +10239,10 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         }
     }
 
-    let jumbled = matches!(game_config.game_rules(), game_config::GameRules::Jumbled);
+    let jumbled = match game_config.game_rules() {
+        game_config::GameRules::Classic => false,
+        game_config::GameRules::Jumbled => true,
+    };
     let mut num_words = 0usize;
     let mut not_words = Vec::<String>::new();
     let mut word = Vec::new();

@@ -1220,10 +1220,14 @@ mod tests {
     fn same_game_config(a: &GameConfig, b: &GameConfig) -> bool {
         let (alphabet, other_alphabet) = (a.alphabet(), b.alphabet());
         let (board_layout, other_board_layout) = (a.board_layout(), b.board_layout());
-        matches!(
-            (a.game_rules(), b.game_rules()),
-            (GameRules::Classic, GameRules::Classic) | (GameRules::Jumbled, GameRules::Jumbled)
-        ) && alphabet.len() == other_alphabet.len()
+        let same_rules = match (a.game_rules(), b.game_rules()) {
+            (GameRules::Classic, GameRules::Classic) | (GameRules::Jumbled, GameRules::Jumbled) => {
+                true
+            }
+            (GameRules::Classic, _) | (GameRules::Jumbled, _) => false,
+        };
+        same_rules
+            && alphabet.len() == other_alphabet.len()
             && (0..alphabet.len()).all(|tile| {
                 alphabet.of_board(tile) == other_alphabet.of_board(tile)
                     && alphabet.freq(tile) == other_alphabet.freq(tile)
@@ -1310,8 +1314,9 @@ mod tests {
         let mut classic = 0;
         for (name, make) in GAME_CONFIGS {
             let gc = make();
-            if !matches!(gc.game_rules(), GameRules::Classic) {
-                continue;
+            match gc.game_rules() {
+                GameRules::Classic => {}
+                GameRules::Jumbled => continue,
             }
             classic += 1;
             let board = if name.starts_with("super-") {
