@@ -637,6 +637,11 @@ struct HarvestBoards {
         help = "read a full rack's leaves and subracks' order from this file the racks task wrote from the leaves"
     )]
     racks: Option<String>,
+    #[arg(
+        long,
+        help = "write no fens, only one line: the boards, games, plies (all, then game by game), and the FNV-1a 64 of the fens"
+    )]
+    digest: bool,
     #[arg(long, help = "print no progress")]
     quiet: bool,
 }
@@ -1427,6 +1432,7 @@ fn run(
                     seed: a.seed,
                     stride: a.stride,
                     lean: a.lean,
+                    digest: a.digest,
                     quiet: a.quiet,
                 },
             )
@@ -10390,7 +10396,22 @@ struct HarvestParams {
     seed: u64,
     stride: u32,
     lean: bool,
+    digest: bool,
     quiet: bool,
+}
+
+// FNV-1a 64, its offset basis and prime the published ones:
+// https://datatracker.ietf.org/doc/html/draft-eastlake-fnv
+// http://www.isthe.com/chongo/tech/comp/fnv/
+const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+#[inline]
+fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash = (hash ^ b as u64).wrapping_mul(FNV1A64_PRIME);
+    }
+    hash
 }
 
 #[inline]
@@ -10418,6 +10439,7 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
         num_games,
         seed,
         stride,
+        digest,
         quiet,
         ..
     }: HarvestParams,
@@ -10433,6 +10455,29 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
     let mut game_state = game_state::GameState::new(&game_config);
     let mut final_scores = vec![0i32; game_config.num_players() as usize];
     let mut out = std::io::BufWriter::new(make_writer(out_path)?);
+    let mut line = Vec::new();
+    let mut hash = FNV1A64_OFFSET;
+    let mut boards = 0u64;
+    let mut game_plies = Vec::new();
+    let mut fen = |out: &mut std::io::BufWriter<_>, board_tiles: &[u8]| -> error::Returns<()> {
+        if digest {
+            line.clear();
+            writeln!(
+                line,
+                "{}",
+                display::BoardFenner::new(alphabet, board_layout, board_tiles),
+            )?;
+            hash = fnv1a64(hash, &line);
+            boards += 1;
+        } else {
+            writeln!(
+                out,
+                "{}",
+                display::BoardFenner::new(alphabet, board_layout, board_tiles),
+            )?;
+        }
+        Ok(())
+    };
     for game in 0..num_games {
         let mut rng = GameRng::seed_from_u64(census_mix64(seed.wrapping_add(census_mix64(game))));
         game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -10453,22 +10498,17 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
             game_state.play(&game_config, &mut rng, play)?;
             ply += 1;
             if stride > 0 && ply.is_multiple_of(stride) {
-                writeln!(
-                    out,
-                    "{}",
-                    display::BoardFenner::new(alphabet, board_layout, &game_state.board_tiles),
-                )?;
+                fen(&mut out, &game_state.board_tiles)?;
             }
             match game_state.check_game_ended(&game_config, &mut final_scores)? {
                 game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
                 _ => break,
             }
         }
-        writeln!(
-            out,
-            "{}",
-            display::BoardFenner::new(alphabet, board_layout, &game_state.board_tiles),
-        )?;
+        fen(&mut out, &game_state.board_tiles)?;
+        if digest {
+            game_plies.push(ply);
+        }
         let secs = t0.elapsed().as_secs();
         if !quiet && secs > ticked {
             ticked = secs;
@@ -10478,6 +10518,18 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
                 game + 1
             )?;
         }
+    }
+    if digest {
+        write!(
+            out,
+            "digest boards {boards} games {} plies {} fnv1a64 {hash:016x} game-plies",
+            game_plies.len(),
+            game_plies.iter().map(|&p| p as u64).sum::<u64>(),
+        )?;
+        for p in &game_plies {
+            write!(out, " {p}")?;
+        }
+        writeln!(out)?;
     }
     Ok(())
 }
@@ -12528,6 +12580,7 @@ WCMP_P1_SCORE 402.000000
                         seed: 1,
                         stride: 1,
                         lean,
+                        digest: false,
                         quiet: true,
                     },
                 )
@@ -12537,6 +12590,42 @@ WCMP_P1_SCORE 402.000000
             let walked = boards(None);
             assert!(walked.contains(char::is_alphabetic), "lean {lean}");
             assert_eq!(boards(Some(racks_path.as_str())), walked, "lean {lean}");
+            harvest_boards(
+                game_config.clone(),
+                kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+                read_klv_with_racks(&game_config, &leaves_path, None).unwrap(),
+                &boards_path,
+                HarvestParams {
+                    num_games: 4,
+                    seed: 1,
+                    stride: 1,
+                    lean,
+                    digest: true,
+                    quiet: true,
+                },
+            )
+            .unwrap();
+            let digest = std::fs::read_to_string(&boards_path).unwrap();
+            let lines = walked.lines().count();
+            assert_eq!(
+                digest.split(" game-plies").next().unwrap(),
+                format!(
+                    "digest boards {lines} games 4 plies {} fnv1a64 {:016x}",
+                    lines - 4,
+                    fnv1a64(FNV1A64_OFFSET, walked.as_bytes()),
+                ),
+                "lean {lean}"
+            );
+            let game_plies = digest
+                .trim_end()
+                .split(" game-plies ")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .map(|p| p.parse::<usize>().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(game_plies.len(), 4, "lean {lean}");
+            assert_eq!(game_plies.iter().sum::<usize>(), lines - 4, "lean {lean}");
         }
         for path in [&boards_path, &racks_path, &leaves_path] {
             std::fs::remove_file(path).unwrap();
