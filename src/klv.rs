@@ -516,7 +516,32 @@ impl<L: kwg::Node> Klv<L> {
         max_len: usize,
         mut f: impl FnMut(&[u8], i32),
     ) {
-        struct Env<'a, L: kwg::Node, F: FnMut(&[u8], i32)> {
+        self.for_each_tally_index_up_to(num_tiles, max_len, |tally, idx| {
+            f(tally, self.leave(idx).raw())
+        });
+    }
+
+    #[inline]
+    pub fn revalued(&self, num_tiles: usize, mut value_of: impl FnMut(&[u8], i32) -> i32) -> Self {
+        let mut leaves = self.leaves.clone();
+        self.for_each_tally_index_up_to(num_tiles, usize::MAX, |tally, idx| {
+            leaves[idx as usize] = value_of(tally, self.leaves[idx as usize]);
+        });
+        Self {
+            kwg: kwg::Kwg(self.kwg.0.clone()),
+            counts: self.counts.clone(),
+            leaves,
+            racks: None,
+        }
+    }
+
+    fn for_each_tally_index_up_to(
+        &self,
+        num_tiles: usize,
+        max_len: usize,
+        mut f: impl FnMut(&[u8], u32),
+    ) {
+        struct Env<'a, L: kwg::Node, F: FnMut(&[u8], u32)> {
             klv: &'a Klv<L>,
             tally: Vec<u8>,
             f: F,
@@ -524,7 +549,7 @@ impl<L: kwg::Node> Klv<L> {
         // the list at q, its first word at index base; a tile in order is one
         // at least min_tile, and the first of its tile in the list, as
         // get_word_index_of takes the first
-        fn iter<L: kwg::Node, F: FnMut(&[u8], i32)>(
+        fn iter<L: kwg::Node, F: FnMut(&[u8], u32)>(
             env: &mut Env<'_, L, F>,
             q: i32,
             base: u32,
@@ -542,7 +567,7 @@ impl<L: kwg::Node> Klv<L> {
                     let idx = base + env.klv.counts[q as usize] - env.klv.counts[p as usize];
                     env.tally[tile] += 1;
                     if node.accepts() {
-                        (env.f)(&env.tally, env.klv.leave(idx).raw());
+                        (env.f)(&env.tally, idx);
                     }
                     if remaining > 1 && node.arc_index() != 0 {
                         iter(
@@ -2204,5 +2229,31 @@ mod tests {
             klv.leave_range(),
             (equity::Equity::new(-2_500), equity::Equity::new(12_345))
         );
+    }
+
+    #[test]
+    fn revalued_leaves_are_what_the_function_makes_of_each() {
+        let klv = kbwg_from_bytes_alloc(make_klv2(&[
+            (&[1], 3.5),
+            (&[1, 2], -1.25),
+            (&[2], 0.5),
+            (&[2, 2, 3], 7.0),
+        ]))
+        .unwrap();
+        let mut before = Vec::new();
+        klv.for_each_tally_leave(4, |tally, value| before.push((tally.to_vec(), value)));
+        assert_eq!(before.len(), 4);
+        let same = klv.revalued(4, |_, value| value);
+        let mut kept = Vec::new();
+        same.for_each_tally_leave(4, |tally, value| kept.push((tally.to_vec(), value)));
+        assert_eq!(kept, before);
+        let made = klv.revalued(4, |tally, value| value + 1000 * tally[2] as i32);
+        for (tally, value) in &before {
+            assert_eq!(
+                made.leave_value_from_tally(tally).raw(),
+                value + 1000 * tally[2] as i32
+            );
+        }
+        assert_eq!(made.leave_value_from_tally(&[0, 0, 0, 0]).raw(), 0);
     }
 }
