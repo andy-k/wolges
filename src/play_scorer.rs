@@ -307,7 +307,7 @@ impl PlayScorer {
                 let checker = self.woadwage_words_checker(board_snapshot);
                 self.words_all(board_snapshot, play, checker)
             }
-            game_config::GameRules::Jumbled => {
+            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
                 let checker = self.jumbled_words_checker(board_snapshot);
                 self.words_all(board_snapshot, play, checker)
             }
@@ -346,7 +346,7 @@ impl PlayScorer {
                 let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)
             }
-            game_config::GameRules::Jumbled => {
+            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
                 let checker = self.jumbled_words_checker(board_snapshot);
                 let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)

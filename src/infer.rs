@@ -132,7 +132,7 @@ pub fn build_sheet_spell_once<
     // each multiset (and blank designation) once, at its best
     let jumbled = match game_config.game_rules() {
         game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
-        game_config::GameRules::Jumbled => true,
+        game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => true,
     };
     if jumbled {
         movegen_rack.clear();

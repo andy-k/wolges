@@ -388,7 +388,9 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
         game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
             sweep_kwg_covering(gc)
         }
-        game_config::GameRules::Jumbled => test_kad(gc, SWEEP_WORDS),
+        game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+            test_kad(gc, SWEEP_WORDS)
+        }
     };
     let run_letter_bits = kwg.compute_letter_bits().letter_bits;
     let detected = anagrams::ArmTables::build(&kwg, gc, false).unwrap();

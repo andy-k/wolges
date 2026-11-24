@@ -980,8 +980,8 @@ impl ArmTables {
     // the tables of the arm the game config is detected for: with lean or for a
     // jumbled game, the lean arm's; else tables keyed by nibbles where they fit
     // the game (a classic game on a square board of a side in NIBBLE_SIDES),
-    // else by their layout; else none (the lean arm). A woadwage game has none:
-    // a joined pair is in no table of the graph's words
+    // else by their layout; else none (the lean arm). A woadwage game, jumbled
+    // or not, has none: a joined pair is in no table of the graph's words
     #[inline]
     pub fn build<N: kwg::Node>(
         kwg: &kwg::Kwg<N>,
@@ -1046,7 +1046,9 @@ impl ArmTables {
         let jumbled = match game_config.game_rules() {
             game_config::GameRules::Classic => false,
             game_config::GameRules::Jumbled => true,
-            game_config::GameRules::Woadwage => return Ok(Self::None),
+            game_config::GameRules::Woadwage | game_config::GameRules::JumbledWoadwage => {
+                return Ok(Self::None);
+            }
         };
         if lean || jumbled {
             return Ok(
@@ -1072,7 +1074,9 @@ impl ArmTables {
         // a jumbled game is the lean arm's, whatever arm is asked for
         match game_config.game_rules() {
             game_config::GameRules::Classic => {}
-            game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => {
+            game_config::GameRules::Jumbled
+            | game_config::GameRules::JumbledWoadwage
+            | game_config::GameRules::Woadwage => {
                 return Self::build_in(kwg, game_config, true, &mut ledger);
             }
         }
