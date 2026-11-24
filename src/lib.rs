@@ -1,5 +1,16 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+// the stable items, what a crate builds on to load a lexicon and generate a
+// move: the version const; kwg's Kwg, its node readers, from_bytes_alloc, and
+// kbwg_from_bytes_alloc; klv's Klv, from_bytes_alloc, and
+// kbwg_from_bytes_alloc; and the alphabet, board_layout, game_config,
+// game_state, bag, display, movegen, play_scorer, move_filter, move_picker,
+// equity, win_pct, and error modules. Nothing else carries a promise. A stable
+// name keeps its meaning; a change is additive (a new item, field, or json
+// key); a new meaning takes a new name, and an old one goes only in a commit
+// that says it removes it. The build identity is the version const, never a
+// field in any file.
+
 #[macro_use]
 pub mod error;
 
