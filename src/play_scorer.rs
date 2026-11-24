@@ -291,7 +291,7 @@ impl PlayScorer {
         play: &movegen::Play,
     ) -> bool {
         match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic => {
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
                 let checker = self.classic_words_checker(board_snapshot);
                 self.words_all(board_snapshot, play, checker)
             }
@@ -324,7 +324,7 @@ impl PlayScorer {
         save_invalid_word: impl FnMut(&[u8]),
     ) {
         match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic => {
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
                 let checker = self.classic_words_checker(board_snapshot);
                 let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)

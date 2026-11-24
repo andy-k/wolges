@@ -1039,6 +1039,7 @@ impl ArmTables {
         let jumbled = match game_config.game_rules() {
             game_config::GameRules::Classic => false,
             game_config::GameRules::Jumbled => true,
+            game_config::GameRules::Woadwage => return Ok(Self::None),
         };
         if lean || jumbled {
             return Ok(
@@ -1064,7 +1065,7 @@ impl ArmTables {
         // a jumbled game is the lean arm's, whatever arm is asked for
         match game_config.game_rules() {
             game_config::GameRules::Classic => {}
-            game_config::GameRules::Jumbled => {
+            game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => {
                 return Self::build_in(kwg, game_config, true, &mut ledger);
             }
         }

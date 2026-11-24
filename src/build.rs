@@ -1526,13 +1526,14 @@ impl Builder {
         memory: Option<&endgame::MemoryLimit>,
     ) -> error::Returns<&[u8]> {
         match game_config.game_rules() {
-            game_config::GameRules::Classic => self.do_build::<2, _>(
-                BuildContent::Gaddawg,
-                BuildLayout::Wolges,
-                BuildOrder::Sorted,
-                machine_words,
-                memory,
-            )?,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => self
+                .do_build::<2, _>(
+                    BuildContent::Gaddawg,
+                    BuildLayout::Wolges,
+                    BuildOrder::Sorted,
+                    machine_words,
+                    memory,
+                )?,
             game_config::GameRules::Jumbled => {
                 // lent to the build, then put back for the next
                 let mut alphagrams = std::mem::take(&mut self.alphagrams);

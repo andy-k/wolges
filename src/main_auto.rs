@@ -405,7 +405,7 @@ fn do_it(
                 let plays2;
                 let plays = if match &board_snapshot.game_config.game_rules() {
                     game_config::GameRules::Classic => true,
-                    game_config::GameRules::Jumbled => false,
+                    game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => false,
                 } {
                     let plays1 = move_generator.plays.clone();
 
@@ -482,7 +482,7 @@ fn do_it(
 
             if match &board_snapshot.game_config.game_rules() {
                 game_config::GameRules::Classic => false,
-                game_config::GameRules::Jumbled => false,
+                game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => false,
             } {
                 let leave_scale = if let move_filter::GenMoves::Tilt { tilt, .. } = filtered_movegen
                 {

@@ -1146,7 +1146,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
     ) -> bool {
         match board_snapshot.game_config.game_rules() {
             game_config::GameRules::Classic => {}
-            game_config::GameRules::Jumbled => return false,
+            game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => return false,
         }
         let dim = board_snapshot.game_config.board_layout().dim();
         let extent = dim.rows.max(dim.cols) as u8;
@@ -1516,7 +1516,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         }
         self.used_letters_tally.clear();
         match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic => {}
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => {}
             game_config::GameRules::Jumbled => {
                 self.used_letters_tally.resize(alphabet.len() as usize, 0);
             }
@@ -2085,15 +2085,17 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
         );
     }
     match board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic => gen_classic_cross_set(
-            board_snapshot,
-            board_strip,
-            allowed,
-            cross_scores,
-            output_strider,
-            cross_set_buffer,
-            cached_cross_sets,
-        ),
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
+            gen_classic_cross_set(
+                board_snapshot,
+                board_strip,
+                allowed,
+                cross_scores,
+                output_strider,
+                cross_set_buffer,
+                cached_cross_sets,
+            )
+        }
         game_config::GameRules::Jumbled => gen_jumbled_cross_set(
             board_snapshot,
             board_strip,
@@ -2451,7 +2453,7 @@ fn fill_key_check<
     let source = board_snapshot.anagrams?;
     let classic = match board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => true,
-        game_config::GameRules::Jumbled => false,
+        game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => false,
     };
     if !classic || working_buffer.rack_tally[0] != 0 || working_buffer.subracks.is_empty() {
         return None;
@@ -7452,7 +7454,7 @@ fn gen_place_moves_lean<
     runs: R,
 ) {
     match params.board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic => {
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
             gen_classic_place_moves_lean::<LEAVES, BAG_TERM, _, _, _, _>(
                 params,
                 single_tile_plays,
@@ -7668,7 +7670,7 @@ fn gen_place_moves_at<
     // back), holding its anagrams
     match board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => {}
-        game_config::GameRules::Jumbled => return,
+        game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => return,
     }
     let Some(held) = board_snapshot.anagrams else {
         return;
@@ -9503,7 +9505,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             dynamic_leaves: None,
         };
         let jumbled = match game_config.game_rules() {
-            game_config::GameRules::Classic => false,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
             game_config::GameRules::Jumbled => true,
         };
         if jumbled {
@@ -9675,7 +9677,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) {
         let game_config = board_snapshot.game_config;
         let jumbled = match game_config.game_rules() {
-            game_config::GameRules::Classic => false,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
             game_config::GameRules::Jumbled => true,
         };
         if !jumbled {
@@ -9739,7 +9741,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) -> u64 {
         let game_config = board_snapshot.game_config;
         let jumbled = match game_config.game_rules() {
-            game_config::GameRules::Classic => false,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
             game_config::GameRules::Jumbled => true,
         };
         if !jumbled {
@@ -9828,7 +9830,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) {
         let game_config = board_snapshot.game_config;
         let jumbled = match game_config.game_rules() {
-            game_config::GameRules::Classic => false,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
             game_config::GameRules::Jumbled => true,
         };
         if !jumbled {
@@ -9886,7 +9888,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) -> u64 {
         let game_config = board_snapshot.game_config;
         let jumbled = match game_config.game_rules() {
-            game_config::GameRules::Classic => false,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
             game_config::GameRules::Jumbled => true,
         };
         if !jumbled {
@@ -10260,7 +10262,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 && dim.cols as usize == D
                 && match params.board_snapshot.game_config.game_rules() {
                     game_config::GameRules::Classic => true,
-                    game_config::GameRules::Jumbled => false,
+                    game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => false,
                 }
                 && params
                     .board_snapshot
@@ -11696,7 +11698,7 @@ fn gen_empty_board_place_moves_made<
         .then_some((true, star_col, star_row)),
     ];
     let jumbled = match game_config.game_rules() {
-        game_config::GameRules::Classic => false,
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
         game_config::GameRules::Jumbled => true,
     };
     if jumbled {
@@ -12250,7 +12252,7 @@ fn kurnia_gen_place_moves_iter_lean<
     let spells_only = working_buffer.is_census
         && match game_config.game_rules() {
             game_config::GameRules::Classic => true,
-            game_config::GameRules::Jumbled => false,
+            game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => false,
         };
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
@@ -14585,6 +14587,39 @@ fn gen_remaining_words<
     working_buffer.prune.found.clear();
     match game_config.game_rules() {
         game_config::GameRules::Classic => {}
+        game_config::GameRules::Woadwage => {
+            fn each_word<N: kwg::Node>(
+                kwg: &kwg::Kwg<N>,
+                mut p: i32,
+                word: &mut Vec<u8>,
+                found_word: &mut impl FnMut(&[u8]),
+            ) {
+                loop {
+                    let node = kwg[p];
+                    word.push(node.tile());
+                    if node.accepts() {
+                        found_word(word);
+                    }
+                    if node.arc_index() != 0 {
+                        each_word(kwg, node.arc_index(), word, found_word);
+                    }
+                    word.pop();
+                    if node.is_end() {
+                        break;
+                    }
+                    p += 1;
+                }
+            }
+            let word = &mut working_buffer.exchange_buffer;
+            word.clear();
+            endgame::room_in(memory, word, dim.rows.max(dim.cols) as usize)?;
+            let root = board_snapshot.kwg[0].arc_index();
+            let mut found_word = found_word;
+            if root != 0 {
+                each_word(board_snapshot.kwg, root, word, &mut found_word);
+            }
+            return Ok(());
+        }
         game_config::GameRules::Jumbled => {
             gen_remaining_jumbled_words(board_snapshot, working_buffer, memory)?;
             let PruneBuffers { found, order, .. } = &mut working_buffer.prune;
@@ -15282,7 +15317,9 @@ mod tests {
             ),
         ] {
             let kwg = match gc.game_rules() {
-                game_config::GameRules::Classic => sweep_kwg_covering(&gc),
+                game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
+                    sweep_kwg_covering(&gc)
+                }
                 game_config::GameRules::Jumbled => test_kad(&gc, SWEEP_WORDS),
             };
             let run_letter_bits = kwg.compute_letter_bits().letter_bits;
@@ -19660,7 +19697,7 @@ mod tests {
         let all = !0u128;
         for (ci, gc) in configs.iter().enumerate() {
             let jumbled = match gc.game_rules() {
-                game_config::GameRules::Classic => false,
+                game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
                 game_config::GameRules::Jumbled => true,
             };
             let kwg = if jumbled {
