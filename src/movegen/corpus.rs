@@ -385,7 +385,9 @@ struct Kept {
 fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
     let gc = &config.gc;
     let kwg = match gc.game_rules() {
-        game_config::GameRules::Classic => sweep_kwg_covering(gc),
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
+            sweep_kwg_covering(gc)
+        }
         game_config::GameRules::Jumbled => test_kad(gc, SWEEP_WORDS),
     };
     let run_letter_bits = kwg.compute_letter_bits().letter_bits;

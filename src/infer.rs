@@ -131,7 +131,7 @@ pub fn build_sheet_spell_once<
     // the opening's adjustment, which the walk weighs too, so each span offers
     // each multiset (and blank designation) once, at its best
     let jumbled = match game_config.game_rules() {
-        game_config::GameRules::Classic => false,
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
         game_config::GameRules::Jumbled => true,
     };
     if jumbled {

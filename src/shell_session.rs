@@ -756,6 +756,7 @@ impl Session {
                             board: None,
                             rack_size: None,
                             jumbled: false,
+                            woadwage: false,
                             players: None,
                             bingo_bonus: None,
                             zeros_to_end: None,

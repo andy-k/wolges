@@ -5305,7 +5305,7 @@ impl Losses {
     fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             jumbled: match game_config.game_rules() {
-                game_config::GameRules::Classic => false,
+                game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
                 game_config::GameRules::Jumbled => true,
             },
             seeker: movegen::KurniaMoveGenerator::new(game_config),
@@ -5739,7 +5739,9 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 ) -> error::Returns<()> {
     match game_config.game_rules() {
         game_config::GameRules::Classic => {}
-        game_config::GameRules::Jumbled => return Err("study plays classic games".into()),
+        game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => {
+            return Err("study plays classic games".into());
+        }
     }
     let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
@@ -6017,10 +6019,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         rack_loss: Default::default(),
         move_loss: Default::default(),
     }));
-    let batch_size = match game_config.game_rules() {
-        game_config::GameRules::Classic => 100,
-        game_config::GameRules::Jumbled => 1,
-    };
+    let batch_size = num_threads as u64;
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
@@ -10240,7 +10239,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     }
 
     let jumbled = match game_config.game_rules() {
-        game_config::GameRules::Classic => false,
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
         game_config::GameRules::Jumbled => true,
     };
     let mut num_words = 0usize;

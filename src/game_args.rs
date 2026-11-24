@@ -30,6 +30,11 @@ pub struct GameArgs {
     rack_size: Option<u8>,
     #[arg(long, help = "jumbled rules; the word graph is then a .kad")]
     jumbled: bool,
+    #[arg(
+        long,
+        help = "woadwage rules: a word, or two words of the lexicon joined"
+    )]
+    woadwage: bool,
     #[arg(long, help = "the number of players, instead of the preset's")]
     players: Option<u8>,
     #[arg(
@@ -71,6 +76,7 @@ impl GameArgs {
             board: self.board.as_deref(),
             rack_size: self.rack_size,
             jumbled: self.jumbled,
+            woadwage: self.woadwage,
             players: self.players,
             bingo_bonus: self.bingo_bonus.as_deref(),
             zeros_to_end: self.zeros_to_end,
