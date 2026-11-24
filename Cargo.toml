@@ -22,7 +22,7 @@ lto = true
 codegen-units = 1
 
 [dependencies]
-clap = { version = "4.6.9", features = ["derive"] }
+clap = { version = "4.6.10", features = ["derive"] }
 csv = "1.4.0"
 rand = { version = "0.10.4", features = ["chacha"] }
 rand_xoshiro = "0.8.2"
