@@ -2,35 +2,133 @@
 
 use crate::kwg::{Kwg, Node};
 
+pub struct Step {
+    first: i32,
+    second: Vec<i32>,
+}
+
+impl Default for Step {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Step {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self {
+            first: 0,
+            second: Vec::new(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn step<N: Node>(&self, graph: &Kwg<N>, tile: u8) -> Option<Self> {
+        let mut next = Self {
+            first: -1,
+            second: Vec::new(),
+        };
+        let mut keep = |p: i32| {
+            if p > 0 && !next.second.contains(&p) {
+                next.second.push(p);
+            }
+        };
+        for &p in &self.second {
+            keep(graph.seek(p, tile));
+        }
+        if self.first > 0 && graph[self.first].accepts() {
+            keep(graph.seek(0, tile));
+        }
+        if self.first >= 0 {
+            next.first = graph.seek(self.first, tile);
+        }
+        (next.first > 0 || !next.second.is_empty()).then_some(next)
+    }
+
+    #[inline(always)]
+    pub fn accepts<N: Node>(&self, graph: &Kwg<N>) -> bool {
+        (self.first > 0 && graph[self.first].accepts())
+            || self.second.iter().any(|&p| graph[p].accepts())
+    }
+}
+
+#[derive(Clone)]
+pub struct StackedStep {
+    first: i32,
+    lo: usize,
+}
+impl StackedStep {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self { first: 0, lo: 0 }
+    }
+    #[inline(always)]
+    pub fn step<N: Node>(&self, graph: &Kwg<N>, stack: &mut Vec<i32>, tile: u8) -> Option<Self> {
+        let hi = stack.len();
+        let lo = self.lo;
+        let keep = |stack: &mut Vec<i32>, p: i32| {
+            if p > 0 && !stack[hi..].contains(&p) {
+                stack.push(p);
+            }
+        };
+        for i in lo..hi {
+            let p = graph.seek(stack[i], tile);
+            keep(stack, p);
+        }
+        if self.first > 0 && graph[self.first].accepts() {
+            keep(stack, graph.seek(0, tile));
+        }
+        let first = if self.first >= 0 {
+            graph.seek(self.first, tile)
+        } else {
+            -1
+        };
+        if first > 0 || stack.len() > hi {
+            Some(Self { first, lo: hi })
+        } else {
+            None
+        }
+    }
+    #[inline(always)]
+    pub fn accepts<N: Node>(&self, graph: &Kwg<N>, stack: &[i32]) -> bool {
+        (self.first > 0 && graph[self.first].accepts())
+            || stack[self.lo..].iter().any(|&p| graph[p].accepts())
+    }
+}
+impl Default for StackedStep {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // accept a dictionary word or two joined words from the dawg root
 pub fn accepts<N: Node>(graph: &Kwg<N>, word: &[u8]) -> bool {
     if graph.0.is_empty() || word.contains(&0) {
         return false;
     }
-    let mut first = 0;
-    for (i, &tile) in word.iter().enumerate() {
-        first = graph.seek(first, tile);
-        if first <= 0 {
+    let from_root = |tiles: &[u8]| {
+        let mut p = 0;
+        for &tile in tiles {
+            p = graph.seek(p, tile);
+            if p <= 0 {
+                return false;
+            }
+        }
+        graph[p].accepts()
+    };
+    let mut p = 0;
+    for (k, &tile) in word.iter().enumerate() {
+        if k > 0 && graph[p].accepts() && from_root(&word[k..]) {
+            return true;
+        }
+        p = graph.seek(p, tile);
+        if p <= 0 {
             return false;
         }
-        if graph[first].accepts() {
-            let rest = &word[i + 1..];
-            if rest.is_empty() {
-                return true;
-            }
-            let mut second = 0;
-            for &tile in rest {
-                second = graph.seek(second, tile);
-                if second <= 0 {
-                    break;
-                }
-            }
-            if second > 0 && graph[second].accepts() {
-                return true;
-            }
-        }
     }
-    false
+    graph[p].accepts()
 }
 
 struct AnagramFrame {
@@ -168,6 +266,27 @@ mod tests {
             assert_eq!(accepts(&graph, &word), explicit.contains(&word), "{word:?}");
         }
         assert!(!accepts(&graph, &[1, 0, 2]));
+        let long = graph_for(&[vec![1; 150], vec![2; 100]]);
+        assert!(accepts(&long, &[[1; 150], [2; 150]].concat()[..250]));
+        assert!(!accepts(&long, &[[1; 150], [2; 150]].concat()[..251]));
+    }
+
+    #[test]
+    fn a_step_at_a_time_is_a_word_or_two_joined_words() {
+        let words = vec![vec![1], vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 2, 1]];
+        let graph = graph_for(&words);
+        let explicit = explicit_variant(&words);
+        for word in tile_strings(&[1, 2, 3, 4], 6) {
+            let mut state = Some(Step::new());
+            for &tile in &word {
+                state = state.and_then(|state| state.step(&graph, tile));
+            }
+            let stepped = !word.is_empty() && state.is_some_and(|state| state.accepts(&graph));
+            assert_eq!(stepped, explicit.contains(&word), "{word:?}");
+        }
+        assert!(accepts(&graph, &[1, 2, 1, 2]));
+        assert!(accepts(&graph, &[1, 1, 1]));
+        assert!(!accepts(&graph, &[3, 2, 1, 1, 2, 3]));
     }
 
     #[test]
