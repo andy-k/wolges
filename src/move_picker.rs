@@ -486,6 +486,7 @@ pub struct Simmer<
     ticked: u64,
     infer: Option<(infer::InferTables, movegen::KurniaMoveGenerator)>, // built at its first use
     inferred: std::sync::Arc<infer::PackedLeaves>, // the opponent's kept leaves, in place
+    infer_fuzz: (f64, f64), // the fuzz and prior mix its inference weighs with, the default unless set
     late_graph: Option<(kwg::Kwg<kwg::Node24>, anagrams::ArmTables)>,
     late_board: Box<[u8]>, // the board the late graph was pruned for
     late_prune: LatePrune, // what each late graph is pruned with
@@ -743,6 +744,7 @@ impl<
             ticked: 0,
             infer: None,
             inferred: std::sync::Arc::default(),
+            infer_fuzz: (infer::FUZZ, 0.0),
             late_graph: None,
             late_board: Box::default(),
             memory: params.memory,
@@ -764,6 +766,12 @@ impl<
     pub fn with_dynamic_root(mut self, dynamic_leaves: klv::DynamicLeavesRef<'a>) -> Self {
         self.dynamic_root = Some(dynamic_leaves);
         self
+    }
+
+    // the fuzz in points, and the prior mix
+    #[inline]
+    pub fn set_infer_fuzz(&mut self, fuzz: (f64, f64)) {
+        self.infer_fuzz = fuzz;
     }
 
     // a decision's time budget, counted from before its candidates are
@@ -2582,6 +2590,7 @@ impl<
                 ))
             }
         };
+        tables.set_prior_mix(self.infer_fuzz.1);
         self.simmer.release_kept();
         if std::sync::Arc::get_mut(&mut self.inferred).is_none() {
             self.inferred = std::sync::Arc::default();
@@ -2600,7 +2609,7 @@ impl<
             watcher_rack,
             (last.play, last.held),
             infer::InferOptions {
-                fuzz: infer::FUZZ,
+                fuzz: self.infer_fuzz.0,
                 threads,
             },
             (std::sync::Arc::make_mut(&mut self.inferred), carried),
@@ -4042,6 +4051,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 20, 5, 5, 0, 1, 20]);
         let board_before = game_state.board_tiles.to_vec();
+        let bag_before = game_state.bag.len();
         let opening = movegen::Play::Place {
             down: false,
             lane: 7,
@@ -4091,6 +4101,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(leaves, shell_leaves);
+
+        let fuzz = infer::fitted_fuzz(bag_before, bag_before, false);
+        assert_eq!(fuzz, (1.507, infer::FUZZ_PRIOR_MIX));
+        let mut fitted_simmer =
+            Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params()).unwrap();
+        fitted_simmer.set_infer_fuzz(fuzz);
+        let fitted = fitted_simmer.kept_leaves(&rack, last).unwrap();
+        let mut mixed_tables = infer::InferTables::new(&game_config, &klv).unwrap();
+        mixed_tables.set_prior_mix(fuzz.1);
+        let shell_fitted = infer::kept_leaves(
+            &mut mixed_tables,
+            &mut movegen::KurniaMoveGenerator::new(&game_config),
+            &movegen::BoardSnapshot {
+                board_tiles: &board_before,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            },
+            &rack,
+            &opening,
+            fuzz.0,
+            1,
+        )
+        .unwrap();
+        assert_eq!(fitted, shell_fitted);
+        assert_ne!(fitted, leaves);
 
         // and the move picked with the last move given is the one a decision
         // handed those leaves picks

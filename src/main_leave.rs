@@ -554,6 +554,16 @@ struct Compare {
     p1_time_ms: Option<std::num::NonZeroU64>,
     #[arg(
         long,
+        help = "seat p0's simmer infers with the fuzz fitted for the bag the opponent's move was made from"
+    )]
+    p0_fuzz_by_bag: bool,
+    #[arg(
+        long,
+        help = "seat p1's simmer infers with the fuzz fitted for the bag the opponent's move was made from"
+    )]
+    p1_fuzz_by_bag: bool,
+    #[arg(
+        long,
         value_name = "POINTS",
         help = "seat p0, when deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
     )]
@@ -1303,6 +1313,14 @@ fn run(
                 },
             );
             let [p0_time, p1_time] = turn_times;
+            for (picker, by_bag) in [
+                (a.p0_picker, a.p0_fuzz_by_bag),
+                (a.p1_picker, a.p1_fuzz_by_bag),
+            ] {
+                if by_bag && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot) {
+                    wolges::return_error!("fuzz by bag requires a simmer picker".to_string());
+                }
+            }
             let params = CompareParams {
                 num_game_pairs: a.pairs,
                 seed: a.seed,
@@ -1317,6 +1335,7 @@ fn run(
                 p0_iters: a.p0_iters,
                 p1_iters: a.p1_iters,
                 turn_times: [p0_time?, p1_time?],
+                fuzz_by_bag: [a.p0_fuzz_by_bag, a.p1_fuzz_by_bag],
                 p0_window,
                 p1_window,
                 p0_endgame: a.p0_endgame,
@@ -10706,6 +10725,7 @@ struct CompareParams {
     p0_iters: u64,
     p1_iters: u64,
     turn_times: [Option<std::time::Duration>; 2],
+    fuzz_by_bag: [bool; 2], // each seat's simmer infers with infer::fitted_fuzz
     p0_window: i32,
     p1_window: i32,
     p0_endgame: Option<EndPicker>,
@@ -10976,6 +10996,7 @@ fn compare_seats<
         p0_iters,
         p1_iters,
         turn_times,
+        fuzz_by_bag,
         p0_window,
         p1_window,
         p0_endgame,
@@ -11188,6 +11209,10 @@ fn compare_seats<
                 // the board before the last move, for a sim to infer from
                 // (hasty seats alone read neither it nor the move)
                 let mut last_board = vec![0u8; game_state.board_tiles.len()];
+                let mut last_bag = 0usize;
+                let start_bag = (game_config.alphabet().num_tiles() as usize).saturating_sub(
+                    game_config.num_players() as usize * game_config.rack_size() as usize,
+                );
                 // each seat's inference of its opponent, carried to its next,
                 // and the tiles it has put back since, with the next carry's
                 // buffer: emptied at the start of each game
@@ -11264,6 +11289,13 @@ fn compare_seats<
                                                 .wrapping_add(num_turns as u64),
                                         )),
                                     ));
+                                    if fuzz_by_bag[!is_p0_seat as usize] {
+                                        simmer_driver.set_infer_fuzz(wolges::infer::fitted_fuzz(
+                                            last_bag,
+                                            start_bag,
+                                            matches!(&last_play, Some(movegen::Play::Exchange { tiles }) if !tiles.is_empty()),
+                                        ));
+                                    }
                                 }
                                 let seat = game_state.turn as usize;
                                 let play = if matches!(driver, move_picker::MovePicker::Hasty) {
@@ -11296,6 +11328,7 @@ fn compare_seats<
                                     put_back[seat].extend_from_slice(tiles);
                                 }
                                 last_board.copy_from_slice(&game_state.board_tiles);
+                                last_bag = game_state.bag.len();
                                 last_play = Some(play.clone());
                                 if seat_swapped {
                                     if !pair_diverged
