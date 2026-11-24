@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use crate::{game_args, parse_rack};
+use crate::{game_args, parse_rack, run_line};
 use rand::SeedableRng;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -76,14 +76,14 @@ impl Engine {
             );
         }
         let load = || -> error::Returns<_> {
-            let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&args.kwg)?, kbwg)?;
+            let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(&args.kwg)?, kbwg)?;
             if !kwg.fits_alphabet(game.alphabet().len()) {
                 return_error!(format!(
                     "{} has tiles outside the game's alphabet",
                     args.kwg
                 ));
             }
-            let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args.klv)?)?;
+            let klv = klv::kbwg_from_bytes_alloc(run_line::read_input(&args.klv)?)?;
             game.check_klv(&klv)?;
             let tables = anagrams::ArmTables::build(&kwg, &game, args.lean)?;
             Ok((kwg, klv, tables))
@@ -91,7 +91,7 @@ impl Engine {
         let (kwg, klv, tables) = if let Some(path) = &args.racks {
             std::thread::scope(|scope| -> error::Returns<_> {
                 let racks = std::thread::Builder::new().spawn_scoped(scope, || {
-                    racks::RackTable::from_bytes_alloc(&game, std::fs::read(path)?)
+                    racks::RackTable::from_bytes_alloc(&game, run_line::read_input(path)?)
                 })?;
                 let loaded = load();
                 let racks = racks.join().map_err(|_| "rack table loader panicked");
@@ -102,6 +102,10 @@ impl Engine {
         } else {
             load()?
         };
+        eprintln!(
+            "{}",
+            run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+        );
         Ok(Self {
             game,
             kwg,
