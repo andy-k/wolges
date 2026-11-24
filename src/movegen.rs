@@ -1995,6 +1995,8 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     }
 }
 
+// jumbled only: its lone island reuse holds for one jumbled word, so the
+// caller never gives it a jumbled woadwage game
 #[inline]
 fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
@@ -5999,7 +6001,9 @@ fn gen_classic_place_moves<
 // spans with the same letters. The lists are held end to end in one buffer,
 // list i ending at size_ends[i], so that the room kept from walk to walk is
 // one walk's lists together, not each list's largest; a set's walk finds its
-// multisets (found, each with its size) and puts them in its lists at its end
+// multisets (found, each with its size) and puts them in its lists at its end.
+// jumbled only: each span's multiset is one word's, so no jumbled woadwage
+// game walks it
 #[derive(Clone)]
 struct JumbledMultisets {
     multisets: Vec<u8>,
@@ -6453,7 +6457,8 @@ fn stops_walk(threshold: i32) -> bool {
     threshold == equity::Equity::INFINITY.raw()
 }
 
-// BAG_TERM: the generator's, as leave_value_of's
+// BAG_TERM: the generator's, as leave_value_of's. jumbled only: a span's
+// multiset is one word's, so the caller never gives it a jumbled woadwage game
 #[inline]
 fn gen_jumbled_place_moves<
     'a,
@@ -10466,7 +10471,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     }
 
     // one-word rules only: it walks the graph's words, so its caller never
-    // gives it a woadwage game
+    // gives it a woadwage game; a jumbled woadwage game (as inference gives
+    // it) walks the jumbled sheet
     pub fn pool_plays_best_window<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
