@@ -503,3 +503,57 @@ fn throughput_using<const N: usize>(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trace_line_keeps_its_keys_and_reads_back() {
+        let position = Position {
+            game: 3,
+            ply: 7,
+            fen: "15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15".to_string(),
+            racks: ["AEINRST".to_string(), "?".to_string()],
+            turn: 1,
+            bag: 80,
+            exchanges: 0,
+            reference: "8H CAT".to_string(),
+            equity: 1234,
+        };
+        let mut out = Vec::new();
+        serde_json::to_writer(&mut out, &position).unwrap();
+        writeln!(out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let mut lines = text.lines();
+        let first = lines.next().unwrap();
+        assert!(lines.next().is_none());
+        let value = serde_json::from_str::<serde_json::Value>(first).unwrap();
+        let keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            [
+                "bag",
+                "equity",
+                "exchanges",
+                "fen",
+                "game",
+                "ply",
+                "racks",
+                "reference",
+                "turn"
+            ]
+        );
+        let back = serde_json::from_str::<Position>(first).unwrap();
+        let mut again = Vec::new();
+        serde_json::to_writer(&mut again, &back).unwrap();
+        assert_eq!(std::str::from_utf8(&again).unwrap(), first);
+    }
+}
