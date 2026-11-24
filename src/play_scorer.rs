@@ -1,6 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, error, game_config, game_state, kwg, move_filter, movegen, woadwage};
+use super::{
+    equity, error, game_config, game_state, jumbled_woadwage, kwg, move_filter, movegen, woadwage,
+};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
@@ -269,6 +271,14 @@ impl PlayScorer {
     }
 
     #[inline(always)]
+    fn jumbled_woadwage_words_checker<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
+    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
+        move |word: &[u8]| jumbled_woadwage::accepts(board_snapshot.kwg, word)
+    }
+
+    #[inline(always)]
     fn jumbled_words_checker<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
@@ -307,7 +317,11 @@ impl PlayScorer {
                 let checker = self.woadwage_words_checker(board_snapshot);
                 self.words_all(board_snapshot, play, checker)
             }
-            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+            game_config::GameRules::JumbledWoadwage => {
+                let checker = self.jumbled_woadwage_words_checker(board_snapshot);
+                self.words_all(board_snapshot, play, checker)
+            }
+            game_config::GameRules::Jumbled => {
                 let checker = self.jumbled_words_checker(board_snapshot);
                 self.words_all(board_snapshot, play, checker)
             }
@@ -346,7 +360,12 @@ impl PlayScorer {
                 let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)
             }
-            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+            game_config::GameRules::JumbledWoadwage => {
+                let checker = self.jumbled_woadwage_words_checker(board_snapshot);
+                let checker = self.collect_invalid_words(checker, save_invalid_word);
+                self.words_all(board_snapshot, play, checker)
+            }
+            game_config::GameRules::Jumbled => {
                 let checker = self.jumbled_words_checker(board_snapshot);
                 let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)
@@ -756,6 +775,98 @@ mod tests {
                 .is_ok()
         );
     }
+
+    #[test]
+    #[inline]
+    fn a_jumbled_woadwage_play_takes_a_jumble_or_two_joined_in_every_word_it_forms() {
+        let words = [vec![4u8, 1], vec![2, 3], vec![4, 1, 2, 3]];
+        let explicit = jumbled_woadwage::tests::explicit_variant(&words);
+        let kad = jumbled_woadwage::tests::kad_for(&words);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let premiums = vec![
+            board_layout::Premium {
+                word_multiplier: 1,
+                tile_multiplier: 1,
+            };
+            49
+        ];
+        let game_config =
+            game_config::make_board_test_game_config(board_layout::make_test_board_layout(
+                premiums.into_boxed_slice(),
+                matrix::Dim { rows: 7, cols: 7 },
+                3,
+                3,
+            ))
+            .jumbled_woadwage();
+        let mut board_tiles = vec![0u8; 49];
+        board_tiles[2 * 7 + 3] = 4;
+        board_tiles[4 * 7 + 3] = 2;
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kad,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let mut play_scorer = PlayScorer::new();
+        let mut cases = 0;
+        let mut valid = 0;
+        let mut strings = vec![Vec::new()];
+        for _ in 0..5 {
+            strings = strings
+                .iter()
+                .flat_map(|s: &Vec<u8>| (1..=4).map(move |t| [s.as_slice(), &[t]].concat()))
+                .collect();
+            for word in &strings {
+                if word.len() >= 2 {
+                    let play = movegen::Play::Place {
+                        down: false,
+                        lane: 0,
+                        idx: 0,
+                        word: word[..].into(),
+                        score: equity::Equity::ZERO,
+                    };
+                    let is_valid = play_scorer.words_are_valid(&board_snapshot, &play);
+                    assert_eq!(is_valid, explicit.contains(word), "{word:?}");
+                    valid += is_valid as usize;
+                }
+                if word.len() <= 4 {
+                    let play = movegen::Play::Place {
+                        down: false,
+                        lane: 3,
+                        idx: 3,
+                        word: word[..].into(),
+                        score: equity::Equity::ZERO,
+                    };
+                    let cross = [4, word[0], 2];
+                    let mut invalid = Vec::new();
+                    play_scorer.find_invalid_words(&board_snapshot, &play, |w: &[u8]| {
+                        invalid.push(w.to_vec())
+                    });
+                    let mut expected = Vec::new();
+                    if !explicit.contains(word) {
+                        expected.push(word.clone());
+                    }
+                    if !explicit.contains(&cross[..]) {
+                        expected.push(cross.to_vec());
+                    }
+                    invalid.sort();
+                    expected.sort();
+                    assert_eq!(invalid, expected, "{word:?}");
+                    assert_eq!(
+                        play_scorer.words_are_valid(&board_snapshot, &play),
+                        expected.is_empty(),
+                        "{word:?}"
+                    );
+                }
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 4 + 16 + 64 + 256 + 1024);
+        assert!(valid > 20, "{valid}");
+    }
+
     #[test]
     #[inline]
     fn a_woadwage_play_takes_a_word_or_two_joined_words_in_every_word_it_forms() {
