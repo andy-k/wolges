@@ -10518,6 +10518,7 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
     let mut hash = FNV1A64_OFFSET;
     let mut boards = 0u64;
     let mut game_plies = Vec::new();
+    let mut total_plies = 0u64;
     let mut fen = |out: &mut std::io::BufWriter<_>, board_tiles: &[u8]| -> error::Returns<()> {
         if digest {
             line.clear();
@@ -10565,6 +10566,7 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
             }
         }
         fen(&mut out, &game_state.board_tiles)?;
+        total_plies += ply as u64;
         if digest {
             game_plies.push(ply);
         }
@@ -10590,6 +10592,13 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
         }
         writeln!(out)?;
     }
+    let secs = t0.elapsed().as_secs_f64();
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "rate games {num_games} turns {total_plies} seconds {secs:.6} games/s {:.3} turns/s {:.3}",
+        num_games as f64 / secs,
+        total_plies as f64 / secs,
+    )?;
     Ok(())
 }
 
