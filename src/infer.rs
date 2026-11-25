@@ -4473,4 +4473,165 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    #[inline]
+    fn a_woadwage_sheet_holds_each_racks_brute_force_best() {
+        use crate::movegen::tests::{
+            WoadwageToyRules, woadwage_brute_keys, woadwage_key_play, woadwage_rng,
+            woadwage_toy_boards, woadwage_toy_rack, woadwage_toy_rules,
+        };
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 407u64;
+        let (mut racks_checked, mut played, mut inferred) = (0usize, 0usize, 0usize);
+        for jumbled in [false, true] {
+            for side in [5i8, 7] {
+                let WoadwageToyRules(mut gc, kwg, explicit) = woadwage_toy_rules(side, jumbled);
+                let game_config::GameConfig::Static(rules) = &mut gc;
+                rules.rack_size = 3;
+                let gc = gc;
+                let lat = census::MultisetLattice::new(27, 3).unwrap();
+                let mut scorer = play_scorer::PlayScorer::new();
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&gc);
+                for board_tiles in woadwage_toy_boards(side, &explicit, &mut seed, 2, 4) {
+                    let mut pool = vec![0u8; 27];
+                    pool[0] = (woadwage_rng(&mut seed) % 2) as u8;
+                    for count in &mut pool[1..5] {
+                        *count = (woadwage_rng(&mut seed) % 3) as u8;
+                    }
+                    let mut sheet = Vec::new();
+                    infer_sheet_for(
+                        &mut move_generator,
+                        &board_tiles,
+                        SpellTables {
+                            game_config: &gc,
+                            kwg: &kwg,
+                            klv: &klv,
+                            lat: &lat,
+                        },
+                        &pool,
+                        true,
+                        (&mut Vec::new(), &mut Vec::new()),
+                        &mut sheet,
+                    );
+                    let board_snapshot = movegen::BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    };
+                    let phase = BoardPhase::of_board(&board_tiles, &gc);
+                    let mut tally = vec![0u8; 27];
+                    let mut each = |tally: &[u8]| {
+                        let rack = (0u8..)
+                            .zip(tally.iter())
+                            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
+                            .collect::<Vec<_>>();
+                        let mut want = 0;
+                        for key in woadwage_brute_keys(side, &board_tiles, &rack, &explicit) {
+                            if key.3.iter().filter(|&&tile| tile != 0).count() != rack.len() {
+                                continue;
+                            }
+                            let play = woadwage_key_play(side, &board_tiles, &key);
+                            let movegen::Play::Place {
+                                down, idx, word, ..
+                            } = &play
+                            else {
+                                unreachable!();
+                            };
+                            let score = scorer.compute_score(&board_snapshot, &play)
+                                + opening_adjustment(phase, &gc, *down, *idx, word);
+                            want = want.max(score);
+                            played += 1;
+                        }
+                        let got = sheet[lat.rank(tally) as usize];
+                        assert_eq!(got, want, "{jumbled} {side} {rack:?} {board_tiles:?}");
+                        racks_checked += 1;
+                    };
+                    fn walk(
+                        tile: usize,
+                        left: usize,
+                        pool: &[u8],
+                        tally: &mut [u8],
+                        each: &mut impl FnMut(&[u8]),
+                    ) {
+                        if tile == 5 {
+                            if left < 3 {
+                                each(tally);
+                            }
+                            return;
+                        }
+                        for count in 0..=(pool[tile] as usize).min(left) {
+                            tally[tile] = count as u8;
+                            walk(tile + 1, left - count, pool, tally, each);
+                        }
+                        tally[tile] = 0;
+                    }
+                    walk(0, 3, &pool, &mut tally, &mut each);
+                    let best_of = |rack: &[u8], scorer: &mut play_scorer::PlayScorer| {
+                        woadwage_brute_keys(side, &board_tiles, rack, &explicit)
+                            .iter()
+                            .map(|key| {
+                                let play = woadwage_key_play(side, &board_tiles, key);
+                                let movegen::Play::Place {
+                                    down, idx, word, ..
+                                } = &play
+                                else {
+                                    unreachable!();
+                                };
+                                let value = scorer.compute_score(&board_snapshot, &play)
+                                    + opening_adjustment(phase, &gc, *down, *idx, word);
+                                (value, play)
+                            })
+                            .max_by_key(|(value, _)| *value)
+                    };
+                    let rack =
+                        woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest());
+                    let Some((value, mut play)) = best_of(&rack, &mut scorer) else {
+                        continue;
+                    };
+                    let scored = scorer.compute_score(&board_snapshot, &play);
+                    let movegen::Play::Place { word, score, .. } = &mut play else {
+                        unreachable!();
+                    };
+                    *score = equity::Equity::new(scored);
+                    let placed = word
+                        .iter()
+                        .filter(|&&tile| tile != 0)
+                        .map(|&tile| if tile & 0x80 != 0 { 0 } else { tile })
+                        .collect::<Vec<_>>();
+                    let Ok(mut unseen) = gc.tiles_off_board(&board_tiles) else {
+                        continue;
+                    };
+                    if gc.take_rack(&mut unseen, &placed).is_err() {
+                        continue;
+                    }
+                    let mut tables = InferTables::new(&gc, &klv).unwrap();
+                    let leaves = kept_leaves(
+                        &mut tables,
+                        &mut move_generator,
+                        &board_snapshot,
+                        &[],
+                        &play,
+                        0.0,
+                        1,
+                    )
+                    .unwrap();
+                    for (leave, _) in &leaves {
+                        let mut held = leave.clone();
+                        held.extend_from_slice(&placed);
+                        assert!(held.len() <= 3, "{leave:?} {placed:?}");
+                        let best = best_of(&held, &mut scorer);
+                        assert_eq!(best.map(|(best, _)| best), Some(value), "{held:?}");
+                        inferred += 1;
+                    }
+                }
+            }
+        }
+        assert!(inferred > 0, "{inferred}");
+        assert!(racks_checked > 0, "{racks_checked}");
+        assert!(played > 0, "{played}");
+    }
 }
