@@ -871,7 +871,24 @@ fn lane_key(
     lane: i8,
 ) -> u128 {
     let mut key = FNV128_BASIS;
-    let mut mix = |byte: u8| key = (key ^ byte as u128).wrapping_mul(FNV128_PRIME);
+    lane_bytes(board_tiles, dim, board_empty, down, lane, |byte| {
+        key = (key ^ u128::from(byte)).wrapping_mul(FNV128_PRIME)
+    });
+    key
+}
+
+// the bytes a lane's key hashes (lane_key), each given to mix in turn; none of
+// a lane's tiles is 0xff, so two lanes that differ in what the key holds never
+// give the same bytes
+#[inline(always)]
+fn lane_bytes(
+    board_tiles: &[u8],
+    dim: &matrix::Dim,
+    board_empty: bool,
+    down: bool,
+    lane: i8,
+    mut mix: impl FnMut(u8),
+) {
     mix(board_empty as u8);
     mix(down as u8);
     mix(lane as u8);
@@ -891,7 +908,6 @@ fn lane_key(
             }
         }
     }
-    key
 }
 
 // a placement's tiles, or a rack's, in a pool's places (LanePool::places): a
@@ -1099,6 +1115,8 @@ struct LanePool {
     scans: Vec<(u32, Tiles)>,     // each slot's list and rack last fetched
     ranges: Vec<Vec<(u32, u32)>>, // and the entries that fetch took
     seen: Vec<u64>,               // lane keys walked once, a tag each
+    #[cfg(debug_assertions)]
+    lanes: fash::MyHashMap<u128, Vec<u8>>,
 }
 
 impl Default for LanePool {
@@ -1132,6 +1150,8 @@ impl LanePool {
             scans: Vec::new(),
             ranges: Vec::new(),
             seen: Vec::new(),
+            #[cfg(debug_assertions)]
+            lanes: fash::MyHashMap::default(),
         }
     }
 
@@ -3650,6 +3670,22 @@ impl<
                         continue;
                     }
                     let key = lane_key(board, dim, board_empty(), down, lane);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut bytes = Vec::new();
+                        let mut fits = true;
+                        lane_bytes(board, dim, board_empty(), down, lane, |byte| {
+                            fits &= bytes.try_reserve(1).is_ok();
+                            if fits {
+                                bytes.push(byte);
+                            }
+                        });
+                        if let Some(first) = lane_pool.lanes.get(&key) {
+                            assert!(!fits || *first == bytes, "two lanes' keys clash");
+                        } else if fits && lane_pool.lanes.try_reserve(1).is_ok() {
+                            lane_pool.lanes.insert(key, bytes);
+                        }
+                    }
                     lane_pool.slot_keys[slot] = key;
                     match lane_pool.keys.get(key) {
                         Some(list) => lane_pool.slot_lists[slot] = list,
