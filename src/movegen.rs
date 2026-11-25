@@ -3940,6 +3940,7 @@ struct GenPlaceMovesParams<
     rack_bits: u64,
     word_strip_buffer: &'a mut [u8],
     num_max_played: u8,
+    num_min_played: u8,
     anchor: i8,
     leftmost: i8,
     rightmost: i8,
@@ -4159,6 +4160,9 @@ fn gen_classic_place_moves_lean<
         idx_left: i8,
         idx_right: i8,
     ) {
+        if env.num_played < env.params.num_min_played {
+            return;
+        }
         let score = if SPELL_ONCE {
             0
         } else {
@@ -7325,7 +7329,8 @@ fn gen_jumbled_place_moves_walk<
             loop {
                 let num_played = empty_left + empty_right;
                 let is_unique = single_tile_plays || free_left || free_right;
-                if num_played > !is_unique as u8
+                if num_played >= env.params.num_min_played
+                    && num_played > u8::from(!is_unique)
                     && idx_r > idx_l
                     && (idx_r + 1 >= rightmost || env.params.board_strip[idx_r as usize + 1] == 0)
                 {
@@ -7700,6 +7705,9 @@ fn gen_jumbled_woadwage_place_moves<
         acc: &Accumulator,
         idx_right: i8,
     ) {
+        if env.num_played < env.params.num_min_played {
+            return;
+        }
         let score = acc.main_score * acc.word_multiplier
             + acc.perpendicular_cumulative_score
             + env
@@ -8044,6 +8052,9 @@ fn gen_woadwage_place_moves<
         acc: &Accumulator,
         idx_right: i8,
     ) {
+        if env.num_played < env.params.num_min_played {
+            return;
+        }
         let score = acc.main_score * acc.word_multiplier
             + acc.perpendicular_cumulative_score
             + env
@@ -8356,6 +8367,7 @@ fn gen_place_moves_at_lean<
                 &mut working_buffer.word_buffer_for_across_plays[strip_range_start..strip_range_end]
             },
             num_max_played,
+            num_min_played: 0,
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
@@ -9511,6 +9523,51 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         w.pool.deltas.shrink_to_fit();
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn gen_outs<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        snapshot: &BoardSnapshot<'_, N, L>,
+        rack: &[u8],
+        (rows, cols): (u128, u128),
+        mut found: impl FnMut(bool, i8, equity::Equity),
+    ) {
+        let dim = snapshot.game_config.board_layout().dim();
+        if rack.is_empty()
+            || rack.len()
+                > (dim.rows.max(dim.cols) as usize)
+                    .min(usize::from(snapshot.game_config.rack_size()))
+        {
+            return;
+        }
+        let w = &mut self.working_buffer;
+        w.init::<0, false, ByLayout, _, _>(
+            snapshot,
+            rack,
+            klv::AdjustLeave::Identity,
+            None,
+            w.multi_leaves.dense_most(),
+            None,
+        );
+        let previous_lanes = (w.lane_rows, w.lane_cols);
+        (w.lane_rows, w.lane_cols) = (G::of_u128(rows), G::of_u128(cols));
+        let multi_leaves = std::mem::take(&mut w.multi_leaves);
+        let opening = w.num_tiles_on_board == 0;
+        walk_raw_places::<true, ANY_SIDE, _, _, _, _, _, _, _>(
+            (),
+            snapshot,
+            w,
+            &multi_leaves,
+            |down, lane, _, word, score, _| {
+                if !opening || word.iter().filter(|&&tile| tile != 0).count() == rack.len() {
+                    found(down, lane, score);
+                }
+                equity::Equity::NEG_INFINITY
+            },
+        );
+        w.multi_leaves = multi_leaves;
+        (w.lane_rows, w.lane_cols) = previous_lanes;
+    }
+
     // as gen_moves_raw_all_unsorted, the place moves on the rows and columns in
     // the masks only (bit i, row or column i): the moves a change to the board
     // can touch, when the rest are known
@@ -9806,61 +9863,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             });
             equity::Equity::NEG_INFINITY
         };
-        let dim = board_snapshot.game_config.board_layout().dim();
-        if working_buffer.num_tiles_on_board == 0 {
-            if ANY_SIDE {
-                gen_empty_board_place_moves::<0, _, _, _, _, _, _, _>(
-                    runs,
-                    board_snapshot,
-                    working_buffer,
-                    &multi_leaves,
-                    i32::MIN,
-                    found_place_move,
-                );
-            } else if dim.rows == 15 {
-                gen_empty_board_place_moves::<15, _, _, _, _, _, _, _>(
-                    runs,
-                    board_snapshot,
-                    working_buffer,
-                    &multi_leaves,
-                    i32::MIN,
-                    found_place_move,
-                );
-            } else {
-                gen_empty_board_place_moves::<21, _, _, _, _, _, _, _>(
-                    runs,
-                    board_snapshot,
-                    working_buffer,
-                    &multi_leaves,
-                    i32::MIN,
-                    found_place_move,
-                );
-            }
-        } else if ANY_SIDE {
-            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _, _, _>(
-                runs,
-                board_snapshot,
-                working_buffer,
-                &multi_leaves,
-                found_place_move,
-            );
-        } else if dim.rows == 15 {
-            kurnia_gen_raw_place_moves::<15, u32, _, _, _, _, _, _, _>(
-                runs,
-                board_snapshot,
-                working_buffer,
-                &multi_leaves,
-                found_place_move,
-            );
-        } else {
-            kurnia_gen_raw_place_moves::<21, u32, _, _, _, _, _, _, _>(
-                runs,
-                board_snapshot,
-                working_buffer,
-                &multi_leaves,
-                found_place_move,
-            );
-        }
+        walk_raw_places::<false, ANY_SIDE, _, _, _, _, _, _, _>(
+            runs,
+            board_snapshot,
+            working_buffer,
+            &multi_leaves,
+            found_place_move,
+        );
         kurnia_gen_exchange_moves(
             board_snapshot,
             working_buffer,
@@ -12391,6 +12400,7 @@ fn walk_jumbled_star_lanes<
                     &mut working_buffer.word_buffer_for_across_plays[start..end]
                 },
                 num_max_played,
+                num_min_played: 0,
                 anchor,
                 leftmost: 0,
                 rightmost: len as i8,
@@ -12500,6 +12510,7 @@ fn walk_woadwage_star_lanes<
                     &mut working_buffer.word_buffer_for_across_plays[start..end]
                 },
                 num_max_played,
+                num_min_played: 0,
                 anchor,
                 leftmost: 0,
                 rightmost: len as i8,
@@ -12609,6 +12620,7 @@ fn walk_jumbled_woadwage_star_lanes<
                     &mut working_buffer.word_buffer_for_across_plays[start..end]
                 },
                 num_max_played,
+                num_min_played: 0,
                 anchor,
                 leftmost: 0,
                 rightmost: len as i8,
@@ -13326,6 +13338,148 @@ fn kurnia_gen_place_moves_iter_lean<
     })
 }
 
+#[inline]
+fn walk_raw_places<
+    const OUT_ONLY: bool,
+    const ANY_SIDE: bool,
+    R: RunLetters,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+    const BAG_TERM: bool,
+    S: BoardStore,
+    F: FnMut(bool, i8, i8, &[u8], equity::Equity, equity::Equity) -> equity::Equity,
+>(
+    runs: R,
+    board_snapshot: &BoardSnapshot<'_, N, L>,
+    working_buffer: &mut WorkingBuffer<G, BAG_TERM, S>,
+    multi_leaves: &klv::MultiLeaves,
+    found_place_move: F,
+) {
+    let dim = board_snapshot.game_config.board_layout().dim();
+    if working_buffer.num_tiles_on_board == 0 {
+        if ANY_SIDE {
+            gen_empty_board_place_moves::<0, _, _, _, _, _, _, _>(
+                runs,
+                board_snapshot,
+                working_buffer,
+                multi_leaves,
+                i32::MIN,
+                found_place_move,
+            );
+        } else if dim.rows == 15 {
+            gen_empty_board_place_moves::<15, _, _, _, _, _, _, _>(
+                runs,
+                board_snapshot,
+                working_buffer,
+                multi_leaves,
+                i32::MIN,
+                found_place_move,
+            );
+        } else {
+            gen_empty_board_place_moves::<21, _, _, _, _, _, _, _>(
+                runs,
+                board_snapshot,
+                working_buffer,
+                multi_leaves,
+                i32::MIN,
+                found_place_move,
+            );
+        }
+    } else if ANY_SIDE {
+        kurnia_gen_raw_place_moves::<OUT_ONLY, 0, G, _, _, _, _, _, _, _>(
+            runs,
+            board_snapshot,
+            working_buffer,
+            multi_leaves,
+            found_place_move,
+        );
+    } else if dim.rows == 15 {
+        kurnia_gen_raw_place_moves::<OUT_ONLY, 15, u32, _, _, _, _, _, _, _>(
+            runs,
+            board_snapshot,
+            working_buffer,
+            multi_leaves,
+            found_place_move,
+        );
+    } else {
+        kurnia_gen_raw_place_moves::<OUT_ONLY, 21, u32, _, _, _, _, _, _, _>(
+            runs,
+            board_snapshot,
+            working_buffer,
+            multi_leaves,
+            found_place_move,
+        );
+    }
+}
+
+fn room_for_out(board: &[u8], allowed: &[u64], rack_letters: u64, required: u8) -> bool {
+    let mut fitting = 0;
+    for (&tile, &letters) in board.iter().zip(allowed) {
+        if tile == 0 {
+            if letters & rack_letters == 0 {
+                fitting = 0;
+            } else {
+                fitting += 1;
+                if fitting == required {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn word_fits_out(
+    anagrams: &anagrams::Anagrams,
+    board: &[u8],
+    allowed: &[u64],
+    rack: &[u8],
+    rack_letters: u64,
+) -> bool {
+    let mut word = [0; i8::MAX as usize];
+    word[..rack.len()].copy_from_slice(rack);
+    for left in 0..board.len() {
+        if left != 0 && board[left - 1] != 0 {
+            continue;
+        }
+        let mut blanks = 0;
+        let mut len = rack.len();
+        for right in left..board.len() {
+            let tile = board[right];
+            if tile == 0 {
+                if blanks == rack.len() || allowed[right] & rack_letters == 0 {
+                    break;
+                }
+                blanks += 1;
+            } else {
+                if len == word.len() {
+                    break;
+                }
+                word[len] = tile & 0x7f;
+                len += 1;
+            }
+            if blanks == rack.len() && (right + 1 == board.len() || board[right + 1] == 0) {
+                let word = &word[..len];
+                let layout = anagrams.layout();
+                let key = if anagrams.nibble_side().is_some() {
+                    alphagram::Nibble::key_of(layout.max_counts(), word)
+                } else {
+                    layout.key_of(word)
+                };
+                if key.is_none_or(|key| {
+                    anagrams
+                        .group_at(alphagram::Fitted(key), len as u8)
+                        .is_some()
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 // the raw moves of the lanes in working_buffer's masks, no bound and no order:
 // each lane's anchors found by the shadow pass's raw arm and walked at once,
 // from the last found, the lanes from the last column and then from the last
@@ -13334,6 +13488,7 @@ fn kurnia_gen_place_moves_iter_lean<
 #[inline]
 fn kurnia_gen_raw_place_moves<
     'a,
+    const OUT_ONLY: bool,
     const D: usize,
     W: LaneBits,
     R: 'a + RunLetters,
@@ -13368,11 +13523,37 @@ fn kurnia_gen_raw_place_moves<
         );
         return;
     }
-    let feasible_lengths = feasible_word_lengths::<false>(
-        board_snapshot.anagrams,
-        board_snapshot.rack_lengths,
-        &working_buffer.rack_tally,
-    );
+    let num_min_played = if OUT_ONLY { num_max_played } else { 0 };
+    let feasible_lengths = if OUT_ONLY {
+        !0
+    } else {
+        feasible_word_lengths::<false>(
+            board_snapshot.anagrams,
+            board_snapshot.rack_lengths,
+            &working_buffer.rack_tally,
+        )
+    };
+    let table = if OUT_ONLY
+        && working_buffer.rack_tally[0] == 0
+        && matches!(
+            game_config.game_rules(),
+            game_config::GameRules::Classic | game_config::GameRules::Jumbled
+        ) {
+        board_snapshot
+            .anagrams
+            .filter(|table| table.fit(game_config))
+    } else {
+        None
+    };
+    let mut rack = [0u8; i8::MAX as usize];
+    let mut held = 0;
+    if table.is_some() {
+        for (tile, &count) in working_buffer.rack_tally.iter().enumerate() {
+            let end = held + usize::from(count);
+            rack[held..end].fill(tile as u8);
+            held = end;
+        }
+    }
     let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
     let mut anchors = std::mem::take(&mut working_buffer.raw_anchors);
     for at in (0..dim.rows as usize + dim.cols as usize).rev() {
@@ -13390,6 +13571,35 @@ fn kurnia_gen_raw_place_moves<
         let len = if down { dim.rows } else { dim.cols } as usize;
         let start = lane as usize * len;
         let end = start + len;
+        let board_strip = if down {
+            &working_buffer.transposed_board_tiles[start..end]
+        } else {
+            &board_snapshot.board_tiles[start..end]
+        };
+        let allowed_strip = if down {
+            &working_buffer.allowed_for_down_plays[start..end]
+        } else {
+            &working_buffer.allowed_for_across_plays[start..end]
+        };
+        let rack_letters = if working_buffer.rack_tally[0] == 0 {
+            working_buffer.rack_bits
+        } else {
+            !1
+        };
+        if OUT_ONLY && !room_for_out(board_strip, allowed_strip, rack_letters, num_min_played) {
+            continue;
+        }
+        if let Some(table) = table
+            && !word_fits_out(
+                table,
+                board_strip,
+                allowed_strip,
+                &rack[..held],
+                rack_letters,
+            )
+        {
+            continue;
+        }
         anchors.clear();
         shadow_lane_lean::<D, W, _>(
             &mut GenPlacePlacementsParams {
@@ -13497,6 +13707,17 @@ fn kurnia_gen_raw_place_moves<
             &mut working_buffer.word_buffer_for_across_plays[start..end]
         };
         for &(anchor, leftmost, rightmost) in anchors.iter().rev() {
+            let span = leftmost as usize..rightmost as usize;
+            if OUT_ONLY
+                && !room_for_out(
+                    &board_strip[span.clone()],
+                    &allowed_strip[span],
+                    rack_letters,
+                    num_min_played,
+                )
+            {
+                continue;
+            }
             gen_place_moves_lean::<false, false, _, _, _, _>(
                 &mut GenPlaceMovesParams {
                     board_snapshot,
@@ -13512,6 +13733,7 @@ fn kurnia_gen_raw_place_moves<
                     rack_bits: working_buffer.rack_bits,
                     word_strip_buffer: &mut *word_buffer,
                     num_max_played,
+                    num_min_played,
                     anchor,
                     leftmost,
                     rightmost,
@@ -22008,7 +22230,7 @@ pub(crate) mod tests {
             equity::Equity::NEG_INFINITY
         };
         if raw {
-            kurnia_gen_raw_place_moves::<0, G, _, _, _, _, _, _, _>(
+            kurnia_gen_raw_place_moves::<false, 0, G, _, _, _, _, _, _, _>(
                 (),
                 board_snapshot,
                 &mut *working_buffer,

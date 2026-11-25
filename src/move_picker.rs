@@ -2156,6 +2156,12 @@ impl Periods {
     }
 }
 
+pub enum PreemptyMode {
+    Off,
+    Static,
+    WithSimmerRoot,
+}
+
 pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Hasty,
     Dynamic(klv::DynamicLeavesRef<'a>),
@@ -2682,6 +2688,8 @@ impl<
             threads,
         ) && (self.memory.is_none()
             || matches!(&**self.arm_tables, anagrams::ArmTables::None));
+        #[cfg(not(target_family = "wasm"))]
+        let late = late && !self.simmer.preempty_enabled();
         // only the very board the graph was pruned for keeps it: tiles added
         // since may be a phoney left standing, beside which a valid move makes
         // a word that prune dropped
@@ -2846,6 +2854,73 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
             rack,
             (None, &mut infer::Carried::default()),
         )
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn pick_a_move_after_with_preempty(
+        &mut self,
+        filtered_movegen: &mut move_filter::GenMoves<'_>,
+        move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        game_state: &game_state::GameState,
+        rack: &[u8],
+        (last, carried, mode): (Option<LastMove<'_>>, &mut infer::Carried, &PreemptyMode),
+    ) -> error::Returns<()> {
+        let enabled = !matches!(mode, PreemptyMode::Off);
+        let bag = game_state.bag.len();
+        let game_config = board_snapshot.game_config;
+        if enabled
+            && crate::preempty::applies(game_config, bag)
+            && (!matches!(self, MovePicker::Simmer(_))
+                || matches!(mode, PreemptyMode::WithSimmerRoot))
+        {
+            carried.clear();
+            let dynamic = match self {
+                MovePicker::Dynamic(leaves) => Some(*leaves),
+                MovePicker::Simmer(simmer) => simmer.dynamic_root,
+                _ => None,
+            };
+            filtered_movegen.gen_moves(
+                move_generator,
+                board_snapshot,
+                rack,
+                game_state.current_player().num_exchanges,
+                usize::MAX,
+                dynamic,
+            );
+            if let MovePicker::Deft(deft) = self {
+                let (term, scratch) = deft.term_and_scratch(game_config);
+                if let Some(term) = term {
+                    term.add_to(
+                        game_config,
+                        &game_state.board_tiles,
+                        &mut move_generator.plays,
+                        scratch,
+                    )?;
+                }
+            }
+            return crate::preempty::pick_generated(
+                &mut move_generator.plays,
+                board_snapshot,
+                rack,
+                bag,
+            );
+        }
+        if enabled && let MovePicker::Simmer(simmer) = self {
+            simmer.simmer.set_preempty(Some(filtered_movegen));
+        }
+        let picked = self.pick_a_move_after(
+            filtered_movegen,
+            move_generator,
+            board_snapshot,
+            game_state,
+            rack,
+            (last, carried),
+        );
+        if enabled && let MovePicker::Simmer(simmer) = self {
+            simmer.simmer.set_preempty(None);
+        }
+        picked
     }
 
     // as pick_a_move, given the opponent's last move: a sim then draws their

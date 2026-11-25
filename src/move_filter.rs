@@ -97,7 +97,7 @@ static LENGTH_IMPORTANCES: &[u8] = &[
 pub struct Tilt<'a> {
     word_prob: Box<prob::WordProbability>,
     max_prob_by_len: Box<[u64]>,
-    length_importances: &'a [u8],
+    length_importances: std::borrow::Cow<'a, [u8]>,
     pub tilt_factor: i32, // 0..=TILT_DENOM
     pub leave_scale: i32, // 0..=LEAVE_SCALE_DENOM
     limited_vocab_checker: LimitedVocabChecker,
@@ -123,9 +123,21 @@ impl<'a> Tilt<'a> {
         Self {
             word_prob: Box::new(word_prob),
             max_prob_by_len: max_prob_by_len.into_boxed_slice(),
-            length_importances,
+            length_importances: std::borrow::Cow::Borrowed(length_importances),
             tilt_factor: 0,
             leave_scale: LEAVE_SCALE_DENOM,
+            limited_vocab_checker: LimitedVocabChecker::new(),
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn owned(&self) -> Tilt<'static> {
+        Tilt {
+            word_prob: self.word_prob.clone(),
+            max_prob_by_len: self.max_prob_by_len.clone(),
+            length_importances: std::borrow::Cow::Owned(self.length_importances.to_vec()),
+            tilt_factor: self.tilt_factor,
+            leave_scale: self.leave_scale,
             limited_vocab_checker: LimitedVocabChecker::new(),
         }
     }
@@ -190,10 +202,46 @@ pub enum GenMoves<'a> {
 }
 
 impl GenMoves<'_> {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn owned(&self) -> GenMoves<'static> {
+        match self {
+            Self::Unfiltered => GenMoves::Unfiltered,
+            Self::Tilt { tilt, bot_level } => GenMoves::Tilt {
+                tilt: tilt.owned(),
+                bot_level: *bot_level,
+            },
+        }
+    }
+
     #[inline(always)]
     pub fn gen_moves<N: kwg::Node, L: kwg::Node>(
         &mut self,
         move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        rack: &[u8],
+        num_exchanges_by_this_player: i16,
+        max_gen: usize,
+        dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
+    ) {
+        self.gen_moves_with(
+            move_generator,
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            max_gen,
+            dynamic_leaves,
+        );
+    }
+
+    pub(crate) fn gen_moves_with<
+        N: kwg::Node,
+        L: kwg::Node,
+        G: movegen::LaneBits,
+        const JUMPS: bool,
+        const ANY_SIDE: bool,
+    >(
+        &mut self,
+        move_generator: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         rack: &[u8],
         num_exchanges_by_this_player: i16,

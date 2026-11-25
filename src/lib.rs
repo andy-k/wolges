@@ -44,6 +44,8 @@ pub mod movegen;
 pub mod notation;
 pub mod parallelism;
 pub mod play_scorer;
+#[cfg(not(target_family = "wasm"))]
+pub mod preempty;
 pub mod prob;
 pub mod racks;
 pub mod simmer;
