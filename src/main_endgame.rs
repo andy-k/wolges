@@ -363,6 +363,7 @@ struct Solving {
     peg_model: endgame::PegModel,
     peg_estimates: bool,
     peg_exact_pass: bool,
+    peg_cuts: Option<bool>,
 }
 
 // the models of a search with two or more tiles in the bag (endgame::PegModel)
@@ -641,6 +642,14 @@ struct Cli {
         help = "value root moves exactly in one score-ordered pass for positions with two or more tiles in the bag"
     )]
     peg_exact_pass: bool,
+    #[arg(
+        long,
+        value_name = "BOOL",
+        help = "for positions with two or more tiles in the bag, whether to stop valuing a move \
+                once it cannot win as often as the best so far (its win% then the most it could \
+                reach, marked <=); on by default, off under a time limit"
+    )]
+    peg_cuts: Option<bool>,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -656,6 +665,22 @@ struct Cli {
     score_diff: i32,
     #[command(flatten)]
     game: game_args::GameArgs,
+}
+
+const WIN_PLACES: usize = 4;
+
+fn bound_pct(pct: f64) -> String {
+    let mut places = WIN_PLACES;
+    while pct > 0.0
+        && format!("{pct:.places$}")
+            .bytes()
+            .all(|b| b == b'0' || b == b'.')
+    {
+        places += 1;
+    }
+    let scale = 10f64.powi(places as i32);
+    let most = (pct * scale).ceil() / scale;
+    format!("{most:.places$}")
 }
 
 fn main() -> error::Returns<()> {
@@ -680,6 +705,7 @@ fn main() -> error::Returns<()> {
         scoreless: [cli.passes, cli.zeros],
         peg_estimates: cli.peg_estimates,
         peg_exact_pass: cli.peg_exact_pass,
+        peg_cuts: cli.peg_cuts,
         peg_model: match cli.peg_model {
             PegModelArg::InfoSets => endgame::PegModel::InfoSets,
             PegModelArg::RandomDraws => endgame::PegModel::RandomDraws,
@@ -1690,6 +1716,12 @@ fn solve_position<N: kwg::Node>(
             if solving.peg_exact_pass {
                 progress = progress.with_exact_pass()?;
             }
+            match solving.peg_cuts {
+                Some(true) => progress = progress.with_cuts()?,
+                Some(false) => progress = progress.without_cuts()?,
+                None if solving.limits.time.is_some() => progress = progress.without_cuts()?,
+                None => {}
+            }
             let named = |play: &movegen::Play| match play {
                 movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
                 movegen::Play::Exchange { tiles } => {
@@ -1735,7 +1767,7 @@ fn solve_position<N: kwg::Node>(
                             began.elapsed(),
                             named(&pass.leader.play),
                             pass.leader.win_pct * 100.0,
-                            pass.leader.expected_margin,
+                            pass.leader.expected_margin.unwrap_or(equity::Equity::ZERO),
                             if pass.leader.exact { "" } else { " (provisional)" },
                         )?;
                         Ok(())
@@ -1819,14 +1851,23 @@ fn solve_position<N: kwg::Node>(
                 )?;
             }
             for valued in &result.moves {
-                writeln!(
-                    std::io::stdout(),
-                    "  {}: win% {:.4}, expected game margin {}{}",
-                    named(&valued.play),
-                    valued.win_pct * 100.0,
-                    valued.expected_margin,
-                    if valued.exact { "" } else { " (provisional)" },
-                )?;
+                match valued.expected_margin {
+                    Some(margin) if !valued.cut => writeln!(
+                        std::io::stdout(),
+                        "  {}: win% {:.places$}, expected game margin {}{}",
+                        named(&valued.play),
+                        valued.win_pct * 100.0,
+                        margin,
+                        if valued.exact { "" } else { " (provisional)" },
+                        places = WIN_PLACES,
+                    )?,
+                    _ => writeln!(
+                        std::io::stdout(),
+                        "  {}: win% <={}, expected game margin unknown (cut)",
+                        named(&valued.play),
+                        bound_pct(valued.win_pct * 100.0),
+                    )?,
+                }
             }
             if !result.exact {
                 say_where_a_limit_stopped(result.depth)?;
@@ -1994,6 +2035,15 @@ fn solve_position<N: kwg::Node>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_positive_bound_never_shows_as_zero() {
+        assert_eq!(super::bound_pct(12.5), "12.5000");
+        assert_eq!(super::bound_pct(0.0), "0.0000");
+        assert_eq!(super::bound_pct(0.00004), "0.00004");
+        assert_eq!(super::bound_pct(0.000_000_7), "0.000001");
+        assert_eq!(super::bound_pct(12.345_61), "12.3457");
+    }
+
     use super::*;
 
     #[test]
