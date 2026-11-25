@@ -12968,6 +12968,135 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_woadwage_solve_answers_as_the_reference_does() {
+        use crate::movegen::tests::{
+            WoadwageToyRules, woadwage_rng, woadwage_toy_boards, woadwage_toy_rack,
+            woadwage_toy_rules,
+        };
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 403u64;
+        let mut solved = 0usize;
+        let mut lines = 0usize;
+        for jumbled in [false, true] {
+            for side in [5i8, 7] {
+                let WoadwageToyRules(gc, kwg, explicit) = woadwage_toy_rules(side, jumbled);
+                let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+                let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+                let mut fixed = Reference {
+                    gc: &gc,
+                    kwg: &kwg,
+                    klv: &klv,
+                    mg: &mut mg,
+                    memo: Default::default(),
+                };
+                let boards = woadwage_toy_boards(side, &explicit, &mut seed, 3, 5);
+                for board in boards.iter().filter(|board| board.iter().any(|&t| t != 0)) {
+                    let racks = [
+                        woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
+                        woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
+                    ];
+                    let mover = (woadwage_rng(&mut seed) % gc.num_players() as u64) as u8;
+                    let what = format!("[{jumbled} {side}] {board:?} {racks:?} mover {mover}");
+                    let want = reference(&mut fixed, board, &racks, mover as usize, 0, 0, false);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
+                            .unwrap();
+                    egs.init(board, [&racks[0][..], &racks[1][..]]);
+                    assert_eq!(egs.solve(mover).unwrap(), super::to_equity(want), "{what}");
+                    let mut line = Vec::new();
+                    egs.collect_pv(mover, &mut line);
+                    lines += line.len();
+                    assert_a_best_line(&mut fixed, board, &racks, mover, &line, &what);
+                    let mut lean = EndgameSolver::<kwg::Node24, kwg::Node24, true>::new(
+                        &gc,
+                        &kwg,
+                        &arm_tables,
+                    )
+                    .unwrap();
+                    lean.init(board, [&racks[0][..], &racks[1][..]]);
+                    assert_eq!(lean.solve(mover).unwrap(), super::to_equity(want), "{what}");
+                    solved += 1;
+                }
+            }
+        }
+        assert!(solved > 0, "{solved}");
+        assert!(lines > 0, "{lines}");
+    }
+
+    #[test]
+    #[inline]
+    fn a_woadwage_graph_pruned_to_the_words_the_board_can_take_solves_as_the_whole() {
+        use crate::movegen::tests::{
+            WoadwageToyRules, woadwage_rng, woadwage_toy_boards, woadwage_toy_rack,
+            woadwage_toy_rules, woadwage_within_bag,
+        };
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 409u64;
+        let mut solved = 0usize;
+        for jumbled in [false, true] {
+            for side in [5i8, 7] {
+                let WoadwageToyRules(gc, whole, explicit) = woadwage_toy_rules(side, jumbled);
+                let boards = woadwage_toy_boards(side, &explicit, &mut seed, 10, 5);
+                for board in (boards.iter()).filter(|board| {
+                    board.iter().any(|&t| t != 0) && woadwage_within_bag(&gc, board)
+                }) {
+                    let mut kept = Vec::<Vec<u8>>::new();
+                    movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                        &movegen::BoardSnapshot {
+                            board_tiles: board,
+                            game_config: &gc,
+                            kwg: &whole,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        |word: &[u8]| kept.push(word.to_vec()),
+                    );
+                    let pruned = if jumbled {
+                        crate::jumbled_woadwage::tests::kad_for(&kept)
+                    } else {
+                        kwg::kbwg_from_bytes_alloc(
+                            build::build(
+                                build::BuildContent::Gaddawg,
+                                build::BuildLayout::Wolges,
+                                build::BuildOrder::Sorted,
+                                &(kept.iter())
+                                    .map(|word| bites::Bites::from(&word[..]))
+                                    .collect::<Vec<_>>(),
+                            )
+                            .unwrap()
+                            .to_vec(),
+                            false,
+                        )
+                        .unwrap()
+                    };
+                    let racks = [
+                        woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
+                        woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
+                    ];
+                    let mover = (woadwage_rng(&mut seed) % gc.num_players() as u64) as u8;
+                    let solve = |kwg: &kwg::Kwg<kwg::Node24>| {
+                        let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
+                        let mut egs =
+                            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, kwg, &arm_tables)
+                                .unwrap();
+                        egs.init(board, [&racks[0][..], &racks[1][..]]);
+                        egs.solve(mover).unwrap()
+                    };
+                    assert_eq!(
+                        solve(&pruned),
+                        solve(&whole),
+                        "[{jumbled} {side}] {board:?} {racks:?} mover {mover}"
+                    );
+                    solved += 1;
+                }
+            }
+        }
+        assert!(solved > 0, "{solved}");
+    }
+
+    #[test]
+    #[inline]
     fn a_solve_in_steps_skipping_by_plays_out_ends_as_one_unbroken_solve() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();

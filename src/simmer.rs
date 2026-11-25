@@ -2732,4 +2732,113 @@ mod tests {
         simmer.last_seen_leave_values[turn] = 10;
         assert!(simmer.final_equity_spread().is_err());
     }
+
+    #[test]
+    #[inline]
+    fn a_woadwage_sim_plays_only_legal_plays() {
+        use crate::movegen::tests::{
+            WoadwageToyRules, woadwage_rng, woadwage_toy_boards, woadwage_toy_rack,
+            woadwage_toy_rules,
+        };
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let no_tables = anagrams::ArmTables::None;
+        let mut seed = 405u64;
+        let (mut rollouts, mut placed) = (0usize, 0usize);
+        for jumbled in [false, true] {
+            for side in [5i8, 7] {
+                let n = side as usize;
+                let WoadwageToyRules(gc, kwg, explicit) = woadwage_toy_rules(side, jumbled);
+                let mut field = movegen::KurniaMoveGenerator::new(&gc);
+                let legal = |board: &[u8]| {
+                    for down in [false, true] {
+                        for lane in 0..n {
+                            let mut run = Vec::new();
+                            for along in 0..=n {
+                                let tile = if along < n {
+                                    let (row, col) =
+                                        if down { (along, lane) } else { (lane, along) };
+                                    board[row * n + col]
+                                } else {
+                                    0
+                                };
+                                if tile != 0 {
+                                    run.push(tile & 0x7f);
+                                } else {
+                                    if run.len() >= 2 && !explicit.contains(&run) {
+                                        return false;
+                                    }
+                                    run.clear();
+                                }
+                            }
+                        }
+                    }
+                    true
+                };
+                let on_board = |board: &[u8]| board.iter().filter(|&&t| t != 0).count();
+                for board in woadwage_toy_boards(side, &explicit, &mut seed, 2, 4) {
+                    let mut game_state = game_state::GameState::new(&gc);
+                    game_state.board_tiles.copy_from_slice(&board);
+                    for player in game_state.players.iter_mut() {
+                        player.rack = woadwage_toy_rack(
+                            &mut seed,
+                            crate::movegen::tests::woadwage_toy_most_tiles(),
+                        );
+                    }
+                    let bag = (0..woadwage_rng(&mut seed) % 6)
+                        .map(|_| {
+                            (woadwage_rng(&mut seed)
+                                % (crate::movegen::tests::woadwage_toy_letters() as u64 + 1))
+                                as u8
+                        })
+                        .collect::<Vec<_>>();
+                    game_state.bag.set_from_iter(bag);
+                    field.gen_moves_unfiltered(&movegen::GenMovesParams {
+                        board_snapshot: &movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        rack: &game_state.current_player().rack,
+                        max_gen: 4,
+                        num_exchanges_by_this_player: 0,
+                        pass_policy: movegen::PassPolicy::AsACandidate,
+                        dynamic_leaves: None,
+                    });
+                    for lean in [false, true] {
+                        let mut simmer = Simmer::new(&gc).unwrap();
+                        simmer.prepare(&gc, &game_state, &SimChoices::new(3, false, &[]));
+                        simmer.reseed(seed);
+                        for candidate in field.plays.iter().map(|m| &m.play) {
+                            simmer.prepare_iteration(None);
+                            if lean {
+                                simmer.simulate_lean(&gc, &kwg, &no_tables, &klv, candidate)
+                            } else {
+                                simmer.simulate(&gc, &kwg, &no_tables, &klv, candidate)
+                            }
+                            .unwrap();
+                            let after = &simmer.game_state.board_tiles;
+                            assert!(legal(after), "{jumbled} {side} {after:?}");
+                            let mut tiles = match candidate {
+                                movegen::Play::Place { word, .. } => {
+                                    word.iter().filter(|&&t| t != 0).count()
+                                }
+                                movegen::Play::Exchange { .. } => 0,
+                            };
+                            for ply in simmer.plies_played() {
+                                tiles += ply.tiles as usize;
+                                placed += (ply.tiles > 0) as usize;
+                            }
+                            assert_eq!(on_board(after), on_board(&board) + tiles, "{jumbled}");
+                            rollouts += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(rollouts > 0, "{rollouts}");
+        assert!(placed > 0, "{placed}");
+    }
 }

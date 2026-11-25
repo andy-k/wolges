@@ -15871,7 +15871,7 @@ fn gen_remaining_words<
 mod corpus;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{alphabet, bites, board_layout, build, display, game_config, klv, kwg};
 
@@ -19080,7 +19080,16 @@ mod tests {
     }
 
     #[inline]
-    fn woadwage_toy() -> (kwg::Kwg<kwg::Node24>, std::collections::BTreeSet<Vec<u8>>) {
+    pub(crate) fn woadwage_toy_longest() -> u64 {
+        WOADWAGE_TOY_WORDS
+            .iter()
+            .map(|word| word.len())
+            .max()
+            .unwrap() as u64
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_toy() -> (kwg::Kwg<kwg::Node24>, std::collections::BTreeSet<Vec<u8>>) {
         let words = WOADWAGE_TOY_WORDS
             .iter()
             .map(|&word| bites::Bites::from(word))
@@ -19110,7 +19119,7 @@ mod tests {
     }
 
     #[inline]
-    fn woadwage_toy_config(side: i8) -> game_config::GameConfig {
+    pub(crate) fn woadwage_toy_config(side: i8) -> game_config::GameConfig {
         let mut premiums = Vec::new();
         for row in 0..side {
             for col in 0..side {
@@ -19139,7 +19148,7 @@ mod tests {
     }
 
     #[inline]
-    fn woadwage_rng(seed: &mut u64) -> u64 {
+    pub(crate) fn woadwage_rng(seed: &mut u64) -> u64 {
         *seed = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
@@ -19256,7 +19265,7 @@ mod tests {
     );
 
     #[inline]
-    fn woadwage_brute_force(
+    pub(crate) fn woadwage_brute_force(
         side: i8,
         board_tiles: &[u8],
         rack: &[u8],
@@ -19547,7 +19556,8 @@ mod tests {
     }
 
     #[inline]
-    fn jumbled_woadwage_toy() -> (kwg::Kwg<kwg::Node24>, std::collections::BTreeSet<Vec<u8>>) {
+    pub(crate) fn jumbled_woadwage_toy()
+    -> (kwg::Kwg<kwg::Node24>, std::collections::BTreeSet<Vec<u8>>) {
         let words = WOADWAGE_TOY_WORDS
             .iter()
             .map(|&word| word.to_vec())
@@ -19870,6 +19880,558 @@ mod tests {
         eprintln!(
             "jumbled woadwage brute force: {cases} cases, {plays_seen} plays, {collapsed} collapsed"
         );
+    }
+
+    pub(crate) struct WoadwageToyRules(
+        pub(crate) game_config::GameConfig,
+        pub(crate) kwg::Kwg<kwg::Node24>,
+        pub(crate) std::collections::BTreeSet<Vec<u8>>,
+    );
+
+    #[inline]
+    pub(crate) fn woadwage_toy_rules(side: i8, jumbled: bool) -> WoadwageToyRules {
+        if jumbled {
+            let (kad, explicit) = jumbled_woadwage_toy();
+            WoadwageToyRules(woadwage_toy_config(side).jumbled_woadwage(), kad, explicit)
+        } else {
+            let (kwg, explicit) = woadwage_toy();
+            WoadwageToyRules(woadwage_toy_config(side), kwg, explicit)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_play_key(
+        down: bool,
+        lane: i8,
+        idx: i8,
+        word: &[u8],
+    ) -> (u8, i8, i8, Vec<u8>) {
+        let placed = (0i8..)
+            .zip(word.iter())
+            .filter(|&(_, &tile)| tile != 0)
+            .collect::<Vec<_>>();
+        if placed.len() == 1 {
+            let along = idx + placed[0].0;
+            let (row, col) = if down { (along, lane) } else { (lane, along) };
+            (2, row, col, vec![*placed[0].1])
+        } else {
+            (down as u8, lane, idx, word.to_vec())
+        }
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_brute_keys(
+        side: i8,
+        board_tiles: &[u8],
+        rack: &[u8],
+        explicit: &std::collections::BTreeSet<Vec<u8>>,
+    ) -> std::collections::BTreeSet<(u8, i8, i8, Vec<u8>)> {
+        let WoadwageBrute(multi, single) = woadwage_brute_force(side, board_tiles, rack, explicit);
+        multi
+            .into_iter()
+            .map(|(down, lane, idx, word)| (down as u8, lane, idx, word))
+            .chain(
+                single
+                    .into_iter()
+                    .map(|(row, col, tile)| (2, row, col, vec![tile])),
+            )
+            .collect()
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_key_play(
+        side: i8,
+        board_tiles: &[u8],
+        (kind, a, b, word): &(u8, i8, i8, Vec<u8>),
+    ) -> Play {
+        let (down, lane, idx, word) = if *kind == 2 {
+            let (row, col) = (*a, *b);
+            let at = |row: i8, col: i8| {
+                (0..side).contains(&row)
+                    && (0..side).contains(&col)
+                    && board_tiles[row as usize * side as usize + col as usize] != 0
+            };
+            let down = !at(row, col - 1) && !at(row, col + 1);
+            let (lane, along) = if down { (col, row) } else { (row, col) };
+            let tile_at = |i: i8| if down { at(i, lane) } else { at(lane, i) };
+            let (mut start, mut end) = (along, along + 1);
+            while tile_at(start - 1) {
+                start -= 1;
+            }
+            while tile_at(end) {
+                end += 1;
+            }
+            let mut spanned = vec![0u8; (end - start) as usize];
+            spanned[(along - start) as usize] = word[0];
+            (down, lane, start, spanned)
+        } else {
+            (*kind == 1, *a, *b, word.clone())
+        };
+        Play::Place {
+            down,
+            lane,
+            idx,
+            word: word[..].into(),
+            score: equity::Equity::new(0),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_toy_rack(seed: &mut u64, most: u64) -> Vec<u8> {
+        let len = 1 + (woadwage_rng(seed) % most) as usize;
+        let mut rack = (0..len)
+            .map(|_| (woadwage_rng(seed) % (woadwage_toy_letters() as u64 + 1)) as u8)
+            .collect::<Vec<_>>();
+        rack.sort_unstable();
+        rack
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_toy_boards(
+        side: i8,
+        explicit: &std::collections::BTreeSet<Vec<u8>>,
+        seed: &mut u64,
+        games: usize,
+        plies: usize,
+    ) -> Vec<Vec<u8>> {
+        let n = side as usize;
+        let mut boards = Vec::new();
+        for _game in 0..games {
+            let mut board_tiles = vec![0u8; n * n];
+            boards.push(board_tiles.clone());
+            for _ply in 0..plies {
+                let rack = woadwage_toy_rack(seed, woadwage_toy_most_tiles());
+                let keys = woadwage_brute_keys(side, &board_tiles, &rack, explicit);
+                if keys.is_empty() {
+                    continue;
+                }
+                let pick = woadwage_rng(seed) as usize % keys.len();
+                let (kind, a, b, word) = keys.into_iter().nth(pick).unwrap();
+                if kind == 2 {
+                    board_tiles[a as usize * n + b as usize] = word[0];
+                } else {
+                    for (i, &tile) in (b..).zip(word.iter()) {
+                        if tile != 0 {
+                            let (row, col) = if kind == 1 { (i, a) } else { (a, i) };
+                            board_tiles[row as usize * n + col as usize] = tile;
+                        }
+                    }
+                }
+                boards.push(board_tiles.clone());
+            }
+        }
+        boards
+    }
+
+    #[inline]
+    pub(crate) fn woadwage_within_bag(gc: &game_config::GameConfig, board_tiles: &[u8]) -> bool {
+        let alphabet = gc.alphabet();
+        let mut left = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile) as i32)
+            .collect::<Vec<_>>();
+        for &tile in board_tiles.iter().filter(|&&tile| tile != 0) {
+            left[if tile & 0x80 == 0 { tile as usize } else { 0 }] -= 1;
+        }
+        left.iter().all(|&count| count >= 0)
+    }
+
+    #[test]
+    #[inline]
+    fn the_word_prune_keeps_every_woadwage_play() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 577u64;
+        let mut cases = 0usize;
+        for jumbled in [false, true] {
+            for side in [5i8, 7] {
+                let WoadwageToyRules(gc, kwg, explicit) = woadwage_toy_rules(side, jumbled);
+                for board_tiles in woadwage_toy_boards(side, &explicit, &mut seed, 6, 8)
+                    .into_iter()
+                    .filter(|board_tiles| woadwage_within_bag(&gc, board_tiles))
+                {
+                    let mut kept = Vec::<Vec<u8>>::new();
+                    KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                        &BoardSnapshot {
+                            board_tiles: &board_tiles,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        |word: &[u8]| kept.push(word.to_vec()),
+                    );
+                    let pruned = if jumbled {
+                        crate::jumbled_woadwage::tests::explicit_variant(&kept)
+                    } else {
+                        (kept.iter().cloned())
+                            .chain(
+                                (kept.iter())
+                                    .flat_map(|a| kept.iter().map(move |b| [&a[..], b].concat())),
+                            )
+                            .collect()
+                    };
+                    for _rack in 0..5 {
+                        let rack = woadwage_toy_rack(&mut seed, woadwage_toy_most_tiles());
+                        assert_eq!(
+                            woadwage_brute_keys(side, &board_tiles, &rack, &pruned),
+                            woadwage_brute_keys(side, &board_tiles, &rack, &explicit),
+                            "[jumbled {jumbled} side {side} {board_tiles:?} {rack:?} {kept:?}]"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert!(cases > 0, "{cases}");
+    }
+
+    #[test]
+    #[inline]
+    fn the_word_prune_lets_a_woadwage_split_move_go_or_come() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        // the letters: a is 1, b 2, c 3, e 5, l 12, o 15, s 19, t 20
+        let shared: Vec<Vec<u8>> = vec![
+            vec![1, 2],
+            vec![1, 2, 19],
+            vec![3, 1, 20],
+            vec![15, 3, 1],
+            vec![19, 3, 1, 20],
+            vec![20, 1, 2, 19],
+        ];
+        let side = 9i8;
+        let catab = [3u8, 1, 20, 1, 2];
+        type Case<'a> = (&'a [u8], &'a [u8], usize);
+        let shared_cases: [Case<'_>; 3] = [
+            (&catab, &[15, 19], 7),
+            (&[3, 1, 20], &[1, 2], 5),
+            (&catab, &[19, 19], 7),
+        ];
+        for jumbled in [false, true] {
+            let (more, more_case): (&[&[u8]], Case<'_>) = if jumbled {
+                (&[&[1, 20], &[1, 2, 1, 20, 5]], (&[1, 20, 1, 2], &[5], 5))
+            } else {
+                (
+                    &[&[12, 15, 3, 1, 20, 1, 2, 12, 5]],
+                    (&catab, &[5, 12, 12, 15], 9),
+                )
+            };
+            let words = (shared.iter().cloned())
+                .chain(more.iter().map(|word| word.to_vec()))
+                .collect::<Vec<_>>();
+            let cases = shared_cases.iter().copied().chain([more_case]);
+            let (gc, kwg, explicit) = if jumbled {
+                (
+                    woadwage_toy_config(side).jumbled_woadwage(),
+                    crate::jumbled_woadwage::tests::kad_for(&words),
+                    crate::jumbled_woadwage::tests::explicit_variant(&words),
+                )
+            } else {
+                let sorted = {
+                    let mut sorted = words.clone();
+                    sorted.sort_unstable();
+                    sorted
+                        .iter()
+                        .map(|word| bites::Bites::from(&word[..]))
+                        .collect::<Vec<_>>()
+                };
+                let kwg = kwg::kbwg_from_bytes_alloc(
+                    build::build(
+                        build::BuildContent::Gaddawg,
+                        build::BuildLayout::Wolges,
+                        build::BuildOrder::Sorted,
+                        &sorted,
+                    )
+                    .unwrap()
+                    .to_vec(),
+                    false,
+                )
+                .unwrap();
+                let explicit = (words.iter().cloned())
+                    .chain(
+                        (words.iter())
+                            .flat_map(|a| words.iter().map(move |b| [&a[..], b].concat())),
+                    )
+                    .collect();
+                (woadwage_toy_config(side), kwg, explicit)
+            };
+            for (run, rack, long) in cases {
+                let mut board_tiles = vec![0u8; side as usize * side as usize];
+                let row = (side / 2) as usize * side as usize;
+                board_tiles[row + 2..row + 2 + run.len()].copy_from_slice(run);
+                let n = side as usize;
+                let mut blockers = [
+                    0x84u8, 0x84, 4, 4, 4, 4, 7, 7, 7, 6, 6, 8, 8, 13, 13, 16, 16,
+                ]
+                .into_iter();
+                for col in 2..2 + run.len() {
+                    board_tiles[row - n + col] = blockers.next().unwrap();
+                    board_tiles[row + n + col] = blockers.next().unwrap();
+                }
+                for (corner, beside) in [(0, [1, n]), (n - 1, [n - 2, 2 * n - 1])] {
+                    board_tiles[corner] = if corner == 0 { 3 } else { 2 };
+                    for at in beside {
+                        board_tiles[at] = blockers.next().unwrap();
+                    }
+                }
+                let mut kept = Vec::<Vec<u8>>::new();
+                KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                    &BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    },
+                    |word: &[u8]| kept.push(word.to_vec()),
+                );
+                let pruned = if jumbled {
+                    crate::jumbled_woadwage::tests::explicit_variant(&kept)
+                } else {
+                    (kept.iter().cloned())
+                        .chain(
+                            (kept.iter())
+                                .flat_map(|a| kept.iter().map(move |b| [&a[..], b].concat())),
+                        )
+                        .collect()
+                };
+                let whole = woadwage_brute_keys(side, &board_tiles, rack, &explicit);
+                assert!(
+                    (whole.iter()).any(|key| matches!(woadwage_key_play(side, &board_tiles, key), Play::Place { word, .. } if word.len() == long)),
+                    "[jumbled {jumbled} {run:?} {rack:?}]"
+                );
+                assert_eq!(
+                    woadwage_brute_keys(side, &board_tiles, rack, &pruned),
+                    whole,
+                    "[jumbled {jumbled} {run:?} {rack:?} {kept:?}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn woadwage_raw_plays_are_the_brute_force_ones() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 401u64;
+        let mut cases = 0usize;
+        let mut plays_seen = 0usize;
+        for jumbled in [false, true] {
+            for side in [5i8, 7] {
+                let WoadwageToyRules(gc, kwg, explicit) = woadwage_toy_rules(side, jumbled);
+                let run_letter_bits = kwg.compute_letter_bits().letter_bits;
+                let mut move_generator = KurniaMoveGenerator::new(&gc);
+                let mut scorer = play_scorer::PlayScorer::new();
+                for board_tiles in woadwage_toy_boards(side, &explicit, &mut seed, 4, 6) {
+                    let board_snapshot = BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    };
+                    for _rack in 0..3 {
+                        let rack = woadwage_toy_rack(&mut seed, woadwage_toy_most_tiles());
+                        let want = woadwage_brute_keys(side, &board_tiles, &rack, &explicit);
+                        let rows = woadwage_rng(&mut seed) as u128;
+                        let cols = woadwage_rng(&mut seed) as u128;
+                        for way in 0..6 {
+                            match way {
+                                0 => move_generator.gen_moves_raw_all_unsorted(
+                                    &board_snapshot,
+                                    &rack,
+                                    0,
+                                    PassPolicy::AsACandidate,
+                                ),
+                                1 => move_generator.gen_moves_raw_all_unsorted_lean(
+                                    &board_snapshot,
+                                    &rack,
+                                    0,
+                                    PassPolicy::AsACandidate,
+                                ),
+                                2 => move_generator.gen_moves_raw_lanes_unsorted(
+                                    &board_snapshot,
+                                    &rack,
+                                    0,
+                                    PassPolicy::AsACandidate,
+                                    !0,
+                                    !0,
+                                ),
+                                3 => move_generator.gen_moves_raw_lanes_unsorted_lean(
+                                    &board_snapshot,
+                                    &rack,
+                                    0,
+                                    PassPolicy::AsACandidate,
+                                    !0,
+                                    !0,
+                                ),
+                                4 => move_generator.gen_moves_raw_lanes_unsorted_by_runs(
+                                    &run_letter_bits,
+                                    &board_snapshot,
+                                    &rack,
+                                    !0,
+                                    !0,
+                                ),
+                                _ => move_generator.gen_moves_raw_lanes_unsorted(
+                                    &board_snapshot,
+                                    &rack,
+                                    0,
+                                    PassPolicy::AsACandidate,
+                                    rows,
+                                    cols,
+                                ),
+                            }
+                            let mut got = Vec::new();
+                            let mut passes = 0usize;
+                            for valued in &move_generator.plays {
+                                match &valued.play {
+                                    Play::Place {
+                                        down,
+                                        lane,
+                                        idx,
+                                        word,
+                                        score,
+                                    } => {
+                                        assert_eq!(
+                                            scorer.compute_score(&board_snapshot, &valued.play),
+                                            score.raw(),
+                                            "{word:?}"
+                                        );
+                                        if way == 5 {
+                                            let mask = if *down { cols } else { rows };
+                                            assert!(mask >> *lane & 1 != 0, "{word:?}");
+                                        }
+                                        got.push(woadwage_play_key(*down, *lane, *idx, word));
+                                    }
+                                    Play::Exchange { tiles } => {
+                                        if tiles.is_empty() {
+                                            passes += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            assert_eq!(passes, 1, "{jumbled} {side} {way}");
+                            let got_set = got
+                                .iter()
+                                .cloned()
+                                .collect::<std::collections::BTreeSet<_>>();
+                            assert_eq!(got.len(), got_set.len(), "a play found twice");
+                            if way == 5 {
+                                let lane_want = want
+                                    .iter()
+                                    .filter(|(kind, a, b, _)| match kind {
+                                        0 => rows >> a & 1 != 0,
+                                        1 => cols >> a & 1 != 0,
+                                        _ => rows >> a & 1 != 0 || cols >> b & 1 != 0,
+                                    })
+                                    .cloned()
+                                    .collect::<std::collections::BTreeSet<_>>();
+                                assert!(got_set.is_subset(&lane_want), "{jumbled} {side}");
+                                assert!(
+                                    lane_want
+                                        .iter()
+                                        .filter(|(kind, _, _, _)| *kind < 2)
+                                        .all(|key| got_set.contains(key)),
+                                    "{jumbled} {side} {rack:?} {board_tiles:?}"
+                                );
+                            } else {
+                                assert_eq!(
+                                    got_set, want,
+                                    "{jumbled} {side} {way} {rack:?} {board_tiles:?}"
+                                );
+                                plays_seen += got_set.len();
+                            }
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert!(cases > 0, "{cases}");
+        assert!(plays_seen > 0, "{plays_seen}");
+    }
+
+    #[test]
+    #[inline]
+    fn a_one_letter_word_is_a_woadwage_half() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let side = 5i8;
+        type Lexicon<'a> = (Vec<Vec<u8>>, &'a [u8], usize);
+        let lexicons: [Lexicon<'_>; 2] = [
+            (vec![vec![1], vec![2]], &[1, 2], 2),
+            (vec![vec![1], vec![2, 3]], &[1, 2, 3], 3),
+        ];
+        for jumbled in [false, true] {
+            for (words, rack, joined) in &lexicons {
+                let (gc, kwg, explicit) = if jumbled {
+                    (
+                        woadwage_toy_config(side).jumbled_woadwage(),
+                        crate::jumbled_woadwage::tests::kad_for(words),
+                        crate::jumbled_woadwage::tests::explicit_variant(words),
+                    )
+                } else {
+                    let kwg = kwg::kbwg_from_bytes_alloc(
+                        build::build(
+                            build::BuildContent::Gaddawg,
+                            build::BuildLayout::Wolges,
+                            build::BuildOrder::Sorted,
+                            &(words.iter())
+                                .map(|word| bites::Bites::from(&word[..]))
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap()
+                        .to_vec(),
+                        false,
+                    )
+                    .unwrap();
+                    let explicit = (words.iter().cloned())
+                        .chain(
+                            (words.iter())
+                                .flat_map(|a| words.iter().map(move |b| [&a[..], b].concat())),
+                        )
+                        .collect();
+                    (woadwage_toy_config(side), kwg, explicit)
+                };
+                let board_tiles = vec![0u8; side as usize * side as usize];
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                let mut move_generator = KurniaMoveGenerator::new(&gc);
+                move_generator.gen_moves_raw_all_unsorted(
+                    &board_snapshot,
+                    rack,
+                    0,
+                    PassPolicy::AsACandidate,
+                );
+                let got = (move_generator.plays.iter())
+                    .filter_map(|valued| match &valued.play {
+                        Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            ..
+                        } => Some(woadwage_play_key(*down, *lane, *idx, word)),
+                        Play::Exchange { .. } => None,
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(
+                    got,
+                    woadwage_brute_keys(side, &board_tiles, rack, &explicit),
+                    "[jumbled {jumbled} {words:?}]"
+                );
+                assert!(
+                    got.iter().any(|(_, _, _, word)| word.len() == *joined),
+                    "[jumbled {jumbled} {words:?}] {got:?}"
+                );
+            }
+        }
     }
 
     #[inline]
