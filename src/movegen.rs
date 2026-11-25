@@ -7637,9 +7637,11 @@ fn gen_place_moves_lean<
         game_config::GameRules::Jumbled => {
             gen_jumbled_place_moves::<BAG_TERM, _, _, _>(params, single_tile_plays, None)
         }
-        game_config::GameRules::Woadwage => {
-            gen_woadwage_place_moves::<LEAVES, BAG_TERM, _, _, _>(params, single_tile_plays)
-        }
+        game_config::GameRules::Woadwage => gen_woadwage_place_moves::<LEAVES, BAG_TERM, _, _, _>(
+            params,
+            single_tile_plays,
+            left_bounds,
+        ),
         game_config::GameRules::JumbledWoadwage => {
             gen_jumbled_woadwage_place_moves::<LEAVES, BAG_TERM, _, _, _>(
                 params,
@@ -7995,12 +7997,14 @@ fn gen_woadwage_place_moves<
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
+    left_bounds: &'a [i32],
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
+        left_bounds: &'a [i32], // by left edge, the best span bound at it, then at or before it
     }
     #[derive(Clone)]
     struct Accumulator {
@@ -8043,6 +8047,11 @@ fn gen_woadwage_place_moves<
         } else {
             0
         };
+        debug_assert!(
+            !LEAVES
+                || env.left_bounds.is_empty()
+                || score + leave_value <= env.left_bounds[env.idx_left as usize]
+        );
         if score + leave_value < env.params.threshold {
             return;
         }
@@ -8165,6 +8174,7 @@ fn gen_woadwage_place_moves<
         alphabet,
         num_played: 0,
         idx_left: 0,
+        left_bounds,
     };
     let mut empties = 0u8;
     let mut idx_l = anchor;
@@ -8179,7 +8189,13 @@ fn gen_woadwage_place_moves<
                 break;
             }
         }
-        if idx_l == leftmost || env.params.board_strip[idx_l as usize - 1] == 0 {
+        let bounds = env.left_bounds;
+        if !bounds.is_empty() && bounds[bounds.len() / 2 + idx_l as usize] < env.params.threshold {
+            break;
+        }
+        if (idx_l == leftmost || env.params.board_strip[idx_l as usize - 1] == 0)
+            && (bounds.is_empty() || bounds[idx_l as usize] >= env.params.threshold)
+        {
             env.idx_left = idx_l;
             env.params.woadwage.stack.clear();
             extend::<LEAVES, BAG_TERM, _, _, _>(
@@ -12480,6 +12496,7 @@ fn walk_woadwage_star_lanes<
                 best_leave_values: &working_buffer.best_leave_values,
             },
             !down,
+            &[],
         );
     }
 }
