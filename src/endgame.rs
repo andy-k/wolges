@@ -7844,6 +7844,9 @@ impl<
             state.pass_exact = true;
             state.depth = if deepens { 1 } else { COMPLETE };
         }
+        if !state.steered.is_empty() && state.standing.len() != state.moves.len() {
+            state.stand();
+        }
 
         // one pass: each move's value is exact, so the same on any thread
         let k = tiles;
@@ -7928,6 +7931,9 @@ impl<
         };
 
         while !state.done {
+            if !state.standing.is_empty() && !state.steer_order() {
+                return Ok(peg_committed_answer(state));
+            }
             prioritize(
                 &mut state.order[state.next..],
                 priority,
@@ -7984,6 +7990,9 @@ impl<
                 state.reached.clear();
                 let valued = &state.valued;
                 (state.order).sort_unstable_by(|&a, &b| peg_ranks(valued, a, b));
+            }
+            if !state.standing.is_empty() {
+                state.carry_paused();
             }
             std::mem::swap(&mut state.answered, &mut state.valued);
             std::mem::swap(&mut state.answered_margins, &mut state.margins);
@@ -8244,6 +8253,165 @@ impl PegProgress {
             .find(|&i| valued[i].is_some() && committed.moves[i] == *play)?;
         Some(committed.places[at])
     }
+
+    // as PegBagProgress::change, a root move of the committed model's (the
+    // pass an exchange of no tiles; any other exchange none of them)
+    pub fn change(&mut self, play: &movegen::Play, change: PegBagChange) -> PegBagStanding {
+        let chosen = match play {
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => PegMove::Pass,
+            movegen::Play::Place { .. } => PegMove::Place(play.clone()),
+            movegen::Play::Exchange { .. } => return PegBagStanding::Absent,
+        };
+        self.committed.change(chosen, change)
+    }
+
+    #[inline(always)]
+    pub fn is_done(&self) -> bool {
+        self.committed.done
+    }
+}
+
+impl PegCommitted {
+    fn change(&mut self, play: PegMove, change: PegBagChange) -> PegBagStanding {
+        if !self.moves.is_empty() && !self.moves.contains(&play) {
+            return PegBagStanding::Absent;
+        }
+        let listed = self.steered.iter().position(|(other, _)| *other == play);
+        let was = listed.map_or(PegBagStanding::Running, |k| self.steered[k].1);
+        let now = match (change, was) {
+            (PegBagChange::Add, PegBagStanding::Absent)
+            | (PegBagChange::Resume, PegBagStanding::Paused) => PegBagStanding::Running,
+            (PegBagChange::Remove, _) => PegBagStanding::Absent,
+            (PegBagChange::Pause, PegBagStanding::Running) => PegBagStanding::Paused,
+            _ => was,
+        };
+        match (listed, now) {
+            (_, _) if now == was => {}
+            (Some(k), PegBagStanding::Running) => {
+                self.steered.remove(k);
+            }
+            (Some(k), _) => self.steered[k].1 = now,
+            (None, _) => self.steered.push((play.clone(), now)),
+        }
+        if now != was && !self.moves.is_empty() {
+            self.stand();
+            self.steered_to(&play, now);
+        }
+        was
+    }
+
+    fn stand(&mut self) {
+        if self.steered.is_empty() && self.standing.is_empty() {
+            return;
+        }
+        let steered = &self.steered;
+        self.standing.clear();
+        self.standing.extend(self.moves.iter().map(|play| {
+            match steered.iter().find(|(other, _)| other == play) {
+                Some((_, PegBagStanding::Paused)) => STAND_PAUSED,
+                Some((_, PegBagStanding::Absent)) => STAND_ABSENT,
+                _ => 0,
+            }
+        }));
+        self.stale.resize(self.moves.len(), false);
+    }
+
+    #[inline(always)]
+    fn live(&self, i: usize) -> bool {
+        self.standing.get(i).is_none_or(|&s| s & 3 == 0)
+    }
+
+    fn steered_to(&mut self, play: &PegMove, now: PegBagStanding) {
+        let Some(i) = self.moves.iter().position(|other| other == play) else {
+            return;
+        };
+        if now == PegBagStanding::Absent {
+            self.valued[i] = None;
+            if let Some(value) = self.answered.get_mut(i) {
+                *value = None;
+            }
+        }
+        if now != PegBagStanding::Running {
+            self.reached.retain(|&other| other != i);
+        }
+        if let Some((_, depth)) = self.answer {
+            let mut live = (0..self.moves.len())
+                .filter(|&k| self.live(k) && self.answered[k].is_some() && !self.stale[k])
+                .collect::<Vec<_>>();
+            if !live.is_empty() {
+                self.answer = Some((peg_best(&mut live, &self.answered), depth));
+            }
+        }
+        let values = self.answer_values();
+        let lacking = (0..self.moves.len())
+            .any(|k| self.live(k) && (values[k].is_none() || self.stale.get(k) == Some(&true)));
+        if self.done && lacking {
+            self.reopen();
+        }
+        self.rank_answer();
+    }
+
+    fn reopen(&mut self) {
+        self.done = false;
+        if self.answered.len() == self.moves.len() {
+            self.valued.clone_from(&self.answered);
+            self.margins.clone_from(&self.answered_margins);
+        }
+        self.reached.clear();
+        for i in 0..self.moves.len() {
+            if self.live(i) && self.valued[i].is_some() && !self.stale[i] {
+                self.reached.push(i);
+            }
+        }
+        self.order.clear();
+        self.order.extend_from_slice(&self.reached);
+        self.next = self.reached.len();
+        self.pass_exact = (self.reached.iter()).all(|&i| self.valued[i].as_ref().unwrap().exact);
+    }
+
+    fn steer_order(&mut self) -> bool {
+        for &i in &self.reached {
+            self.standing[i] |= MARK_REACHED;
+        }
+        let mut keep = 0;
+        for k in 0..self.order.len() {
+            let i = self.order[k];
+            let s = self.standing[i];
+            if (k < self.next && s & MARK_REACHED != 0) || (k >= self.next && s & 3 == 0) {
+                self.order[keep] = i;
+                keep += 1;
+            }
+        }
+        self.order.truncate(keep);
+        self.next = self.reached.len();
+        for &i in &self.order {
+            self.standing[i] |= MARK_TAKEN;
+        }
+        for i in 0..self.moves.len() {
+            if self.standing[i] == 0 {
+                self.order.push(i);
+            }
+            self.standing[i] &= 3;
+        }
+        (0..self.moves.len()).any(|i| self.live(i))
+    }
+
+    // the paused moves' values, and each one's margins, carried from the
+    // answer into the pass that did not value them
+    fn carry_paused(&mut self) {
+        let k = self.margins.len() / self.moves.len().max(1);
+        for i in 0..self.moves.len() {
+            self.stale[i] = false;
+            if self.standing[i] & STAND_PAUSED != 0 && self.valued[i].is_none() {
+                self.valued[i] = self.answered.get(i).cloned().flatten();
+                self.stale[i] = self.valued[i].is_some();
+                if self.stale[i] {
+                    let run = i * k..(i + 1) * k;
+                    self.margins[run.clone()].copy_from_slice(&self.answered_margins[run]);
+                }
+            }
+        }
+    }
 }
 
 // the committed model's search so far: the moves; the order its pass values
@@ -8271,6 +8439,9 @@ struct PegCommitted {
     kept: PassKept,
     margins: Vec<equity::Equity>,
     answered_margins: Vec<equity::Equity>,
+    steered: Vec<(PegMove, PegBagStanding)>, // those not running
+    standing: Vec<u8>,                       // each move's (STAND_*), empty until one is steered
+    stale: Vec<bool>,                        // each answer value kept from an older pass
 }
 
 // what valuing a move of the committed model refills for each tile, kept from
@@ -8319,6 +8490,10 @@ impl PegCommitted {
         self.ranked.clear();
         (self.ranked).extend((0..valued.len()).filter(|&i| valued[i].is_some()));
         (self.ranked).sort_unstable_by(|&a, &b| peg_ranks(valued, a, b));
+        if !self.standing.is_empty() {
+            let standing = &self.standing;
+            (self.ranked).sort_by_key(|&i| standing[i] & 3 != 0);
+        }
         self.places.clear();
         self.places.resize(valued.len(), 0);
         for (place, &i) in self.ranked.iter().enumerate() {
@@ -21231,5 +21406,108 @@ mod tests {
         }
         let held = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
         assert!(held.unwrap().unwrap().best_move.is_some());
+    }
+
+    #[test]
+    fn a_one_tile_search_takes_a_sims_changes_to_its_moves() {
+        use super::{PegBagChange as C, PegBagStanding as S};
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        for tile in [1u8, 2, 8] {
+            unseen_tally[tile as usize] += 1;
+        }
+        let fresh = || {
+            super::PegProgress::new(
+                0,
+                &board,
+                &[1, 1],
+                &unseen_tally,
+                equity::Equity::ZERO,
+                [0, 0],
+            )
+        };
+        let rows = |moves: &[super::PegMoveValue]| {
+            (moves.iter())
+                .map(|m| (m.play.clone(), m.win_pct, m.expected_margin, m.exact))
+                .collect::<Vec<_>>()
+        };
+        let play_of = |play: &super::PegMove| match play {
+            super::PegMove::Pass => movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+            super::PegMove::Place(play) => play.clone(),
+        };
+        let one_state = super::Limits {
+            time: None,
+            states: Some(1),
+            memory: None,
+            clock: None,
+        };
+        let mut solve = |progress: &mut super::PegProgress, limits: &super::Limits| {
+            egs.resume_peg_one_in_bag(progress, limits)
+                .unwrap()
+                .unwrap()
+        };
+        let full = solve(&mut fresh(), &super::Limits::NONE);
+        assert!(full.exact && full.moves.len() >= 3);
+        let (first, second) = (play_of(&full.moves[0].play), play_of(&full.moves[1].play));
+        let mut progress = fresh();
+        assert_eq!(progress.change(&first, C::Pause), S::Running);
+        assert_eq!(progress.change(&first, C::Resume), S::Paused);
+        let same = solve(&mut progress, &super::Limits::NONE);
+        assert!(same.best_move == full.best_move && rows(&same.moves) == rows(&full.moves));
+        let mut progress = fresh();
+        assert!(!solve(&mut progress, &one_state).exact);
+        assert_eq!(progress.change(&first, C::Pause), S::Running);
+        assert_eq!(progress.change(&first, C::Pause), S::Paused);
+        let paused = solve(&mut progress, &super::Limits::NONE);
+        assert!(paused.best_move.as_ref().map(play_of) == Some(second.clone()));
+        assert_eq!(paused.win_pct, full.moves[1].win_pct);
+        assert_eq!(paused.expected_margin, full.moves[1].expected_margin);
+        let at = (paused.moves.iter()).position(|m| play_of(&m.play) == first);
+        assert!(at.is_none_or(|at| at + 1 == paused.moves.len()));
+        assert_eq!(progress.change(&first, C::Resume), S::Paused);
+        assert!(!progress.is_done());
+        let resumed = solve(&mut progress, &super::Limits::NONE);
+        assert!(resumed.best_move == full.best_move);
+        assert!(rows(&resumed.moves) == rows(&full.moves));
+        progress.change(&first, C::Pause);
+        let listed = progress.answer_moves(0..usize::MAX);
+        assert!(rows(&listed[..1]) == rows(&full.moves[1..2]));
+        assert!(rows(&listed[listed.len() - 1..]) == rows(&full.moves[..1]));
+        let k = progress.hypotheses(Some(listed[listed.len() - 1].row));
+        let kept = progress.hypotheses(Some(full.moves[0].row));
+        assert!(k.collect::<Vec<_>>() == kept.collect::<Vec<_>>());
+        progress.change(&first, C::Resume);
+        let resumed = solve(&mut progress, &super::Limits::NONE);
+        assert!(resumed.best_move == full.best_move);
+        assert!(rows(&resumed.moves) == rows(&full.moves));
+        assert_eq!(progress.change(&second, C::Remove), S::Running);
+        assert_eq!(progress.change(&second, C::Pause), S::Absent);
+        let removed = progress.answer_moves(0..usize::MAX);
+        assert!(removed.len() + 1 == full.moves.len());
+        assert!(removed.iter().all(|m| play_of(&m.play) != second));
+        assert_eq!(progress.change(&second, C::Add), S::Absent);
+        assert!(!progress.is_done());
+        let added = solve(&mut progress, &super::Limits::NONE);
+        assert!(added.best_move == full.best_move && rows(&added.moves) == rows(&full.moves));
+        let exchange = movegen::Play::Exchange {
+            tiles: [1u8][..].into(),
+        };
+        assert_eq!(progress.change(&exchange, C::Add), S::Absent);
+        for m in &full.moves {
+            progress.change(&play_of(&m.play), C::Pause);
+        }
+        assert!(
+            solve(&mut progress, &super::Limits::NONE)
+                .best_move
+                .is_some()
+        );
     }
 }
