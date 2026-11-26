@@ -199,7 +199,7 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     let game_ended = simmer.simulate(game_config, kwg, arm_tables, klv, play)?;
     let final_spread = simmer.final_equity_spread()?;
     let win_prob = if simmer.wants_win_prob() {
-        simmer.compute_win_prob(game_ended, final_spread, table)
+        simmer.compute_win_prob(game_ended, final_spread, table)?
     } else {
         0.0
     };

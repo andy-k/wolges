@@ -347,7 +347,7 @@ fn main() -> error::Returns<()> {
             for (c, candidate) in candidates.iter().enumerate() {
                 let ended = sim.simulate_lean(&gc, &kwg, no_tables, &klv, &candidate.play)?;
                 let final_spread = sim.final_equity_spread()?;
-                let win = sim.compute_win_prob(ended, final_spread, None);
+                let win = sim.compute_win_prob(ended, final_spread, None)?;
                 let spread = final_spread - sim.initial_score_spread;
                 let objective = simmer::sim_objective(spread, win, sim.win_prob_weightage());
                 match sim.reply_equity() {
