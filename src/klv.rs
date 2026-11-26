@@ -1994,7 +1994,7 @@ mod tests {
 
         let mut full_v = vec![0i32; lat.len()];
         for (idx, slot) in full_v.iter_mut().enumerate() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
         }
 
@@ -2114,7 +2114,7 @@ mod tests {
         let add = census::AddTable::new(&lat);
         let mut full_v = vec![0i32; lat.len()];
         for (idx, slot) in full_v.iter_mut().enumerate() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
         }
         let ml = MultiLeaves {

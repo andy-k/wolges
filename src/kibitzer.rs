@@ -365,7 +365,7 @@ mod tests {
             (0.001, "0.001"),
             (0.0, "0"),
             (16384.001, "16384.001"),
-            (-2147483.648, "-2147483.648"),
+            (-2_147_483.648, "-2147483.648"),
         ] {
             let play = JsonPlayWithEquity {
                 equity,
@@ -398,7 +398,7 @@ mod tests {
             (r#"{"equity":71.303,"action":"exchange","tiles":[]}"#, 71303),
             (
                 r#"{"equity":16384.001,"action":"exchange","tiles":[]}"#,
-                16384001,
+                16_384_001,
             ),
             (
                 r#"{"equity":-2147483.648,"action":"exchange","tiles":[]}"#,

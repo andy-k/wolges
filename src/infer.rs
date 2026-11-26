@@ -3932,9 +3932,9 @@ mod tests {
         let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for (idx, (s, l)) in sheet.iter_mut().zip(leave.iter_mut()).enumerate() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             *s = h.rem_euclid(30_000) - 10_000;
-            *l = h.wrapping_mul(2246822519u32 as i32).rem_euclid(8_000) - 4_000;
+            *l = h.wrapping_mul(2_246_822_519u32 as i32).rem_euclid(8_000) - 4_000;
         }
         let pool = [9u8, 8, 8, 7, 7, 7, 6, 6, 5];
         let ln_binom = LnBinom::new(pool.iter().map(|&c| c as usize).sum());

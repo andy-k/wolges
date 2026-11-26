@@ -96,12 +96,12 @@ impl NormalDistribution {
 
     #[inline(always)]
     fn cnd_positive(x: f64) -> f64 {
-        const P: f64 = 0.2316419;
-        const B1: f64 = 0.319381530;
-        const B2: f64 = -0.356563782;
-        const B3: f64 = 1.781477937;
-        const B4: f64 = -1.821255978;
-        const B5: f64 = 1.330274429;
+        const P: f64 = 0.231_641_9;
+        const B1: f64 = 0.319_381_530;
+        const B2: f64 = -0.356_563_782;
+        const B3: f64 = 1.781_477_937;
+        const B4: f64 = -1.821_255_978;
+        const B5: f64 = 1.330_274_429;
         let t = 1.0 / (1.0 + P * x);
         let pdf = (x * x * -0.5).exp()
             * (std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5);
