@@ -6893,6 +6893,16 @@ impl<
                             if *cuts {
                                 let halves = halves_down(value.win, splits);
                                 beat = Some(beat.map_or(halves, |beat| beat.max(halves)));
+                                if state.split_order.is_empty() && !value.cut {
+                                    let found = &state.split_found;
+                                    if let Ok(mut order) = list_in_room(limits, splits.len()) {
+                                        order.extend(0..splits.len());
+                                        order.sort_by(|&a, &b| {
+                                            found[a].1.total_cmp(&found[b].1).then(a.cmp(&b))
+                                        });
+                                        state.split_order = order;
+                                    }
+                                }
                             }
                             state.pass_exact &= value.exact;
                             state.valued[i] = Some(value);
@@ -6939,6 +6949,7 @@ impl<
                 break;
             }
             state.next = 0;
+            state.split_order.clear();
             state.pass_exact = true;
             let (answered, copies) = state.searched.shared(limits.memory).unzip();
             state.answered_searched = answered;
