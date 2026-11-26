@@ -58,10 +58,7 @@ const INFO_LEAD: u64 = 8 << 32;
 // the scoreless turns before a node, as a pass there sees them: either the
 // counts the config checks (the position's own until the line places tiles;
 // none from then on) or that the line's move before was a pass. A pass
-// answering a pass ends the line: the position is as it was two plies back, so
-// a player who would rather place than let the game end places now as well as
-// after any more passes, which makes the line worth the game's end here
-// whatever the counts
+// answering a pass ends the line, worth the game's end here whatever the counts
 #[derive(Clone, Copy, PartialEq)]
 enum Scoreless {
     Counted { passes: u8, zeros: u8 },
@@ -3008,7 +3005,6 @@ impl<
         if equity::Equity::new(best) > need {
             return equity::Equity::new(best);
         }
-        // timed only while something listens
         let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
         gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             &mut work_buffer.movegen,
@@ -3389,7 +3385,6 @@ impl<
                         new_cols |= 1 << (slot as usize - num_rows);
                     }
                 }
-                // timed only while something listens
                 let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
                 // its walks' rack is the whole pool, so its leaves' table is
                 // held to the pool's budget, and to the bound others keep
@@ -3442,7 +3437,6 @@ impl<
             } else {
                 (walk_rows, walk_cols)
             };
-            // timed only while something listens
             let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
             work_buffer.movegen_cut |= gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                 &mut work_buffer.movegen,
@@ -4457,7 +4451,6 @@ impl<
         // root)
         let root = root.unwrap_or_else(|| std::mem::take(&mut self.work_buffer.at_root));
 
-        // the listener, if any, hears every node
         if self.progress.is_some() {
             self.report(None)?;
         }
@@ -5027,7 +5020,6 @@ impl<
                 self.unplace(mover, &play);
                 self.harvest_outs(ply, depth, &play);
                 if self.take_value(i, index, score.finite_sub(child.value)) {
-                    // a cutoff: no more moves, nor the pass
                     self.work_buffer.frames.last_mut().unwrap().next = usize::MAX;
                 }
             }
@@ -5329,7 +5321,6 @@ impl<
         Ok(())
     }
 
-    // send the progress, if anything is listening
     #[inline]
     fn report(&mut self, value: Option<equity::Equity>) -> error::Returns<()> {
         let work_buffer = &mut self.work_buffer;
@@ -7518,7 +7509,6 @@ impl<
                 let valued = &state.valued;
                 (state.order).sort_unstable_by(|&a, &b| peg_ranks(valued, a, b));
             }
-            // the pass's values become the answer's, swapped in, not cloned
             std::mem::swap(&mut state.answered, &mut state.valued);
             std::mem::swap(&mut state.answered_margins, &mut state.margins);
             state.valued.clear();
