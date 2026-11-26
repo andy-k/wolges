@@ -278,8 +278,6 @@ pub fn naive_best_equity(
     (equity::Equity::new(best), kept_tiles)
 }
 
-// the nonzero letters are added high-to-low, so each letter's suffix size is
-// fixed the moment it is added and its rank contribution is known then.
 struct SplitCtx<'a> {
     nz: &'a [(usize, u8)],
     n: usize,
@@ -751,8 +749,7 @@ impl AddTable {
     }
 
     // the table with its ranks also kept letter by letter, on as many threads
-    // (a letter each at most), so that a pass of one letter reads its ranks in
-    // order where by index each would be a row apart
+    // (a letter each at most)
     pub fn with_letter_passes(mut self, num_threads: usize) -> Self {
         let n = self.num_letters;
         let rows = self.add.len() / n;
@@ -1732,8 +1729,7 @@ pub fn record_blank_variants(
     }
     let leftover = num_blanks_eff - total_forced;
 
-    // the runs taken from the last letter back: a letter adds to the rank by
-    // how many real tiles there are from it on, which the runs after it fix
+    // the runs taken from the last letter back
     struct Ctx<'a> {
         runs: &'a [(u8, u8, u8, u8)],
         placed: &'a [(u8, i32)],
