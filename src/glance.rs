@@ -25,9 +25,9 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
     let premiums = board_layout.premiums();
     let rack_size = u32::from(game_config.rack_size());
     let empty_board = board_tiles.iter().all(|&t| t == 0);
-    let star = dim.at_row_col(board_layout.star_row(), board_layout.star_col());
+    let star = dim.at_on_board(board_layout.star_row(), board_layout.star_col());
     let is_anchor = |row: i8, col: i8| {
-        let at = dim.at_row_col(row, col);
+        let at = dim.at_on_board(row, col);
         if board_tiles[at] != 0 {
             return false;
         }
@@ -38,7 +38,7 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
             let (r, c) = (row + dr, col + dc);
             (0..dim.rows).contains(&r)
                 && (0..dim.cols).contains(&c)
-                && board_tiles[dim.at_row_col(r, c)] != 0
+                && board_tiles[dim.at_on_board(r, c)] != 0
         })
     };
     let mut glance = Glance {
@@ -53,7 +53,7 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
     for row in 0..dim.rows {
         for col in 0..dim.cols {
             if is_anchor(row, col) {
-                let premium = &premiums[dim.at_row_col(row, col)];
+                let premium = &premiums[dim.at_on_board(row, col)];
                 glance.anchors += 1;
                 glance.premium_anchors +=
                     u32::from(premium.word_multiplier != 1 || premium.tile_multiplier != 1);
@@ -65,7 +65,7 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
         for lane in 0..(if down { dim.cols } else { dim.rows }) {
             let strider = dim.lane(down, lane);
             let len = strider.len();
-            let square = |i: i8| strider.at(i);
+            let square = |i: i8| strider.at_in_lane(i);
             let anchor_at = |i: i8| {
                 if down {
                     is_anchor(i, lane)
@@ -131,7 +131,7 @@ pub fn board_after(
         let strider = game_config.board_layout().dim().lane(*down, *lane);
         for (i, &tile) in (*idx..).zip(word.iter()) {
             if tile != 0 {
-                out[strider.at(i)] = tile;
+                out[strider.at_in_lane(i)] = tile;
             }
         }
     }
@@ -144,7 +144,7 @@ pub fn reach_into(game_config: &game_config::GameConfig, board_tiles: &[u8], out
     let premiums = board_layout.premiums();
     let rack_size = game_config.rack_size();
     let empty_board = board_tiles.iter().all(|&t| t == 0);
-    let star = dim.at_row_col(board_layout.star_row(), board_layout.star_col());
+    let star = dim.at_on_board(board_layout.star_row(), board_layout.star_col());
     let takes_a_tile = |at: usize| {
         board_tiles[at] == 0
             && (premiums[at].word_multiplier != 0 || premiums[at].tile_multiplier != 0)
@@ -153,7 +153,7 @@ pub fn reach_into(game_config: &game_config::GameConfig, board_tiles: &[u8], out
     out.resize(board_tiles.len(), 0);
     for row in 0..dim.rows {
         for col in 0..dim.cols {
-            let at = dim.at_row_col(row, col);
+            let at = dim.at_on_board(row, col);
             let anchor = takes_a_tile(at)
                 && if empty_board {
                     at == star
@@ -162,7 +162,7 @@ pub fn reach_into(game_config: &game_config::GameConfig, board_tiles: &[u8], out
                         let (r, c) = (row + dr, col + dc);
                         (0..dim.rows).contains(&r)
                             && (0..dim.cols).contains(&c)
-                            && board_tiles[dim.at_row_col(r, c)] != 0
+                            && board_tiles[dim.at_on_board(r, c)] != 0
                     })
                 };
             out[at] = anchor as u8;
@@ -175,7 +175,7 @@ pub fn reach_into(game_config: &game_config::GameConfig, board_tiles: &[u8], out
             for backward in [false, true] {
                 let mut behind = 0u8;
                 for k in 0..len {
-                    let at = strider.at(if backward { len - 1 - k } else { k });
+                    let at = strider.at_in_lane(if backward { len - 1 - k } else { k });
                     if !takes_a_tile(at) {
                         behind = 0;
                     } else if out[at] == 1 {
@@ -231,7 +231,11 @@ mod tests {
                     rack_size
                 };
                 let want = if away < rack_size { away as u8 + 1 } else { 0 };
-                assert_eq!(reach[dim.at_row_col(row, col)], want, "row {row} col {col}");
+                assert_eq!(
+                    reach[dim.at_on_board(row, col)],
+                    want,
+                    "row {row} col {col}"
+                );
             }
         }
     }
@@ -242,10 +246,10 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let dim = game_config.board_layout().dim();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-        board_tiles[dim.at_row_col(7, 7)] = 1;
+        board_tiles[dim.at_on_board(7, 7)] = 1;
         let mut reach = Vec::new();
         reach_into(&game_config, &board_tiles, &mut reach);
-        let at = |row: i8, col: i8| reach[dim.at_row_col(row, col)];
+        let at = |row: i8, col: i8| reach[dim.at_on_board(row, col)];
         assert_eq!(at(7, 7), 0, "the tile's own square");
         for (row, col) in [(6, 7), (8, 7), (7, 6), (7, 8)] {
             assert_eq!(at(row, col), 1, "the anchor at row {row} col {col}");
@@ -258,10 +262,10 @@ mod tests {
         assert_eq!(at(6, 0), 0);
         assert_eq!(at(5, 5), 0);
         assert_eq!(at(0, 0), 0);
-        board_tiles[dim.at_row_col(7, 7)] = 0;
-        board_tiles[dim.at_row_col(0, 0)] = 1;
+        board_tiles[dim.at_on_board(7, 7)] = 0;
+        board_tiles[dim.at_on_board(0, 0)] = 1;
         reach_into(&game_config, &board_tiles, &mut reach);
-        let at = |row: i8, col: i8| reach[dim.at_row_col(row, col)];
+        let at = |row: i8, col: i8| reach[dim.at_on_board(row, col)];
         assert_eq!((at(0, 1), at(1, 0), at(1, 1), at(0, 7)), (1, 1, 2, 7));
         assert_eq!((at(7, 7), at(0, 8), at(14, 14)), (0, 0, 0));
     }
@@ -290,7 +294,7 @@ mod tests {
         let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         let mut reach = Vec::new();
         reach_into(&game_config, &board_tiles, &mut reach);
-        let at = |(row, col): (i8, i8)| reach[dim.at_row_col(row, col)];
+        let at = |(row, col): (i8, i8)| reach[dim.at_on_board(row, col)];
         assert_eq!(at((7, 7)), 1);
         for (near, punctured, past) in [
             ((7, 6), (7, 5), (7, 4)),

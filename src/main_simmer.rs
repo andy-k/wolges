@@ -362,7 +362,7 @@ fn simulate(
                 i,
                 equity_mean,
                 100.0 * win_rate,
-                move_generator.plays[play_index].play.fmt(board_snapshot)
+                move_generator.plays[play_index].play.fmt(board_snapshot)?
             )?;
         }
         if done >= sim_iters {

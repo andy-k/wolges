@@ -301,7 +301,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
                 std::io::stdout(),
                 "{:>8} {}",
                 play.equity,
-                play.play.fmt(board_snapshot)
+                play.play.fmt(board_snapshot)?
             )?;
         }
     }
@@ -323,7 +323,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
             std::io::stdout(),
             "{:>8} {}",
             play.equity,
-            play.play.fmt(board_snapshot)
+            play.play.fmt(board_snapshot)?
         )?;
 
         let movegen_score = match &play.play {
@@ -335,7 +335,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
             writeln!(
                 std::io::stdout(),
                 "{} should score {} instead of {}!",
-                play.play.fmt(board_snapshot),
+                play.play.fmt(board_snapshot)?,
                 recounted_score,
                 movegen_score
             )?;

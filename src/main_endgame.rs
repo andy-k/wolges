@@ -260,7 +260,8 @@ impl Question {
                     Err(err) => {
                         return Err(fmt_error!(format_args!(
                             "invalid play {}: {}",
-                            play.fmt(board_snapshot),
+                            play.fmt(board_snapshot)
+                                .map_err(|e| error::new(e.to_string()))?,
                             err
                         )));
                     }
@@ -269,7 +270,8 @@ impl Question {
                         if move_score != recounted_score {
                             return Err(fmt_error!(format_args!(
                                 "wrong score for {}: should score {}",
-                                play.fmt(board_snapshot),
+                                play.fmt(board_snapshot)
+                                    .map_err(|e| error::new(e.to_string()))?,
                                 recounted_score,
                             )));
                         } else {
@@ -1724,33 +1726,35 @@ fn solve_position<N: kwg::Node>(
                 None if solving.limits.time.is_some() => progress = progress.without_cuts()?,
                 None => {}
             }
-            let named = |play: &movegen::Play| match play {
-                movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
-                movegen::Play::Exchange { tiles } => {
-                    format!("exchange {}", alphabet.fmt_rack(tiles))
-                }
-                movegen::Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word,
-                    score,
-                } => {
-                    let coord = if *down {
-                        format!("{}{}", display::column(*lane), idx + 1)
-                    } else {
-                        format!("{}{}", lane + 1, display::column(*idx))
-                    };
-                    let mut word_str = String::new();
-                    for &t in word.iter() {
-                        if t == 0 {
-                            word_str.push('.');
-                        } else {
-                            word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
-                        }
+            let named = |play: &movegen::Play| -> error::Returns<String> {
+                Ok(match play {
+                    movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
+                    movegen::Play::Exchange { tiles } => {
+                        format!("exchange {}", alphabet.fmt_rack(tiles))
                     }
-                    format!("{coord} {word_str} (scores {})", *score)
-                }
+                    movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        score,
+                    } => {
+                        let coord = if *down {
+                            format!("{}{}", display::column(*lane)?, idx + 1)
+                        } else {
+                            format!("{}{}", lane + 1, display::column(*idx)?)
+                        };
+                        let mut word_str = String::new();
+                        for &t in word.iter() {
+                            if t == 0 {
+                                word_str.push('.');
+                            } else {
+                                word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
+                            }
+                        }
+                        format!("{coord} {word_str} (scores {})", *score)
+                    }
+                })
             };
             let result = if solving.quiet {
                 egs.resume_peg(&mut progress, &solving.limits, solving.threads)?
@@ -1767,7 +1771,7 @@ fn solve_position<N: kwg::Node>(
                             pass.depth,
                             pass.moves,
                             began.elapsed(),
-                            named(&pass.leader.play),
+                            named(&pass.leader.play)?,
                             pass.leader.win_pct * 100.0,
                             pass.leader.expected_margin.unwrap_or(equity::Equity::ZERO),
                             if pass.leader.exact { "" } else { " (provisional)" },
@@ -1793,10 +1797,10 @@ fn solve_position<N: kwg::Node>(
                          known, each draw averaged over every set of tiles it may bring)"
                     }
                 },
-                result.best_move.as_ref().map_or_else(
-                    || "none: a limit stopped the search before it valued one".to_string(),
-                    named
-                ),
+                match result.best_move.as_ref() {
+                    Some(best) => named(best)?,
+                    None => "none: a limit stopped the search before it valued one".to_string(),
+                },
             )?;
             if result.best_move.is_none() {
                 writeln!(
@@ -1857,7 +1861,7 @@ fn solve_position<N: kwg::Node>(
                     Some(margin) if !valued.cut => writeln!(
                         std::io::stdout(),
                         "  {}: win% {:.places$}, expected game margin {}{}",
-                        named(&valued.play),
+                        named(&valued.play)?,
                         valued.win_pct * 100.0,
                         margin,
                         if valued.exact { "" } else { " (provisional)" },
@@ -1866,7 +1870,7 @@ fn solve_position<N: kwg::Node>(
                     _ => writeln!(
                         std::io::stdout(),
                         "  {}: win% <={}, expected game margin unknown (cut)",
-                        named(&valued.play),
+                        named(&valued.play)?,
                         bound_pct(valued.win_pct * 100.0),
                     )?,
                 }
@@ -1916,9 +1920,9 @@ fn solve_position<N: kwg::Node>(
                     score,
                 })) => {
                     let coord = if *down {
-                        format!("{}{}", display::column(*lane), idx + 1)
+                        format!("{}{}", display::column(*lane)?, idx + 1)
                     } else {
-                        format!("{}{}", lane + 1, display::column(*idx))
+                        format!("{}{}", lane + 1, display::column(*idx)?)
                     };
                     let mut word_str = String::new();
                     for &t in word.iter() {

@@ -106,25 +106,23 @@ pub fn opening_adjustment(
     down: bool,
     idx: i8,
     word: &[u8],
-) -> i32 {
+) -> error::Returns<i32> {
     if phase != BoardPhase::Opening {
-        return 0;
+        return Ok(0);
     }
     let alphabet = game_config.alphabet();
-    let board_layout = game_config.board_layout();
-    -(equity::OPENING_HOTSPOT_PENALTY
-        * (idx..)
-            .zip(word)
-            .filter(|&(i, &tile)| {
-                tile != 0
-                    && alphabet.is_vowel(tile)
-                    && if down {
-                        board_layout.danger_star_down(i)
-                    } else {
-                        board_layout.danger_star_across(i)
-                    }
-            })
-            .count() as i32)
+    let hotspots = game_config.board_layout().danger_stars(down);
+    let from = usize::try_from(idx)?;
+    let danger = hotspots
+        .get(from..)
+        .and_then(|tail| tail.get(..word.len()))
+        .ok_or("opening play extends outside the board")?;
+    Ok(-(equity::OPENING_HOTSPOT_PENALTY
+        * word
+            .iter()
+            .zip(danger)
+            .filter(|&(&tile, &danger)| danger && tile != 0 && alphabet.is_vowel(tile))
+            .count() as i32))
 }
 
 #[inline]
@@ -162,6 +160,7 @@ pub fn build_sheet_spell_once<
         crate::return_error!("inference pool does not match the alphabet and lattice".to_string());
     }
     let mut n_cand = 0u64;
+    let mut failure = None;
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles,
         game_config,
@@ -193,8 +192,18 @@ pub fn build_sheet_spell_once<
             0..u64::MAX,
             &mut movegen::PoolLists::default(),
             |down, _, idx, word: &[u8], score: i32| {
+                if failure.is_some() {
+                    return;
+                }
+                let adjustment = match opening_adjustment(phase, game_config, down, idx, word) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        failure = Some(error);
+                        return;
+                    }
+                };
                 n_cand += 1;
-                let score = score + opening_adjustment(phase, game_config, down, idx, word);
+                let score = score + adjustment;
                 tally.fill(0);
                 for &tile in word {
                     if tile != 0 {
@@ -205,7 +214,7 @@ pub fn build_sheet_spell_once<
                 *slot = (*slot).max(score);
             },
         );
-        return Ok(n_cand);
+        return failure.map_or(Ok(n_cand), Err);
     }
     movegen_rack.clear();
     for (t, &c) in (0..num_letters).zip(unseen_tally) {
@@ -221,7 +230,6 @@ pub fn build_sheet_spell_once<
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
     };
-    let mut failure = None;
     // the snapshot holds no tables, so the lean arm alone runs it
     move_generator.gen_census_sheet_lean(
         &params,
@@ -231,6 +239,13 @@ pub fn build_sheet_spell_once<
                     return false;
                 }
                 n_cand += 1;
+                let adjustment = match opening_adjustment(phase, game_config, down, idx, word) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        failure = Some(error);
+                        return false;
+                    }
+                };
                 let real_score = play_scorer::score_and_blank_deltas(
                     board_snapshot,
                     down,
@@ -238,7 +253,7 @@ pub fn build_sheet_spell_once<
                     idx,
                     word,
                     blank_deltas,
-                ) + opening_adjustment(phase, game_config, down, idx, word);
+                ) + adjustment;
                 if let Err(error) = census::record_blank_variants(
                     lat,
                     sheet,
@@ -735,9 +750,9 @@ pub fn move_tiles_and_value<N: kwg::Node, L: kwg::Node>(
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     play: &movegen::Play,
     placed: &mut [u8],
-) -> (Option<usize>, i32) {
+) -> error::Returns<(Option<usize>, i32)> {
     placed.iter_mut().for_each(|c| *c = 0);
-    match play {
+    Ok(match play {
         movegen::Play::Exchange { tiles } => {
             if tiles.is_empty() {
                 (None, 0)
@@ -758,10 +773,10 @@ pub fn move_tiles_and_value<N: kwg::Node, L: kwg::Node>(
             (
                 None,
                 play_scorer::PlayScorer::new().compute_score(board_snapshot, play)
-                    + opening_adjustment(phase, game_config, *down, *idx, word),
+                    + opening_adjustment(phase, game_config, *down, *idx, word)?,
             )
         }
-    }
+    })
 }
 
 // fuzz, given in points, in the equity's own units. 0 is the exact limit, so
@@ -2053,7 +2068,7 @@ fn kept_leaves_packed_impl<
     let bag = pool_size - rack_size;
     placed.clear();
     placed.resize(num_letters, 0);
-    let (exchanged, move_value) = move_tiles_and_value(board_snapshot, play, placed);
+    let (exchanged, move_value) = move_tiles_and_value(board_snapshot, play, placed)?;
     if placed.iter().zip(pool.iter()).any(|(&p, &u)| p > u) {
         return_error!("the move places tiles the watcher holds or the board has".into());
     }
@@ -2511,7 +2526,7 @@ pub fn reply_to<
             let strider = game_config.board_layout().dim().lane(*down, *lane);
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
-                    board_tiles[strider.at(i)] = tile;
+                    board_tiles[strider.at_in_lane(i)] = tile;
                     *used
                         .get_mut(if tile & 0x80 != 0 { 0 } else { tile as usize })
                         .ok_or("no such tile")? += 1;
@@ -3379,7 +3394,7 @@ mod tests {
             _ => top.equity.raw(),
         };
         let mut placed = vec![0u8; rack.len()];
-        let (exchanged, value) = move_tiles_and_value(&board_snapshot, play, &mut placed);
+        let (exchanged, value) = move_tiles_and_value(&board_snapshot, play, &mut placed).unwrap();
         let worth = |kept: &[u8]| leave[lat.rank(kept).unwrap() as usize];
         match exchanged {
             Some(n) => tallies_of(rack, rack_tiles.len() - n)
@@ -4672,7 +4687,7 @@ mod tests {
                                 unreachable!();
                             };
                             let score = scorer.compute_score(&board_snapshot, &play)
-                                + opening_adjustment(phase, &gc, *down, *idx, word);
+                                + opening_adjustment(phase, &gc, *down, *idx, word).unwrap();
                             want = want.max(score);
                             played += 1;
                         }
@@ -4712,7 +4727,7 @@ mod tests {
                                     unreachable!();
                                 };
                                 let value = scorer.compute_score(&board_snapshot, &play)
-                                    + opening_adjustment(phase, &gc, *down, *idx, word);
+                                    + opening_adjustment(phase, &gc, *down, *idx, word).unwrap();
                                 (value, play)
                             })
                             .max_by_key(|(value, _)| *value)

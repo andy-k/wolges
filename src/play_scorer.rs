@@ -106,9 +106,10 @@ impl PlayScorer {
                     return_error!("word extends out of board".into());
                 }
 
-                if (*idx > 0 && board_snapshot.board_tiles[strider.at(idx - 1)] != 0)
+                if (*idx > 0 && board_snapshot.board_tiles[strider.at_in_lane(idx - 1)] != 0)
                     || (end_idx_exclusive < strider.len() as usize
-                        && board_snapshot.board_tiles[strider.at(end_idx_exclusive as i8)] != 0)
+                        && board_snapshot.board_tiles[strider.at_in_lane(end_idx_exclusive as i8)]
+                            != 0)
                 {
                     return_error!("word is not whole word".into());
                 }
@@ -121,7 +122,7 @@ impl PlayScorer {
                 self.set_rack_tally(game_config, &game_state.current_player().rack);
                 let premiums = board_layout.premiums();
                 for (i, &tile) in (*idx..).zip(word.iter()) {
-                    let strider_at_i = strider.at(i);
+                    let strider_at_i = strider.at_in_lane(i);
                     let board_tile = board_snapshot.board_tiles[strider_at_i];
                     if tile != 0 {
                         if board_tile != 0 {
@@ -145,11 +146,12 @@ impl PlayScorer {
                         if !attaches_to_existing_tile || may_transpose {
                             let perpendicular_strider = dim.lane(!*down, i);
                             if (*lane > 0
-                                && board_snapshot.board_tiles[perpendicular_strider.at(*lane - 1)]
+                                && board_snapshot.board_tiles
+                                    [perpendicular_strider.at_in_lane(*lane - 1)]
                                     != 0)
                                 || (*lane + 1 < perpendicular_strider.len()
                                     && board_snapshot.board_tiles
-                                        [perpendicular_strider.at(*lane + 1)]
+                                        [perpendicular_strider.at_in_lane(*lane + 1)]
                                         != 0)
                             {
                                 if may_transpose {
@@ -193,14 +195,15 @@ impl PlayScorer {
                     // force single-tile plays to be in preferred direction
                     let perpendicular_strider = dim.lane(!*down, i);
                     let mut j = *lane;
-                    while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                    while j > 0
+                        && board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j - 1)] != 0
                     {
                         j -= 1;
                     }
                     let perpendicular_strider_len = perpendicular_strider.len();
                     let mut k = *lane + 1;
                     while k < perpendicular_strider_len
-                        && board_snapshot.board_tiles[perpendicular_strider.at(k)] != 0
+                        && board_snapshot.board_tiles[perpendicular_strider.at_in_lane(k)] != 0
                     {
                         k += 1;
                     }
@@ -405,7 +408,7 @@ impl PlayScorer {
                     let mut word_multiplier = 1;
                     let mut word_score = 0i32;
                     for (i, &tile) in (*idx..).zip(word.iter()) {
-                        let strider_at_i = strider.at(i);
+                        let strider_at_i = strider.at_in_lane(i);
                         let tile_multiplier;
                         let premium = &premiums[strider_at_i];
                         let placed_tile = if tile != 0 {
@@ -430,14 +433,16 @@ impl PlayScorer {
                         let perpendicular_strider = dim.lane(!*down, i);
                         let mut j = *lane;
                         while j > 0
-                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                            && board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j - 1)]
+                                != 0
                         {
                             j -= 1;
                         }
                         let perpendicular_strider_len = perpendicular_strider.len();
                         if j == *lane
                             && if j + 1 < perpendicular_strider_len {
-                                board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                                board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j + 1)]
+                                    == 0
                             } else {
                                 true
                             }
@@ -447,7 +452,7 @@ impl PlayScorer {
                         let mut word_multiplier = 1;
                         let mut word_score = 0i32;
                         for j in j..perpendicular_strider_len {
-                            let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                            let perpendicular_strider_at_j = perpendicular_strider.at_in_lane(j);
                             let tile_multiplier;
                             let premium = &premiums[perpendicular_strider_at_j];
                             let placed_tile = if j == *lane {
@@ -581,14 +586,14 @@ impl PlayScorer {
                                 tile != 0 && alphabet.is_vowel(tile) && {
                                     (match strider1 {
                                         Some(ref strider) => {
-                                            let premium = &premiums[strider.at(*i)];
+                                            let premium = &premiums[strider.at_in_lane(*i)];
                                             premium.tile_multiplier != 1
                                                 || premium.word_multiplier != 1
                                         }
                                         None => false,
                                     }) || (match strider2 {
                                         Some(ref strider) => {
-                                            let premium = &premiums[strider.at(*i)];
+                                            let premium = &premiums[strider.at_in_lane(*i)];
                                             premium.tile_multiplier != 1
                                                 || premium.word_multiplier != 1
                                         }
@@ -641,7 +646,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
         let mut word_multiplier = 1;
         let mut word_score = 0i32;
         for (i, &tile) in (idx..).zip(word.iter()) {
-            let strider_at_i = strider.at(i);
+            let strider_at_i = strider.at_in_lane(i);
             let tile_multiplier;
             let premium = &premiums[strider_at_i];
             let placed_tile = if tile != 0 {
@@ -676,13 +681,14 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
             let letter = tile & 0x7f;
             let perpendicular_strider = dim.lane(!down, i);
             let mut j = lane;
-            while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0 {
+            while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j - 1)] != 0
+            {
                 j -= 1;
             }
             let perpendicular_strider_len = perpendicular_strider.len();
             if j == lane
                 && if j + 1 < perpendicular_strider_len {
-                    board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                    board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j + 1)] == 0
                 } else {
                     true
                 }
@@ -695,7 +701,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
 
             let mut placed_tile_multiplier = 1i32;
             for j in j..perpendicular_strider_len {
-                let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                let perpendicular_strider_at_j = perpendicular_strider.at_in_lane(j);
                 let tile_multiplier;
                 let premium = &premiums[perpendicular_strider_at_j];
                 let placed_tile = if j == lane {

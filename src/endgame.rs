@@ -912,14 +912,14 @@ fn lane_bytes(
     mix(lane as u8);
     let strider = dim.lane(down, lane);
     for i in 0..strider.len() {
-        let tile = board_tiles[strider.at(i)];
+        let tile = board_tiles[strider.at_in_lane(i)];
         mix(tile);
         if tile == 0 {
             let across = dim.lane(!down, i);
             for step in [-1i8, 1] {
                 let mut at = lane + step;
-                while at >= 0 && at < across.len() && board_tiles[across.at(at)] != 0 {
-                    mix(board_tiles[across.at(at)]);
+                while at >= 0 && at < across.len() && board_tiles[across.at_in_lane(at)] != 0 {
+                    mix(board_tiles[across.at_in_lane(at)]);
                     at += step;
                 }
                 mix(0xff);
@@ -3212,7 +3212,7 @@ impl<
             let rack = &mut work_buffer.racks[player_idx as usize];
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
-                    let square = strider.at(i);
+                    let square = strider.at_in_lane(i);
                     work_buffer.board_tiles[square] = tile;
                     work_buffer.key ^= square_key(square, tile);
                     let held = held_tile(tile);
@@ -3244,7 +3244,7 @@ impl<
             let rack = &mut work_buffer.racks[player_idx as usize];
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
-                    let square = strider.at(i);
+                    let square = strider.at_in_lane(i);
                     work_buffer.board_tiles[square] = 0;
                     work_buffer.key ^= square_key(square, tile);
                     let held = held_tile(tile);
@@ -3379,9 +3379,9 @@ impl<
     #[inline(always)]
     fn zone_lanes(&self, play: &movegen::Play) -> (u128, u128) {
         let dim = self.game_config.board_layout().dim();
-        zone::zone_lanes(
+        zone::zone_lanes_on_board(
             dim,
-            &zone::footprint(dim, &self.work_buffer.board_tiles, play).zone,
+            &zone::footprint_on_board(dim, &self.work_buffer.board_tiles, play).zone,
         )
     }
 
@@ -3423,7 +3423,7 @@ impl<
         }
         let dim = self.game_config.board_layout().dim();
         let board = &work_buffer.board_tiles[..];
-        let fills = zone::footprint(dim, board, play).fills;
+        let fills = zone::footprint_on_board(dim, board, play).fills;
         let outs = &mut work_buffer.outs[ply];
         for candidate in work_buffer.lists[ply + 1].iter() {
             if !candidate.plays_out {
@@ -3450,11 +3450,11 @@ impl<
             let strider = dim.lane(*down, *lane);
             if (*idx..)
                 .zip(word.iter())
-                .any(|(i, &tile)| tile == 0 && board[strider.at(i)] == 0)
+                .any(|(i, &tile)| tile == 0 && board[strider.at_in_lane(i)] == 0)
             {
                 continue;
             }
-            let zone = zone::footprint(dim, board, &candidate.play).zone;
+            let zone = zone::footprint_on_board(dim, board, &candidate.play).zone;
             if zone.meets(&fills) {
                 continue;
             }
@@ -4996,8 +4996,8 @@ impl<
                 if depth >= 2 {
                     if skip_outs {
                         let dim = self.game_config.board_layout().dim();
-                        let fp = zone::footprint(dim, &self.work_buffer.board_tiles, play);
-                        self.work_buffer.zones[ply] = zone::zone_lanes(dim, &fp.zone);
+                        let fp = zone::footprint_on_board(dim, &self.work_buffer.board_tiles, play);
+                        self.work_buffer.zones[ply] = zone::zone_lanes_on_board(dim, &fp.zone);
                         fills = fp.fills;
                     } else {
                         self.work_buffer.zones[ply] = self.zone_lanes(play);
@@ -5670,7 +5670,7 @@ impl<
                     anagrams: self.arm_tables.anagrams(),
                     rack_lengths: self.arm_tables.rack_lengths(),
                     klv: &self.klv,
-                }),
+                })?,
                 width = self.game_config.rack_size() as usize - rack.len(),
             )?;
             if let movegen::Play::Place {
@@ -5686,7 +5686,7 @@ impl<
                 // place the tiles
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     if tile != 0 {
-                        board_tiles[strider.at(i)] = tile;
+                        board_tiles[strider.at_in_lane(i)] = tile;
                         let tombstone_idx =
                             rack.iter().rposition(|&t| t == held_tile(tile)).unwrap();
                         rack[tombstone_idx] = 0x80;
@@ -6122,7 +6122,7 @@ impl<
                     let strider = search.gc.board_layout().dim().lane(*down, *lane);
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
-                            nb[strider.at(i)] = tile;
+                            nb[strider.at_in_lane(i)] = tile;
                             let blanked = tile & !((tile as i8) >> 7) as u8;
                             let p = rack.iter().rposition(|&t| t == blanked).unwrap();
                             rack[p] = 0x80;
@@ -6275,7 +6275,7 @@ impl<
                     let strider = search.gc.board_layout().dim().lane(*down, *lane);
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
-                            nb[strider.at(i)] = tile;
+                            nb[strider.at_in_lane(i)] = tile;
                             let blanked = tile & !((tile as i8) >> 7) as u8;
                             let p = rack.iter().rposition(|&t| t == blanked).unwrap();
                             rack[p] = 0x80;
@@ -7657,7 +7657,7 @@ impl<
         let strider = sub.game_config.board_layout().dim().lane(*down, *lane);
         for (i, &tile) in (*idx..).zip(word.iter()) {
             if tile != 0 {
-                nb[strider.at(i)] = tile;
+                nb[strider.at_in_lane(i)] = tile;
                 let b = tile & !((tile as i8) >> 7) as u8;
                 let p = mr.iter().rposition(|&x| x == b).unwrap();
                 mr[p] = 0x80;
@@ -9877,7 +9877,7 @@ impl InBag {
             let rack = &mut self.racks[self.mover as usize];
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
-                    self.board[strider.at(i)] = tile;
+                    self.board[strider.at_in_lane(i)] = tile;
                     let held = held_tile(tile);
                     let p = rack.iter().rposition(|&t| t == held).unwrap();
                     rack.remove(p);
@@ -9905,7 +9905,7 @@ impl InBag {
             let rack = &mut self.racks[self.mover as usize];
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
-                    self.board[strider.at(i)] = 0;
+                    self.board[strider.at_in_lane(i)] = 0;
                     let held = held_tile(tile);
                     rack.insert(rack.partition_point(|&t| t <= held), held);
                 }
@@ -12328,7 +12328,7 @@ mod tests {
         let strider = gc.board_layout().dim().lane(down, lane);
         for (i, &tile) in (idx..).zip(word.iter()) {
             if tile != 0 {
-                board[strider.at(i)] = tile;
+                board[strider.at_in_lane(i)] = tile;
                 let blanked = tile & !((tile as i8) >> 7) as u8;
                 let p = rack.iter().rposition(|&t| t == blanked).unwrap();
                 rack[p] = 0x80;
@@ -14782,15 +14782,15 @@ mod tests {
         let run = |down: bool, lane: i8, at: i8| {
             let strider = dim.lane(down, lane);
             let mut first = at;
-            while first > 0 && board[strider.at(first - 1)] != 0 {
+            while first > 0 && board[strider.at_in_lane(first - 1)] != 0 {
                 first -= 1;
             }
             let mut last = at;
-            while last + 1 < strider.len() && board[strider.at(last + 1)] != 0 {
+            while last + 1 < strider.len() && board[strider.at_in_lane(last + 1)] != 0 {
                 last += 1;
             }
             (first..=last)
-                .map(|i| board[strider.at(i)] & 0x7f)
+                .map(|i| board[strider.at_in_lane(i)] & 0x7f)
                 .collect::<Vec<_>>()
         };
         let mut made = vec![run(down, lane, idx)];
@@ -20198,7 +20198,7 @@ mod tests {
                 let strider = gc.board_layout().dim().lane(*down, *lane);
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     if tile != 0 {
-                        placed[strider.at(i)] = tile;
+                        placed[strider.at_in_lane(i)] = tile;
                         let p = kept.iter().position(|&t| t == tile).unwrap();
                         kept.remove(p);
                     }

@@ -265,26 +265,26 @@ fn replay_using<const N: usize>(
                         "game {} ply {}: {} has equity {}, expected {} for {}",
                         entry.position.game,
                         entry.position.ply,
-                        best.play.fmt(&entry.snapshot),
+                        best.play.fmt(&entry.snapshot)?,
                         best.equity,
                         wolges::equity::Equity::new(entry.position.equity),
                         entry.position.reference,
                     ));
                 }
                 ties += usize::from(
-                    best.play.fmt(&entry.snapshot).to_string() != entry.position.reference,
+                    best.play.fmt(&entry.snapshot)?.to_string() != entry.position.reference,
                 );
                 if let Some(moves) = &mut moves {
                     let list = generator
                         .plays
                         .iter()
                         .map(|item| {
-                            (
+                            Ok((
                                 item.equity.raw(),
-                                item.play.fmt(&entry.snapshot).to_string(),
-                            )
+                                item.play.fmt(&entry.snapshot)?.to_string(),
+                            ))
                         })
-                        .collect::<Vec<_>>();
+                        .collect::<error::Returns<Vec<_>>>()?;
                     serde_json::to_writer(&mut *moves, &list)?;
                     writeln!(moves)?;
                 }
@@ -406,7 +406,7 @@ fn capture_using<const N: usize>(engine: &Engine, args: &CaptureArgs) -> error::
                         turn: state.turn,
                         bag: state.bag.len(),
                         exchanges: state.current_player().num_exchanges,
-                        reference: chosen.play.fmt(snapshot).to_string(),
+                        reference: chosen.play.fmt(snapshot)?.to_string(),
                         equity: chosen.equity.raw(),
                     },
                 )?;

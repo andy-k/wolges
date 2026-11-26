@@ -87,7 +87,7 @@ pub fn read_place_word(
                         "invalid coord (row {row} col {col}) after {v:?} in {s:?}"
                     )));
                 }
-                let tile_on_board = board_tiles[dim.at_row_col(row, col)];
+                let tile_on_board = board_tiles[dim.at_on_board(row, col)];
                 if tile_on_board == 0 {
                     // empty square, place this tile. must not be in paren.
                     if num_in_paren >= 0 {
@@ -114,7 +114,7 @@ pub fn read_place_word(
                         "invalid coord (row {row} col {col}) after {v:?} in {s:?}"
                     )));
                 }
-                let tile_on_board = board_tiles[dim.at_row_col(row, col)];
+                let tile_on_board = board_tiles[dim.at_on_board(row, col)];
                 if tile_on_board == 0 {
                     return Err(error::new(format!(
                         "invalid tile 0 after {v:?} in {s:?} (no tile found on board at row {row} col {col})"
@@ -167,7 +167,7 @@ mod tests {
         let reader = alphabet::AlphabetReader::new_for_plays(game_config.alphabet());
         // H on 8H, so 8G reads A, then the H already there, then T
         let mut board_tiles = vec![0u8; (dim.rows as usize) * (dim.cols as usize)];
-        board_tiles[dim.at_row_col(7, 7)] = 8;
+        board_tiles[dim.at_on_board(7, 7)] = 8;
         let coord = parse_coord("8G", dim).unwrap();
         let mut v = Vec::new();
         for word in ["A.T", "AHT", "A(H)T", "A(.)T"] {

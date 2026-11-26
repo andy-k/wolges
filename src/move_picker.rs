@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::zone::{Footprint, SQUARE_WORDS, Squares, footprint, zone_lanes};
+use super::zone::{Footprint, SQUARE_WORDS, Squares, footprint_on_board, zone_lanes_on_board};
 use super::{
     anagrams, bites, build, endgame, equity, error, game_config, game_state, glance, infer, klv,
     kwg, move_filter, movegen, simmer, stats, win_pct,
@@ -1414,7 +1414,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 weight: score + twice(game_config, used),
                 score,
                 out: used.len() == other_rack.len(),
-                footprint: footprint(dim, board_tiles, &m.play),
+                footprint: footprint_on_board(dim, board_tiles, &m.play),
             });
         }
         // by weight, highest first, ties as generated
@@ -1475,7 +1475,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 score: play_score(&m.play),
                 used: (start, mid),
                 left: (mid, tiles.len()),
-                footprint: footprint(dim, board_tiles, &m.play),
+                footprint: footprint_on_board(dim, board_tiles, &m.play),
             });
         }
         // each choice by the tiles it takes, and those taking the same best
@@ -1695,7 +1695,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         }
         let kept_twice = twice(game_config, kept);
         let stuck = -i64::from(equity::ENDGAME_PENALTY_BASE) - kept_twice;
-        let (rows, cols) = zone_lanes(dim, &choice.footprint.zone);
+        let (rows, cols) = zone_lanes_on_board(dim, &choice.footprint.zone);
         // the mover's outs after it, best first, by score and zone
         let outs = &mut temps.after_outs;
         outs.clear();
@@ -1707,7 +1707,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         outs.extend(
             (generator.plays.iter())
                 .filter(|m| tiles_placed(&m.play) == kept.len())
-                .map(|m| (play_score(&m.play), footprint(dim, after, &m.play).zone)),
+                .map(|m| {
+                    (
+                        play_score(&m.play),
+                        footprint_on_board(dim, after, &m.play).zone,
+                    )
+                }),
         );
         // ties in any order: of an out, only the score is read
         outs.sort_unstable_by_key(|&(s, _)| std::cmp::Reverse(s));
@@ -1748,7 +1753,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 s_x,
                 s_x + twice(game_config, used),
                 used.len() == other_rack.len(),
-                &footprint(dim, after, &m.play).fills,
+                &footprint_on_board(dim, after, &m.play).fills,
             );
         }
         Some(v)
@@ -1934,7 +1939,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
                 &choice.play,
                 after,
             );
-            let (rows, cols) = zone_lanes(dim, &choice.footprint.zone);
+            let (rows, cols) = zone_lanes_on_board(dim, &choice.footprint.zone);
             // each real out's blocking set, from the first of sets on
             let w = self.words;
             sets.clear();
@@ -1949,7 +1954,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             for p in (generator.plays.iter()).filter(|p| tiles_placed(&p.play) == left.len()) {
                 let at = next_set(sets, num_sets, w);
                 self.blocking(
-                    &footprint(dim, after, &p.play).zone,
+                    &footprint_on_board(dim, after, &p.play).zone,
                     &mut sets[at * w..(at + 1) * w],
                 );
                 real.push((play_score(&p.play), at));
@@ -3116,6 +3121,10 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
 mod tests {
     use super::*;
     use crate::{alphabet, bites, build, display};
+    use crate::{
+        matrix,
+        zone::{footprint, zone_lanes},
+    };
 
     impl<N: kwg::Node, L: kwg::Node> OutInTwo<'_, N, L> {
         fn values_and_hopes(&self) -> (Vec<i64>, Vec<i64>) {
@@ -4570,7 +4579,7 @@ mod tests {
         let squares = |list: &[(i8, i8)]| {
             let mut s = Squares::NONE;
             for &(row, col) in list {
-                s.set(dim.at_row_col(row, col));
+                s.set(dim.at_on_board(row, col));
             }
             s.0
         };
@@ -4578,7 +4587,9 @@ mod tests {
         // the A making AAT along row 7
         let board_tiles = board_with(&game_config, 7, 0);
         let play = place(0, true, 4, 6, &[5, 1], 0).play;
-        let fp = footprint(dim, &board_tiles, &play);
+        let fp = footprint(dim, &board_tiles, &play).unwrap();
+        let malformed = matrix::Dim { rows: 15, cols: -1 };
+        assert!(zone_lanes(&malformed, &fp.zone).is_err());
         assert_eq!(fp.fills.0, squares(&[(6, 4), (7, 4)]));
         assert_eq!(
             fp.zone.0,
@@ -4593,13 +4604,13 @@ mod tests {
                 (7, 7)
             ])
         );
-        let (rows, cols) = zone_lanes(dim, &fp.zone);
+        let (rows, cols) = zone_lanes(dim, &fp.zone).unwrap();
         assert_eq!((rows, cols), (0b1_1110_0000, 0b1011_1000));
         assert!(fp.on(0, 1 << 4) && !fp.on(!0, !(1 << 4)));
         // AT along row 0 from its corner, on the empty board: nothing past the
         // edges
         let empty = vec![0u8; dim.rows as usize * dim.cols as usize];
-        let fp = footprint(dim, &empty, &place(0, false, 0, 0, &[1, 20], 0).play);
+        let fp = footprint(dim, &empty, &place(0, false, 0, 0, &[1, 20], 0).play).unwrap();
         assert_eq!(fp.fills.0, squares(&[(0, 0), (0, 1)]));
         assert_eq!(
             fp.zone.0,
@@ -4608,12 +4619,12 @@ mod tests {
         assert!(fp.on(1, 0) && !fp.on(!1, !0));
         // AT along row 0 from column 1, and along row 14 to column 13: the
         // squares just inside the edges are in the zone
-        let fp = footprint(dim, &empty, &place(0, false, 0, 1, &[1, 20], 0).play);
+        let fp = footprint(dim, &empty, &place(0, false, 0, 1, &[1, 20], 0).play).unwrap();
         assert_eq!(
             fp.zone.0,
             squares(&[(0, 1), (0, 2), (0, 0), (0, 3), (1, 1), (1, 2)])
         );
-        let fp = footprint(dim, &empty, &place(0, false, 14, 12, &[1, 20], 0).play);
+        let fp = footprint(dim, &empty, &place(0, false, 14, 12, &[1, 20], 0).play).unwrap();
         assert_eq!(
             fp.zone.0,
             squares(&[(14, 12), (14, 13), (14, 11), (14, 14), (13, 12), (13, 13)])
@@ -4622,7 +4633,7 @@ mod tests {
         let pass = movegen::Play::Exchange {
             tiles: [0u8; 0][..].into(),
         };
-        let fp = footprint(dim, &board_tiles, &pass);
+        let fp = footprint(dim, &board_tiles, &pass).unwrap();
         assert_eq!(fp.zone.0, Squares::NONE.0);
         assert!(!fp.on(!0, !0));
     }
@@ -4846,7 +4857,7 @@ mod tests {
             .map(|m| {
                 (
                     play_score(&m.play),
-                    footprint(dim, &scratch.after, &m.play).zone,
+                    footprint(dim, &scratch.after, &m.play).unwrap().zone,
                 )
             })
             .collect::<Vec<_>>();
@@ -4874,7 +4885,7 @@ mod tests {
             }
             used_tiles(&m.play, &mut scratch.used);
             let w_x = s_x + twice(game_config, &scratch.used);
-            let fills = footprint(dim, &scratch.after, &m.play).fills;
+            let fills = footprint(dim, &scratch.after, &m.play).unwrap().fills;
             match outs.iter().find(|(_, zone)| !fills.meets(zone)) {
                 Some(&(s_u, _)) => v = v.min(c - w_x + s_u),
                 None => v = v.min(s_m - s_x + stuck),
@@ -4956,7 +4967,7 @@ mod tests {
         .unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-        board_tiles[dim.at_row_col(7, 7)] = 1; // A
+        board_tiles[dim.at_on_board(7, 7)] = 1; // A
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
@@ -5185,7 +5196,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(move_generator.plays.len(), 1);
-        move_generator.plays[0].play.fmt(board_snapshot).to_string()
+        move_generator.plays[0]
+            .play
+            .fmt(board_snapshot)
+            .unwrap()
+            .to_string()
     }
 
     // with the bag empty, deft goes out when that wins even where out in two
@@ -5244,7 +5259,7 @@ mod tests {
             &mut Vec::new(),
         );
         assert_eq!(
-            plays[fewest].play.fmt(&board_snapshot).to_string(),
+            plays[fewest].play.fmt(&board_snapshot).unwrap().to_string(),
             "F6 CASTE 28"
         );
         assert!(
@@ -5315,7 +5330,7 @@ mod tests {
             &mut Vec::new(),
         );
         assert_eq!(
-            plays[fewest].play.fmt(&board_snapshot).to_string(),
+            plays[fewest].play.fmt(&board_snapshot).unwrap().to_string(),
             "F10 ES 13"
         );
         assert_eq!(winning_out(&game_config, &game_state, plays), None);
@@ -5359,7 +5374,7 @@ mod tests {
         let at = move_generator
             .plays
             .iter()
-            .position(|m| m.play.fmt(&board_snapshot).to_string() == "H7 ET 10")
+            .position(|m| m.play.fmt(&board_snapshot).unwrap().to_string() == "H7 ET 10")
             .unwrap();
         assert!(at >= DEFT_FIELD, "it ranks {at}");
     }
@@ -5421,13 +5436,13 @@ mod tests {
                         first.value_after(&mut scratch, i),
                         value_after_in_full(&board_snapshot, &game_state, &choice.play, &mut whole),
                         "{fen} {mine} against {theirs}: {}",
-                        choice.play.fmt(&board_snapshot),
+                        choice.play.fmt(&board_snapshot).unwrap(),
                     );
                     assert_eq!(
                         values[i],
                         value_on_footprints_by_hand(&first, i),
                         "{fen} {mine} against {theirs}, on footprints: {}",
-                        choice.play.fmt(&board_snapshot),
+                        choice.play.fmt(&board_snapshot).unwrap(),
                     );
                     valued += 1;
                 }
@@ -5481,7 +5496,7 @@ mod tests {
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         let mut reach = Vec::new();
         assert_eq!(term.value_of(&game_config, &board_tiles, &mut reach), -1500);
-        board_tiles[dim.at_row_col(7, 7)] = 1;
+        board_tiles[dim.at_on_board(7, 7)] = 1;
         assert_eq!(term.value_of(&game_config, &board_tiles, &mut reach), -8000);
     }
 
@@ -5628,7 +5643,7 @@ mod tests {
                     let added = term.value_of(&game_config, &after, &mut reach) - before;
                     (
                         m.equity.raw() as i64 + added,
-                        m.play.fmt(&board_snapshot).to_string(),
+                        m.play.fmt(&board_snapshot).unwrap().to_string(),
                     )
                 })
                 .collect::<Vec<_>>();

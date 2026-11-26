@@ -98,7 +98,7 @@ impl BoardLayout {
         let mut transposed_premiums = Vec::with_capacity(rows_times_cols);
         for col in 0..x.dim.cols {
             for row in 0..x.dim.rows {
-                transposed_premiums.push(x.premiums[x.dim.at_row_col(row, col)].clone());
+                transposed_premiums.push(x.premiums[x.dim.at_on_board(row, col)].clone());
             }
         }
         let mut danger_star_across = vec![false; x.dim.cols as usize];
@@ -151,8 +151,8 @@ impl BoardLayout {
                 && x.star_row == x.star_col
                 && (0..x.dim.rows).all(|row| {
                     (0..row).all(|col| {
-                        let p1 = &x.premiums[x.dim.at_row_col(row, col)];
-                        let p2 = &x.premiums[x.dim.at_row_col(col, row)];
+                        let p1 = &x.premiums[x.dim.at_on_board(row, col)];
+                        let p2 = &x.premiums[x.dim.at_on_board(col, row)];
                         p1.word_multiplier == p2.word_multiplier
                             && p1.tile_multiplier == p2.tile_multiplier
                     })
@@ -283,16 +283,26 @@ impl BoardLayout {
     }
 
     #[inline(always)]
-    pub fn danger_star_across(&self, col: i8) -> bool {
-        match self {
-            BoardLayout::Static(x) => x.danger_star_across[col as usize],
-        }
+    pub fn danger_star_across(&self, col: i8) -> crate::error::Returns<bool> {
+        self.danger_stars(false)
+            .get(usize::try_from(col)?)
+            .copied()
+            .ok_or_else(|| format!("column {col} is outside the board").into())
     }
 
     #[inline(always)]
-    pub fn danger_star_down(&self, row: i8) -> bool {
+    pub fn danger_star_down(&self, row: i8) -> crate::error::Returns<bool> {
+        self.danger_stars(true)
+            .get(usize::try_from(row)?)
+            .copied()
+            .ok_or_else(|| format!("row {row} is outside the board").into())
+    }
+
+    #[inline(always)]
+    pub(crate) fn danger_stars(&self, down: bool) -> &[bool] {
         match self {
-            BoardLayout::Static(x) => x.danger_star_down[row as usize],
+            BoardLayout::Static(x) if down => &x.danger_star_down,
+            BoardLayout::Static(x) => &x.danger_star_across,
         }
     }
 
@@ -1312,7 +1322,7 @@ mod tests {
         for row in 0..dim.rows {
             text.push('|');
             for col in 0..dim.cols {
-                let premium = &board_layout.premiums()[dim.at_row_col(row, col)];
+                let premium = &board_layout.premiums()[dim.at_on_board(row, col)];
                 text.push(match (premium.word_multiplier, premium.tile_multiplier) {
                     (4, 1) => '~',
                     (3, 1) => '=',

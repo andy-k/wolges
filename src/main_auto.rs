@@ -308,7 +308,7 @@ fn do_it(
                 std::io::stdout(),
                 "{:>8} {}",
                 play.equity,
-                play.play.fmt(board_snapshot)
+                play.play.fmt(board_snapshot)?
             )?;
         }
         return Ok(());
@@ -478,7 +478,7 @@ fn do_it(
                         std::io::stdout(),
                         "{:>8} {}",
                         play.equity,
-                        play.play.fmt(board_snapshot)
+                        play.play.fmt(board_snapshot)?
                     )?;
                 }
             }
@@ -520,7 +520,7 @@ fn do_it(
                             writeln!(
                                 std::io::stdout(),
                                 "{} is not valid, {}!",
-                                play.play.fmt(board_snapshot),
+                                play.play.fmt(board_snapshot)?,
                                 err
                             )?;
                         }
@@ -530,8 +530,8 @@ fn do_it(
                                 writeln!(
                                     std::io::stdout(),
                                     "{} is valid, but reformats into {}!",
-                                    play.play.fmt(board_snapshot),
-                                    canonical_play.fmt(board_snapshot)
+                                    play.play.fmt(board_snapshot)?,
+                                    canonical_play.fmt(board_snapshot)?
                                 )?;
                             }
                             let movegen_score = match &play.play {
@@ -544,7 +544,7 @@ fn do_it(
                                 writeln!(
                                     std::io::stdout(),
                                     "{} should score {} instead of {}!",
-                                    play.play.fmt(board_snapshot),
+                                    play.play.fmt(board_snapshot)?,
                                     recounted_score,
                                     movegen_score
                                 )?;
@@ -561,7 +561,7 @@ fn do_it(
                                     writeln!(
                                         std::io::stdout(),
                                         "{} should have equity {} instead of {}!",
-                                        play.play.fmt(board_snapshot),
+                                        play.play.fmt(board_snapshot)?,
                                         equity::Equity::new(recounted_equity),
                                         play.equity
                                     )?;
@@ -572,7 +572,7 @@ fn do_it(
                                 writeln!(
                                     std::io::stdout(),
                                     "{} forms invalid words!",
-                                    play.play.fmt(board_snapshot)
+                                    play.play.fmt(board_snapshot)?
                                 )?;
                             }
                         }
@@ -606,7 +606,7 @@ fn do_it(
             std::mem::swap(&mut carried[seat], &mut next_carried);
             let plays = &mut move_generator.plays;
             let play = &plays[0].play; // assume at least there's always Pass
-            writeln!(std::io::stdout(), "Playing: {}", play.fmt(board_snapshot))?;
+            writeln!(std::io::stdout(), "Playing: {}", play.fmt(board_snapshot)?)?;
 
             put_back[seat].clear();
             if let movegen::Play::Exchange { tiles } = play {

@@ -1548,12 +1548,12 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             rows: dim.cols,
             cols: dim.rows,
         };
-        let idx = dim.at_row_col(star_row, star_col);
+        let idx = dim.at_on_board(star_row, star_col);
         self.allowed_for_across_plays[idx] = u64::MAX;
         self.perpendicular_word_multipliers_for_across_plays[idx] = 0;
         self.perpendicular_scores_for_across_plays[idx] = 0;
         if !board_layout.is_symmetric() {
-            let idx = transposed_dim.at_row_col(star_col, star_row);
+            let idx = transposed_dim.at_on_board(star_col, star_row);
             self.allowed_for_down_plays[idx] = u64::MAX;
             self.perpendicular_word_multipliers_for_down_plays[idx] = 0;
             self.perpendicular_scores_for_down_plays[idx] = 0;
@@ -1585,7 +1585,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 }
                 let strider = dim.down(col);
                 for i in 0..strider.len() {
-                    let idx = strider.at(i);
+                    let idx = strider.at_in_lane(i);
                     let premium = &premiums[idx];
                     let allowed = &mut self.allowed_for_across_plays[idx];
                     if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
@@ -1612,7 +1612,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 }
                 let strider = transposed_dim.down(row);
                 for i in 0..strider.len() {
-                    let idx = strider.at(i);
+                    let idx = strider.at_in_lane(i);
                     let premium = &transposed_premiums[idx];
                     let allowed = &mut self.allowed_for_down_plays[idx];
                     if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
@@ -7310,8 +7310,12 @@ fn gen_jumbled_place_moves_walk<
     let opening_penalty = |i: i8| {
         let board_layout = env.params.board_snapshot.game_config.board_layout();
         match opening {
-            Some(true) if board_layout.danger_star_down(i) => -equity::OPENING_HOTSPOT_PENALTY,
-            Some(false) if board_layout.danger_star_across(i) => -equity::OPENING_HOTSPOT_PENALTY,
+            Some(true) if board_layout.danger_stars(true)[usize::from(i.cast_unsigned())] => {
+                -equity::OPENING_HOTSPOT_PENALTY
+            }
+            Some(false) if board_layout.danger_stars(false)[usize::from(i.cast_unsigned())] => {
+                -equity::OPENING_HOTSPOT_PENALTY
+            }
             _ => 0,
         }
     };
@@ -8754,6 +8758,7 @@ impl Ord for ValuedMove {
 pub struct WriteablePlay<'a, N: kwg::Node, L: kwg::Node> {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     play: &'a Play,
+    column: Option<display::ColumnStr>,
 }
 
 impl<N: kwg::Node, L: kwg::Node> std::fmt::Display for WriteablePlay<'_, N, L> {
@@ -8790,10 +8795,11 @@ impl<N: kwg::Node, L: kwg::Node> WriteablePlay<'_, N, L> {
             } => {
                 let dim = self.board_snapshot.game_config.board_layout().dim();
                 let alphabet = self.board_snapshot.game_config.alphabet();
+                let column = self.column.as_ref().ok_or(std::fmt::Error)?;
                 if *down {
-                    write!(f, "{}{} ", display::column(*lane), idx + 1)?;
+                    write!(f, "{column}{} ", i16::from(*idx) + 1)?;
                 } else {
-                    write!(f, "{}{} ", lane + 1, display::column(*idx))?;
+                    write!(f, "{}{column} ", i16::from(*lane) + 1)?;
                 }
                 let strider = dim.lane(*down, *lane);
                 let mut inside = false;
@@ -8807,7 +8813,7 @@ impl<N: kwg::Node, L: kwg::Node> WriteablePlay<'_, N, L> {
                             f,
                             "{}",
                             alphabet
-                                .of_board(self.board_snapshot.board_tiles[strider.at(i)])
+                                .of_board(self.board_snapshot.board_tiles[strider.at_in_lane(i)])
                                 .unwrap(),
                         )?;
                     } else {
@@ -8833,11 +8839,30 @@ impl Play {
     pub fn fmt<'a, N: kwg::Node, L: kwg::Node>(
         &'a self,
         board_snapshot: &'a BoardSnapshot<'_, N, L>,
-    ) -> WriteablePlay<'a, N, L> {
-        WriteablePlay {
+    ) -> error::Returns<WriteablePlay<'a, N, L>> {
+        let column = match self {
+            Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                ..
+            } => {
+                board_snapshot.game_config.board_layout().dim().check_span(
+                    *down,
+                    *lane,
+                    *idx,
+                    word.len(),
+                )?;
+                Some(display::column(if *down { *lane } else { *idx })?)
+            }
+            Play::Exchange { .. } => None,
+        };
+        Ok(WriteablePlay {
             board_snapshot,
             play: self,
-        }
+            column,
+        })
     }
 }
 
@@ -11158,9 +11183,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                             tile != 0
                                 && alphabet.is_vowel(tile)
                                 && if down {
-                                    board_layout.danger_star_down(*i)
+                                    board_layout.danger_stars(true)
+                                        [usize::from((*i).cast_unsigned())]
                                 } else {
-                                    board_layout.danger_star_across(*i)
+                                    board_layout.danger_stars(false)
+                                        [usize::from((*i).cast_unsigned())]
                                 }
                         })
                         .count() as i32
@@ -11760,10 +11787,10 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         for row in 0..dim.rows {
             for col in 0..dim.cols {
                 found(
-                    dim.at_row_col(row, col),
-                    hooked(working_buffer.allowed_for_across_plays[dim.at_row_col(row, col)]),
+                    dim.at_on_board(row, col),
+                    hooked(working_buffer.allowed_for_across_plays[dim.at_on_board(row, col)]),
                     hooked(
-                        working_buffer.allowed_for_down_plays[transposed_dim.at_row_col(col, row)],
+                        working_buffer.allowed_for_down_plays[transposed_dim.at_on_board(col, row)],
                     ),
                 );
             }
@@ -12328,9 +12355,9 @@ fn hotspot_penalty(game_config: &game_config::GameConfig, down: bool, idx: i8, w
             tile != 0
                 && alphabet.is_vowel(tile)
                 && if down {
-                    board_layout.danger_star_down(i)
+                    board_layout.danger_stars(true)[usize::from(i.cast_unsigned())]
                 } else {
-                    board_layout.danger_star_across(i)
+                    board_layout.danger_stars(false)[usize::from(i.cast_unsigned())]
                 }
         })
         .count() as i32
@@ -16713,7 +16740,7 @@ pub(crate) mod tests {
                 out.push_str(&format!(
                     "{} {}\n",
                     p.equity.raw(),
-                    p.play.fmt(&board_snapshot)
+                    p.play.fmt(&board_snapshot).unwrap()
                 ));
             }
         }
@@ -16777,7 +16804,7 @@ pub(crate) mod tests {
                             out.push_str(&format!(
                                 "{} {}\n",
                                 p.equity.raw(),
-                                p.play.fmt(&board_snapshot)
+                                p.play.fmt(&board_snapshot).unwrap()
                             ));
                         }
                     }
@@ -16898,7 +16925,7 @@ pub(crate) mod tests {
                     let plays = |g: &KurniaMoveGenerator| {
                         g.plays
                             .iter()
-                            .map(|p| format!("{}\n", p.play.fmt(&board_snapshot)))
+                            .map(|p| format!("{}\n", p.play.fmt(&board_snapshot).unwrap()))
                             .collect::<String>()
                     };
                     move_generator.gen_moves_raw_lanes_unsorted(
@@ -17016,9 +17043,10 @@ pub(crate) mod tests {
                             .plays
                             .iter()
                             .filter_map(|p| match &p.play {
-                                Play::Place { score, .. } => {
-                                    Some(format!("{} {score}", p.play.fmt(&board_snapshot)))
-                                }
+                                Play::Place { score, .. } => Some(format!(
+                                    "{} {score}",
+                                    p.play.fmt(&board_snapshot).unwrap()
+                                )),
                                 Play::Exchange { .. } => None,
                             })
                             .collect::<Vec<_>>();
@@ -17181,7 +17209,7 @@ pub(crate) mod tests {
                 let mut lines = move_generator
                     .plays
                     .iter()
-                    .map(|p| format!("{} {}", p.play.fmt(&board_snapshot), p.equity))
+                    .map(|p| format!("{} {}", p.play.fmt(&board_snapshot).unwrap(), p.equity))
                     .collect::<Vec<_>>();
                 lines.sort_unstable();
                 lines
@@ -17280,7 +17308,7 @@ pub(crate) mod tests {
                                 }
                                 Play::Exchange { .. } => false,
                             })
-                            .map(|p| p.play.fmt(&board_snapshot).to_string())
+                            .map(|p| p.play.fmt(&board_snapshot).unwrap().to_string())
                             .collect::<Vec<_>>();
                         lines.sort_unstable();
                         lines
@@ -17440,8 +17468,8 @@ pub(crate) mod tests {
                     assert!(
                         actual == expected,
                         "lean={lean}, rack={rack:?}: {} vs {}",
-                        actual.fmt(&snapshot),
-                        expected.fmt(&snapshot)
+                        actual.fmt(&snapshot).unwrap(),
+                        expected.fmt(&snapshot).unwrap()
                     );
                 }
                 if i <= 1 {
@@ -17518,7 +17546,7 @@ pub(crate) mod tests {
             .flat_map(|word| (1..=word.len()).map(|n| word[..n].to_vec()))
             .collect::<crate::fash::MyHashSet<_>>();
         let empty_board = board_tiles.iter().all(|&tile| tile == 0);
-        let star = dim.at_row_col(layout.star_row(), layout.star_col());
+        let star = dim.at_on_board(layout.star_row(), layout.star_col());
         let mut held = vec![0u8; alphabet.len() as usize];
         for &tile in rack {
             held[tile as usize] += 1;
@@ -17529,7 +17557,7 @@ pub(crate) mod tests {
                 if r < 0 || c < 0 || r >= dim.rows || c >= dim.cols {
                     return None;
                 }
-                let sq = dim.at_row_col(r, c);
+                let sq = dim.at_on_board(r, c);
                 if board_tiles[sq] != 0 {
                     Some((sq, board_tiles[sq]))
                 } else {
@@ -17586,7 +17614,7 @@ pub(crate) mod tests {
                     let mut stack = vec![((r0, c0), Vec::<(usize, u8)>::new(), Vec::<u8>::new())];
                     while let Some(((r, c), placed, main)) = stack.pop() {
                         let on_board = r < dim.rows && c < dim.cols;
-                        let sq = on_board.then(|| dim.at_row_col(r, c));
+                        let sq = on_board.then(|| dim.at_on_board(r, c));
                         if !placed.is_empty() && sq.is_none_or(|sq| board_tiles[sq] == 0) {
                             let mut ok = true;
                             let mut formed = 0;
@@ -17631,7 +17659,7 @@ pub(crate) mod tests {
                         };
                         if placed.is_empty() && main.is_empty() {
                             let (pr, pc) = (r - step.0, c - step.1);
-                            if pr >= 0 && pc >= 0 && board_tiles[dim.at_row_col(pr, pc)] != 0 {
+                            if pr >= 0 && pc >= 0 && board_tiles[dim.at_on_board(pr, pc)] != 0 {
                                 continue;
                             }
                         }
@@ -17777,9 +17805,9 @@ pub(crate) mod tests {
                                         .map(|(i, &t)| {
                                             let i = *idx + i as i8;
                                             let sq = if *down {
-                                                dim.at_row_col(i, *lane)
+                                                dim.at_on_board(i, *lane)
                                             } else {
-                                                dim.at_row_col(*lane, i)
+                                                dim.at_on_board(*lane, i)
                                             };
                                             (sq, t)
                                         })
@@ -17825,7 +17853,7 @@ pub(crate) mod tests {
             .plays
             .iter()
             .filter(|p| matches!(p.play, Play::Place { .. }))
-            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot).unwrap()))
             .collect::<Vec<_>>();
         out.sort_unstable();
         out
@@ -17858,7 +17886,13 @@ pub(crate) mod tests {
         move_generator
             .plays
             .iter()
-            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+            .map(|p| {
+                format!(
+                    "{} {}",
+                    p.equity.raw(),
+                    p.play.fmt(&board_snapshot).unwrap()
+                )
+            })
             .collect::<Vec<_>>()
     }
 
@@ -17938,7 +17972,13 @@ pub(crate) mod tests {
                         move_generator
                             .plays
                             .iter()
-                            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                            .map(|p| {
+                                format!(
+                                    "{} {}",
+                                    p.equity.raw(),
+                                    p.play.fmt(&board_snapshot).unwrap()
+                                )
+                            })
                             .collect::<Vec<_>>()
                     };
                     let all = generate(usize::MAX);
@@ -17966,7 +18006,7 @@ pub(crate) mod tests {
                 let strider = gc.board_layout().dim().lane(down, lane);
                 for (i, &tile) in (idx..).zip(word.iter()) {
                     if tile != 0 {
-                        board_tiles[strider.at(i)] = tile;
+                        board_tiles[strider.at_in_lane(i)] = tile;
                     }
                 }
             }
@@ -18089,7 +18129,7 @@ pub(crate) mod tests {
                 );
                 let tile_at = |r: i8, c: i8| {
                     if (0..dim.rows).contains(&r) && (0..dim.cols).contains(&c) {
-                        board_tiles[dim.at_row_col(r, c)] & 0x7f
+                        board_tiles[dim.at_on_board(r, c)] & 0x7f
                     } else {
                         0
                     }
@@ -18117,7 +18157,7 @@ pub(crate) mod tests {
                             hooks_by_hand(&kwg, jumbled, alphabet_len, &left, &run(r, c, 0, 1)),
                         );
                         assert_eq!(
-                            got[dim.at_row_col(r, c)],
+                            got[dim.at_on_board(r, c)],
                             want,
                             "[{fen}] row {r} col {c}, jumbled {jumbled}"
                         );
@@ -18172,7 +18212,7 @@ pub(crate) mod tests {
             .plays
             .iter()
             .filter(|p| matches!(p.play, Play::Place { .. }))
-            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot).unwrap()))
             .collect::<Vec<_>>();
         out.sort_unstable();
         out
@@ -18621,7 +18661,7 @@ pub(crate) mod tests {
             .plays
             .iter()
             .filter(|p| matches!(p.play, Play::Place { .. }))
-            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot).unwrap()))
             .collect::<Vec<_>>();
         out.sort_unstable();
         out
@@ -18659,7 +18699,13 @@ pub(crate) mod tests {
             let plays = |g: &KurniaMoveGenerator| {
                 g.plays
                     .iter()
-                    .map(|p| format!("{} {}\n", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                    .map(|p| {
+                        format!(
+                            "{} {}\n",
+                            p.equity.raw(),
+                            p.play.fmt(&board_snapshot).unwrap()
+                        )
+                    })
                     .collect::<String>()
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -18976,7 +19022,7 @@ pub(crate) mod tests {
         move_generator
             .plays
             .iter()
-            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot).unwrap()))
             .collect()
     }
 
@@ -19257,7 +19303,7 @@ pub(crate) mod tests {
             move_generator
                 .plays
                 .iter()
-                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&seat_snapshot)))
+                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&seat_snapshot).unwrap()))
                 .collect::<Vec<_>>()
         };
         let fresh = plays(&mut KurniaMoveGenerator::new(&gc));
@@ -19382,7 +19428,13 @@ pub(crate) mod tests {
             move_generator
                 .plays
                 .iter()
-                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .map(|p| {
+                    format!(
+                        "{} {}",
+                        p.equity.raw(),
+                        p.play.fmt(&board_snapshot).unwrap()
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -19438,7 +19490,13 @@ pub(crate) mod tests {
             move_generator
                 .plays
                 .iter()
-                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .map(|p| {
+                    format!(
+                        "{} {}",
+                        p.equity.raw(),
+                        p.play.fmt(&board_snapshot).unwrap()
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let mut kept = KurniaMoveGenerator::new(&gc);
@@ -19489,7 +19547,7 @@ pub(crate) mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let dim = gc.board_layout().dim();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-        board_tiles[dim.at_row_col(7, 7)] = 1;
+        board_tiles[dim.at_on_board(7, 7)] = 1;
         let plays = |anagrams| {
             let board_snapshot = BoardSnapshot {
                 board_tiles: &board_tiles,
@@ -19509,7 +19567,13 @@ pub(crate) mod tests {
                 dynamic_leaves: None,
             });
             (move_generator.plays.iter())
-                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .map(|p| {
+                    format!(
+                        "{} {}",
+                        p.equity.raw(),
+                        p.play.fmt(&board_snapshot).unwrap()
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let walked = plays(Some(&held));
@@ -19581,7 +19645,13 @@ pub(crate) mod tests {
             move_generator
                 .plays
                 .iter()
-                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .map(|p| {
+                    format!(
+                        "{} {}",
+                        p.equity.raw(),
+                        p.play.fmt(&board_snapshot).unwrap()
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let mut kept = KurniaMoveGenerator::new(&gc);
@@ -19646,7 +19716,13 @@ pub(crate) mod tests {
                 move_generator
                     .plays
                     .iter()
-                    .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                    .map(|p| {
+                        format!(
+                            "{} {}",
+                            p.equity.raw(),
+                            p.play.fmt(&board_snapshot).unwrap()
+                        )
+                    })
                     .collect::<Vec<_>>()
             };
             let mut source = KurniaMoveGenerator::new(&gc);
@@ -19842,7 +19918,7 @@ pub(crate) mod tests {
                 let wb = &move_generator.working_buffer;
                 for row in 0..side {
                     for col in 0..side {
-                        let at = dim.at_row_col(row, col);
+                        let at = dim.at_on_board(row, col);
                         if board_tiles[at] != 0 {
                             continue;
                         }
@@ -19858,7 +19934,7 @@ pub(crate) mod tests {
                                 if !(0..side).contains(&r) || !(0..side).contains(&c) {
                                     break;
                                 }
-                                let tile = board_tiles[dim.at_row_col(r, c)];
+                                let tile = board_tiles[dim.at_on_board(r, c)];
                                 if tile == 0 {
                                     break;
                                 }
@@ -20256,7 +20332,7 @@ pub(crate) mod tests {
                 let wb = &move_generator.working_buffer;
                 for row in 0..side {
                     for col in 0..side {
-                        let at = dim.at_row_col(row, col);
+                        let at = dim.at_on_board(row, col);
                         if board_tiles[at] != 0 {
                             continue;
                         }
@@ -20272,7 +20348,7 @@ pub(crate) mod tests {
                                 if !(0..side).contains(&r) || !(0..side).contains(&c) {
                                     break;
                                 }
-                                let tile = board_tiles[dim.at_row_col(r, c)];
+                                let tile = board_tiles[dim.at_on_board(r, c)];
                                 if tile == 0 {
                                     break;
                                 }
@@ -21195,7 +21271,7 @@ pub(crate) mod tests {
         let mut board_tiles = vec![0u8; 15 * 15];
         for i in 0..8 {
             let (row, col) = (i, ((i32::from(i) * 7 + 3) % 15) as i8);
-            board_tiles[gc.board_layout().dim().at_row_col(row, col)] =
+            board_tiles[gc.board_layout().dim().at_on_board(row, col)] =
                 rack[1 + i as usize % (rack.len() - 1)];
         }
         type Build = fn(&kwg::Kwg<kwg::Node24>, &game_config::GameConfig) -> anagrams::ArmTables;
@@ -21273,7 +21349,7 @@ pub(crate) mod tests {
         for step in 0..=tiles.len() {
             if step > 0 {
                 let (row, col) = tiles[step - 1];
-                board_tiles[gc.board_layout().dim().at_row_col(row, col)] =
+                board_tiles[gc.board_layout().dim().at_on_board(row, col)] =
                     racks[0][(step - 1) % racks[0].len()];
             }
             let [by_nibbles_tables, by_layout_tables] =
@@ -21321,7 +21397,7 @@ pub(crate) mod tests {
                 let at = gc
                     .board_layout()
                     .dim()
-                    .at_row_col(step - 1, ((i32::from(step - 1) * 7 + 3) % 15) as i8);
+                    .at_on_board(step - 1, ((i32::from(step - 1) * 7 + 3) % 15) as i8);
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
@@ -21370,7 +21446,7 @@ pub(crate) mod tests {
             let pool = &parse_test_rack(gc.alphabet(), pool);
             let mut collapsed = 0;
             let mut board_tiles = vec![0u8; 15 * 15];
-            board_tiles[gc.board_layout().dim().at_row_col(4, 3)] = on_board;
+            board_tiles[gc.board_layout().dim().at_on_board(4, 3)] = on_board;
             let board_snapshot = BoardSnapshot {
                 board_tiles: &board_tiles,
                 game_config: &gc,
@@ -21500,7 +21576,7 @@ pub(crate) mod tests {
         let mut split = 0;
         for step in 0..=4 {
             if step > 0 {
-                let at = dim.at_row_col(7, (step + 5) as i8);
+                let at = dim.at_on_board(7, (step + 5) as i8);
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
@@ -21603,7 +21679,7 @@ pub(crate) mod tests {
         let mut fewer = 0;
         for step in 0..=4 {
             if step > 0 {
-                let at = dim.at_row_col(7, (step + 5) as i8);
+                let at = dim.at_on_board(7, (step + 5) as i8);
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
@@ -21677,7 +21753,7 @@ pub(crate) mod tests {
         let mut pruned = 0;
         for step in 0..=4 {
             if step > 0 {
-                let at = dim.at_row_col(7, (step + 5) as i8);
+                let at = dim.at_on_board(7, (step + 5) as i8);
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
@@ -21975,7 +22051,7 @@ pub(crate) mod tests {
             let at = gc
                 .board_layout()
                 .dim()
-                .at_row_col(i, ((i32::from(i) * 7 + 3) % 15) as i8);
+                .at_on_board(i, ((i32::from(i) * 7 + 3) % 15) as i8);
             board_tiles[at] = placed[i as usize % placed.len()];
         }
         let pool = parse_test_rack(gc.alphabet(), "AAEEIILNORSST");
@@ -22051,7 +22127,7 @@ pub(crate) mod tests {
         for step in 0..=tiles.len() {
             if step > 0 {
                 let (row, col) = tiles[step - 1];
-                board_tiles[dim.at_row_col(row, col)] = rack[(step - 1) % rack.len()];
+                board_tiles[dim.at_on_board(row, col)] = rack[(step - 1) % rack.len()];
             }
             let snapshot = BoardSnapshot {
                 board_tiles: &board_tiles,
@@ -22179,7 +22255,7 @@ pub(crate) mod tests {
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         for i in 0..8 {
             let (row, col) = (i, ((i32::from(i) * 7 + 3) % 15) as i8);
-            board_tiles[dim.at_row_col(row, col)] = rack[1 + i as usize % (rack.len() - 1)];
+            board_tiles[dim.at_on_board(row, col)] = rack[1 + i as usize % (rack.len() - 1)];
         }
         let [by_nibbles, by_layout] = [&nibbles, &layout].map(|tables| BoardSnapshot {
             board_tiles: &board_tiles,
@@ -22499,9 +22575,9 @@ pub(crate) mod tests {
                     let placed = tiles.iter().enumerate().skip((step - 1) * per_step);
                     for (i, &(row, col)) in placed.take(per_step) {
                         let tile = rack[i % rack.len()];
-                        board_tiles[gc.board_layout().dim().at_row_col(row, col)] = tile;
+                        board_tiles[gc.board_layout().dim().at_on_board(row, col)] = tile;
                         transposed_board_tiles
-                            [transposed_gc.board_layout().dim().at_row_col(col, row)] = tile;
+                            [transposed_gc.board_layout().dim().at_on_board(col, row)] = tile;
                     }
                 }
                 let board_snapshot = BoardSnapshot {
@@ -22615,8 +22691,8 @@ pub(crate) mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; (rows as isize * cols as isize) as usize];
         let rack = parse_test_rack(gc.alphabet(), "AEST");
-        board_tiles[gc.board_layout().dim().at_row_col(0, 9)] = rack[0];
-        board_tiles[gc.board_layout().dim().at_row_col(1, 9)] = rack[3];
+        board_tiles[gc.board_layout().dim().at_on_board(0, 9)] = rack[0];
+        board_tiles[gc.board_layout().dim().at_on_board(1, 9)] = rack[3];
         let board_snapshot = BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &gc,
@@ -22643,7 +22719,7 @@ pub(crate) mod tests {
     ) -> Vec<String> {
         plays
             .iter()
-            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(board_snapshot)))
+            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(board_snapshot).unwrap()))
             .collect()
     }
 
@@ -22687,9 +22763,9 @@ pub(crate) mod tests {
                         tile != 0
                             && alphabet.is_vowel(tile)
                             && if down {
-                                board_layout.danger_star_down(i)
+                                board_layout.danger_stars(true)[usize::from(i.cast_unsigned())]
                             } else {
-                                board_layout.danger_star_across(i)
+                                board_layout.danger_stars(false)[usize::from(i.cast_unsigned())]
                             }
                     })
                     .count() as i32
@@ -23080,7 +23156,7 @@ pub(crate) mod tests {
                     let mut board_tiles = empty.clone();
                     let strider = dim.lane(*down, *lane);
                     for (i, &tile) in (*idx..).zip(word.iter()) {
-                        board_tiles[strider.at(i)] = tile;
+                        board_tiles[strider.at_in_lane(i)] = tile;
                     }
                     let next_snapshot = BoardSnapshot {
                         board_tiles: &board_tiles,
@@ -23234,7 +23310,7 @@ pub(crate) mod tests {
                         }
                     };
                     (
-                        p.play.fmt(&snapshot).to_string(),
+                        p.play.fmt(&snapshot).unwrap().to_string(),
                         p.equity.raw(),
                         num_played,
                     )

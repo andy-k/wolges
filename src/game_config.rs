@@ -987,9 +987,9 @@ impl GameConfig {
                 let mut multipliers = (0..len)
                     .map(|i| {
                         let idx = if down {
-                            dim.at_row_col(i, lane)
+                            dim.at_on_board(i, lane)
                         } else {
-                            dim.at_row_col(lane, i)
+                            dim.at_on_board(lane, i)
                         };
                         premiums[idx].word_multiplier.max(1) as u128
                     })
