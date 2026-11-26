@@ -409,7 +409,7 @@ impl MsPrinter {
 struct GameStatePrinter<'a> {
     game_config: &'a game_config::GameConfig,
     game_state: &'a game_state::GameState,
-    optional_game_timers: Option<&'a game_timers::GameTimers>,
+    clocks: Option<(Vec<i64>, i8)>,
 }
 
 impl std::fmt::Display for GameStatePrinter<'_> {
@@ -422,7 +422,28 @@ impl std::fmt::Display for GameStatePrinter<'_> {
     }
 }
 
-impl GameStatePrinter<'_> {
+impl<'a> GameStatePrinter<'a> {
+    fn new(
+        game_config: &'a game_config::GameConfig,
+        game_state: &'a game_state::GameState,
+        game_timers: Option<&game_timers::GameTimers>,
+    ) -> crate::error::Returns<Self> {
+        let clocks = if let Some(game_timers) = game_timers {
+            let now = std::time::Instant::now();
+            let clocks = (0..game_state.players.len())
+                .map(|turn| game_timers.get_timer_as_at(now, turn))
+                .collect::<crate::error::Returns<Vec<_>>>()?;
+            Some((clocks, game_timers.turn))
+        } else {
+            None
+        };
+        Ok(Self {
+            game_config,
+            game_state,
+            clocks,
+        })
+    }
+
     #[inline(always)]
     fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         writeln!(
@@ -443,7 +464,6 @@ impl GameStatePrinter<'_> {
                 .alphabet()
                 .fmt_rack(self.game_state.bag.as_slice())
         )?;
-        let now = std::time::Instant::now();
         for (i, player) in self.game_state.players.iter().enumerate() {
             write!(
                 f,
@@ -452,8 +472,8 @@ impl GameStatePrinter<'_> {
                 player.score.descaled(),
                 self.game_config.alphabet().fmt_rack(&player.rack)
             )?;
-            if let Some(game_timers) = self.optional_game_timers {
-                let clock_ms = game_timers.get_timer_as_at(now, i);
+            if let Some((clocks, running)) = &self.clocks {
+                let clock_ms = clocks[i];
                 // the clocks right-aligned in a column past a full rack
                 write!(
                     f,
@@ -467,7 +487,7 @@ impl GameStatePrinter<'_> {
                 if adjustment != 0 {
                     write!(f, " ({adjustment})")?;
                 }
-                if game_timers.turn as usize == i {
+                if usize::try_from(*running) == Ok(i) {
                     // may differ from game_state.turn if timer is paused
                     write!(f, " (timer running)")?;
                 }
@@ -486,16 +506,10 @@ pub fn print_game_state(
     game_config: &game_config::GameConfig,
     game_state: &game_state::GameState,
     optional_game_timers: Option<&game_timers::GameTimers>,
-) -> std::io::Result<()> {
-    write!(
-        std::io::stdout(),
-        "{}",
-        GameStatePrinter {
-            game_config,
-            game_state,
-            optional_game_timers
-        }
-    )
+) -> crate::error::Returns<()> {
+    let printer = GameStatePrinter::new(game_config, game_state, optional_game_timers)?;
+    write!(std::io::stdout(), "{printer}")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -643,12 +657,14 @@ mod tests {
         let mut game_timers = game_timers::GameTimers::new(2);
         game_timers.clocks_ms[0] = 1_234_567;
         game_timers.clocks_ms[1] = -61_001;
-        let text = GameStatePrinter {
-            game_config: &game_config,
-            game_state: &game_state,
-            optional_game_timers: Some(&game_timers),
-        }
-        .to_string();
+        let text = GameStatePrinter::new(&game_config, &game_state, Some(&game_timers))
+            .unwrap()
+            .to_string();
+        game_timers.clocks_ms[0] = i64::MIN;
+        let now = std::time::Instant::now();
+        game_timers.set_turn(0).unwrap();
+        let later = now + std::time::Duration::from_secs(1);
+        assert!(game_timers.get_timer_as_at(later, 0).is_err());
         let rows = text
             .lines()
             .filter(|line| line.starts_with("Player "))
