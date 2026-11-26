@@ -2761,6 +2761,11 @@ impl<
                         }
                     },
                 );
+                let refused = match pruned {
+                    Ok(()) => refused,
+                    Err(e) if e.is::<endgame::Refused>() => true,
+                    Err(e) => return Err(e),
+                };
                 let (mut kwg, mut arm_tables) = match self.late_graph.take() {
                     Some(late) => late,
                     None => (
@@ -2771,7 +2776,7 @@ impl<
                 // where the limit has no room for the prune or the graph, the sim
                 // goes on with the lexicon's own graph: the late one is for speed
                 // alone
-                let built = if pruned.is_err() || refused {
+                let built = if refused {
                     None
                 } else {
                     match builder.build_for_game_within(self.game_config, words, memory) {

@@ -476,7 +476,7 @@ fn run_batch<N: kwg::Node>(
                 klv: &empty_klv,
             },
             |word: &[u8]| vec_of_words.push(word.into()),
-        );
+        )?;
         builder.refill_graph_for_game(&mut smaller_graph, &game_config, &vec_of_words)?;
         let smaller_kwg = smaller_graph.kwg();
         let arm_tables = solver_tables(smaller_kwg, &game_config, solving.lean)?;
@@ -1672,7 +1672,7 @@ fn solve_position<N: kwg::Node>(
             klv: &klv::Klv::<kwg::Node24>::empty()?,
         },
         |word: &[u8]| vec_of_words.push(word.into()),
-    );
+    )?;
     writeln!(
         std::io::stdout(),
         "word_prune: {} words",

@@ -11645,8 +11645,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         found_word: FoundWord,
-    ) {
-        let _ = self.gen_remaining_words_within(board_snapshot, None, found_word);
+    ) -> error::Returns<()> {
+        self.gen_remaining_words_within(board_snapshot, None, found_word)
     }
 
     // the buffers the word prune keeps from one prune to the next let go, for
@@ -11671,7 +11671,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         memory: Option<&endgame::MemoryLimit>,
         found_word: FoundWord,
-    ) -> Result<(), endgame::Refused> {
+    ) -> error::Returns<()> {
         let working_buffer = &mut self.working_buffer;
         if memory.is_some() {
             working_buffer.prune = PruneBuffers::default();
@@ -15604,7 +15604,7 @@ fn lone_words<N: kwg::Node>(
     bits: &mut Vec<u64>,
     buffers: &mut LoneBuffers,
     memory: Option<&endgame::MemoryLimit>,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     let root = kwg[0].arc_index();
     let Some(&(_, longest)) = shapes.first() else {
         return Ok(());
@@ -15704,6 +15704,7 @@ struct FoundWords {
     slots: Vec<u64>,
     shift: u32, // a hash's top bits pick its slot: 64 - log2(slots.len())
     refused: bool,
+    index_overflow: bool,
 }
 
 impl FoundWords {
@@ -15721,13 +15722,17 @@ impl FoundWords {
         self.starts.clear();
         self.slots.fill(0);
         self.refused = false;
+        self.index_overflow = false;
     }
 
     // whether a memory limit has refused it a growth
     #[inline(always)]
-    fn refused(&self) -> Result<(), endgame::Refused> {
+    fn refused(&self) -> error::Returns<()> {
+        if self.index_overflow {
+            crate::return_error!("word prune indices are out of range".to_string());
+        }
         if self.refused {
-            Err(endgame::Refused)
+            Err(endgame::Refused.into())
         } else {
             Ok(())
         }
@@ -15787,17 +15792,26 @@ impl FoundWords {
             }
             i = (i + 1) & mask;
         }
+        let index = self.starts.len();
+        let (Ok(start), Ok(word_len), Ok(slot_index)) = (
+            u32::try_from(self.tiles.len()),
+            u8::try_from(word.len()),
+            u32::try_from(index + 1),
+        ) else {
+            self.refused = true;
+            self.index_overflow = true;
+            return None;
+        };
         if endgame::room_in(memory, &mut self.starts, 1).is_err()
             || endgame::room_in(memory, &mut self.tiles, 1 + word.len()).is_err()
         {
             self.refused = true;
             return None;
         }
-        let index = self.starts.len();
-        self.starts.push(self.tiles.len() as u32);
-        self.tiles.push(word.len() as u8);
+        self.starts.push(start);
+        self.tiles.push(word_len);
         self.tiles.extend_from_slice(word);
-        self.slots[i] = tag | (index as u64 + 1);
+        self.slots[i] = tag | u64::from(slot_index);
         Some(index)
     }
 
@@ -15850,14 +15864,12 @@ impl FoundWords {
         order: &mut Vec<u32>,
         found_word: impl FnMut(&[u8]),
         memory: Option<&endgame::MemoryLimit>,
-    ) -> Result<(), endgame::Refused> {
+    ) -> error::Returns<()> {
         order.clear();
         endgame::room_in(memory, order, self.len())?;
-        order.extend(
-            (0..self.len())
-                .filter(|&index| keep(index))
-                .map(|i| i as u32),
-        );
+        for index in (0..self.len()).filter(|&index| keep(index)) {
+            order.push(u32::try_from(index)?);
+        }
         order.sort_unstable_by(|&a, &b| self.word(a as usize).cmp(self.word(b as usize)));
         order
             .iter()
@@ -15886,7 +15898,7 @@ fn gen_remaining_jumbled_words<
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
     memory: Option<&endgame::MemoryLimit>,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     struct Env<'a, N: kwg::Node> {
         kwg: &'a kwg::Kwg<N>,
         available: &'a mut [u8], // the tiles not on the board, a blank at 0
@@ -16044,7 +16056,7 @@ fn gen_remaining_woadwage_words<
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
     memory: Option<&endgame::MemoryLimit>,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     struct Env<'a, N: kwg::Node> {
         kwg: &'a kwg::Kwg<N>,
         available: &'a mut [u8], // the tiles not on the board, a blank at 0
@@ -16243,7 +16255,7 @@ fn gen_remaining_words<
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
     memory: Option<&endgame::MemoryLimit>,
     found_word: FoundWord,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
@@ -19251,7 +19263,9 @@ pub(crate) mod tests {
         let fresh = plays(&mut KurniaMoveGenerator::new(&gc));
         let mut move_generator = KurniaMoveGenerator::new(&gc);
         assert_eq!(plays(&mut move_generator), fresh);
-        move_generator.gen_remaining_words(&empty_snapshot, |_| {});
+        move_generator
+            .gen_remaining_words(&empty_snapshot, |_| {})
+            .unwrap();
         assert_eq!(plays(&mut move_generator), fresh);
     }
 
@@ -19305,7 +19319,9 @@ pub(crate) mod tests {
             };
             let mut move_generator = KurniaMoveGenerator::new(gc);
             let mut every = Vec::new();
-            move_generator.gen_remaining_words(&snapshot, |word| every.push(word.to_vec()));
+            move_generator
+                .gen_remaining_words(&snapshot, |word| every.push(word.to_vec()))
+                .unwrap();
             assert!(!every.is_empty());
             let mut refusals = Vec::new();
             for bytes in [1, 64, 256, 1024, 4096, 16384, usize::MAX] {
@@ -20678,17 +20694,19 @@ pub(crate) mod tests {
                     .filter(|board_tiles| woadwage_within_bag(&gc, board_tiles))
                 {
                     let mut kept = Vec::<Vec<u8>>::new();
-                    KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                        &BoardSnapshot {
-                            board_tiles: &board_tiles,
-                            game_config: &gc,
-                            kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: &klv,
-                        },
-                        |word: &[u8]| kept.push(word.to_vec()),
-                    );
+                    KurniaMoveGenerator::new(&gc)
+                        .gen_remaining_words(
+                            &BoardSnapshot {
+                                board_tiles: &board_tiles,
+                                game_config: &gc,
+                                kwg: &kwg,
+                                anagrams: None,
+                                rack_lengths: None,
+                                klv: &klv,
+                            },
+                            |word: &[u8]| kept.push(word.to_vec()),
+                        )
+                        .unwrap();
                     let pruned = if jumbled {
                         crate::jumbled_woadwage::tests::explicit_variant(&kept)
                     } else {
@@ -20809,17 +20827,19 @@ pub(crate) mod tests {
                     }
                 }
                 let mut kept = Vec::<Vec<u8>>::new();
-                KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                    &BoardSnapshot {
-                        board_tiles: &board_tiles,
-                        game_config: &gc,
-                        kwg: &kwg,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: &klv,
-                    },
-                    |word: &[u8]| kept.push(word.to_vec()),
-                );
+                KurniaMoveGenerator::new(&gc)
+                    .gen_remaining_words(
+                        &BoardSnapshot {
+                            board_tiles: &board_tiles,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        |word: &[u8]| kept.push(word.to_vec()),
+                    )
+                    .unwrap();
                 let pruned = if jumbled {
                     crate::jumbled_woadwage::tests::explicit_variant(&kept)
                 } else {
@@ -20878,17 +20898,19 @@ pub(crate) mod tests {
             board_tiles[13] = 0x84;
             board_tiles[0] = 0x84;
             let mut kept = Vec::<Vec<u8>>::new();
-            KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                &BoardSnapshot {
-                    board_tiles: &board_tiles,
-                    game_config: &gc,
-                    kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
-                |word: &[u8]| kept.push(word.to_vec()),
-            );
+            KurniaMoveGenerator::new(&gc)
+                .gen_remaining_words(
+                    &BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    },
+                    |word: &[u8]| kept.push(word.to_vec()),
+                )
+                .unwrap();
             assert_eq!(kept, vec![vec![1, 2], vec![1, 4]], "[jumbled {jumbled}]");
         }
     }

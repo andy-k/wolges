@@ -279,7 +279,7 @@ fn simulate(
         |word: &[u8]| {
             set_of_words.insert(word.into());
         },
-    );
+    )?;
     writeln!(
         std::io::stdout(),
         "word_prune: {} words",
