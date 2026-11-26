@@ -9550,6 +9550,21 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
         let previous_lanes = (w.lane_rows, w.lane_cols);
         (w.lane_rows, w.lane_cols) = (G::of_u128(rows), G::of_u128(cols));
+        if rack.len() > 1
+            && w.num_tiles_on_board != 0
+            && matches!(
+                snapshot.game_config.game_rules(),
+                game_config::GameRules::Classic
+            )
+            && let Some(table) = snapshot
+                .anagrams
+                .filter(|table| table.fit(snapshot.game_config))
+        {
+            lean_cross_sets::<0, _, _, _, _, _>(snapshot, w);
+            table_outs(snapshot, w, table, rack, &mut found);
+            (w.lane_rows, w.lane_cols) = previous_lanes;
+            return;
+        }
         let multi_leaves = std::mem::take(&mut w.multi_leaves);
         let opening = w.num_tiles_on_board == 0;
         walk_raw_places::<true, ANY_SIDE, _, _, _, _, _, _, _>(
@@ -13412,6 +13427,207 @@ fn walk_raw_places<
             found_place_move,
         );
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn table_outs<N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool, S: BoardStore>(
+    snapshot: &BoardSnapshot<'_, N, L>,
+    w: &mut WorkingBuffer<G, BAG_TERM, S>,
+    table: &anagrams::Anagrams,
+    rack: &[u8],
+    found: &mut impl FnMut(bool, i8, equity::Equity),
+) {
+    let layout = snapshot.game_config.board_layout();
+    let dim = layout.dim();
+    let opening = w.num_tiles_on_board == 0;
+    let mut tally = [0u8; MAX_ALPHABET_LEN];
+    for &tile in rack {
+        tally[usize::from(tile)] += 1;
+    }
+    let blanks = tally[0];
+    let letters = (u64::MAX >> (u64::BITS - u32::from(snapshot.game_config.alphabet().len()))) & !1;
+    let rack_letters = if blanks != 0 { letters } else { w.rack_bits };
+    let keyer = |word: &[u8]| {
+        let layout = table.layout();
+        if table.nibble_side().is_some() {
+            alphagram::Nibble::key_of(layout.max_counts(), word)
+        } else {
+            layout.key_of(word)
+        }
+    };
+    let scratch = &mut w.pool;
+    for (down, mask, board, allowed) in [
+        (
+            false,
+            w.lane_rows,
+            snapshot.board_tiles,
+            &w.allowed_for_across_plays[..],
+        ),
+        (
+            true,
+            w.lane_cols,
+            &w.transposed_board_tiles[..],
+            &w.allowed_for_down_plays[..],
+        ),
+    ] {
+        let side = if down { dim.rows } else { dim.cols } as usize;
+        for (lane, (board, allowed)) in board
+            .chunks_exact(side)
+            .zip(allowed.chunks_exact(side))
+            .enumerate()
+        {
+            if (opening && down && layout.is_symmetric())
+                || mask & (G::from(1) << lane as u32) == G::from(0)
+                || !room_for_out(board, allowed, rack_letters, rack.len() as u8)
+            {
+                continue;
+            }
+            let mut key_letters = [0; i8::MAX as usize];
+            let real = rack.len() - usize::from(blanks);
+            for (to, &tile) in key_letters
+                .iter_mut()
+                .zip(rack.iter().filter(|&&tile| tile != 0))
+            {
+                *to = tile;
+            }
+            for left in 0..board.len() {
+                if left != 0 && board[left - 1] != 0 {
+                    continue;
+                }
+                let mut count = 0;
+                let mut connected = false;
+                let mut key_len = real;
+                let mut blank_bits = 0;
+                for (right, (&tile, &allowed_here)) in
+                    board.iter().zip(allowed).enumerate().skip(left)
+                {
+                    if tile == 0 {
+                        if count == rack.len()
+                            || allowed_here & rack_letters == 0
+                            || (down && rack.len() == 1 && allowed_here & 1 != 0)
+                        {
+                            break;
+                        }
+                        connected |= allowed_here & 1 != 0;
+                        blank_bits |= allowed_here & letters;
+                        count += 1;
+                    } else {
+                        if key_len == key_letters.len() {
+                            break;
+                        }
+                        connected = true;
+                        key_letters[key_len] = tile & 0x7f;
+                        key_len += 1;
+                    }
+                    if count != rack.len()
+                        || left == right
+                        || !connected
+                        || (right + 1 < board.len() && board[right + 1] != 0)
+                    {
+                        continue;
+                    }
+                    let len = (right + 1 - left) as u8;
+                    let Some(key) = keyer(&key_letters[..key_len]) else {
+                        continue;
+                    };
+                    let mut fit = |words: alphagram::Words<'_>| {
+                        for word in words.iter() {
+                            let span = left..=right;
+                            if word
+                                .iter()
+                                .zip(&board[span.clone()])
+                                .zip(&allowed[span.clone()])
+                                .any(|((&letter, &fixed), &cross)| {
+                                    if fixed == 0 {
+                                        cross & (1 << letter) == 0
+                                    } else {
+                                        fixed & 0x7f != letter
+                                    }
+                                })
+                            {
+                                continue;
+                            }
+                            scratch.word.clear();
+                            scratch.word.extend(word.iter().zip(&board[span]).map(
+                                |(&letter, &fixed)| {
+                                    if fixed == 0 { letter } else { 0 }
+                                },
+                            ));
+                            let score = play_scorer::score_and_blank_deltas(
+                                snapshot,
+                                down,
+                                lane as i8,
+                                left as i8,
+                                &scratch.word,
+                                &mut scratch.deltas,
+                            );
+                            designate(
+                                &mut tally,
+                                &scratch.deltas,
+                                &mut scratch.word,
+                                0,
+                                0,
+                                score,
+                                &mut |_, score| {
+                                    found(down, lane as i8, equity::Equity::new(score));
+                                },
+                            );
+                        }
+                    };
+                    if blanks == 0 {
+                        if let Some(words) = table.words(alphagram::Fitted(key), len) {
+                            fit(words);
+                        }
+                    } else {
+                        blank_out_words(table, key, len, blanks, blank_bits, &mut fit);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn blank_out_words(
+    table: &anagrams::Anagrams,
+    key: u128,
+    len: u8,
+    blanks: u8,
+    mut possible: u64,
+    visit: &mut impl FnMut(alphagram::Words<'_>),
+) {
+    if blanks == 1 {
+        table.blank_groups(alphagram::Fitted(key), len, possible, |_, at| {
+            visit(table.words_at(at))
+        });
+        return;
+    }
+    let layout = table.layout();
+    let add = |tile| {
+        if table.nibble_side().is_some() {
+            add_blank_letter(alphagram::Nibble, key, tile, layout.max_counts())
+        } else {
+            add_blank_letter(layout, key, tile, layout.max_counts())
+        }
+    };
+    while possible != 0 {
+        let tile = possible.trailing_zeros() as u8;
+        if let Some(key) = add(tile) {
+            blank_out_words(table, key, len, blanks - 1, possible, visit);
+        }
+        possible &= possible - 1;
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn add_blank_letter(
+    places: impl alphagram::KeyPlaces,
+    key: u128,
+    tile: u8,
+    counts: &[u8],
+) -> Option<u128> {
+    (places.count_in(key, tile) < places.max_count(tile, counts))
+        .then(|| key + places.place_value(tile))
 }
 
 fn room_for_out(board: &[u8], allowed: &[u64], rack_letters: u64, required: u8) -> bool {
