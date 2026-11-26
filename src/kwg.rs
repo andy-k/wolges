@@ -303,16 +303,19 @@ pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
 
 pub static EMPTY_KBWG_BYTES: &[u8] = b"\x40\x00\x00\x00\x40\x00\x00\x00";
 
-impl<N: Node> std::ops::Index<i32> for Kwg<N> {
-    type Output = N;
+impl<N: Node> Kwg<N> {
+    #[inline(always)]
+    pub fn node(&self, index: i32) -> error::Returns<&N> {
+        self.0
+            .get(usize::try_from(index)?)
+            .ok_or_else(|| format!("node {index} is outside the word graph").into())
+    }
 
     #[inline(always)]
-    fn index(&self, i: i32) -> &N {
-        &self.0[i as usize]
+    pub(crate) fn node_in_run(&self, index: i32) -> N {
+        self.0[index.cast_unsigned() as usize]
     }
-}
 
-impl<N: Node> Kwg<N> {
     #[inline(always)]
     pub fn from_bytes_alloc(buf: &[u8]) -> error::Returns<Self> {
         Self::from_reader::<N>(buf.len(), |at, piece| {
@@ -417,10 +420,10 @@ impl<N: Node> Kwg<N> {
     #[inline(always)]
     pub fn seek(&self, mut p: i32, tile: u8) -> i32 {
         if p >= 0 {
-            p = self[p].arc_index();
+            p = self.node_in_run(p).arc_index();
             if p > 0 {
                 loop {
-                    let node = self[p];
+                    let node = self.node_in_run(p);
                     if node.tile() == tile {
                         return p;
                     }
@@ -472,7 +475,7 @@ impl<N: Node> Kwg<N> {
         };
         if word_counts[p as usize] == 0 {
             word_counts[p as usize] = !0; // marker
-            let node = self[p];
+            let node = self.node_in_run(p);
             let count = u64::from(node.accepts())
                 + if node.arc_index() != 0 {
                     u64::from(self.count_words_at(word_counts, node.arc_index())?)
@@ -639,10 +642,10 @@ impl<N: Node> Kwg<N> {
                     break;
                 }
                 vis[p_byte_index] |= p_bit;
-                if nodes[p].arc_index() != 0 {
-                    ret = ret.max(max_from(nodes, vis, nodes[p].arc_index()));
+                if nodes.node_in_run(p).arc_index() != 0 {
+                    ret = ret.max(max_from(nodes, vis, nodes.node_in_run(p).arc_index()));
                 }
-                if nodes[p].is_end() {
+                if nodes.node_in_run(p).is_end() {
                     break;
                 }
                 p += 1;
@@ -706,34 +709,56 @@ impl<N: Node> Kwg<N> {
     }
 
     #[inline(always)]
-    pub fn get_word_index(&self, word_counts: &[u32], mut p: i32, word: &[u8]) -> u32 {
-        let mut idx = 0;
-        for (remaining, &tile) in (0..word.len()).rev().zip(word) {
-            if p == 0 {
-                return !0;
-            }
-            let mut node = self[p];
-            idx += word_counts[p as usize];
+    pub fn get_word_index(&self, word_counts: &[u32], p: i32, word: &[u8]) -> error::Returns<u32> {
+        self.get_word_index_of(word_counts, p, &mut word.iter().copied())
+    }
+
+    #[inline(always)]
+    pub fn get_word_index_of<I: Iterator<Item = u8>>(
+        &self,
+        word_counts: &[u32],
+        p: i32,
+        iter: &mut I,
+    ) -> error::Returns<u32> {
+        let mut p = usize::try_from(p)?;
+        let mut rank = 0u32;
+        let Some(mut tile) = iter.next() else {
+            return Ok(!0);
+        };
+        while p != 0 {
+            let first_count = *word_counts.get(p).ok_or("word counts omit a graph node")?;
+            let mut node = *self.0.get(p).ok_or("node is outside the word graph")?;
             while node.tile() != tile {
                 if node.is_end() {
-                    return !0;
+                    return Ok(!0);
                 }
                 p += 1;
-                node = self[p];
+                node = *self.0.get(p).ok_or("unterminated word graph run")?;
             }
-            idx -= word_counts[p as usize];
-            if remaining == 0 {
-                return idx | ((i32::from(node.accepts()) - 1) as u32);
+            let count = *word_counts.get(p).ok_or("word counts omit a graph node")?;
+            let skipped = first_count
+                .checked_sub(count)
+                .ok_or("inconsistent word counts")?;
+            rank = rank
+                .checked_add(skipped)
+                .ok_or("word rank is out of range")?;
+            match iter.next() {
+                Some(next) => {
+                    tile = next;
+                    rank = rank
+                        .checked_add(u32::from(node.accepts()))
+                        .ok_or("word rank is out of range")?;
+                    p = usize::try_from(node.arc_index())?;
+                }
+                None => return Ok(if node.accepts() { rank } else { !0 }),
             }
-            idx += u32::from(node.accepts());
-            p = node.arc_index();
         }
-        !0
+        Ok(!0)
     }
 
     // slower than just using the index
     #[inline(always)]
-    pub fn get_word_index_of<I: Iterator<Item = u8>>(
+    pub(crate) fn get_word_index_of_counted<I: Iterator<Item = u8>>(
         &self,
         word_counts: &[u32],
         mut p: i32,
@@ -742,14 +767,14 @@ impl<N: Node> Kwg<N> {
         let mut idx = 0;
         if let Some(mut tile) = iter.next() {
             while p != 0 {
-                let mut node = self[p];
+                let mut node = self.node_in_run(p);
                 idx += word_counts[p as usize];
                 while node.tile() != tile {
                     if node.is_end() {
                         return !0;
                     }
                     p += 1;
-                    node = self[p];
+                    node = self.node_in_run(p);
                 }
                 idx -= word_counts[p as usize];
                 match iter.next() {
@@ -768,8 +793,14 @@ impl<N: Node> Kwg<N> {
     }
 
     #[inline(always)]
-    fn completes_alpha_cross_set(&self, mut p: i32, letters_tally: &[u8], next_letter: u8) -> bool {
-        for letter in next_letter..letters_tally.len() as u8 {
+    fn completes_alpha_cross_set(
+        &self,
+        mut p: i32,
+        letters_tally: &[u8],
+        next_letter: u8,
+        letters_tally_len: u8,
+    ) -> bool {
+        for letter in next_letter..letters_tally_len {
             for _ in 0..letters_tally[letter as usize] {
                 p = self.seek(p, letter);
                 if p <= 0 {
@@ -777,34 +808,54 @@ impl<N: Node> Kwg<N> {
                 }
             }
         }
-        self[p].accepts()
+        self.node_in_run(p).accepts()
     }
 
     #[inline(always)]
-    pub fn accepts_alpha(&self, letters_tally: &[u8]) -> bool {
-        self.completes_alpha_cross_set(0, letters_tally, 1)
+    pub fn accepts_alpha(&self, letters_tally: &[u8]) -> error::Returns<bool> {
+        let letters_tally_len = u8::try_from(letters_tally.len())?;
+        Ok(self.accepts_alpha_of_len(letters_tally, letters_tally_len))
     }
 
     #[inline(always)]
-    pub fn compute_alpha_cross_set(&self, letters_tally: &[u8]) -> u64 {
+    pub(crate) fn accepts_alpha_of_len(&self, letters_tally: &[u8], letters_tally_len: u8) -> bool {
+        self.completes_alpha_cross_set(0, letters_tally, 1, letters_tally_len)
+    }
+
+    #[inline(always)]
+    pub fn compute_alpha_cross_set(&self, letters_tally: &[u8]) -> error::Returns<u64> {
+        let letters_tally_len = u8::try_from(letters_tally.len())?;
+        Ok(self.compute_alpha_cross_set_of_len(letters_tally, letters_tally_len))
+    }
+
+    #[inline(always)]
+    pub(crate) fn compute_alpha_cross_set_of_len(
+        &self,
+        letters_tally: &[u8],
+        letters_tally_len: u8,
+    ) -> u64 {
         let mut answer = 1; // always set bit 0 here
-        let mut p = self[0].arc_index();
+        let mut p = self.node_in_run(0).arc_index();
         if p <= 0 {
             return answer;
         }
-        let letters_tally_len = letters_tally.len() as u8;
         for letter in 1..letters_tally_len {
             // 0 should be unused
             for _ in 0..letters_tally[letter as usize] {
                 loop {
-                    let node = self[p];
+                    let node = self.node_in_run(p);
                     let tile = node.tile();
                     match tile.cmp(&letter) {
                         std::cmp::Ordering::Greater => {
                             return answer;
                         }
                         std::cmp::Ordering::Less => {
-                            if self.completes_alpha_cross_set(p, letters_tally, letter) {
+                            if self.completes_alpha_cross_set(
+                                p,
+                                letters_tally,
+                                letter,
+                                letters_tally_len,
+                            ) {
                                 answer |= 1 << tile;
                             }
                             if node.is_end() {
@@ -825,8 +876,13 @@ impl<N: Node> Kwg<N> {
             }
         }
         loop {
-            let node = self[p];
-            if self.completes_alpha_cross_set(p, letters_tally, letters_tally_len) {
+            let node = self.node_in_run(p);
+            if self.completes_alpha_cross_set(
+                p,
+                letters_tally,
+                letters_tally_len,
+                letters_tally_len,
+            ) {
                 answer |= 1 << node.tile();
             }
             if node.is_end() {
@@ -925,7 +981,7 @@ mod tests {
         let bytes = bytes_of(&game_config::make_english_game_config(), &["SEAT", "TEA"]);
         let kwg = Kwg::<Node22>::from_bytes_alloc(&bytes).unwrap();
         let counts = kwg.count_words_alloc().unwrap();
-        let dawg_root = kwg[0].arc_index();
+        let dawg_root = kwg.node_in_run(0).arc_index();
         let mut word = Vec::new();
         kwg.get_word_by_index(&counts, dawg_root, 1, |t| word.push(t))
             .unwrap();
@@ -1077,7 +1133,7 @@ mod tests {
         let accepts = |graph: &Kwg<Node22>, word: &[u8]| {
             let p =
                 (word.iter()).try_fold(0, |p, &tile| Some(graph.seek(p, tile)).filter(|&p| p > 0));
-            p.is_some_and(|p| graph[p].accepts())
+            p.is_some_and(|p| graph.node_in_run(p).accepts())
         };
         for word in words.iter().chain(&["SEA", "EAST", "TEAS"]) {
             reader.set_word(word, &mut buf).unwrap();

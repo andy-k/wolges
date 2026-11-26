@@ -1308,7 +1308,7 @@ fn old_main() -> error::Returns<()> {
         let v_ecwl_bits = std::fs::read("lexbin/all-ECWL.kwi")?;
         let v_probability_indexes = std::fs::read("lexbin/all-probidx.kwp")?;
         let mut out_vec = Vec::new();
-        let dawg_root = kwg[0].arc_index();
+        let dawg_root = kwg.node(0)?.arc_index();
         let english_alphabet = alphabet::make_english_alphabet();
         let mut word_prob = prob::WordProbability::new(&english_alphabet);
         // the indexes right-aligned, as wide as the last
@@ -1318,7 +1318,7 @@ fn old_main() -> error::Returns<()> {
             kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
                 out_vec.push(v);
             })?;
-            let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
+            let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec)?;
             write!(std::io::stdout(), "{i:width$} {j:width$} {out_vec:?}")?;
             let byte_index = j as usize / 8;
             let bit = 1 << (j as usize % 8);

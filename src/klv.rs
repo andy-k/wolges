@@ -297,7 +297,7 @@ fn load_leaves_graph<L: kwg::Node>(
 ) -> error::Returns<(kwg::Kwg<L>, Box<[u32]>)> {
     let kwg = kwg::Kwg::<L>::from_bytes_alloc(kwg_bytes)?;
     let counts = kwg.count_words_alloc()?;
-    let root = kwg[0].arc_index();
+    let root = kwg.node_in_run(0).arc_index();
     let num_leaves = if root != 0 { counts[root as usize] } else { 0 };
     if num_leaves as usize != lv_len {
         return Err(format!("klv has {lv_len} leave values for {num_leaves} leaves").into());
@@ -357,7 +357,7 @@ impl<L: kwg::Node> Klv<L> {
         };
         let kwg = kwg::Kwg::<L>::from_pieces::<Old>(4, kwg_bytes_len, piece_len, read)?;
         let counts = kwg.count_words_alloc()?;
-        let root = kwg[0].arc_index();
+        let root = kwg.node_in_run(0).arc_index();
         let num_leaves = if root != 0 { counts[root as usize] } else { 0 };
         if num_leaves as usize != lv_len {
             return Err(format!("klv has {lv_len} leave values for {num_leaves} leaves").into());
@@ -473,20 +473,23 @@ impl<L: kwg::Node> Klv<L> {
     }
 
     #[inline(always)]
-    pub fn count(&self, i: i32) -> u32 {
-        self.counts[i as usize]
+    pub fn count(&self, i: i32) -> error::Returns<u32> {
+        self.counts
+            .get(usize::try_from(i)?)
+            .copied()
+            .ok_or_else(|| format!("node {i} is outside the leave counts").into())
     }
 
     #[inline(always)]
-    pub fn kwg(&self, i: i32) -> L {
-        self.kwg[i]
+    pub fn kwg(&self, i: i32) -> error::Returns<L> {
+        self.kwg.node(i).copied()
     }
 
     #[inline(always)]
     pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> equity::Equity {
-        let leave_idx = self.kwg.get_word_index_of(
+        let leave_idx = self.kwg.get_word_index_of_counted(
             &self.counts,
-            self.kwg[0].arc_index(),
+            self.kwg.node_in_run(0).arc_index(),
             &mut (0u8..)
                 .zip(rack_tally)
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
@@ -558,11 +561,11 @@ impl<L: kwg::Node> Klv<L> {
         ) {
             let mut p = q;
             loop {
-                let node = env.klv.kwg[p];
+                let node = env.klv.kwg.node_in_run(p);
                 let tile = node.tile() as usize;
                 if tile >= min_tile
                     && tile < env.tally.len()
-                    && !(q..p).any(|e| env.klv.kwg[e].tile() == node.tile())
+                    && !(q..p).any(|e| env.klv.kwg.node_in_run(e).tile() == node.tile())
                 {
                     let idx = base + env.klv.counts[q as usize] - env.klv.counts[p as usize];
                     env.tally[tile] += 1;
@@ -586,7 +589,7 @@ impl<L: kwg::Node> Klv<L> {
                 p += 1;
             }
         }
-        let root = self.kwg[0].arc_index();
+        let root = self.kwg.node_in_run(0).arc_index();
         if root != 0 && max_len != 0 {
             let mut env = Env {
                 klv: self,
@@ -631,7 +634,7 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
     // the graph was counted: it does not loop, and holds one leave a value.
     fn iter<L: kwg::Node>(env: &mut Env<'_, L>, mut p: i32) {
         loop {
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             env.word.push(node.tile());
             if node.accepts() {
                 let value = env.values[env.leaves.len()];
@@ -653,7 +656,7 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
         word: Vec::new(),
         leaves: Vec::with_capacity(lv_len),
     };
-    let root = kwg[0].arc_index();
+    let root = kwg.node_in_run(0).arc_index();
     if root != 0 {
         iter(&mut env, root);
     }
@@ -1014,9 +1017,9 @@ impl MultiLeaves {
                     if env.digits[tile_usize].count > 0 {
                         env.digits[tile_usize].count -= 1;
                         if p != 0 {
-                            idx += env.klv.count(p);
+                            idx += env.klv.counts[p.cast_unsigned() as usize];
                             loop {
-                                let node = env.klv.kwg(p);
+                                let node = env.klv.kwg.node_in_run(p);
                                 if node.tile() >= tile {
                                     break;
                                 }
@@ -1034,8 +1037,8 @@ impl MultiLeaves {
                         let mut child = 0;
                         let mut child_idx = 0;
                         if p != 0 {
-                            idx -= env.klv.count(p);
-                            let node = env.klv.kwg(p);
+                            idx -= env.klv.counts[p.cast_unsigned() as usize];
+                            let node = env.klv.kwg.node_in_run(p);
                             if node.tile() == tile {
                                 if node.accepts() {
                                     let mut value = env.klv.leave(idx).raw();
@@ -1073,7 +1076,11 @@ impl MultiLeaves {
                     num_playeds: &mut self.num_playeds,
                     paired,
                 },
-                if use_klv { klv.kwg[0].arc_index() } else { 0 },
+                if use_klv {
+                    klv.kwg.node_in_run(0).arc_index()
+                } else {
+                    0
+                },
                 0,
                 0,
                 0,
@@ -1206,11 +1213,11 @@ impl MultiLeaves {
             }
             let mut p = q;
             loop {
-                let node = env.klv.kwg(p);
+                let node = env.klv.kwg.node_in_run(p);
                 let tile = node.tile();
                 if (tile as usize) < env.rack_tally.len()
                     && env.rack_tally[tile as usize] > 0
-                    && !(q..p).any(|e| env.klv.kwg(e).tile() == tile)
+                    && !(q..p).any(|e| env.klv.kwg.node_in_run(e).tile() == tile)
                 {
                     let idx = base + env.klv.counts[q as usize] - env.klv.counts[p as usize];
                     env.rack_tally[tile as usize] -= 1;
@@ -1243,7 +1250,7 @@ impl MultiLeaves {
                 num_kept: 0,
                 adjust_leave_value,
             },
-            klv.kwg[0].arc_index(),
+            klv.kwg.node_in_run(0).arc_index(),
             0,
         );
 
@@ -1422,6 +1429,31 @@ impl MultiLeaves {
         rack_tally: &'a mut [u8],
         exchange_buffer: &'a mut Vec<u8>,
         max_vec_len: usize,
+    ) -> error::Returns<()> {
+        let rack_tally_len = u8::try_from(rack_tally.len())?;
+        Self::gen_exchange_moves_via_klv_of_len(
+            klv,
+            found_exchange_move,
+            rack_tally,
+            rack_tally_len,
+            exchange_buffer,
+            max_vec_len,
+        );
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn gen_exchange_moves_via_klv_of_len<
+        'a,
+        FoundExchangeMove: FnMut(&[u8], equity::Equity),
+        L: kwg::Node,
+    >(
+        klv: &Klv<L>,
+        found_exchange_move: FoundExchangeMove,
+        rack_tally: &'a mut [u8],
+        rack_tally_len: u8,
+        exchange_buffer: &'a mut Vec<u8>,
+        max_vec_len: usize,
     ) {
         exchange_buffer.clear();
         struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], equity::Equity), L: kwg::Node> {
@@ -1455,7 +1487,7 @@ impl MultiLeaves {
         }
         generate_exchanges(
             &mut ExchangeEnv {
-                rack_tally_len: rack_tally.len() as u8,
+                rack_tally_len,
                 klv,
                 found_exchange_move,
                 rack_tally,
@@ -1637,7 +1669,7 @@ mod tests {
             }
             let mut p = p;
             loop {
-                let node = klv.kwg(p);
+                let node = klv.kwg(p).unwrap();
                 let tile = node.tile() as usize;
                 if tile < rack_tally.len() && rack_tally[tile] > 0 {
                     rack_tally[tile] -= 1;
@@ -1715,7 +1747,7 @@ mod tests {
             );
             let mut want = vec![i32::MIN; rack.len() + 1];
             let mut kept = vec![0u8; 27];
-            let root = klv.kwg[0].arc_index();
+            let root = klv.kwg.node_in_run(0).arc_index();
             by_lookup(
                 &mut tally,
                 &klv,
@@ -1764,7 +1796,7 @@ mod tests {
         let file22 = Klv::<kwg::Node22>::from_bytes_alloc(EMPTY_KLV_BYTES).unwrap();
         assert_eq!(made22.kwg.0.len(), file22.kwg.0.len());
         for i in 0..made22.kwg.0.len() as i32 {
-            let (a, b) = (made22.kwg(i), file22.kwg(i));
+            let (a, b) = (made22.kwg(i).unwrap(), file22.kwg(i).unwrap());
             assert_eq!(
                 (a.tile(), a.accepts(), a.is_end(), a.arc_index()),
                 (b.tile(), b.accepts(), b.is_end(), b.arc_index()),

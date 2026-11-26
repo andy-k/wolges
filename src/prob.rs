@@ -119,7 +119,7 @@ impl WordProbability {
     ) {
         let l = word.len() + 1;
         loop {
-            let node = kwg[p];
+            let node = kwg.node_in_run(p);
             let t = node.tile();
             word.push(t);
             if node.accepts() {
@@ -142,7 +142,7 @@ impl WordProbability {
     #[inline(always)]
     pub fn get_max_probs_by_len<N: kwg::Node>(&mut self, kwg: &kwg::Kwg<N>, v: &mut Vec<u64>) {
         v.clear();
-        self.get_max_probs_by_len_iter(kwg, &mut Vec::new(), v, kwg[0].arc_index());
+        self.get_max_probs_by_len_iter(kwg, &mut Vec::new(), v, kwg.node_in_run(0).arc_index());
     }
 
     #[inline(always)]

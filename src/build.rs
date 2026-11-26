@@ -1925,7 +1925,9 @@ mod tests {
 
         let present = |kwg: &kwg::Kwg<kwg::Node24>, w: &[u8]| {
             let counts = kwg.count_dawg_words_alloc().unwrap();
-            kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
+            kwg.get_word_index(&counts, kwg.node_in_run(0).arc_index(), w)
+                .unwrap()
+                != !0
         };
 
         let classic_kwg =
@@ -1954,7 +1956,7 @@ mod tests {
         }
         let mut i = p;
         loop {
-            let node = kwg[i];
+            let node = kwg.node_in_run(i);
             word.push(node.tile());
             if node.accepts() {
                 out.push(word[..].into());
@@ -1978,7 +1980,7 @@ mod tests {
     ) {
         let mut i = p;
         loop {
-            let node = kwg[i];
+            let node = kwg.node_in_run(i);
             if node.tile() == 0 {
                 let mut suffixes = Vec::new();
                 collect_dawg_words(kwg, node.arc_index(), &mut Vec::new(), &mut suffixes);
@@ -2019,7 +2021,7 @@ mod tests {
         let mut i = p;
         loop {
             seen[i as usize] = true;
-            let node = kwg[i];
+            let node = kwg.node_in_run(i);
             out.push(node.tile());
             if node.arc_index() != 0 {
                 collect_dawg_tiles(kwg, node.arc_index(), seen, out);
@@ -2061,13 +2063,23 @@ mod tests {
         expected.dedup();
 
         let mut got = Vec::new();
-        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        collect_dawg_words(
+            &kwg,
+            kwg.node_in_run(0).arc_index(),
+            &mut Vec::new(),
+            &mut got,
+        );
         got.sort_unstable();
         assert_eq!(got, expected);
 
         let mut got_gaddag = Vec::new();
-        if kwg[1].arc_index() != 0 {
-            collect_gaddag_words(&kwg, kwg[1].arc_index(), &mut Vec::new(), &mut got_gaddag);
+        if kwg.node_in_run(1).arc_index() != 0 {
+            collect_gaddag_words(
+                &kwg,
+                kwg.node_in_run(1).arc_index(),
+                &mut Vec::new(),
+                &mut got_gaddag,
+            );
         }
         got_gaddag.sort_unstable();
         got_gaddag.dedup();
@@ -2113,6 +2125,17 @@ mod tests {
     #[test]
     #[inline]
     fn empty_graph_constants_are_what_the_builder_writes() {
+        let graph = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES).unwrap();
+        assert!(graph.get_word_index(&[0, 0], -1, &[1]).is_err());
+        assert!(
+            graph
+                .get_word_index_of(&[0, 0], 2, &mut [1].into_iter())
+                .is_err()
+        );
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES).unwrap();
+        let tally = vec![0; usize::from(u8::MAX) + 1];
+        assert!(kwg.accepts_alpha(&tally).is_err());
+        assert!(kwg.compute_alpha_cross_set(&tally).is_err());
         assert_eq!(
             &build(
                 BuildContent::Gaddawg,
@@ -2202,7 +2225,12 @@ mod tests {
     fn words_in_graph<N: kwg::Node>(bytes: &[u8]) -> Vec<bites::Bites> {
         let kwg = kwg::Kwg::<N>::from_bytes_alloc(bytes).unwrap();
         let mut got = Vec::new();
-        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        collect_dawg_words(
+            &kwg,
+            kwg.node_in_run(0).arc_index(),
+            &mut Vec::new(),
+            &mut got,
+        );
         got.sort_unstable();
         got
     }
@@ -2344,14 +2372,14 @@ mod tests {
         let mut sorted_tiles = Vec::new();
         collect_dawg_tiles(
             &sorted,
-            sorted[0].arc_index(),
+            sorted.node_in_run(0).arc_index(),
             &mut vec![false; sorted.0.len()],
             &mut sorted_tiles,
         );
         let mut reordered_tiles = Vec::new();
         collect_dawg_tiles(
             &reordered,
-            reordered[0].arc_index(),
+            reordered.node_in_run(0).arc_index(),
             &mut vec![false; reordered.0.len()],
             &mut reordered_tiles,
         );
@@ -2359,8 +2387,9 @@ mod tests {
 
         let mut num_descents = 0;
         for i in 1..reordered.0.len() - 1 {
-            if !reordered[i as i32].is_end()
-                && reordered[i as i32].tile() > reordered[i as i32 + 1].tile()
+            if !reordered.node_in_run(i as i32).is_end()
+                && reordered.node_in_run(i as i32).tile()
+                    > reordered.node_in_run(i as i32 + 1).tile()
             {
                 num_descents += 1;
             }
@@ -2369,8 +2398,10 @@ mod tests {
 
         let mut num_moved_turnarounds = 0;
         for i in 2..reordered.0.len() {
-            num_moved_turnarounds +=
-                usize::from(reordered[i as i32].tile() == 0 && !reordered[i as i32 - 1].is_end());
+            num_moved_turnarounds += usize::from(
+                reordered.node_in_run(i as i32).tile() == 0
+                    && !reordered.node_in_run(i as i32 - 1).is_end(),
+            );
         }
         assert!(
             num_moved_turnarounds > 0,
@@ -2394,7 +2425,12 @@ mod tests {
         .unwrap();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
         let mut got = Vec::new();
-        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        collect_dawg_words(
+            &kwg,
+            kwg.node_in_run(0).arc_index(),
+            &mut Vec::new(),
+            &mut got,
+        );
         got.sort_unstable();
         let mut expected = machine_words.clone();
         expected.sort_unstable();

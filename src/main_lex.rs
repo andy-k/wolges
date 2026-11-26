@@ -14,7 +14,7 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) -> error::R
     fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) -> error::Returns<()> {
         let l = env.s.len();
         loop {
-            let t = env.g[p].tile();
+            let t = env.g.node(p)?.tile();
             env.s.push_str(if t == 0 {
                 env.a
                     .of_rack(0)
@@ -26,14 +26,14 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) -> error::R
             } else {
                 return Err("the word graph has a blank".into());
             });
-            if env.g[p].accepts() {
+            if env.g.node(p)?.accepts() {
                 writeln!(std::io::stdout(), "{}", env.s)?;
             }
-            if env.g[p].arc_index() != 0 {
-                iter(env, env.g[p].arc_index())?;
+            if env.g.node(p)?.arc_index() != 0 {
+                iter(env, env.g.node(p)?.arc_index())?;
             }
             env.s.truncate(l);
-            if env.g[p].is_end() {
+            if env.g.node(p)?.is_end() {
                 break;
             }
             p += 1;
@@ -46,7 +46,7 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) -> error::R
             g,
             s: &mut String::new(),
         },
-        g[0].arc_index(),
+        g.node(0)?.arc_index(),
     )
 }
 
@@ -159,7 +159,7 @@ impl EmbeddedWordsFinder {
         self.ubuf[idx] = true;
         self.wbuf.push(tile);
         multiplier *= (params.get_multiplier_at)(idx);
-        let node = params.kwg[p];
+        let node = params.kwg.0[p.cast_unsigned() as usize];
         if node.accepts() {
             (params.record_finding)(&self.wbuf, multiplier);
         }
@@ -182,7 +182,7 @@ impl EmbeddedWordsFinder {
             p = params.kwg.seek(p, u_tile);
             if p > 0 {
                 self.wbuf.push(u_tile);
-                let node = params.kwg[p];
+                let node = params.kwg.0[p.cast_unsigned() as usize];
                 if node.accepts() {
                     (params.record_finding)(&self.wbuf, multiplier);
                 }
@@ -477,7 +477,7 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
     writeln!(std::io::stdout(), "took {} ms", t0.elapsed().as_millis())?;
     writeln!(std::io::stdout(), "{:?}", &word_counts[0..100])?;
     let mut out_vec = Vec::new();
-    let dawg_root = kwg[0].arc_index();
+    let dawg_root = kwg.node(0)?.arc_index();
     // the indexes right-aligned, as wide as the last
     let width = format!("{}", word_counts[dawg_root as usize].saturating_sub(1)).len();
     for i in 0..word_counts[dawg_root as usize] {
@@ -485,13 +485,13 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
         kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
             out_vec.push(v);
         })?;
-        let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
+        let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec)?;
         writeln!(std::io::stdout(), "{i:width$} {j:width$} {out_vec:?}")?;
         assert_eq!(i, j);
     }
-    assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);
-    assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[]), !0);
-    assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[1, 3]), !0);
+    assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[5, 3, 1])?, !0);
+    assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[])?, !0);
+    assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[1, 3])?, !0);
 
     Ok(())
 }
