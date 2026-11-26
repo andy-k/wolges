@@ -7,7 +7,7 @@ use super::{
     anagrams, bites, display, equity, error, fash, game_config, game_state, infer, klv, kwg,
     matrix, movegen, play_scorer, zone,
 };
-use std::io::Write;
+use std::{io::Write, num::NonZeroU32};
 
 // how many nodes the search visits between looks at the clock and the memory,
 // for their limits, at most
@@ -2760,6 +2760,17 @@ pub struct KeptSolver<L: kwg::Node, G: movegen::LaneBits, const JUMPS: bool, con
     made_with: [usize; 3],
 }
 
+pub const DEFAULT_ASPIRATION_WINDOW_POINTS: NonZeroU32 = NonZeroU32::new(32).unwrap();
+
+#[inline(always)]
+fn subtract_window_bound(left: equity::Equity, right: equity::Equity) -> equity::Equity {
+    if left.is_finite() && right.is_finite() {
+        equity::Equity::new(left.raw().saturating_sub(right.raw()))
+    } else {
+        left - right
+    }
+}
+
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
@@ -4058,6 +4069,7 @@ impl<
         limits: &Limits,
         finished: Option<(i8, equity::Equity)>,
         resumable: bool,
+        aspiration_window_points: NonZeroU32,
     ) -> error::Returns<Solved> {
         let limited = limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         self.work_buffer.resumable = resumable && limited;
@@ -4067,6 +4079,7 @@ impl<
             limits,
             finished,
             equity::Equity::INFINITY,
+            aspiration_window_points,
         );
         self.work_buffer.resumable = false;
         solved
@@ -4083,6 +4096,7 @@ impl<
         limits: &Limits,
         finished: Option<(i8, equity::Equity)>,
         beta: equity::Equity,
+        aspiration_window_points: NonZeroU32,
     ) -> error::Returns<Solved> {
         let mut last_valuation = None;
         let longest = self.longest_line(player_idx);
@@ -4139,7 +4153,12 @@ impl<
             } else if let Some(last_valuation) = last_valuation
                 && max_depth > 1
             {
-                self.aspiration_search(player_idx, max_depth, last_valuation)
+                self.aspiration_search(
+                    player_idx,
+                    max_depth,
+                    last_valuation,
+                    aspiration_window_points,
+                )
             } else {
                 self.root_search(
                     player_idx,
@@ -4298,10 +4317,12 @@ impl<
         player_idx: u8,
         max_depth: i8,
         last_valuation: equity::Equity,
+        aspiration_window_points: NonZeroU32,
     ) -> error::Returns<Searched> {
-        const ASPIRATION_WINDOW: equity::Equity = equity::Equity::new(32 * super::equity::SCALE);
-        let lo = last_valuation - ASPIRATION_WINDOW;
-        let hi = last_valuation + ASPIRATION_WINDOW;
+        let width = i64::from(aspiration_window_points.get()) * i64::from(equity::SCALE);
+        let center = i64::from(last_valuation.raw());
+        let lo = equity::Equity::new(i32::try_from(center - width).unwrap_or(i32::MIN));
+        let hi = equity::Equity::new(i32::try_from(center + width).unwrap_or(i32::MAX));
         // a stopped search with the full window goes on as that, the narrow one
         // having been searched
         let full = (self.work_buffer.stopped).is_some_and(|(_, mover, depth, alpha, beta)| {
@@ -4355,7 +4376,14 @@ impl<
     #[inline(always)]
     pub fn evaluate(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock(limits);
-        self.run_id_loop(player_idx, true, limits, None, false)
+        self.run_id_loop(
+            player_idx,
+            true,
+            limits,
+            None,
+            false,
+            DEFAULT_ASPIRATION_WINDOW_POINTS,
+        )
     }
 
     pub fn evaluate_on_threads(
@@ -4380,7 +4408,23 @@ impl<
     #[inline(always)]
     pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
         self.start_clock(limits);
-        self.run_id_loop(player_idx, false, limits, None, true)
+        self.run_id_loop(
+            player_idx,
+            false,
+            limits,
+            None,
+            true,
+            DEFAULT_ASPIRATION_WINDOW_POINTS,
+        )
+    }
+
+    pub fn solve_with_aspiration_window_points(
+        &mut self,
+        player_idx: u8,
+        width: NonZeroU32,
+    ) -> error::Returns<Solved> {
+        self.start_clock(&Limits::NONE);
+        self.run_id_loop(player_idx, false, &Limits::NONE, None, false, width)
     }
 
     pub fn solve_within_on_threads(
@@ -4425,7 +4469,14 @@ impl<
         finished: (i8, equity::Equity),
     ) -> error::Returns<Solved> {
         self.start_clock(limits);
-        self.run_id_loop(player_idx, false, limits, Some(finished), true)
+        self.run_id_loop(
+            player_idx,
+            false,
+            limits,
+            Some(finished),
+            true,
+            DEFAULT_ASPIRATION_WINDOW_POINTS,
+        )
     }
 
     // the move for player_idx to play, lead being their score less the other's
@@ -4463,6 +4514,7 @@ impl<
             &share(if winner.is_some() { 9 } else { 10 }, 10),
             None,
             false,
+            DEFAULT_ASPIRATION_WINDOW_POINTS,
         )?;
         let mut line = Vec::new();
         self.collect_pv(player_idx, &mut line)?;
@@ -5039,7 +5091,8 @@ impl<
                     && depth >= 2
                     && self.work_buffer.racks[player_idx as usize].len() == 1
                 {
-                    match self.one_tile_bound(ply, player_idx, alpha - score) {
+                    match self.one_tile_bound(ply, player_idx, subtract_window_bound(alpha, score))
+                    {
                         Ok(bound) => score + bound,
                         Err(error) => {
                             self.unplace(player_idx, &play);
@@ -5060,7 +5113,10 @@ impl<
                 // at alpha, which only says whether it beats alpha; one that
                 // does without reaching beta is searched again with the whole
                 // window (child_returned)
-                let (child_alpha, child_beta) = (score - beta, score - alpha);
+                let (child_alpha, child_beta) = (
+                    subtract_window_bound(score, beta),
+                    subtract_window_bound(score, alpha),
+                );
                 let scout = i > 0 && child_alpha < child_beta - LEAST_STEP;
                 if skip_outs {
                     self.enter_outs(ply);
@@ -5185,7 +5241,7 @@ impl<
             own.generate(0, player_idx, false)?;
             for (i, play, score) in moves.iter().skip(lane).step_by(threads) {
                 own.place(player_idx, play);
-                let child_beta = *score - alpha;
+                let child_beta = subtract_window_bound(*score, alpha);
                 let searched = own.negamax_eval(
                     1,
                     player_idx ^ 1,
@@ -5397,8 +5453,8 @@ impl<
                     ply: ply + 1,
                     player_idx: player_idx ^ 1,
                     depth: depth - 1,
-                    alpha: *score - beta,
-                    beta: *score - alpha,
+                    alpha: subtract_window_bound(*score, beta),
+                    beta: subtract_window_bound(*score, alpha),
                     scoreless: Scoreless::Counted {
                         passes: 0,
                         zeros: 0,
@@ -5813,6 +5869,7 @@ impl<
             },
             None,
             beta,
+            DEFAULT_ASPIRATION_WINDOW_POINTS,
         );
         let work_buffer = &mut self.work_buffer;
         limits.dur_movegen.set(work_buffer.dur_movegen);
@@ -12906,6 +12963,46 @@ mod tests {
         (all_positions().into_iter())
             .filter(|(name, _)| names.contains(&&name[..]))
             .collect()
+    }
+
+    #[test]
+    fn aspiration_width_preserves_exact_values() {
+        use std::num::NonZeroU32;
+
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let fresh = |pos: &Position| {
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+            solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+            solver
+        };
+        let finite_edge = NonZeroU32::new((i32::MAX / equity::SCALE) as u32).unwrap();
+        let default_width = super::DEFAULT_ASPIRATION_WINDOW_POINTS;
+        for (name, pos) in all_positions() {
+            for mover in 0..gc.num_players() {
+                let mut stock = fresh(&pos);
+                let want = stock.solve(mover).unwrap();
+                let mut pv = Vec::new();
+                let nodes = stock.searched();
+                stock.collect_pv(mover, &mut pv).unwrap();
+                for width in [NonZeroU32::MIN, default_width, finite_edge, NonZeroU32::MAX] {
+                    let mut solver = fresh(&pos);
+                    let got = solver
+                        .solve_with_aspiration_window_points(mover, width)
+                        .unwrap();
+                    assert!(got.exact, "{name} mover {mover} width {width}");
+                    assert_eq!(got.value, Some(want), "{name} mover {mover} width {width}");
+                    if width == default_width {
+                        let mut explicit = Vec::new();
+                        assert_eq!(solver.searched(), nodes);
+                        solver.collect_pv(mover, &mut explicit).unwrap();
+                        assert!(explicit.first().map(|(_, p)| p) == pv.first().map(|(_, p)| p));
+                    }
+                }
+            }
+        }
     }
 
     // sort a ply's whole list, as the search does past the first move
