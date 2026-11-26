@@ -2501,19 +2501,26 @@ fn to_equity(v: f32) -> equity::Equity {
 // a bound in f64 as an endgame's beta: a whole value is below it when it is
 // below the bound rounded up
 #[inline(always)]
-fn beta_equity(beta: f64) -> equity::Equity {
+fn beta_equity(beta: f64) -> error::Returns<equity::Equity> {
     if beta == f64::INFINITY {
-        equity::Equity::INFINITY
+        Ok(equity::Equity::INFINITY)
     } else if beta == f64::NEG_INFINITY {
-        equity::Equity::NEG_INFINITY
+        Ok(equity::Equity::NEG_INFINITY)
     } else {
         let beta = beta.ceil();
-        debug_assert!(
-            beta > f64::from(i32::MIN) && beta < f64::from(i32::MAX),
-            "{beta}"
-        );
-        equity::Equity::new(beta as i32)
+        if !(beta > f64::from(i32::MIN) && beta < f64::from(i32::MAX)) {
+            crate::return_error!(format!("endgame beta is out of range: {beta}"));
+        }
+        Ok(equity::Equity::new(beta as i32))
     }
+}
+
+fn checked_expected_margin(margin: f64) -> error::Returns<equity::Equity> {
+    let rounded = margin.round();
+    if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&rounded) {
+        crate::return_error!(format!("expected margin is out of range: {margin}"));
+    }
+    Ok(equity::Equity::new(rounded as i32))
 }
 
 // a solve's answer: exact, or the value of the deepest search that finished
@@ -6704,11 +6711,7 @@ impl<
                 limits.room(&mut found.wins, 1)?;
                 limits.room(&mut found.draws, 1)?;
                 let _tiles = limits.reserve(bag.iter().map(|&count| count as usize).sum())?;
-                (found.hypotheses).push((
-                    tiles_of(bag),
-                    *ways,
-                    equity::Equity::new(value.round() as i32),
-                ));
+                (found.hypotheses).push((tiles_of(bag), *ways, checked_expected_margin(value)?));
                 found.wins.push(win);
                 found.draws.push(draws);
             }
@@ -7018,7 +7021,7 @@ impl<
                     leader: PegBagMove {
                         play: state.moves[best].clone(),
                         win_pct: value.win,
-                        expected_margin: Some(equity::Equity::new(value.marg.round() as i32)),
+                        expected_margin: Some(value.expected_margin),
                         exact: value.exact,
                         cut: false,
                     },
@@ -7407,7 +7410,7 @@ impl<
                     }
                 }
                 let most = (win + (all - total) as f64) / all as f64;
-                let mean = peg_bag_value(win, marg, total, exact);
+                let mean = peg_bag_value(win, marg, total, exact)?;
                 state.valued[i] = Some(PegBagValue {
                     win: most,
                     cut: true,
@@ -7425,7 +7428,7 @@ impl<
                     marg += *ways as f64 * value;
                     total += ways;
                 }
-                let value = peg_bag_value(win, marg, total, exact);
+                let value = peg_bag_value(win, marg, total, exact)?;
                 state.pass_exact &= value.exact;
                 state.valued[i] = Some(value);
                 state.reached.push(i);
@@ -7495,7 +7498,7 @@ impl<
                 );
             }
             let (win_pct, margin) = outcomes.averages();
-            let expected_margin = equity::Equity::new(margin.round() as i32);
+            let expected_margin = checked_expected_margin(margin)?;
             let result = PegResult {
                 win_pct,
                 expected_margin,
@@ -8106,7 +8109,12 @@ fn peg_value(
             equity::Equity::new(margin.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
     }
     let (win, marg) = outcomes.averages();
-    Ok(PegValue { win, marg, exact })
+    Ok(PegValue {
+        win,
+        marg,
+        expected_margin: checked_expected_margin(marg)?,
+        exact,
+    })
 }
 
 // the best of these moves: the most wins, then the best mean margin, ties going
@@ -8143,7 +8151,7 @@ fn peg_result(
 ) -> PegResult {
     PegResult {
         win_pct: value.win,
-        expected_margin: equity::Equity::new(value.marg.round() as i32),
+        expected_margin: value.expected_margin,
         row: Some(best),
         best_move: Some(moves[best].clone()),
         moves: Vec::new(),
@@ -8253,7 +8261,7 @@ impl PegProgress {
                 PegMoveValue {
                     play: committed.moves[i].clone(),
                     win_pct: value.win,
-                    expected_margin: equity::Equity::new(value.marg.round() as i32),
+                    expected_margin: value.expected_margin,
                     row: i,
                     exact: value.exact,
                     cut: false,
@@ -8579,6 +8587,7 @@ pub struct PegResult {
 struct PegValue {
     win: f64,
     marg: f64,
+    expected_margin: equity::Equity,
     exact: bool,
 }
 
@@ -8920,8 +8929,7 @@ impl PegBagProgress {
                 PegBagMove {
                     play: state.moves[i].clone(),
                     win_pct: value.win,
-                    expected_margin: (!value.cut)
-                        .then(|| equity::Equity::new(value.marg.round() as i32)),
+                    expected_margin: (!value.cut).then_some(value.expected_margin),
                     exact: value.exact && !value.cut,
                     cut: value.cut,
                 }
@@ -9019,7 +9027,7 @@ fn value_root_move<
         // down, so a move whose share could tie the best is kept
         let most = (win + (all - total) as f64) / all as f64;
         if beat.is_some_and(|beat| won + 2 * (all - total) < beat) {
-            let mean = peg_bag_value(win, marg, total, search.exact);
+            let mean = peg_bag_value(win, marg, total, search.exact)?;
             return Ok(PegBagValue {
                 win: most,
                 cut: true,
@@ -9039,7 +9047,7 @@ fn value_root_move<
         win += split.2 as f64 * chance;
         marg += split.2 as f64 * value;
     }
-    Ok(peg_bag_value(win, marg, total, search.exact))
+    peg_bag_value(win, marg, total, search.exact)
 }
 
 // a move's value with tiles in the bag in one split, and its chance to win
@@ -9097,11 +9105,12 @@ fn value_root_draws<
 ) -> error::Returns<(f64, f64)> {
     let limits = search.limits;
     let mut refused = false;
+    let mut conversion = Ok(());
     let value = search.move_value_each(pos, play, |drawn, ways, value| {
         let Some(draws) = draws.as_deref_mut() else {
             return;
         };
-        if refused {
+        if refused || conversion.is_err() {
             return;
         }
         let tiles = drawn.iter().map(|&count| count as usize).sum::<usize>();
@@ -9110,16 +9119,20 @@ fn value_root_draws<
             refused = true;
             return;
         };
-        draws.push(PegBagDraw {
-            tiles: tiles_of(drawn),
-            ways,
-            margin: equity::Equity::new((value + score_diff).round() as i32),
-            win: 0.0,
-        })
+        match checked_expected_margin(value + score_diff) {
+            Ok(margin) => draws.push(PegBagDraw {
+                tiles: tiles_of(drawn),
+                ways,
+                margin,
+                win: 0.0,
+            }),
+            Err(error) => conversion = Err(error),
+        }
     })? + score_diff;
     if refused {
         return Err(limits.stop_refused());
     }
+    conversion?;
     let mut at_draw = 0;
     let win = search.move_win_each(pos, play, -score_diff, |_, _, win| {
         if let Some(draws) = draws.as_deref_mut() {
@@ -9152,15 +9165,17 @@ fn halves_down(share: f64, splits: &[(Vec<u8>, Vec<u8>, u64)]) -> u64 {
 
 // a move's value, summed over its splits weighed by the deals giving them, and
 // whether every endgame valuing it was exact
-fn peg_bag_value(win: f64, marg: f64, total: u64, exact: bool) -> PegBagValue {
+fn peg_bag_value(win: f64, marg: f64, total: u64, exact: bool) -> error::Returns<PegBagValue> {
     // a part given no split (PegBagProgress::part) has no deals to weigh
     let total = total.max(1);
-    PegBagValue {
+    let marg = marg / total as f64;
+    Ok(PegBagValue {
         win: win / total as f64,
-        marg: marg / total as f64,
+        marg,
+        expected_margin: checked_expected_margin(marg)?,
         exact,
         cut: false,
-    }
+    })
 }
 
 // what a pass values each move against: each split of the unseen tiles (the
@@ -9377,6 +9392,7 @@ impl PegBagState {
 struct PegBagValue {
     win: f64,
     marg: f64,
+    expected_margin: equity::Equity,
     exact: bool,
     cut: bool,
 }
@@ -9496,9 +9512,7 @@ fn peg_bag_result(
     let value = best.map(|best| valued[best].as_ref().unwrap());
     PegBagResult {
         win_pct: value.map_or(0.0, |value| value.win),
-        expected_margin: value.map_or(equity::Equity::ZERO, |value| {
-            equity::Equity::new(value.marg.round() as i32)
-        }),
+        expected_margin: value.map_or(equity::Equity::ZERO, |value| value.expected_margin),
         best_move: best.map(|best| moves[best].clone()),
         moves: Vec::new(),
         exact,
@@ -11482,7 +11496,7 @@ impl<
         let mut exact = true;
         let value = f64::from(
             (self.sub)
-                .solve_in_bag_below(pos.mover, beta_equity(beta), self.limits, &mut exact)?
+                .solve_in_bag_below(pos.mover, beta_equity(beta)?, self.limits, &mut exact)?
                 .raw(),
         );
         self.exact &= exact;
