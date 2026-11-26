@@ -553,7 +553,6 @@ impl<
     // its chance; none draws them plainly
     #[inline(always)]
     pub fn prepare_iteration(&mut self, at: Option<f64>) {
-        // the opponent's rack is drawn anew, so its replies are found anew
         self.lane_bests.clear();
         self.lane_rows_taken = 0;
         self.lane_cols_taken = 0;
@@ -633,7 +632,6 @@ impl<
         let others = bag_len - blanks;
         let lo = draws.saturating_sub(others);
         let hi = blanks.min(draws);
-        // each count's chance relative to lo's, by the ratio of neighbors
         let next = |k: usize, weight: f64| {
             weight * ((blanks - k) * (draws - k)) as f64
                 / ((k + 1) * (others + k + 1 - draws)) as f64

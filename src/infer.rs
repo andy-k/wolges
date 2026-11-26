@@ -284,8 +284,7 @@ pub fn count_tallies_of_size(avail: &[u8], m: usize) -> usize {
 // the same, counted in ways, whose memory is kept
 #[inline]
 pub fn count_tallies_of_size_in(avail: &[u8], m: usize, ways: &mut Vec<usize>) -> usize {
-    // ways[k] is the tallies of k tiles from the letters read so far; a letter
-    // adds its tallies with c of it, c from 1, to those without
+    // ways[k] is the tallies of k tiles from the letters read so far
     ways.clear();
     ways.resize(m + 1, 0);
     ways[0] = 1;
@@ -352,10 +351,6 @@ impl WeighScratch {
         Self::default()
     }
 
-    // the tiles left to draw after the move's, and how many to draw: from the
-    // pool less a placed move's tiles, or from the whole pool for an exchange;
-    // then from each letter on, how many tiles are left, and the tally and the
-    // rack zeroed
     #[inline]
     fn begin(&mut self, pool: &[u8], tiles: &MoveTiles<'_>, rack_size: usize) -> usize {
         let num_letters = pool.len();
@@ -410,7 +405,6 @@ pub fn weigh_racks(
     scratch: &mut WeighScratch,
     f: &mut impl FnMut(u32, f64, i32, u32),
 ) {
-    // a wasm build has no threads
     let threads = if cfg!(target_family = "wasm") {
         1
     } else {
@@ -447,7 +441,6 @@ pub fn weigh_racks(
         if passed {
             best = best.max(is.leave[rank as usize]);
         }
-        // exchanging n tiles scores 0 and keeps the best leave of the rest
         let (value, kept) = match tiles {
             MoveTiles::Placed(_) => {
                 let kept = lat.rank(drawn);
@@ -474,10 +467,6 @@ pub fn weigh_racks(
         });
         return;
     }
-    // the racks in chunks by the counts of their first k letters, k the least
-    // that gives chunks enough (or every letter); each thread takes the next
-    // chunk and weighs its racks in order, and the chunks are handed on in
-    // theirs, which is the one thread's
     let mut k = 1;
     let mut prefixes: Vec<(Vec<u8>, usize)> = Vec::new();
     loop {
@@ -619,7 +608,6 @@ pub fn weigh_racks_by_generation<
         if passed {
             best = best.max(leave[rank as usize]);
         }
-        // exchanging n tiles scores 0 and keeps the best leave of the rest
         let (value, kept) = match tiles {
             MoveTiles::Placed(_) => {
                 let kept = lat.rank(drawn);
@@ -679,7 +667,6 @@ pub fn infer_sheet_for<
         scratch.1,
         sheet,
     );
-    // the empty rack, the first of the racks of no tiles
     sheet[lat.size_start(0)] = i32::MIN / 4;
 }
 
@@ -773,11 +760,7 @@ pub fn weigh_by_fuzz(racks: &[(u32, f64, i32)], fuzz: f64) -> Vec<(f64, f64, u32
 // each leave the racks (the leave each kept, its gap, and the log of its chance
 // to be dealt) kept, in the lattice's order, with the sum of their weights as
 // weigh_by_fuzz gives them, added in the order the racks come; a rack of weight
-// 0 (fuzz 0 keeps only the racks closest to their best) adds nothing. The racks'
-// own list holds the work: each weighed in place with its place among them,
-// sorted by leave and then by that place (so a leave's racks keep their order,
-// with no buffer a stable sort would make), and each leave's run summed into
-// its first: (leave, place, weight)
+// 0 (fuzz 0 keeps only the racks closest to their best) adds nothing
 #[inline]
 fn weights_by_leave(racks: &[(u32, i32, f64)], fuzz: f64, weighed: &mut Vec<(u32, usize, f64)>) {
     let g0 = racks
@@ -1408,11 +1391,7 @@ fn carry_chunk(
     total
 }
 
-// the parts in rank order, those of one rank in the order they came: a stable
-// sort by the rank less the first of the keep's size, in two passes, each over
-// half the bits the ranks from there to the full racks' take, the low half
-// first: each pass counts its digit's values, then deals the parts out in
-// order
+// the parts in rank order, those of one rank in the order they came
 #[inline]
 fn sort_by_rank(
     lat: &census::MultisetLattice,
@@ -1499,7 +1478,6 @@ fn carry_exchange(
     scratch: &mut CarryScratch,
     carried: &mut Carried,
 ) {
-    // a wasm build has no threads
     let threads = if cfg!(target_family = "wasm") {
         1
     } else {
@@ -1989,9 +1967,6 @@ fn kept_leaves_packed_impl<
         }
         None => racks.push((kept, gap, ln_prior)),
     };
-    // where the watcher carried what it knew from the mover's last move, each
-    // rack's chance is taken from that in place of its chance as any rack the
-    // unseen tiles could make, and a rack that could not be held is dropped
     let carried_from = match held {
         Held::Kept(from, put_back) if hold((from, put_back), pool, held_scratch) => Some(from),
         _ => None,
@@ -2005,8 +1980,6 @@ fn kept_leaves_packed_impl<
             add(rank, ln_prior, gap, kept);
         }
     };
-    // the racks the move could have come from: few, when it leaves few tiles
-    // unseen, and then each is generated on the board in place of the sheet
     let num_racks = match exchanged {
         Some(_) => count_tallies_of_size_in(pool, rack_size, &mut weigh.ways),
         None => {
@@ -2172,7 +2145,7 @@ impl ReplySums {
     }
 }
 
-// C(n, k), exactly: each step's product is the next binomial times its divisor
+// C(n, k), exactly
 #[inline(always)]
 fn binom(n: usize, k: usize) -> u64 {
     if k > n {
@@ -2201,7 +2174,6 @@ fn reply_sums(
     scratch: &mut WeighScratch,
     ways: &mut Vec<u64>,
 ) -> error::Returns<ReplySums> {
-    // a wasm build has no threads
     let threads = if cfg!(target_family = "wasm") {
         1
     } else {
@@ -2414,7 +2386,6 @@ pub fn reply_to<
         sheet,
     );
     let (lat, sheet, leave, pool) = (&*lat, &sheet[..], &leave[..], &pool[..]);
-    // the reply over the full racks holding this tally, the rest drawn
     let mut reply_holding = |tally: &[u8]| -> error::Returns<Reply> {
         let n = tally.iter().map(|&c| c as usize).sum::<usize>();
         let sums = reply_sums(

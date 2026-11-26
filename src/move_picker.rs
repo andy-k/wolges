@@ -113,7 +113,6 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         movegen::PassPolicy::OnlyWhenForced
     };
     std::mem::swap(&mut move_generator.plays, scratch);
-    // taking the dynamic leaves the field's generation above found
     filtered_movegen.gen_nonplacing_moves_with(
         move_generator,
         &movegen::GenMovesParams {
@@ -377,9 +376,7 @@ pub fn behind_paired(
 
 // compare each candidate with the leader (the highest mean) on the iterations
 // both were rolled out: a candidate retires when its objective minus the
-// leader's is below 0 even at the top of its interval. Every candidate shares
-// each iteration's draws, so the difference varies much less than either
-// objective.
+// leader's is below 0 even at the top of its interval
 #[inline(always)]
 fn retire_paired(candidates: &mut Vec<Candidate>, retired: &mut Vec<Candidate>, z: f64) {
     let mut lead = candidates
@@ -388,9 +385,6 @@ fn retire_paired(candidates: &mut Vec<Candidate>, retired: &mut Vec<Candidate>, 
         .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
         .unwrap()
         .0;
-    // each candidate is judged where it stands before any swap reaches it, and
-    // the leader's place is followed through the swaps, so no list of verdicts
-    // is made
     let mut write = 0;
     for read in 0..candidates.len() {
         let (candidate, leader) = (&candidates[read], &candidates[lead]);
@@ -937,7 +931,6 @@ impl<
             let field = in_play.min((3 + 2 * looks) as f64);
             let cost = PRUNE_CADENCE as f64 * field;
             if field == in_play {
-                // the cap no longer binds, so every later look costs the same
                 looks = looks.saturating_add((left.max(0.0) / cost) as u64);
                 break;
             }
@@ -1720,7 +1713,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             return None;
         }
         self.values_and_hopes_in(&mut scratch.temps);
-        // taken out of the scratch while it is lent on, and put back
         let mut values = std::mem::take(&mut scratch.temps.values);
         let hopes = std::mem::take(&mut scratch.temps.hopes);
         self.raise_openers(scratch, &mut values, &hopes);
@@ -1968,7 +1960,6 @@ impl Deft {
         self.window
     }
 
-    // the scratch, for this game
     #[inline]
     fn scratch(&mut self, game_config: &game_config::GameConfig) -> &mut Scratch {
         let dim = game_config.board_layout().dim();
@@ -2234,11 +2225,7 @@ impl<
     }
 
     // split each block into contiguous ranges, one per thread, and put the rows
-    // back together in iteration order. The threads are started at the sim's
-    // first run on threads and kept for its life; each owns its share of the
-    // tables and works on its own simmer, prepared as the sim's for each run
-    // (restored to that for each iteration), and its own rows, so that a run
-    // after the first starts nothing and grows only what it outgrows
+    // back together in iteration order
     #[cfg(not(target_family = "wasm"))]
     #[inline]
     fn run_iterations_parallel(
@@ -2261,8 +2248,6 @@ impl<
             simmer.prepare_as(self.game_config, &self.simmer);
             pristine.clone_from(simmer.prepared_state());
         }
-        // the late graph, lent to the threads while the blocks' rows are taken
-        // in, then taken back
         let plays = std::sync::Arc::clone(&workers[0].3);
         let late = std::sync::Arc::clone(&workers[0].4);
         std::mem::swap(
@@ -2362,7 +2347,6 @@ impl<
         let arm_tables = std::sync::Arc::clone(self.arm_tables);
         let klv = std::sync::Arc::clone(self.klv);
         let win_pct_table = self.win_pct_table.cloned();
-        // shared with the threads started before, if any
         let (plays, late) = match shared {
             Some((.., plays, late)) => (std::sync::Arc::clone(plays), std::sync::Arc::clone(late)),
             None => Default::default(),
@@ -2568,7 +2552,6 @@ impl<
                         }
                     },
                 );
-                // made in the nodes of the graph before, if any
                 let (mut kwg, mut arm_tables) = match self.late_graph.take() {
                     Some(late) => late,
                     None => (
@@ -2596,8 +2579,6 @@ impl<
                     break 'late None;
                 };
                 kwg.refill_from_bytes(bytes)?;
-                // tables of the arm the given ones are of, in the memory of those
-                // before
                 match &**self.arm_tables {
                     anagrams::ArmTables::Anagrams(_) => {
                         arm_tables.rebuild(&kwg, self.game_config, false, arm_scratch)?
@@ -2610,7 +2591,6 @@ impl<
                 Some((kwg, arm_tables))
             }
         } else {
-            // its nodes kept for the next
             if let Some((kwg, arm_tables)) = self.late_graph.take() {
                 *spare = kwg;
                 *spare_tables = arm_tables;
@@ -2849,8 +2829,6 @@ mod tests {
     use crate::{alphabet, bites, build, display};
 
     impl<N: kwg::Node, L: kwg::Node> OutInTwo<'_, N, L> {
-        // values_and_hopes_in's values and hopes, worked out in temps of their
-        // own
         fn values_and_hopes(&self) -> (Vec<i64>, Vec<i64>) {
             let mut temps = Temps::default();
             self.values_and_hopes_in(&mut temps);
