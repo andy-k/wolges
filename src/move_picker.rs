@@ -964,10 +964,10 @@ impl<
     // decision with slow rollouts prunes harder at its next look, and a fast
     // one runs on for its time.
     #[inline]
-    pub fn plan_rollouts(&mut self, rollouts_left: f64) {
+    pub fn plan_rollouts(&mut self, rollouts_left: f64) -> error::Returns<()> {
         let in_play = self.candidates.len() as f64;
         if in_play < 2.0 {
-            return;
+            return Ok(());
         }
         let next_look = (self.iters_done / PRUNE_CADENCE + 1) * PRUNE_CADENCE;
         let mut left = rollouts_left.max(0.0) - (next_look - self.iters_done) as f64 * in_play;
@@ -978,7 +978,13 @@ impl<
             let field = in_play.min((3 + 2 * looks) as f64);
             let cost = PRUNE_CADENCE as f64 * field;
             if field == in_play {
-                looks = looks.saturating_add((left.max(0.0) / cost) as u64);
+                let complete_looks = left.max(0.0) / cost;
+                if !(0.0..2.0_f64.powi(u64::BITS as i32)).contains(&complete_looks) {
+                    crate::return_error!(format!(
+                        "rollout budget is out of range: {rollouts_left}"
+                    ));
+                }
+                looks = looks.saturating_add(complete_looks as u64);
                 break;
             }
             if cost > left {
@@ -988,6 +994,7 @@ impl<
             looks += 1;
         }
         self.num_sim_iters = next_look.saturating_add(PRUNE_CADENCE.saturating_mul(looks));
+        Ok(())
     }
 }
 
@@ -4048,8 +4055,9 @@ mod tests {
             }
             PRUNE_CADENCE * (1 + looks as u64)
         };
+        assert!(simmer.plan_rollouts(f64::MAX).is_err());
         for rollouts_left in (0..40 * PRUNE_CADENCE * num_plays as u64).step_by(7) {
-            simmer.plan_rollouts(rollouts_left as f64);
+            simmer.plan_rollouts(rollouts_left as f64).unwrap();
             assert_eq!(
                 simmer.num_sim_iters,
                 by_hand(rollouts_left as f64),
@@ -4064,7 +4072,7 @@ mod tests {
         let mut spent = 0.0;
         while simmer.active_stream_ids().count() >= 2 {
             assert!(simmer.iters_done < 1000, "the plan never ended it");
-            simmer.plan_rollouts(given - spent);
+            simmer.plan_rollouts(given - spent).unwrap();
             spent += simmer.active_stream_ids().count() as f64;
             simmer.resume(&move_generator, 1).unwrap();
         }

@@ -2388,7 +2388,7 @@ impl Session {
                     "sim: {iterations} iterations, {in_play} left in, {spent:.0} of {ms} ms"
                 )?;
             }
-            simmer.plan_rollouts((ms - spent) * rollouts / spent);
+            simmer.plan_rollouts((ms - spent) * rollouts / spent)?;
             let step = simmer.iters_to_next_look();
             simmer.resume(&self.move_generator, step)?;
             rollouts += (step as usize * in_play) as f64;
