@@ -1293,7 +1293,7 @@ impl MultiLeaves {
             if s_size < min_keep {
                 continue;
             }
-            let s_ridx = lat.rank(&s_tally[..num_letters]);
+            let s_ridx = lat.rank_in_lattice(&s_tally[..num_letters]);
             if s_ridx == !0 {
                 continue;
             }
@@ -2061,7 +2061,7 @@ mod tests {
                             continue;
                         }
                         let r = [kept_a + da, kept_b + db, dc];
-                        let ri = lat.rank(&r) as usize;
+                        let ri = lat.rank(&r).unwrap() as usize;
                         num += ways as f64 * f64::from(full_v[ri]);
                         den += ways as f64;
                     }
@@ -2074,7 +2074,7 @@ mod tests {
             );
         }
 
-        let empty_ridx = lat.rank(&[0u8, 0, 0]) as usize;
+        let empty_ridx = lat.rank(&[0u8, 0, 0]).unwrap() as usize;
         assert_eq!(
             census::dynamic_leave_value(&lat, &add, &full_v, &[0u8, 0, 0], empty_ridx, 3),
             census::UNPLAYABLE,
@@ -2097,7 +2097,7 @@ mod tests {
             }
             let mut r = [1u8, 0, 0];
             r[t] += 1;
-            num += f64::from(avail) * f64::from(full_v[lat.rank(&r) as usize]);
+            num += f64::from(avail) * f64::from(full_v[lat.rank(&r).unwrap() as usize]);
             den += f64::from(avail);
         }
         assert_eq!(

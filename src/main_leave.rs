@@ -3796,7 +3796,7 @@ fn census_klv2_bytes(
             for t in low..self.tally.len() {
                 self.tally[t] += 1;
                 self.word.push(t as u8);
-                let idx = self.lat.rank(&self.tally) as usize;
+                let idx = self.lat.rank(&self.tally)? as usize;
                 if (self.is_valued)(idx) {
                     let pts = ((self.value_mp)(idx) - self.baseline_mp) / f64::from(equity::SCALE);
                     self.words.push(self.word[..].into());
@@ -4038,16 +4038,20 @@ fn sum_census_board(
 
 // the fewest boards that any full rack the tiles can deal is valued on
 #[inline]
-fn least_full_rack_boards(lat: &census::MultisetLattice, cnt: &[u64], freqs: &[u8]) -> u64 {
+fn least_full_rack_boards(
+    lat: &census::MultisetLattice,
+    cnt: &[u64],
+    freqs: &[u8],
+) -> error::Returns<u64> {
     let mut tally = vec![0u8; lat.num_letters()];
     let mut least = None::<u64>;
     for (idx, &c) in cnt.iter().enumerate().skip(lat.full_rack_start()) {
-        lat.unrank_into(idx, &mut tally);
+        lat.unrank_into(idx, &mut tally)?;
         if tally.iter().zip(freqs).all(|(&have, &freq)| have <= freq) {
             least = Some(least.map_or(c, |l| l.min(c)));
         }
     }
-    least.unwrap_or(0)
+    Ok(least.unwrap_or(0))
 }
 
 // how many boards the last generation adds when its least-covered full rack has
@@ -4208,7 +4212,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
-    let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
+    let empty_rank = lat.rank(&vec![0u8; num_letters])? as usize;
     writeln!(
         boxed_stdout_or_stderr(),
         "census: lattice {} leaves (letters {num_letters}, rack_size {rack_size}), \
@@ -4275,7 +4279,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             for &tile in leave.iter() {
                 tally_buf[tile as usize] += 1;
             }
-            let idx = lat.rank(&tally_buf) as usize;
+            let idx = lat.rank(&tally_buf)? as usize;
             leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf).raw();
             ever[idx] = true;
         }
@@ -4436,7 +4440,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                        log_first: bool,
                                        cache_slot: Option<&SheetCacheSlot>,
                                        reuse: bool,
-                                       cur_boards: u64| {
+                                       cur_boards: u64| -> error::Returns<()> {
 
                     if reuse {
                         let g = cache_slot.unwrap().lock().unwrap();
@@ -4478,7 +4482,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         &mut movegen_rack,
                         &mut blank_deltas,
                         &mut sheet,
-                    );
+                    )?;
                     if log_first {
                         writeln!(boxed_stdout_or_stderr(),
                             "  step1 sheet: {} tiles in pool -> {} candidate plays (unstored) in {:?}",
@@ -4521,7 +4525,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         },
                         &mut maxsheet,
                         mode(),
-                    );
+                    )?;
                     if !narrow {
                         wide_board.resize(lo, 0);
                         wide_board.fill(0);
@@ -4536,7 +4540,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             },
                             &mut maxsheet,
                             mode(),
-                        ));
+                        )?);
                     }
                     // each multiset's mean on this board, in the buffer
                     let contrib = &mut maxsheet;
@@ -4546,9 +4550,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         *slot = if den == 0 {
                             census::UNPLAYABLE.raw()
                         } else if narrow {
-                            census::ApportionSum::mean(num_board[idx], den)
+                            census::ApportionSum::mean(num_board[idx], den)?
                         } else {
-                            census::ApportionSum::mean(wide_board[idx], den)
+                            census::ApportionSum::mean(wide_board[idx], den)?
                         };
                     }
                     for (slot, &ways) in full.iter_mut().zip(&ways_board) {
@@ -4582,6 +4586,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             *valued,
                             globally_possible_count,).ok();
                     }
+                    Ok(())
                 };
 
 
@@ -4698,7 +4703,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                     }
                     }
-                    value_board(
+                    if let Err(e) = value_board(
                         &mut move_generator,
                         &game_state,
                         &leave,
@@ -4720,7 +4725,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         },
                         reuse_board,
                         num_boards,
-                    );
+                    ) {
+                        error = Some(e);
+                        failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break 'boards;
+                    }
                     }
                     }
 
@@ -4728,8 +4737,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         if barrier.wait().is_leader()
                             && !failed.load(std::sync::atomic::Ordering::Relaxed)
                         {
+                            let top_up = (|| -> error::Returns<()> {
                             let g = shared.lock().unwrap();
-                            let least = least_full_rack_boards(&lat, &g.1, &base_freqs);
+                            let least = least_full_rack_boards(&lat, &g.1, &base_freqs)?;
                             let boards = last_boards.load(std::sync::atomic::Ordering::Relaxed);
                             let more =
                                 census_more_boards(boards, least, min_boards, num_threads as u64);
@@ -4751,6 +4761,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             // each thread's last take went past the boards done,
                             // so the boards added start where those end
                             next_board.store(boards, std::sync::atomic::Ordering::Relaxed);
+                            Ok(())
+                            })();
+                            if let Err(e) = top_up {
+                                error = Some(e);
+                                failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                         barrier.wait();
                         if more_boards.load(std::sync::atomic::Ordering::Relaxed)
@@ -4925,7 +4941,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         if !valued {
             continue;
         }
-        lat.unrank_into(idx, &mut tally_buf);
+        lat.unrank_into(idx, &mut tally_buf)?;
         let size: usize = tally_buf.iter().map(|&c| c as usize).sum();
         let centered_points = (value_mp(idx) - baseline) / f64::from(equity::SCALE);
         let start = leaves_text.len();
@@ -4998,7 +5014,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         if accum_cnt[idx] == 0 {
                             continue;
                         }
-                        lat.unrank_into(idx, &mut tally);
+                        lat.unrank_into(idx, &mut tally)?;
                         rack.clear();
                         for (t, &c) in tally.iter().enumerate() {
                             for _ in 0..c {
@@ -7827,11 +7843,11 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
         &mut movegen_rack,
         &mut blank_deltas,
         &mut sheet,
-    );
+    )?;
     let sheet_elapsed = t0.elapsed();
     if !can_exchange {
         let empty = vec![0u8; num_letters];
-        let idx = lat.rank(&empty);
+        let idx = lat.rank(&empty)?;
         if idx != !0 {
             sheet[idx as usize] = 0;
         }
@@ -7904,7 +7920,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             &mut played,
             &mut kept,
             &mut best,
-        );
+        )?;
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
                 board_tiles: &board_tiles,
@@ -7999,10 +8015,10 @@ fn best_split(
     played: &mut [u8],
     kept: &mut [u8],
     best: &mut i32,
-) {
+) -> error::Returns<()> {
     if at == split.rack.len() {
-        let played_idx = split.lat.rank(played);
-        let kept_idx = split.lat.rank(kept);
+        let played_idx = split.lat.rank(played)?;
+        let kept_idx = split.lat.rank(kept)?;
         if played_idx != !0 && kept_idx != !0 {
             let keep_value = if kept.iter().all(|&n| n == 0) {
                 split.empty_keep
@@ -8014,15 +8030,16 @@ fn best_split(
                 *best = value;
             }
         }
-        return;
+        return Ok(());
     }
     let tile = split.rack[at] as usize;
-    best_split(split, at + 1, played, kept, best);
+    best_split(split, at + 1, played, kept, best)?;
     kept[tile] -= 1;
     played[tile] += 1;
-    best_split(split, at + 1, played, kept, best);
+    let result = best_split(split, at + 1, played, kept, best);
     played[tile] -= 1;
     kept[tile] += 1;
+    result
 }
 
 // a move written as "8H QI" (across from row 8, column H), "H8 Q.I" (down),
@@ -8248,7 +8265,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         can_exchange,
         (&mut movegen_rack, &mut blank_deltas),
         &mut sheet,
-    );
+    )?;
     let sheet_elapsed = t0.elapsed();
     let tiles = match exchanged {
         Some(n) => MoveTiles::Exchanged(n),
@@ -8313,7 +8330,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     let mut expect = vec![0.0f64; num_letters];
     let mut expect_prior = vec![0.0f64; num_letters];
     for &(w, prior, rank, _) in &weighed {
-        lat.unrank_into(rank as usize, &mut tally);
+        lat.unrank_into(rank as usize, &mut tally)?;
         for (((e, e_prior), &r), &p) in expect
             .iter_mut()
             .zip(expect_prior.iter_mut())
@@ -8334,7 +8351,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         "gap",
     )?;
     for &(w, prior, rank, gap) in weighed.iter().take(params.racks) {
-        lat.unrank_into(rank as usize, &mut tally);
+        lat.unrank_into(rank as usize, &mut tally)?;
         let mut shown = String::new();
         for (t, (&r, &p)) in tally.iter().zip(&placed).enumerate() {
             for _ in p..r {
@@ -8634,12 +8651,12 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                                 can_exchange,
                                 (&mut movegen_rack, &mut blank_deltas),
                                 &mut sheet,
-                            );
+                            )?;
                             true_tally.iter_mut().for_each(|c| *c = 0);
                             for &t in game_state.current_player().rack.iter() {
                                 true_tally[t as usize] += 1;
                             }
-                            let true_rank = is.lat.rank(&true_tally);
+                            let true_rank = is.lat.rank(&true_tally)?;
                             let kind = match exchanged {
                                 Some(_) => MoveKind::Exchanged,
                                 None if placed.iter().all(|&c| c == 0) => MoveKind::Passed,
@@ -8873,7 +8890,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
     pool: &[u8],
     ln_binom: &LnBinom,
     scratch: &mut OpennessScratch,
-) -> BoardOpenness {
+) -> error::Returns<BoardOpenness> {
     let game_config = tables.game_config;
     let lat = tables.lat;
     let num_letters = lat.num_letters();
@@ -8896,7 +8913,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
         can_exchange,
         (movegen_rack, blank_deltas),
         sheet,
-    );
+    )?;
     // a play of every tile is a full rack's own entry, above the sheet's floor
     // only if some word takes them all
     let floor = if can_exchange { 0 } else { i32::MIN / 4 };
@@ -8914,7 +8931,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
         best_equity: 0.0,
         bingo: 0.0,
     };
-    each_tally_of_size(pool, cap, 0, rack_size, cur, &mut |rack| {
+    let mut visit = |rack: &[u8]| -> error::Returns<()> {
         let chance = (rack
             .iter()
             .zip(pool)
@@ -8922,7 +8939,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
             .sum::<f64>()
             - ln_deals)
             .exp();
-        let rank = lat.rank(rack) as usize;
+        let rank = lat.rank(rack)? as usize;
         // with no play and no exchange a rack must pass: it scores nothing and
         // keeps every tile (the sheet has no entry for playing nothing)
         let or_pass = |best: i32, pass: i32| if best < i32::MIN / 8 { pass } else { best };
@@ -8937,8 +8954,16 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
                 leaves.0[rank],
             ));
         openness.bingo += chance * f64::from(u8::from(sheet[rank] > floor));
+        Ok(())
+    };
+    let mut found = Ok(());
+    each_tally_of_size(pool, cap, 0, rack_size, cur, &mut |rack| {
+        if found.is_ok() {
+            found = visit(rack);
+        }
     });
-    openness
+    found?;
+    Ok(openness)
 }
 
 // a board file's lines that hold a board: a line ends at "\n", "\r\n", or a
@@ -9026,7 +9051,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 &pool,
                                 ln_binom,
                                 &mut scratch,
-                            );
+                            )?;
                             out.push((i, openness, glance_at(game_config, board_tiles)));
                         }
                         Ok(out)
@@ -9300,7 +9325,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     &pool,
                                     ln_binom,
                                     &mut scratch,
-                                );
+                                )?;
                                 cands.push((
                                     m.equity.raw(),
                                     openness,
@@ -10122,7 +10147,7 @@ fn print_rack_keeps<L: kwg::Node>(
     full_v: &[i32],
     pool: &[u8],
     rack: &[u8],
-) -> std::io::Result<()> {
+) -> error::Returns<()> {
     let num_letters = alphabet.len() as usize;
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
@@ -10151,7 +10176,7 @@ fn print_rack_keeps<L: kwg::Node>(
                 kept.push_str(alphabet.of_rack(tile).unwrap());
             }
         }
-        let s_ridx = lat.rank(&kept_tally);
+        let s_ridx = lat.rank(&kept_tally)?;
         if s_ridx != !0 {
             let static_value = klv.leave_value_from_tally(&kept_tally).raw();
             let draw = (rack_size - size).min(pool_size);
@@ -10205,7 +10230,9 @@ fn rollout_pool_klv<L: kwg::Node>(
     let value = dynamic_leaves_of_pool(lat, add, full_v, pool)?;
     let baseline = value[0];
     Ok(klv.revalued(lat.num_letters(), |tally, leave| {
-        let ridx = lat.rank(tally);
+        let Ok(ridx) = lat.rank(tally) else {
+            return leave;
+        };
         match value.get(ridx as usize) {
             Some(&v) if ridx != !0 && v.is_finite() && baseline.is_finite() => {
                 (v - baseline).round() as i32
@@ -10231,7 +10258,7 @@ fn dynamic_leaves_of_pool(
     let mut value = lat.dense(f64::NAN)?;
     let mut tally = vec![0u8; n];
     for idx in (0..lat.len()).rev() {
-        lat.unrank_into(idx, &mut tally);
+        lat.unrank_into(idx, &mut tally)?;
         if tally.iter().zip(pool).any(|(&s, &p)| s > p) {
             continue;
         }
@@ -11745,14 +11772,14 @@ WCMP_P1_SCORE 402.000000
         // the second, and none of the third, so only {0,1} and {1,1} are dealt
         let lat = census::MultisetLattice::new(3, 2).unwrap();
         let mut cnt = vec![0u64; lat.len()];
-        cnt[lat.rank(&[1, 1, 0]) as usize] = 5;
-        cnt[lat.rank(&[0, 2, 0]) as usize] = 7;
+        cnt[lat.rank(&[1, 1, 0]).unwrap() as usize] = 5;
+        cnt[lat.rank(&[0, 2, 0]).unwrap() as usize] = 7;
         // a rack the tiles cannot deal, and a shorter one, are left out
-        cnt[lat.rank(&[2, 0, 0]) as usize] = 1;
-        cnt[lat.rank(&[0, 1, 0]) as usize] = 2;
-        assert_eq!(least_full_rack_boards(&lat, &cnt, &[1, 2, 0]), 5);
-        cnt[lat.rank(&[0, 2, 0]) as usize] = 3;
-        assert_eq!(least_full_rack_boards(&lat, &cnt, &[1, 2, 0]), 3);
+        cnt[lat.rank(&[2, 0, 0]).unwrap() as usize] = 1;
+        cnt[lat.rank(&[0, 1, 0]).unwrap() as usize] = 2;
+        assert_eq!(least_full_rack_boards(&lat, &cnt, &[1, 2, 0]).unwrap(), 5);
+        cnt[lat.rank(&[0, 2, 0]).unwrap() as usize] = 3;
+        assert_eq!(least_full_rack_boards(&lat, &cnt, &[1, 2, 0]).unwrap(), 3);
     }
 
     #[test]
@@ -11783,7 +11810,7 @@ WCMP_P1_SCORE 402.000000
             let mut tally = vec![0u8; freqs.len()];
             let held = (0..lat.len())
                 .filter(|&idx| {
-                    lat.unrank_into(idx, &mut tally);
+                    lat.unrank_into(idx, &mut tally).unwrap();
                     tally.iter().zip(&freqs).all(|(&c, &f)| c <= f)
                 })
                 .count();
@@ -12123,7 +12150,7 @@ WCMP_P1_SCORE 402.000000
         let mut tally = vec![0u8; lat.num_letters()];
         let mut checked = 0;
         for (idx, &got) in value.iter().enumerate() {
-            lat.unrank_into(idx, &mut tally);
+            lat.unrank_into(idx, &mut tally).unwrap();
             if tally.iter().zip(&pool).any(|(&s, &p)| s > p) {
                 assert!(got.is_nan(), "{tally:?} does not fit the pool");
                 continue;
@@ -12177,12 +12204,12 @@ WCMP_P1_SCORE 402.000000
         // as infer_sheet_for leaves it: playing nothing is no entry
         let mut sheet = vec![if can_exchange { 0 } else { i32::MIN / 4 }; lat.len()];
         let mut leave = vec![0i32; lat.len()];
-        sheet[lat.rank(&[0, 0, 0]) as usize] = i32::MIN / 4;
-        sheet[lat.rank(&[0, 1, 0]) as usize] = 10_000;
-        sheet[lat.rank(&[1, 1, 0]) as usize] = 12_000;
-        sheet[lat.rank(&[1, 0, 1]) as usize] = 7_000;
-        leave[lat.rank(&[1, 0, 0]) as usize] = 1_000;
-        leave[lat.rank(&[0, 0, 1]) as usize] = 3_000;
+        sheet[lat.rank(&[0, 0, 0]).unwrap() as usize] = i32::MIN / 4;
+        sheet[lat.rank(&[0, 1, 0]).unwrap() as usize] = 10_000;
+        sheet[lat.rank(&[1, 1, 0]).unwrap() as usize] = 12_000;
+        sheet[lat.rank(&[1, 0, 1]).unwrap() as usize] = 7_000;
+        leave[lat.rank(&[1, 0, 0]).unwrap() as usize] = 1_000;
+        leave[lat.rank(&[0, 0, 1]).unwrap() as usize] = 3_000;
         let is = InferSheet {
             lat: &lat,
             sheet: &sheet,
@@ -12197,7 +12224,9 @@ WCMP_P1_SCORE 402.000000
             move_value,
             1,
             &mut WeighScratch::new(),
-            &mut |rank, ln_prior, gap, _| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
+            &mut |rank, ln_prior, gap, _| {
+                got.push((lat.tally(rank as usize).unwrap(), ln_prior.exp(), gap))
+            },
         );
         got.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         got
@@ -13252,7 +13281,7 @@ WCMP_P1_SCORE 402.000000
         let pooled = rollout_pool_klv(&lat, &add, &full_v, &klv, &pool).unwrap();
         let (mut drawn, mut own) = (0, 0);
         klv.for_each_tally_leave(4, |tally, leave| {
-            let ridx = lat.rank(tally) as usize;
+            let ridx = lat.rank(tally).unwrap() as usize;
             let got = pooled.leave_value_from_tally(tally).raw();
             if value[ridx].is_finite() {
                 assert_eq!(got, (value[ridx] - baseline).round() as i32, "{tally:?}");

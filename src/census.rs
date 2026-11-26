@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::equity;
+use super::{equity, error};
 
 pub const UNPLAYABLE: equity::Equity = equity::Equity::new(i32::MIN / 2);
 
@@ -8,7 +8,7 @@ pub const MAX_LETTERS: usize = 64;
 
 pub struct MultisetLattice {
     num_letters: usize,
-    rack_size: usize,
+    rack_size: u8,
     pascal: crate::prob::Pascal,
     size_offset: Vec<u64>,
     steps: RankSteps,
@@ -30,6 +30,8 @@ impl MultisetLattice {
     // for each inference
     #[inline(always)]
     pub fn new(num_letters: usize, rack_size: usize) -> crate::error::Returns<Self> {
+        check_letters(num_letters)?;
+        let rack_size_u8 = u8::try_from(rack_size)?;
         let n_max = rack_size + num_letters;
 
         let pascal = crate::prob::Pascal::with_rows(n_max + 1);
@@ -41,7 +43,7 @@ impl MultisetLattice {
             if s <= rack_size {
                 count = u64::try_from(u128::from(count) * (s + num_letters) as u128 / s as u128)
                     .ok()
-                    .filter(|&n| usize::try_from(n).is_ok())
+                    .filter(|&n| usize::try_from(n).is_ok() && u32::try_from(n).is_ok())
                     .ok_or_else(|| {
                         format!(
                             "a census of {num_letters} letters and racks of {rack_size} has more multisets than can be counted"
@@ -52,7 +54,7 @@ impl MultisetLattice {
         let steps = RankSteps::new(&pascal, num_letters, rack_size);
         Ok(Self {
             num_letters,
-            rack_size,
+            rack_size: rack_size_u8,
             pascal,
             size_offset,
             steps,
@@ -71,7 +73,7 @@ impl MultisetLattice {
 
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.size_offset[self.rack_size + 1] as usize
+        self.size_offset[self.rack_size() + 1] as usize
     }
     #[inline]
     pub fn dense<T: Clone>(&self, value: T) -> crate::error::Returns<Vec<T>> {
@@ -91,12 +93,12 @@ impl MultisetLattice {
     }
     #[inline(always)]
     pub fn rack_size(&self) -> usize {
-        self.rack_size
+        usize::from(self.rack_size)
     }
 
     #[inline(always)]
     pub fn full_rack_start(&self) -> usize {
-        self.size_offset[self.rack_size] as usize
+        self.size_offset[self.rack_size()] as usize
     }
 
     // the multisets of s tiles are the indices from size_start(s) up to
@@ -107,11 +109,24 @@ impl MultisetLattice {
     }
 
     #[inline(always)]
-    pub fn rank(&self, tally: &[u8]) -> u32 {
+    pub fn rank(&self, tally: &[u8]) -> error::Returns<u32> {
+        if tally.len() > self.num_letters {
+            crate::return_error!("rank tally exceeds the lattice alphabet".to_string());
+        }
+        Ok(u32::try_from(self.rank_wide(tally))?)
+    }
+
+    #[inline(always)]
+    pub(crate) fn rank_in_lattice(&self, tally: &[u8]) -> u32 {
+        self.rank_wide(tally) as u32
+    }
+
+    #[inline(always)]
+    fn rank_wide(&self, tally: &[u8]) -> u64 {
         let l = self.num_letters;
         let s: usize = tally.iter().map(|&c| c as usize).sum();
-        if s > self.rack_size {
-            return !0;
+        if s > self.rack_size() {
+            return u64::from(u32::MAX);
         }
         let mut within: u64 = 0;
         let mut rem = s;
@@ -123,18 +138,58 @@ impl MultisetLattice {
             }
             rem -= ct;
         }
-        (self.size_offset[s] + within) as u32
+        self.size_offset[s] + within
     }
 
     #[inline(always)]
-    pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> u32 {
+    pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> error::Returns<u32> {
         self.rank_sparse_iter(s, items.iter().copied())
     }
 
     #[inline]
-    pub fn rank_sparse_iter(&self, s: usize, items: impl Iterator<Item = (u8, u8)>) -> u32 {
-        if s > self.rack_size {
-            return !0;
+    pub fn rank_sparse_iter(
+        &self,
+        s: usize,
+        items: impl Iterator<Item = (u8, u8)>,
+    ) -> error::Returns<u32> {
+        if s > self.rack_size() {
+            return Ok(!0);
+        }
+        let mut previous = None;
+        let mut remaining = s;
+        let mut counts = [(0, 0); MAX_LETTERS];
+        let mut len = 0;
+        for (letter, count) in items {
+            if usize::from(letter) >= self.num_letters || previous.is_some_and(|p| p >= letter) {
+                crate::return_error!(
+                    "sparse tally letters are out of order or outside the alphabet".to_string()
+                );
+            }
+            remaining = remaining
+                .checked_sub(usize::from(count))
+                .ok_or("sparse tally exceeds its total")?;
+            counts[len] = (letter, count);
+            len += 1;
+            previous = Some(letter);
+        }
+        Ok(u32::try_from(
+            self.rank_sparse_wide(s, counts.into_iter().take(len)),
+        )?)
+    }
+
+    #[inline(always)]
+    pub(crate) fn rank_sparse_in_lattice(
+        &self,
+        s: usize,
+        items: impl Iterator<Item = (u8, u8)>,
+    ) -> u32 {
+        self.rank_sparse_wide(s, items) as u32
+    }
+
+    #[inline]
+    fn rank_sparse_wide(&self, s: usize, items: impl Iterator<Item = (u8, u8)>) -> u64 {
+        if s > self.rack_size() {
+            return u64::from(u32::MAX);
         }
         let l = self.num_letters;
         let mut within: u64 = 0;
@@ -152,16 +207,19 @@ impl MultisetLattice {
             }
             rem -= ct;
         }
-        (self.size_offset[s] + within) as u32
+        self.size_offset[s] + within
     }
 
     #[inline]
-    pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
+    pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> error::Returns<u32> {
+        if sorted_tiles.len() > self.rack_size() {
+            return Ok(!0);
+        }
         let mut tally = [0u8; MAX_LETTERS];
         for &t in sorted_tiles {
             let i = t as usize;
             if i >= self.num_letters {
-                return !0;
+                return Ok(!0);
             }
             tally[i] += 1;
         }
@@ -169,36 +227,47 @@ impl MultisetLattice {
     }
 
     #[inline(always)]
-    pub fn unrank_into(&self, idx: usize, out: &mut [u8]) {
+    pub fn unrank_into(&self, idx: usize, out: &mut [u8]) -> error::Returns<()> {
+        if idx >= self.len() || out.len() < self.num_letters {
+            crate::return_error!(
+                "unrank index or output length is outside the lattice".to_string()
+            );
+        }
+        self.unrank_in_lattice(idx, out);
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn unrank_in_lattice(&self, idx: usize, out: &mut [u8]) {
         let l = self.num_letters;
-        let mut s = 0usize;
-        while s < self.rack_size && (self.size_offset[s + 1] as usize) <= idx {
+        let mut s = 0u8;
+        while s < self.rack_size && (self.size_offset[usize::from(s) + 1] as usize) <= idx {
             s += 1;
         }
-        let mut r = idx - self.size_offset[s] as usize;
+        let mut r = idx - self.size_offset[usize::from(s)] as usize;
         let mut rem = s;
         for (t, slot) in out.iter_mut().enumerate().take(l - 1) {
             let parts = l - 1 - t;
-            let mut ct = 0usize;
+            let mut ct = 0u8;
             loop {
-                let ways = self.c((rem - ct) + parts - 1, parts - 1) as usize;
+                let ways = self.c(usize::from(rem - ct) + parts - 1, parts - 1) as usize;
                 if r < ways {
                     break;
                 }
                 r -= ways;
                 ct += 1;
             }
-            *slot = ct as u8;
+            *slot = ct;
             rem -= ct;
         }
-        out[l - 1] = rem as u8;
+        out[l - 1] = rem;
     }
 
     #[inline]
-    pub fn tally(&self, idx: usize) -> Vec<u8> {
+    pub fn tally(&self, idx: usize) -> error::Returns<Vec<u8>> {
         let mut out = vec![0u8; self.num_letters];
-        self.unrank_into(idx, &mut out);
-        out
+        self.unrank_into(idx, &mut out)?;
+        Ok(out)
     }
 }
 
@@ -227,7 +296,7 @@ pub fn naive_best_equity(
     impl Ctx<'_> {
         fn rec(&mut self, pos: usize) {
             if pos == self.n {
-                let pr = self.lat.rank(self.played);
+                let pr = self.lat.rank_in_lattice(self.played);
                 if pr == !0 {
                     return;
                 }
@@ -240,7 +309,7 @@ pub fn naive_best_equity(
                 {
                     *k = rc - pc;
                 }
-                let kr = self.lat.rank(&kept);
+                let kr = self.lat.rank_in_lattice(&kept);
                 if kr == !0 {
                     return;
                 }
@@ -366,12 +435,34 @@ pub fn best_keep_of(
     leave: &[i32],
     tally: &[u8],
     keep: usize,
+) -> error::Returns<(equity::Equity, u32)> {
+    let (value, rank) = best_keep_wide(lat, leave, tally, keep);
+    Ok((value, u32::try_from(rank)?))
+}
+
+#[inline]
+pub(crate) fn best_keep_in_lattice(
+    lat: &MultisetLattice,
+    leave: &[i32],
+    tally: &[u8],
+    keep: usize,
 ) -> (equity::Equity, u32) {
+    let (value, rank) = best_keep_wide(lat, leave, tally, keep);
+    (value, rank as u32)
+}
+
+#[inline]
+fn best_keep_wide(
+    lat: &MultisetLattice,
+    leave: &[i32],
+    tally: &[u8],
+    keep: usize,
+) -> (equity::Equity, u64) {
     if leave.len() != lat.len()
         || tally.len() != lat.num_letters()
         || tally.iter().map(|&c| c as usize).sum::<usize>() > lat.rack_size()
     {
-        return (UNPLAYABLE, !0);
+        return (UNPLAYABLE, u64::from(u32::MAX));
     }
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
     // how many tiles the nonzero letters before each hold
@@ -384,7 +475,7 @@ pub fn best_keep_of(
             m += 1;
         }
     }
-    let mut best = (UNPLAYABLE.raw(), !0);
+    let mut best = (UNPLAYABLE.raw(), u64::from(u32::MAX));
     if keep <= below[m] {
         KeepCtx {
             nz: &nz[..m],
@@ -408,13 +499,13 @@ struct KeepCtx<'a> {
     n: usize,
     lat: &'a MultisetLattice,
     leave: &'a [i32],
-    best: &'a mut (i32, u32),
+    best: &'a mut (i32, u64),
 }
 
 impl KeepCtx<'_> {
     fn rec(&mut self, i: usize, s_k: usize, within_k: u64, left: usize) {
         if i == 0 {
-            let kr = (self.lat.size_offset[s_k] + within_k) as u32;
+            let kr = self.lat.size_offset[s_k] + within_k;
             let v = self.leave[kr as usize];
             if v > self.best.0 || (v == self.best.0 && kr < self.best.1) {
                 *self.best = (v, kr);
@@ -447,7 +538,7 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
     for (off, slot) in out[lo..].iter_mut().enumerate() {
         let ridx = lo + off;
-        lat.unrank_into(ridx, &mut r[..n]);
+        lat.unrank_in_lattice(ridx, &mut r[..n]);
         let mut m = 0;
         for (t, &c) in r[..n].iter().enumerate() {
             if c > 0 {
@@ -493,25 +584,25 @@ pub fn best_equity_of(
 pub trait ApportionSum: Copy {
     const MAX: i128;
 
-    fn add_ways_times(&mut self, ways: u64, best: i32);
+    fn add_ways_times(&mut self, ways: u64, best: i32) -> error::Returns<()>;
 
     fn add(&mut self, other: Self);
 
-    fn add_times(&mut self, other: Self, times: u64);
+    fn add_times(&mut self, other: Self, times: u64) -> error::Returns<()>;
 
     // this sum over by, which divides it
-    fn divided_exactly(self, by: u64) -> Self;
+    fn divided_exactly(self, by: u64) -> error::Returns<Self>;
 
     // the mean, this sum over den, rounded half away from zero
-    fn mean(self, den: u64) -> i32;
+    fn mean(self, den: u64) -> error::Returns<i32>;
 }
 
 impl ApportionSum for i64 {
     const MAX: i128 = i64::MAX as i128;
 
     #[inline(always)]
-    fn add_ways_times(&mut self, ways: u64, best: i32) {
-        *self += ways as i64 * i64::from(best);
+    fn add_ways_times(&mut self, ways: u64, best: i32) -> error::Returns<()> {
+        self.add_times(i64::from(best), ways)
     }
 
     #[inline(always)]
@@ -520,18 +611,19 @@ impl ApportionSum for i64 {
     }
 
     #[inline(always)]
-    fn add_times(&mut self, other: Self, times: u64) {
-        *self += other * times as i64;
+    fn add_times(&mut self, other: Self, times: u64) -> error::Returns<()> {
+        let term = i128::from(other) * i128::from(times);
+        *self = Self::try_from(i128::from(*self) + term)?;
+        Ok(())
     }
 
     #[inline(always)]
-    fn divided_exactly(self, by: u64) -> Self {
-        debug_assert_eq!(self % by as i64, 0);
-        self / by as i64
+    fn divided_exactly(self, by: u64) -> error::Returns<Self> {
+        Ok(Self::try_from(i128::from(self).divided_exactly(by)?)?)
     }
 
     #[inline(always)]
-    fn mean(self, den: u64) -> i32 {
+    fn mean(self, den: u64) -> error::Returns<i32> {
         rounded_mean(i128::from(self), den)
     }
 }
@@ -540,8 +632,8 @@ impl ApportionSum for i128 {
     const MAX: i128 = i128::MAX;
 
     #[inline(always)]
-    fn add_ways_times(&mut self, ways: u64, best: i32) {
-        *self += i128::from(ways) * i128::from(best);
+    fn add_ways_times(&mut self, ways: u64, best: i32) -> error::Returns<()> {
+        self.add_times(i128::from(best), ways)
     }
 
     #[inline(always)]
@@ -550,18 +642,25 @@ impl ApportionSum for i128 {
     }
 
     #[inline(always)]
-    fn add_times(&mut self, other: Self, times: u64) {
-        *self += other * i128::from(times);
+    fn add_times(&mut self, other: Self, times: u64) -> error::Returns<()> {
+        *self = other
+            .checked_mul(i128::from(times))
+            .and_then(|term| self.checked_add(term))
+            .ok_or("apportion sum overflows")?;
+        Ok(())
     }
 
     #[inline(always)]
-    fn divided_exactly(self, by: u64) -> Self {
-        debug_assert_eq!(self % i128::from(by), 0);
-        self / i128::from(by)
+    fn divided_exactly(self, by: u64) -> error::Returns<Self> {
+        let by = i128::from(by);
+        if self.checked_rem(by) != Some(0) {
+            crate::return_error!("apportion sum does not divide exactly".to_string());
+        }
+        Ok(self / by)
     }
 
     #[inline(always)]
-    fn mean(self, den: u64) -> i32 {
+    fn mean(self, den: u64) -> error::Returns<i32> {
         rounded_mean(self, den)
     }
 }
@@ -569,14 +668,18 @@ impl ApportionSum for i128 {
 // num over den rounded half away from zero, as f64::round rounds their
 // quotient; den is not 0
 #[inline(always)]
-fn rounded_mean(num: i128, den: u64) -> i32 {
+fn rounded_mean(num: i128, den: u64) -> error::Returns<i32> {
     let den = i128::from(den);
-    let (quotient, rest) = (num / den, num % den);
-    if 2 * rest.abs() >= den {
-        (quotient + num.signum()) as i32
+    let quotient = num
+        .checked_div(den)
+        .ok_or("apportion mean has a zero denominator")?;
+    let rest = num % den;
+    let rounded = if 2 * rest.abs() >= den {
+        quotient + num.signum()
     } else {
-        quotient as i32
-    }
+        quotient
+    };
+    Ok(i32::try_from(rounded)?)
 }
 
 // whether T holds every sum the ways of a pool of pool tiles make: at most
@@ -584,8 +687,17 @@ fn rounded_mean(num: i128, den: u64) -> i32 {
 // times factor (how much more than its draw ways a full rack's weight can be:
 // 1 for the ways alone)
 #[inline]
-fn sums_fit<T: ApportionSum>(pool: u64, rack_size: usize, most: u64, factor: u64) -> bool {
-    i128::from(n_choose_k(pool, rack_size as u64)) * i128::from(most) * i128::from(factor) <= T::MAX
+fn sums_fit<T: ApportionSum>(
+    pool: u64,
+    rack_size: usize,
+    most: u64,
+    factor: u64,
+) -> error::Returns<bool> {
+    let ways = n_choose_k(pool, rack_size as u64)?;
+    Ok(i128::from(ways)
+        .checked_mul(i128::from(most))
+        .and_then(|bound| bound.checked_mul(i128::from(factor)))
+        .is_some_and(|bound| bound <= T::MAX))
 }
 
 // the ways to draw the full rack ridx from unseen (0 when it cannot be), its
@@ -597,21 +709,23 @@ fn full_rack_ways(
     ridx: usize,
     r: &mut [u8],
     nz: &mut [(usize, u8)],
-) -> (u64, usize) {
-    lat.unrank_into(ridx, r);
+) -> error::Returns<(u64, usize)> {
+    lat.unrank_in_lattice(ridx, r);
     let mut w = 1u64;
     let mut m = 0;
     for (t, &c) in r.iter().enumerate() {
         if c > 0 {
             nz[m] = (t, c);
             m += 1;
-            w *= n_choose_k(u64::from(unseen[t]), u64::from(c));
+            w = w
+                .checked_mul(n_choose_k(u64::from(unseen[t]), u64::from(c))?)
+                .ok_or("rack deal count overflows")?;
             if w == 0 {
                 break;
             }
         }
     }
-    (w, m)
+    Ok((w, m))
 }
 
 #[inline]
@@ -621,7 +735,7 @@ pub fn apportion_table<T: ApportionSum>(
     unseen: &[u8],
     num: &mut [T],
     den: &mut [u64],
-) {
+) -> error::Returns<()> {
     // the walk's reads and writes are unchecked: every table is the lattice's
     // size
     assert!(best.len() == lat.len() && num.len() == lat.len() && den.len() == lat.len());
@@ -631,15 +745,16 @@ pub fn apportion_table<T: ApportionSum>(
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
     let mut most = 0u64;
     for (ridx, &b) in best.iter().enumerate().skip(lo) {
-        if full_rack_ways(lat, unseen, ridx, &mut r[..n], &mut nz).0 > 0 {
+        if full_rack_ways(lat, unseen, ridx, &mut r[..n], &mut nz)?.0 > 0 {
             most = most.max(u64::from(b.unsigned_abs()));
         }
     }
     let pool = unseen.iter().map(|&c| u64::from(c)).sum();
-    assert!(
-        sums_fit::<T>(pool, lat.rack_size(), most, 1),
-        "the sums of a pool of {pool} outgrow the table's type"
-    );
+    if !sums_fit::<T>(pool, lat.rack_size(), most, 1)? {
+        crate::return_error!(format!(
+            "the sums of a pool of {pool} outgrow the table's type"
+        ));
+    }
 
     struct Ctx<'a, T> {
         nz: &'a [(usize, u8)],
@@ -651,7 +766,7 @@ pub fn apportion_table<T: ApportionSum>(
         den: &'a mut [u64],
     }
     impl<T: ApportionSum> Ctx<'_, T> {
-        fn rec(&mut self, i: usize, s_s: usize, within_s: u64) {
+        fn rec(&mut self, i: usize, s_s: usize, within_s: u64) -> error::Returns<()> {
             if i == 0 {
                 let sr = (self.lat.size_offset[s_s] + within_s) as usize;
                 // safety: sr ranks a sub-multiset of a full rack the lattice
@@ -660,10 +775,13 @@ pub fn apportion_table<T: ApportionSum>(
                 unsafe {
                     self.num
                         .get_unchecked_mut(sr)
-                        .add_ways_times(self.w, self.e);
-                    *self.den.get_unchecked_mut(sr) += self.w;
+                        .add_ways_times(self.w, self.e)?;
+                    let den = self.den.get_unchecked_mut(sr);
+                    *den = den
+                        .checked_add(self.w)
+                        .ok_or("apportion deal count overflows")?;
                 }
-                return;
+                return Ok(());
             }
             let (t, cnt) = self.nz[i - 1];
             let parts = self.n - 1 - t;
@@ -676,12 +794,13 @@ pub fn apportion_table<T: ApportionSum>(
                         a -= 1;
                     }
                 }
-                self.rec(i - 1, s_s + cs as usize, within_s + dw);
+                self.rec(i - 1, s_s + cs as usize, within_s + dw)?;
             }
+            Ok(())
         }
     }
     for ridx in lo..lat.len() {
-        let (w, m) = full_rack_ways(lat, unseen, ridx, &mut r[..n], &mut nz);
+        let (w, m) = full_rack_ways(lat, unseen, ridx, &mut r[..n], &mut nz)?;
         if w == 0 {
             continue;
         }
@@ -697,8 +816,9 @@ pub fn apportion_table<T: ApportionSum>(
             num,
             den,
         }
-        .rec(m, 0, 0);
+        .rec(m, 0, 0)?;
     }
+    Ok(())
 }
 
 // add(idx, t) is the rank of multiset(idx) with one more t, kept index by
@@ -731,10 +851,10 @@ impl AddTable {
                     let mut tally = vec![0u8; n];
                     for (j, row) in add_chunk.chunks_exact_mut(n).enumerate() {
                         let idx = base + j;
-                        lat.unrank_into(idx, &mut tally);
+                        lat.unrank_in_lattice(idx, &mut tally);
                         for (t, slot) in row.iter_mut().enumerate() {
                             tally[t] += 1;
-                            *slot = lat.rank(&tally);
+                            *slot = lat.rank_in_lattice(&tally);
                             tally[t] -= 1;
                         }
                     }
@@ -1011,7 +1131,7 @@ fn scatter_words(
         if sp_val <= 0 {
             continue;
         }
-        lat.unrank_into(pj, &mut p_tally[..n]);
+        lat.unrank_in_lattice(pj, &mut p_tally[..n]);
         let psize: usize = p_tally[..n].iter().map(|&c| c as usize).sum();
         let krem = rack_size - psize;
 
@@ -1132,7 +1252,7 @@ pub fn apportion_fused<T: ApportionSum>(
     out: ApportionOut<T>,
     maxsheet: &mut [i32],
     mode: ApportionMode,
-) -> bool {
+) -> error::Returns<bool> {
     apportion_fused_with::<T, false>(lat, add, board, out, maxsheet, mode)
 }
 
@@ -1147,7 +1267,7 @@ pub fn apportion_fused_completions<T: ApportionSum>(
     out: ApportionOut<T>,
     maxsheet: &mut [i32],
     mode: ApportionMode,
-) -> bool {
+) -> error::Returns<bool> {
     apportion_fused_with::<T, true>(lat, add, board, out, maxsheet, mode)
 }
 
@@ -1159,7 +1279,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
     out: ApportionOut<T>,
     maxsheet: &mut [i32],
     mode: ApportionMode,
-) -> bool {
+) -> error::Returns<bool> {
     let ApportionBoard {
         sheet,
         leave,
@@ -1248,14 +1368,16 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
             s_idx: usize,
             w: u64,
             best: i32,
-        ) {
+        ) -> error::Returns<()> {
             if i == 0 {
                 // the full rack itself keeps its share as its deals (ways)
                 if s_idx < self.lo {
-                    self.num[s_idx].add_ways_times(w, best);
-                    self.den[s_idx] += w;
+                    self.num[s_idx].add_ways_times(w, best)?;
+                    self.den[s_idx] = self.den[s_idx]
+                        .checked_add(w)
+                        .ok_or("apportion deal count overflows")?;
                 }
-                return;
+                return Ok(());
             }
             let (t, cnt) = self.nz[i - 1];
             let mut idx = s_idx;
@@ -1264,14 +1386,18 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
                 // cs physical copies of this letter are kept, so the total
                 // weight at a leave S differs from its completion draw count
                 // only by the fixed number of ways to set S aside
-                self.apportion_rec::<COMPLETIONS>(i - 1, idx, w * binom, best);
+                let ways = w
+                    .checked_mul(binom)
+                    .ok_or("apportion deal count overflows")?;
+                self.apportion_rec::<COMPLETIONS>(i - 1, idx, ways, best)?;
                 if cs < cnt {
                     idx = self.add.add(idx, t);
                     if COMPLETIONS {
-                        binom = binom * u64::from(cnt - cs) / u64::from(cs + 1);
+                        binom = choose_next(binom, u64::from(cnt - cs), u64::from(cs) + 1)?;
                     }
                 }
             }
+            Ok(())
         }
 
         // each full rack the pool can draw, its draw ways w: SUM false finds
@@ -1284,12 +1410,12 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
             w: u64,
             idx: usize,
             m: usize,
-        ) {
+        ) -> error::Returns<()> {
             if remaining == 0 {
                 if SUM {
                     let best = self.maxsheet[idx];
-                    self.apportion_rec::<COMPLETIONS>(m, 0, w, best);
-                    return;
+                    self.apportion_rec::<COMPLETIONS>(m, 0, w, best)?;
+                    return Ok(());
                 }
                 let best = if self.best_from_maxsheet {
                     // safety: idx ranks a full rack, built up from 0 by add,
@@ -1306,30 +1432,31 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
                 // read it (fold_full)
                 self.ways[idx - self.lo] = w;
                 self.most = self.most.max(u64::from(best.unsigned_abs()));
-                return;
+                return Ok(());
             }
             if t == self.n || (self.suffix_cap[t] as usize) < remaining {
-                return;
+                return Ok(());
             }
 
-            self.enum_drawable::<SUM, COMPLETIONS>(t + 1, remaining, w, idx, m);
+            self.enum_drawable::<SUM, COMPLETIONS>(t + 1, remaining, w, idx, m)?;
 
             let nt = u64::from(self.unseen[t]);
             let cap = nt.min(remaining as u64);
             let mut binom = 1u64;
             let mut idx_c = idx;
             for c in 1..=cap {
-                binom = binom * (nt - c + 1) / c;
+                binom = choose_next(binom, nt - c + 1, c)?;
                 idx_c = self.add.add(idx_c, t);
                 self.nz[m] = (t, c as u8);
                 self.enum_drawable::<SUM, COMPLETIONS>(
                     t + 1,
                     remaining - c as usize,
-                    w * binom,
+                    w.checked_mul(binom).ok_or("rack deal count overflows")?,
                     idx_c,
                     m + 1,
-                );
+                )?;
             }
+            Ok(())
         }
 
         // each multiset's sums over its supersets, a letter at a time: those
@@ -1337,7 +1464,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
         // and bests, the rest from the sums. A letter the pool lacks is in no
         // rack drawn from it: its pass would add nothing, so it is skipped
         #[inline]
-        fn fold_zeta(&mut self, short: usize) {
+        fn fold_zeta(&mut self, short: usize) -> error::Returns<()> {
             let (add, lo) = (self.add, self.lo);
             for t in 0..self.n {
                 if self.unseen[t] == 0 {
@@ -1346,39 +1473,46 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
                 match add.letter(t) {
                     Some(to) => {
                         for (idx, &sp) in (short..lo).zip(&to[short..lo]).rev() {
-                            self.fold_full(idx, sp as usize);
+                            self.fold_full(idx, sp as usize)?;
                         }
                         for (idx, &sp) in to[..short].iter().enumerate().rev() {
-                            self.fold_one(idx, sp as usize);
+                            self.fold_one(idx, sp as usize)?;
                         }
                     }
                     None => {
                         for idx in (short..lo).rev() {
-                            self.fold_full(idx, add.add(idx, t));
+                            self.fold_full(idx, add.add(idx, t))?;
                         }
                         for idx in (0..short).rev() {
-                            self.fold_one(idx, add.add(idx, t));
+                            self.fold_one(idx, add.add(idx, t))?;
                         }
                     }
                 }
             }
+            Ok(())
         }
 
         // a multiset's sums gain those of its superset sp, a full rack: its
         // best for each of its deals
         #[inline(always)]
-        fn fold_full(&mut self, idx: usize, sp: usize) {
+        fn fold_full(&mut self, idx: usize, sp: usize) -> error::Returns<()> {
             let w = self.ways[sp - self.lo];
-            self.num[idx].add_ways_times(w, self.maxsheet[sp]);
-            self.den[idx] += w;
+            self.num[idx].add_ways_times(w, self.maxsheet[sp])?;
+            self.den[idx] = self.den[idx]
+                .checked_add(w)
+                .ok_or("apportion deal count overflows")?;
+            Ok(())
         }
 
         // a multiset's sums gain those of its superset sp, short of a full rack
         #[inline(always)]
-        fn fold_one(&mut self, idx: usize, sp: usize) {
+        fn fold_one(&mut self, idx: usize, sp: usize) -> error::Returns<()> {
             let (sn, sd) = (self.num[sp], self.den[sp]);
             self.num[idx].add(sn);
-            self.den[idx] += sd;
+            self.den[idx] = self.den[idx]
+                .checked_add(sd)
+                .ok_or("apportion deal count overflows")?;
+            Ok(())
         }
     }
     let mut nz = [(0usize, 0u8); MAX_LETTERS];
@@ -1398,7 +1532,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
         nz: &mut nz,
         most: 0,
     };
-    ctx.enum_drawable::<false, COMPLETIONS>(0, rack_size, 1, 0, 0);
+    ctx.enum_drawable::<false, COMPLETIONS>(0, rack_size, 1, 0, 0)?;
     let pool = unseen.iter().map(|&c| u64::from(c)).sum();
     // how much more than its draw ways a full rack's weight at a leave can be:
     // the ways to set the leave aside within the rack (apportion_rec), or the
@@ -1409,19 +1543,19 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
     } else if zeta {
         rack_size as u64
     } else {
-        n_choose_k(rack_size as u64, rack_size as u64 / 2)
+        n_choose_k(rack_size as u64, rack_size as u64 / 2)?
     };
-    if !sums_fit::<T>(pool, rack_size, ctx.most, factor) {
-        return false;
+    if !sums_fit::<T>(pool, rack_size, ctx.most, factor)? {
+        return Ok(false);
     }
     if !zeta {
-        ctx.enum_drawable::<true, COMPLETIONS>(0, rack_size, 1, 0, 0);
+        ctx.enum_drawable::<true, COMPLETIONS>(0, rack_size, 1, 0, 0)?;
     } else if !COMPLETIONS {
-        ctx.fold_zeta(lat.size_start(rack_size.saturating_sub(1)));
+        ctx.fold_zeta(lat.size_start(rack_size.saturating_sub(1)))?;
     } else if suffix_cap[0] as usize >= rack_size {
-        fill_completion_sums(lat, add, ctx.maxsheet, unseen, ctx.num, ctx.den);
+        fill_completion_sums(lat, add, ctx.maxsheet, unseen, ctx.num, ctx.den)?;
     }
-    true
+    Ok(true)
 }
 
 // each shorter leave S's sums over its completions, for a pool that can fill a
@@ -1439,7 +1573,7 @@ fn fill_completion_sums<T: ApportionSum>(
     pool: &[u8],
     num: &mut [T],
     den: &mut [u64],
-) {
+) -> error::Returns<()> {
     let full_start = lat.full_rack_start();
     let rack_size = lat.rack_size();
     assert!(
@@ -1452,7 +1586,7 @@ fn fill_completion_sums<T: ApportionSum>(
     let pool_size: u64 = pool.iter().map(|&c| u64::from(c)).sum();
     let mut tally = vec![0u8; lat.num_letters()];
     for idx in (0..full_start).rev() {
-        lat.unrank_into(idx, &mut tally);
+        lat.unrank_in_lattice(idx, &mut tally);
         if tally.iter().zip(pool).any(|(&s, &p)| s > p) {
             continue;
         }
@@ -1462,16 +1596,17 @@ fn fill_completion_sums<T: ApportionSum>(
             if count != 0 {
                 let next = add.add(idx, t);
                 if next >= full_start {
-                    num[idx].add_ways_times(count, bests[next]);
+                    num[idx].add_ways_times(count, bests[next])?;
                 } else {
                     let sums = num[next];
-                    num[idx].add_times(sums, count);
+                    num[idx].add_times(sums, count)?;
                 }
             }
         }
-        num[idx] = num[idx].divided_exactly((rack_size - kept) as u64);
-        den[idx] = n_choose_k(pool_size - kept as u64, (rack_size - kept) as u64);
+        num[idx] = num[idx].divided_exactly((rack_size - kept) as u64)?;
+        den[idx] = n_choose_k(pool_size - kept as u64, (rack_size - kept) as u64)?;
     }
+    Ok(())
 }
 
 struct DrawCtx<'a> {
@@ -1523,18 +1658,21 @@ pub fn leave_value_by_draw(
     best: &[i32],
     unseen: &[u8],
     s_tally: &[u8],
-) -> equity::Equity {
+) -> error::Returns<equity::Equity> {
     // the walk's reads of best are unchecked: it is the lattice's size
     assert_eq!(best.len(), lat.len());
     let n = lat.num_letters();
 
     for t in 0..n {
         if s_tally[t] > unseen[t] {
-            return UNPLAYABLE;
+            return Ok(UNPLAYABLE);
         }
     }
     let s_size: usize = s_tally.iter().map(|&c| c as usize).sum();
-    let draw = lat.rack_size() - s_size;
+    let draw = lat
+        .rack_size()
+        .checked_sub(s_size)
+        .ok_or("leave holds more than a full rack")?;
     let mut num: i128 = 0;
     let mut den: i128 = 0;
     let mut d = [0u8; MAX_LETTERS];
@@ -1552,41 +1690,54 @@ pub fn leave_value_by_draw(
         den: &'a mut i128,
     }
     impl Ctx<'_> {
-        fn rec(&mut self, pos: usize, remaining: usize) {
+        fn rec(&mut self, pos: usize, remaining: usize) -> error::Returns<()> {
             if pos == self.n {
                 if remaining != 0 {
-                    return;
+                    return Ok(());
                 }
                 let mut w: i128 = 1;
                 for t in 0..self.n {
-                    w *= i128::from(n_choose_k(
+                    let ways = n_choose_k(
                         u64::from(self.unseen[t] - self.s_tally[t]),
                         u64::from(self.d[t]),
-                    ));
+                    )?;
+                    w = w
+                        .checked_mul(i128::from(ways))
+                        .ok_or("rack deal count overflows")?;
                     if w == 0 {
-                        return;
+                        return Ok(());
                     }
                 }
                 for t in 0..self.n {
                     self.r[t] = self.s_tally[t] + self.d[t];
                 }
-                let ri = self.lat.rank(&self.r[..self.n]);
+                let ri = self.lat.rank_in_lattice(&self.r[..self.n]);
                 if ri == !0 {
-                    return;
+                    return Ok(());
                 }
                 // safety: rank gives !0 for a tally the lattice does not hold,
                 // and otherwise its rank, below lat.len(), best's length
                 // (checked above).
-                *self.num += w * i128::from(unsafe { *self.best.get_unchecked(ri as usize) });
-                *self.den += w;
-                return;
+                let contribution = w
+                    .checked_mul(i128::from(unsafe { *self.best.get_unchecked(ri as usize) }))
+                    .ok_or("apportion sum overflows")?;
+                *self.num = self
+                    .num
+                    .checked_add(contribution)
+                    .ok_or("apportion sum overflows")?;
+                *self.den = self
+                    .den
+                    .checked_add(w)
+                    .ok_or("apportion deal count overflows")?;
+                return Ok(());
             }
             let hi = remaining.min(self.unseen[pos] as usize);
             for c in 0..=hi {
                 self.d[pos] = c as u8;
-                self.rec(pos + 1, remaining - c);
+                self.rec(pos + 1, remaining - c)?;
             }
             self.d[pos] = 0;
+            Ok(())
         }
     }
     Ctx {
@@ -1600,11 +1751,11 @@ pub fn leave_value_by_draw(
         num: &mut num,
         den: &mut den,
     }
-    .rec(0, draw);
+    .rec(0, draw)?;
     if den == 0 {
-        UNPLAYABLE
+        Ok(UNPLAYABLE)
     } else {
-        equity::Equity::new((num / den) as i32)
+        Ok(equity::Equity::new(i32::try_from(num / den)?))
     }
 }
 
@@ -1650,7 +1801,7 @@ pub fn fill_lattice_leaves(
 ) {
     let mut tally = vec![0u8; lat.num_letters()];
     for (idx, slot) in out.iter_mut().enumerate() {
-        lat.unrank_into(idx, &mut tally);
+        lat.unrank_in_lattice(idx, &mut tally);
         *slot = value_of(&tally);
     }
 }
@@ -1667,7 +1818,7 @@ pub fn fill_lattice_klv_leaves<L: crate::kwg::Node>(
     assert!(out.len() == lat.len());
     out.fill(0);
     klv.for_each_tally_leave(lat.num_letters(), |tally, value| {
-        let ri = lat.rank(tally);
+        let ri = lat.rank_in_lattice(tally);
         if ri != !0 {
             out[ri as usize] = value;
         }
@@ -1675,18 +1826,22 @@ pub fn fill_lattice_klv_leaves<L: crate::kwg::Node>(
 }
 
 #[inline]
-fn n_choose_k(n: u64, k: u64) -> u64 {
+fn n_choose_k(n: u64, k: u64) -> error::Returns<u64> {
     if k > n {
-        return 0;
+        return Ok(0);
     }
-    let k = k.min(n - k);
-    let mut num: u128 = 1;
-    let mut den: u128 = 1;
-    for i in 0..k {
-        num *= u128::from(n - i);
-        den *= u128::from(i + 1);
+    let mut ways = 1;
+    for i in 0..k.min(n - k) {
+        ways = choose_next(ways, n - i, i + 1)?;
     }
-    (num / den) as u64
+    Ok(ways)
+}
+
+#[inline(always)]
+fn choose_next(ways: u64, factor: u64, divisor: u64) -> error::Returns<u64> {
+    Ok(u64::try_from(
+        u128::from(ways) * u128::from(factor) / u128::from(divisor),
+    )?)
 }
 
 #[inline]
@@ -1697,14 +1852,24 @@ pub fn record_blank_variants(
     placed: &mut [(u8, i32)],
     unseen_tally: &[u8],
     num_blanks_eff: usize,
-) {
+) -> crate::error::Returns<()> {
     let n = placed.len();
     if n == 0 {
-        return;
+        return Ok(());
     }
     let rack_size = lat.rack_size();
     if n > rack_size {
-        return;
+        return Ok(());
+    }
+
+    check_letters(lat.num_letters())?;
+    if sheet.len() != lat.len()
+        || unseen_tally.len() != lat.num_letters()
+        || placed
+            .iter()
+            .any(|&(tile, _)| usize::from(tile) >= unseen_tally.len())
+    {
+        crate::return_error!("blank variant inputs do not match the lattice".to_string());
     }
 
     placed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -1723,11 +1888,16 @@ pub fn record_blank_variants(
         let real_avail = (unseen_tally[letter as usize] as usize).min(rack_size);
         let forced = count.saturating_sub(real_avail);
         total_forced += forced;
-        runs[num_runs] = (letter, start as u8, count as u8, forced as u8);
+        runs[num_runs] = (
+            letter,
+            u8::try_from(start)?,
+            u8::try_from(count)?,
+            u8::try_from(forced)?,
+        );
         num_runs += 1;
     }
     if total_forced > num_blanks_eff {
-        return;
+        return Ok(());
     }
     let leftover = num_blanks_eff - total_forced;
 
@@ -1804,6 +1974,7 @@ pub fn record_blank_variants(
         real_score: real_score.raw(),
     }
     .rec(num_runs, leftover, 0, 0, 0, 0);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1816,8 +1987,8 @@ mod tests {
 
         assert_eq!(lat.len(), 10);
         for idx in 0..lat.len() {
-            let tally = lat.tally(idx);
-            assert_eq!(lat.rank(&tally), idx as u32);
+            let tally = lat.tally(idx).unwrap();
+            assert_eq!(lat.rank(&tally).unwrap(), idx as u32);
             assert!(tally.iter().map(|&c| c as usize).sum::<usize>() <= 2);
         }
     }
@@ -1832,6 +2003,12 @@ mod tests {
         assert!(MultisetLattice::new(1, 7).is_ok());
         assert!(MultisetLattice::new(64, 1).is_ok());
         assert!(MultisetLattice::new(64, 255).is_err());
+        assert!(MultisetLattice::new(64, 8).is_err());
+        assert!(MultisetLattice::new(1, usize::from(u8::MAX) + 1).is_err());
+        let lat = MultisetLattice::new(3, 2).unwrap();
+        assert!(lat.rank(&[0, 0, 0, 1]).is_err());
+        assert!(lat.rank_sparse(1, &[(0, 2)]).is_err());
+        assert!(lat.unrank_into(lat.len(), &mut [0; 3]).is_err());
     }
 
     #[test]
@@ -1841,8 +2018,8 @@ mod tests {
         assert_eq!(lat.len(), 5_379_616);
         let mut buf = vec![0u8; 27];
         for idx in (0..lat.len()).step_by(997) {
-            lat.unrank_into(idx, &mut buf);
-            assert_eq!(lat.rank(&buf), idx as u32, "roundtrip idx {idx}");
+            lat.unrank_into(idx, &mut buf).unwrap();
+            assert_eq!(lat.rank(&buf).unwrap(), idx as u32, "roundtrip idx {idx}");
         }
     }
 
@@ -1852,7 +2029,7 @@ mod tests {
         let lat = MultisetLattice::new(27, 7).unwrap();
         let mut buf = vec![0u8; 27];
         for idx in (0..lat.len()).step_by(733) {
-            lat.unrank_into(idx, &mut buf);
+            lat.unrank_into(idx, &mut buf).unwrap();
             let mut items = Vec::new();
             let mut s = 0usize;
             for (t, &c) in buf.iter().enumerate() {
@@ -1861,10 +2038,17 @@ mod tests {
                     s += c as usize;
                 }
             }
-            assert_eq!(lat.rank_sparse(s, &items), idx as u32, "sparse idx {idx}");
+            assert_eq!(
+                lat.rank_sparse(s, &items).unwrap(),
+                idx as u32,
+                "sparse idx {idx}"
+            );
         }
 
-        assert_eq!(lat.rank_sparse(0, &[]), lat.rank(&[0u8; 27]));
+        assert_eq!(
+            lat.rank_sparse(0, &[]).unwrap(),
+            lat.rank(&[0u8; 27]).unwrap()
+        );
     }
 
     #[test]
@@ -1873,11 +2057,11 @@ mod tests {
         let lat = MultisetLattice::new(2, 2).unwrap();
 
         let mut sheet = vec![0i32; lat.len()];
-        sheet[lat.rank(&[1, 0]) as usize] = 5_000;
-        sheet[lat.rank(&[0, 1]) as usize] = 3_000;
+        sheet[lat.rank(&[1, 0]).unwrap() as usize] = 5_000;
+        sheet[lat.rank(&[0, 1]).unwrap() as usize] = 3_000;
         let mut leave = vec![0i32; lat.len()];
-        leave[lat.rank(&[1, 0]) as usize] = 4_000;
-        leave[lat.rank(&[0, 1]) as usize] = 1_000;
+        leave[lat.rank(&[1, 0]).unwrap() as usize] = 4_000;
+        leave[lat.rank(&[0, 1]).unwrap() as usize] = 1_000;
 
         let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
         assert_eq!(eq, equity::Equity::new(7_000));
@@ -1902,7 +2086,7 @@ mod tests {
         best_equity_table(&lat, &sheet, &leave, &mut best);
 
         for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
-            let tally = lat.tally(idx);
+            let tally = lat.tally(idx).unwrap();
             assert_eq!(tally.iter().map(|&c| c as usize).sum::<usize>(), 4);
             let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
             assert_eq!(b, naive.raw(), "mismatch at idx {idx} tally {tally:?}");
@@ -1927,7 +2111,7 @@ mod tests {
         best_equity_table(&lat, &sheet, &leave, &mut best);
 
         for (idx, &b) in best.iter().enumerate() {
-            let tally = lat.tally(idx);
+            let tally = lat.tally(idx).unwrap();
             let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
             let one = best_equity_of(&lat, &sheet, &leave, &tally);
             assert_eq!(one, naive, "mismatch at idx {idx} tally {tally:?}");
@@ -1978,20 +2162,20 @@ mod tests {
         }
         let mut checked = 0;
         for idx in 0..lat.len() {
-            let tally = lat.tally(idx);
+            let tally = lat.tally(idx).unwrap();
             let size = tally.iter().map(|&c| c as usize).sum::<usize>();
             for keep in 0..=5 {
                 let mut want = (UNPLAYABLE, !0u32);
                 let mut cur = vec![0u8; 4];
                 each_sub(&tally, 0, keep, &mut cur, &mut |kept| {
-                    let kr = lat.rank(kept);
+                    let kr = lat.rank(kept).unwrap();
                     let value = equity::Equity::new(leave[kr as usize]);
                     if value > want.0 {
                         want = (value, kr);
                     }
                 });
                 assert_eq!(
-                    best_keep_of(&lat, &leave, &tally, keep),
+                    best_keep_of(&lat, &leave, &tally, keep).unwrap(),
                     want,
                     "tally {tally:?} keep {keep}"
                 );
@@ -1999,9 +2183,12 @@ mod tests {
             }
         }
         assert!(checked > 0);
-        assert_eq!(best_keep_of(&lat, &leave, &[1, 1, 1], 1), (UNPLAYABLE, !0));
         assert_eq!(
-            best_keep_of(&lat, &leave[1..], &[1, 1, 1, 1], 1),
+            best_keep_of(&lat, &leave, &[1, 1, 1], 1).unwrap(),
+            (UNPLAYABLE, !0)
+        );
+        assert_eq!(
+            best_keep_of(&lat, &leave[1..], &[1, 1, 1, 1], 1).unwrap(),
             (UNPLAYABLE, !0)
         );
     }
@@ -2032,9 +2219,9 @@ mod tests {
                     best_equity_table(&lat, &sheet, &leave, &mut best);
                     let mut num = vec![0i64; lat.len()];
                     let mut den = vec![0u64; lat.len()];
-                    apportion_table(&lat, &best, &unseen, &mut num, &mut den);
+                    apportion_table(&lat, &best, &unseen, &mut num, &mut den).unwrap();
                     let tally = vec![0u8; 27];
-                    let value = leave_value_by_draw(&lat, &best, &unseen, &tally);
+                    let value = leave_value_by_draw(&lat, &best, &unseen, &tally).unwrap();
                     let mut placed = vec![(1u8, 5i32), (2, 7), (3, 9)];
                     record_blank_variants(
                         &lat,
@@ -2043,7 +2230,8 @@ mod tests {
                         &mut placed,
                         &unseen,
                         1,
-                    );
+                    )
+                    .unwrap();
                     (best[lat.full_rack_start()], value)
                 })
                 .unwrap()
@@ -2060,16 +2248,16 @@ mod tests {
         let lat = MultisetLattice::new(2, 2).unwrap();
         let unseen = [1u8, 1u8];
         let mut best = vec![0i32; lat.len()];
-        best[lat.rank(&[2, 0]) as usize] = 10_000;
-        best[lat.rank(&[1, 1]) as usize] = 6_000;
-        best[lat.rank(&[0, 2]) as usize] = 2_000;
-        best[lat.rank(&[1, 0]) as usize] = 100;
-        best[lat.rank(&[0, 1]) as usize] = 200;
+        best[lat.rank(&[2, 0]).unwrap() as usize] = 10_000;
+        best[lat.rank(&[1, 1]).unwrap() as usize] = 6_000;
+        best[lat.rank(&[0, 2]).unwrap() as usize] = 2_000;
+        best[lat.rank(&[1, 0]).unwrap() as usize] = 100;
+        best[lat.rank(&[0, 1]).unwrap() as usize] = 200;
 
-        let e = leave_value_by_draw(&lat, &best, &unseen, &[0u8, 0u8]);
+        let e = leave_value_by_draw(&lat, &best, &unseen, &[0u8, 0u8]).unwrap();
         assert_eq!(e, equity::Equity::new(6_000));
 
-        let f = leave_value_by_draw(&lat, &best, &unseen, &[1u8, 1u8]);
+        let f = leave_value_by_draw(&lat, &best, &unseen, &[1u8, 1u8]).unwrap();
         assert_eq!(f, equity::Equity::new(6_000));
     }
 
@@ -2085,7 +2273,7 @@ mod tests {
             *slot = h.rem_euclid(20_000) - 5_000;
         }
         for s_idx in 0..lat.len() {
-            let s = lat.tally(s_idx);
+            let s = lat.tally(s_idx).unwrap();
             let s_size: usize = s.iter().map(|&c| c as usize).sum();
             let draw = lat.rack_size() - s_size;
             let mut unseen = [0u8; 3];
@@ -2093,7 +2281,7 @@ mod tests {
                 unseen[t] = pool[t] + s[t];
             }
             let dyn_v = dynamic_leave_value(&lat, &add, &full_v, &pool, s_idx, draw);
-            let ref_v = leave_value_by_draw(&lat, &full_v, &unseen, &s);
+            let ref_v = leave_value_by_draw(&lat, &full_v, &unseen, &s).unwrap();
             assert_eq!(dyn_v, ref_v, "S={s:?} (idx {s_idx})");
         }
     }
@@ -2101,6 +2289,9 @@ mod tests {
     #[test]
     #[inline]
     fn apportion_table_matches_naive() {
+        assert!(n_choose_k(u64::from(u8::MAX), 12).is_err());
+        assert!(i64::MAX.mean(1).is_err());
+        assert!(1i64.divided_exactly(0).is_err());
         let lat = MultisetLattice::new(3, 3).unwrap();
         let unseen = [4u8, 3u8, 2u8];
         let mut best = vec![UNPLAYABLE.raw(); lat.len()];
@@ -2110,16 +2301,16 @@ mod tests {
         }
         let mut num = vec![0i64; lat.len()];
         let mut den = vec![0u64; lat.len()];
-        apportion_table(&lat, &best, &unseen, &mut num, &mut den);
+        apportion_table(&lat, &best, &unseen, &mut num, &mut den).unwrap();
 
         let n = lat.num_letters();
         let mut num_naive = vec![0f64; lat.len()];
         let mut den_naive = vec![0f64; lat.len()];
         for (ridx, &bval) in best.iter().enumerate().skip(lat.full_rack_start()) {
-            let rk = lat.tally(ridx);
+            let rk = lat.tally(ridx).unwrap();
             let mut w = 1.0f64;
             for t in 0..n {
-                w *= n_choose_k(u64::from(unseen[t]), u64::from(rk[t])) as f64;
+                w *= n_choose_k(u64::from(unseen[t]), u64::from(rk[t])).unwrap() as f64;
             }
             if w == 0.0 {
                 continue;
@@ -2133,7 +2324,7 @@ mod tests {
                         s[0] = a;
                         s[1] = b;
                         s[2] = c;
-                        let sr = lat.rank(&s) as usize;
+                        let sr = lat.rank(&s).unwrap() as usize;
                         num_naive[sr] += w * e;
                         den_naive[sr] += w;
                     }
@@ -2189,7 +2380,7 @@ mod tests {
             for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
                 let mut num_a = vec![0i64; lat.len()];
                 let mut den_a = vec![0u64; lat.len()];
-                apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+                apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a).unwrap();
                 for (by_letter, add) in tables.iter().enumerate() {
                     for scatter in [false, true] {
                         for zeta in [false, true] {
@@ -2199,27 +2390,30 @@ mod tests {
                             let mut ways_b = vec![0u64; lat.len() - lo];
                             // what a board before leaves there, never read back
                             maxsheet.fill(UNPLAYABLE.raw());
-                            assert!(apportion_fused(
-                                &lat,
-                                add,
-                                &ApportionBoard {
-                                    sheet: &sheet,
-                                    leave: &leave,
-                                    leave_max: &leave_max,
-                                    unseen: &unseen,
-                                },
-                                ApportionOut {
-                                    num: &mut num_b,
-                                    den: &mut den_b,
-                                    ways: &mut ways_b,
-                                },
-                                &mut maxsheet,
-                                ApportionMode {
-                                    zeta,
-                                    null_leave: false,
-                                    scatter,
-                                },
-                            ));
+                            assert!(
+                                apportion_fused(
+                                    &lat,
+                                    add,
+                                    &ApportionBoard {
+                                        sheet: &sheet,
+                                        leave: &leave,
+                                        leave_max: &leave_max,
+                                        unseen: &unseen,
+                                    },
+                                    ApportionOut {
+                                        num: &mut num_b,
+                                        den: &mut den_b,
+                                        ways: &mut ways_b,
+                                    },
+                                    &mut maxsheet,
+                                    ApportionMode {
+                                        zeta,
+                                        null_leave: false,
+                                        scatter,
+                                    },
+                                )
+                                .unwrap()
+                            );
                             let case = (top, unseen, by_letter, zeta, scatter);
                             for idx in 0..lo {
                                 assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
@@ -2253,7 +2447,7 @@ mod tests {
         for (idx, score) in sheet.iter_mut().enumerate().skip(full_start) {
             *score = (idx as i32 * 101) - 1100;
         }
-        let tallies: Vec<_> = (0..lat.len()).map(|idx| lat.tally(idx)).collect();
+        let tallies: Vec<_> = (0..lat.len()).map(|idx| lat.tally(idx).unwrap()).collect();
 
         for pool in [[4, 3, 2], [1, 2, 0], [0, 1, 1]] {
             for zeta in [false, true] {
@@ -2261,27 +2455,30 @@ mod tests {
                 let mut den = vec![0u64; full_start];
                 let mut ways = vec![0u64; lat.len() - full_start];
                 let mut best = vec![UNPLAYABLE.raw(); lat.len()];
-                assert!(apportion_fused_completions(
-                    &lat,
-                    &add,
-                    &ApportionBoard {
-                        sheet: &sheet,
-                        leave: &leave,
-                        leave_max: &leave,
-                        unseen: &pool,
-                    },
-                    ApportionOut {
-                        num: &mut num,
-                        den: &mut den,
-                        ways: &mut ways,
-                    },
-                    &mut best,
-                    ApportionMode {
-                        zeta,
-                        null_leave: false,
-                        scatter: false,
-                    },
-                ));
+                assert!(
+                    apportion_fused_completions(
+                        &lat,
+                        &add,
+                        &ApportionBoard {
+                            sheet: &sheet,
+                            leave: &leave,
+                            leave_max: &leave,
+                            unseen: &pool,
+                        },
+                        ApportionOut {
+                            num: &mut num,
+                            den: &mut den,
+                            ways: &mut ways,
+                        },
+                        &mut best,
+                        ApportionMode {
+                            zeta,
+                            null_leave: false,
+                            scatter: false,
+                        },
+                    )
+                    .unwrap()
+                );
                 for (idx, kept) in tallies.iter().enumerate().take(full_start) {
                     let mut sum = 0.0;
                     let mut weight = 0;
@@ -2295,6 +2492,7 @@ mod tests {
                                     u64::from(pool[t] - kept[t]),
                                     u64::from(rack[t] - kept[t]),
                                 )
+                                .unwrap()
                             })
                             .product();
                         sum += ways as f64 * f64::from(sheet[ridx]);
@@ -2340,7 +2538,7 @@ mod tests {
         for unseen in [[3u8, 2, 4, 1], [3, 0, 4, 1], [2, 1, 0, 4]] {
             let mut num_a = vec![0i64; lat.len()];
             let mut den_a = vec![0u64; lat.len()];
-            apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+            apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a).unwrap();
             for (by_letter, add) in tables.iter().enumerate() {
                 for null_leave in [false, true] {
                     for zeta in [false, true] {
@@ -2350,27 +2548,30 @@ mod tests {
                         let mut ways_b = vec![0u64; lat.len() - lo];
                         // what a board before leaves there, never read back
                         maxsheet.fill(UNPLAYABLE.raw());
-                        assert!(apportion_fused(
-                            &lat,
-                            add,
-                            &ApportionBoard {
-                                sheet: &sheet,
-                                leave: &leave,
-                                leave_max: &leave_max,
-                                unseen: &unseen,
-                            },
-                            ApportionOut {
-                                num: &mut num_b,
-                                den: &mut den_b,
-                                ways: &mut ways_b,
-                            },
-                            &mut maxsheet,
-                            ApportionMode {
-                                zeta,
-                                null_leave,
-                                scatter: false,
-                            },
-                        ));
+                        assert!(
+                            apportion_fused(
+                                &lat,
+                                add,
+                                &ApportionBoard {
+                                    sheet: &sheet,
+                                    leave: &leave,
+                                    leave_max: &leave_max,
+                                    unseen: &unseen,
+                                },
+                                ApportionOut {
+                                    num: &mut num_b,
+                                    den: &mut den_b,
+                                    ways: &mut ways_b,
+                                },
+                                &mut maxsheet,
+                                ApportionMode {
+                                    zeta,
+                                    null_leave,
+                                    scatter: false,
+                                },
+                            )
+                            .unwrap()
+                        );
                         let case = (unseen, by_letter, zeta, null_leave);
                         for idx in 0..lo {
                             assert_eq!(num_a[idx], num_b[idx], "num at {idx} {case:?}");
@@ -2409,7 +2610,7 @@ mod tests {
         best_equity_table(&lat, &sheet, &leave, &mut best);
         let mut num_a = vec![0i128; lat.len()];
         let mut den_a = vec![0u64; lat.len()];
-        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a).unwrap();
         let add = AddTable::new(&lat);
         let lo = lat.full_rack_start();
         let mut maxsheet = vec![0i32; lat.len()];
@@ -2428,33 +2629,39 @@ mod tests {
             let mut den = vec![0u64; lo];
             let mut ways = vec![0u64; lat.len() - lo];
             let mut narrow = vec![0i64; lo];
-            assert!(!apportion_fused(
-                &lat,
-                &add,
-                &board,
-                ApportionOut {
-                    num: &mut narrow,
-                    den: &mut den,
-                    ways: &mut ways,
-                },
-                &mut maxsheet,
-                mode(),
-            ));
+            assert!(
+                !apportion_fused(
+                    &lat,
+                    &add,
+                    &board,
+                    ApportionOut {
+                        num: &mut narrow,
+                        den: &mut den,
+                        ways: &mut ways,
+                    },
+                    &mut maxsheet,
+                    mode(),
+                )
+                .unwrap()
+            );
             assert!(narrow.iter().all(|&v| v == 0) && den.iter().all(|&v| v == 0));
             let mut wide = vec![0i128; lo];
             ways.fill(0);
-            assert!(apportion_fused(
-                &lat,
-                &add,
-                &board,
-                ApportionOut {
-                    num: &mut wide,
-                    den: &mut den,
-                    ways: &mut ways,
-                },
-                &mut maxsheet,
-                mode(),
-            ));
+            assert!(
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &board,
+                    ApportionOut {
+                        num: &mut wide,
+                        den: &mut den,
+                        ways: &mut ways,
+                    },
+                    &mut maxsheet,
+                    mode(),
+                )
+                .unwrap()
+            );
             assert_eq!(wide[..], num_a[..lo], "zeta={zeta}");
             assert_eq!(den[..], den_a[..lo], "zeta={zeta}");
         }
@@ -2496,7 +2703,7 @@ mod tests {
                     tally[letter as usize] = (run.len() - blanks[i]) as u8;
                     val -= run[..blanks[i]].iter().map(|e| e.1).sum::<i32>();
                 }
-                let slot = &mut sheet[lat.rank(&tally) as usize];
+                let slot = &mut sheet[lat.rank(&tally).unwrap() as usize];
                 *slot = (*slot).max(val);
             }
             // the next count of blanks, as an odometer over the runs
@@ -2542,7 +2749,8 @@ mod tests {
                 &mut placed,
                 &unseen,
                 num_blanks_eff,
-            );
+            )
+            .unwrap();
         }
         let valued = plain.iter().filter(|&&v| v != 0).count();
         assert!(valued > lat.len() / 2, "{valued} of {}", lat.len());
@@ -2553,11 +2761,11 @@ mod tests {
     #[inline]
     fn record_blank_variants_enumerates_designations() {
         let lat = MultisetLattice::new(4, 4).unwrap();
-        let key = |tally: &[u8]| lat.rank(tally) as usize;
+        let key = |tally: &[u8]| lat.rank(tally).unwrap() as usize;
         let run = |placed: &mut [(u8, i32)], unseen: &[u8], blanks: usize, real_score: i32| {
             let mut sheet = vec![0i32; lat.len()];
             let real_score = equity::Equity::new(real_score);
-            record_blank_variants(&lat, &mut sheet, real_score, placed, unseen, blanks);
+            record_blank_variants(&lat, &mut sheet, real_score, placed, unseen, blanks).unwrap();
             sheet
         };
 
@@ -2588,7 +2796,8 @@ mod tests {
             &mut [(1, 10), (1, 4)],
             &[0, 2, 0, 0],
             1,
-        );
+        )
+        .unwrap();
         record_blank_variants(
             &lat,
             &mut sheet,
@@ -2596,25 +2805,28 @@ mod tests {
             &mut [(1, 10), (1, 4)],
             &[0, 2, 0, 0],
             1,
-        );
+        )
+        .unwrap();
         assert_eq!(sheet[key(&[0, 2, 0, 0])], 120); // {A,A} from the better word
         assert_eq!(sheet[key(&[1, 1, 0, 0])], 116); // {blank,A} likewise
     }
 
     #[test]
     fn a_lattice_too_large_to_count_or_hold_is_refused() {
-        let mut rack_size = 1;
-        let lat = loop {
-            match MultisetLattice::new(64, rack_size) {
-                Ok(lat) if lat.len() > isize::MAX as usize / std::mem::size_of::<u64>() => {
-                    break lat;
-                }
-                Ok(_) => rack_size += 1,
-                Err(e) => panic!("refused at rack {rack_size} before too large to hold: {e}"),
-            }
-        };
-        assert!(lat.dense(0u64).is_err());
-        assert!(MultisetLattice::new(64, rack_size + 64).is_err());
+        let max_rack_size = usize::from(u8::MAX);
+        let pascal = crate::prob::Pascal::with_rows(MAX_LETTERS + max_rack_size + 1);
+        let rack_size = (1..=max_rack_size)
+            .find(|&size| {
+                let count = pascal.binom(MAX_LETTERS + size, size);
+                u32::try_from(count).is_err() || usize::try_from(count).is_err()
+            })
+            .unwrap();
+        let lat = MultisetLattice::new(MAX_LETTERS, rack_size - 1).unwrap();
+        assert!(MultisetLattice::new(MAX_LETTERS, rack_size).is_err());
+        if lat.len() > isize::MAX as usize / std::mem::size_of::<u64>() {
+            assert!(lat.dense(0u64).is_err());
+        }
+        assert!(MultisetLattice::new(MAX_LETTERS, rack_size + MAX_LETTERS).is_err());
         let small = MultisetLattice::new(27, 7).unwrap();
         assert_eq!(small.dense(0i32).unwrap().len(), small.len());
     }

@@ -142,7 +142,7 @@ pub fn build_sheet_spell_once<
     movegen_rack: &mut Vec<u8>,
     blank_deltas: &mut Vec<(u8, i32)>,
     sheet: &mut [i32],
-) -> u64 {
+) -> error::Returns<u64> {
     let SpellTables {
         game_config,
         kwg,
@@ -155,6 +155,12 @@ pub fn build_sheet_spell_once<
         rack_size,
         phase,
     } = pool;
+    census::check_letters(unseen_tally.len())?;
+    let num_letters = u8::try_from(unseen_tally.len())?;
+    if usize::from(num_letters) != lat.num_letters() || num_letters != game_config.alphabet().len()
+    {
+        crate::return_error!("inference pool does not match the alphabet and lattice".to_string());
+    }
     let mut n_cand = 0u64;
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles,
@@ -173,9 +179,9 @@ pub fn build_sheet_spell_once<
     };
     if jumbled {
         movegen_rack.clear();
-        for (t, &c) in unseen_tally.iter().enumerate() {
+        for (t, &c) in (0..num_letters).zip(unseen_tally) {
             for _ in 0..c {
-                movegen_rack.push(t as u8);
+                movegen_rack.push(t);
             }
         }
         let mut tally = [0u8; census::MAX_LETTERS];
@@ -195,16 +201,16 @@ pub fn build_sheet_spell_once<
                         tally[if tile & 0x80 != 0 { 0 } else { tile as usize }] += 1;
                     }
                 }
-                let slot = &mut sheet[lat.rank(tally) as usize];
+                let slot = &mut sheet[lat.rank_in_lattice(tally) as usize];
                 *slot = (*slot).max(score);
             },
         );
-        return n_cand;
+        return Ok(n_cand);
     }
     movegen_rack.clear();
-    for (t, &c) in unseen_tally.iter().enumerate() {
+    for (t, &c) in (0..num_letters).zip(unseen_tally) {
         for _ in 0..(c as usize).min(rack_size) {
-            movegen_rack.push(t as u8);
+            movegen_rack.push(t);
         }
     }
     let params = movegen::GenMovesParams {
@@ -215,11 +221,15 @@ pub fn build_sheet_spell_once<
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
     };
+    let mut failure = None;
     // the snapshot holds no tables, so the lean arm alone runs it
     move_generator.gen_census_sheet_lean(
         &params,
         movegen::PlacePredicate::Dyn(
             &mut |down, lane, idx, word: &[u8], _score: equity::Equity| {
+                if failure.is_some() {
+                    return false;
+                }
                 n_cand += 1;
                 let real_score = play_scorer::score_and_blank_deltas(
                     board_snapshot,
@@ -229,21 +239,26 @@ pub fn build_sheet_spell_once<
                     word,
                     blank_deltas,
                 ) + opening_adjustment(phase, game_config, down, idx, word);
-                census::record_blank_variants(
+                if let Err(error) = census::record_blank_variants(
                     lat,
                     sheet,
                     equity::Equity::new(real_score),
                     blank_deltas,
                     unseen_tally,
                     num_blanks_eff,
-                );
+                ) {
+                    failure = Some(error);
+                }
                 false // never keep the move
             },
         ),
         klv::AdjustLeave::Identity,
         movegen::EquityPredicate::RejectAll,
     );
-    n_cand
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(n_cand),
+    }
 }
 
 // what a move shows of the tiles it came from: the tiles it placed (none for a
@@ -477,19 +492,19 @@ pub fn weigh_racks(
         for (r, (&d, &p)) in rack.iter_mut().zip(drawn.iter().zip(placed)) {
             *r = d + p;
         }
-        let rank = lat.rank(rack);
+        let rank = lat.rank_in_lattice(rack);
         let mut best = census::best_equity_of(lat, is.sheet, is.leave, rack).raw();
         if passed {
             best = best.max(is.leave[rank as usize]);
         }
         let (value, kept) = match tiles {
             MoveTiles::Placed(_) => {
-                let kept = lat.rank(drawn);
+                let kept = lat.rank_in_lattice(drawn);
                 (move_value + is.leave[kept as usize], kept)
             }
             MoveTiles::Exchanged(n) => {
                 let (value, kept) =
-                    census::best_keep_of(lat, is.leave, rack, rack_size.saturating_sub(n));
+                    census::best_keep_in_lattice(lat, is.leave, rack, rack_size.saturating_sub(n));
                 (value.raw(), kept)
             }
         };
@@ -614,7 +629,7 @@ pub fn weigh_racks_by_generation<
         for (r, (&d, &p)) in rack.iter_mut().zip(drawn.iter().zip(placed)) {
             *r = d + p;
         }
-        let rank = lat.rank(rack);
+        let rank = lat.rank_in_lattice(rack);
         rack_tiles.clear();
         rack_tiles.extend(
             (0u8..)
@@ -639,7 +654,7 @@ pub fn weigh_racks_by_generation<
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 i32::MIN / 4
                     + (0..=rack_tiles.len())
-                        .map(|keep| census::best_keep_of(lat, leave, rack, keep).0)
+                        .map(|keep| census::best_keep_in_lattice(lat, leave, rack, keep).0)
                         .max()
                         .unwrap_or(census::UNPLAYABLE)
                         .raw()
@@ -651,12 +666,12 @@ pub fn weigh_racks_by_generation<
         }
         let (value, kept) = match tiles {
             MoveTiles::Placed(_) => {
-                let kept = lat.rank(drawn);
+                let kept = lat.rank_in_lattice(drawn);
                 (move_value + leave[kept as usize], kept)
             }
             MoveTiles::Exchanged(n) => {
                 let (value, kept) =
-                    census::best_keep_of(lat, leave, rack, rack_size.saturating_sub(n));
+                    census::best_keep_in_lattice(lat, leave, rack, rack_size.saturating_sub(n));
                 (value.raw(), kept)
             }
         };
@@ -688,7 +703,7 @@ pub fn infer_sheet_for<
     can_exchange: bool,
     scratch: (&mut Vec<u8>, &mut Vec<(u8, i32)>),
     sheet: &mut Vec<i32>,
-) {
+) -> error::Returns<()> {
     let lat = tables.lat;
     let game_config = tables.game_config;
     let rack_size = lat.rack_size();
@@ -700,15 +715,16 @@ pub fn infer_sheet_for<
         tables,
         SpellPool {
             unseen_tally: pool,
-            num_blanks_eff: (pool[0] as usize).min(rack_size),
+            num_blanks_eff: usize::from(pool.first().copied().unwrap_or(0)).min(rack_size),
             rack_size,
             phase: BoardPhase::of_board(board_tiles, game_config),
         },
         scratch.0,
         scratch.1,
         sheet,
-    );
+    )?;
     sheet[lat.size_start(0)] = i32::MIN / 4;
+    Ok(())
 }
 
 // the tiles a move places, as a tally (a blank as tile 0), or how many it
@@ -877,7 +893,7 @@ fn each_keep(
         cap[t] = cap[t + 1] + rack[t] as usize;
     }
     each_tally_of_size(rack, cap, 0, keep, cur, &mut |kept| {
-        let kept = lat.rank(kept);
+        let kept = lat.rank_in_lattice(kept);
         f(kept, best - leave[kept as usize]);
     });
 }
@@ -915,7 +931,7 @@ fn weights_by_keep(
     by_keep.clear();
     by_keep.resize(end - start, 0.0);
     for &(rank, best, ln_prior) in racks {
-        lat.unrank_into(rank as usize, rack);
+        lat.unrank_in_lattice(rank as usize, rack);
         let prior = ln_prior.exp();
         each_keep(
             lat,
@@ -1251,7 +1267,7 @@ fn held_ln_prior(
         terms,
     } = held;
     let (pool, size) = (&carried.pool, carried.size);
-    lat.unrank_into(rank as usize, rack);
+    lat.unrank_in_lattice(rank as usize, rack);
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let rack_size: usize = rack.iter().map(|&c| c as usize).sum();
     let drawn_size: usize = drawn.iter().map(|&c| c as usize).sum();
@@ -1280,7 +1296,7 @@ fn held_ln_prior(
     kept.resize(items.len(), 0);
     terms.clear();
     each_sub_tally(items, 0, size, kept, &mut |kept| {
-        let weight = carried.weights[lat.rank_sparse_iter(
+        let weight = carried.weights[lat.rank_sparse_in_lattice(
             size,
             (items.iter().zip(kept))
                 .filter(|&(_, &k)| k > 0)
@@ -1403,7 +1419,7 @@ fn carry_chunk(
     let mut total = 0.0;
     parts.clear();
     for &(rank, best, ln_prior) in racks {
-        lat.unrank_into(rank as usize, &mut rack);
+        lat.unrank_in_lattice(rank as usize, &mut rack);
         items.clear();
         items.extend(
             (0u8..)
@@ -1428,7 +1444,7 @@ fn carry_chunk(
         kept.clear();
         kept.resize(items.len(), 0);
         each_sub_tally(&items, 0, keep, &mut kept, &mut |kept| {
-            let rank = lat.rank_sparse_iter(
+            let rank = lat.rank_sparse_in_lattice(
                 keep,
                 (items.iter().zip(kept))
                     .filter(|&(_, &k)| k > 0)
@@ -1458,7 +1474,7 @@ fn carry_chunk(
                     &mut |place, ways| sum += by_place[place] * ways,
                 );
                 if sum != 0.0 {
-                    let rank = lat.rank_sparse_iter(
+                    let rank = lat.rank_sparse_in_lattice(
                         size,
                         (items.iter().zip(set))
                             .filter(|&(_, &w)| w > 0)
@@ -1687,9 +1703,9 @@ fn carry_exchange(
             let held = (0u8..)
                 .zip(prefix.iter().copied())
                 .filter(|&(_, count)| count > 0);
-            let first = lat.rank_sparse_iter(size, held.clone()) as usize;
+            let first = lat.rank_sparse_in_lattice(size, held.clone()) as usize;
             let last = if *rest > 0 && k < num_letters {
-                lat.rank_sparse_iter(size, held.chain([(k as u8, *rest as u8)])) as usize
+                lat.rank_sparse_in_lattice(size, held.chain([(k as u8, *rest as u8)])) as usize
             } else {
                 first
             };
@@ -1717,10 +1733,10 @@ fn carry_exchange(
                     let without = (items.iter().enumerate())
                         .map(|(j, &(l, c))| (l, if j == i { c - 1 } else { c }))
                         .filter(|&(_, c)| c > 0);
-                    sum += below[lat.rank_sparse_iter(size - 1, without) as usize - start]
+                    sum += below[lat.rank_sparse_in_lattice(size - 1, without) as usize - start]
                         * f64::from(pool[letter as usize] - count + 1);
                 }
-                span[lat.rank_sparse_iter(size, items.iter().copied()) as usize - *first] +=
+                span[lat.rank_sparse_in_lattice(size, items.iter().copied()) as usize - *first] +=
                     sum / left;
             });
         };
@@ -2136,7 +2152,7 @@ fn kept_leaves_packed_impl<
             can_exchange,
             (movegen_rack, blank_deltas),
             sheet,
-        );
+        )?;
         weigh_racks(
             &InferSheet {
                 lat,
@@ -2176,7 +2192,7 @@ fn kept_leaves_packed_impl<
     kept.clear();
     kept.resize(num_letters, 0);
     for &(rank, _, weight) in weighed.iter() {
-        lat.unrank_into(rank as usize, kept);
+        lat.unrank_in_lattice(rank as usize, kept);
         leave_tiles.clear();
         leave_tiles.extend(
             (0u8..)
@@ -2345,7 +2361,7 @@ fn reply_sums(
         let deals = (drawn.iter().zip(ways.chunks_exact(stride)))
             .map(|(&d, ways)| ways[d as usize])
             .product::<u64>();
-        let rank = lat.rank(rack) as usize;
+        let rank = lat.rank_in_lattice(rack) as usize;
         let mut best = census::best_equity_of(lat, sheet, leave, rack).raw();
         if best < i32::MIN / 8 {
             best = leave[rank];
@@ -2524,7 +2540,7 @@ pub fn reply_to<
         can_exchange,
         (movegen_rack, blank_deltas),
         sheet,
-    );
+    )?;
     let (lat, sheet, leave, pool) = (&*lat, &sheet[..], &leave[..], &pool[..]);
     let mut reply_holding = |tally: &[u8]| -> error::Returns<Reply> {
         let n = tally.iter().map(|&c| c as usize).sum::<usize>();
@@ -2832,7 +2848,8 @@ mod tests {
                     true,
                     (&mut Vec::new(), &mut Vec::new()),
                     &mut sheet,
-                );
+                )
+                .unwrap();
                 sheet
             };
             let want = sheet_under(&game_config::make_english_game_config(), &classic);
@@ -2980,8 +2997,8 @@ mod tests {
         // a rack of AAB keeping one: B is worth 3.105 points more than A
         let lat = census::MultisetLattice::new(3, 3).unwrap();
         let mut leave = vec![0i32; lat.len()];
-        leave[lat.rank(&[0, 1, 0]) as usize] = 1_000;
-        leave[lat.rank(&[0, 0, 1]) as usize] = 4_105;
+        leave[lat.rank(&[0, 1, 0]).unwrap() as usize] = 1_000;
+        leave[lat.rank(&[0, 0, 1]).unwrap() as usize] = 4_105;
         let mut keeps = Vec::new();
         each_keep(
             &lat,
@@ -2989,7 +3006,7 @@ mod tests {
             (&[0, 2, 1], &mut [0u8; 3], &mut [0usize; 4]),
             4_112,
             1,
-            &mut |kept, gap| keeps.push((lat.tally(kept as usize), gap)),
+            &mut |kept, gap| keeps.push((lat.tally(kept as usize).unwrap(), gap)),
         );
         keeps.sort_unstable();
         assert_eq!(keeps, [(vec![0, 0, 1], 7), (vec![0, 1, 0], 3_112)]);
@@ -2997,7 +3014,7 @@ mod tests {
         weights_by_keep(
             &lat,
             &leave,
-            &[(lat.rank(&[0, 2, 1]), 4_112, 0.0)],
+            &[(lat.rank(&[0, 2, 1]).unwrap(), 4_112, 0.0)],
             (1, 7, equity_fuzz(3.105).unwrap()),
             &mut KeepScratch::default(),
             &mut weighed,
@@ -3071,7 +3088,8 @@ mod tests {
             true,
             (&mut Vec::new(), &mut Vec::new()),
             &mut sheet,
-        );
+        )
+        .unwrap();
         let is = InferSheet {
             lat,
             sheet: &sheet,
@@ -3094,7 +3112,7 @@ mod tests {
                     lat,
                     leave,
                     (
-                        &lat.tally(rank as usize),
+                        &lat.tally(rank as usize).unwrap(),
                         &mut vec![0u8; lat.num_letters()],
                         &mut vec![0usize; lat.num_letters() + 1],
                     ),
@@ -3147,7 +3165,7 @@ mod tests {
         let one = infer_on(1);
         assert_eq!(one.len(), by_list.len());
         for ((tiles, weight), b) in one.iter().zip(&by_list) {
-            assert_eq!(lat.rank_bytes(tiles), b.0);
+            assert_eq!(lat.rank_bytes(tiles).unwrap(), b.0);
             assert_eq!(weight.to_bits(), b.2.to_bits());
         }
         assert_eq!(infer_on(4), one);
@@ -3353,7 +3371,7 @@ mod tests {
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 i32::MIN / 4
                     + (0..=rack_tiles.len())
-                        .map(|keep| census::best_keep_of(lat, leave, rack, keep).0)
+                        .map(|keep| census::best_keep_of(lat, leave, rack, keep).unwrap().0)
                         .max()
                         .unwrap()
                         .raw()
@@ -3362,7 +3380,7 @@ mod tests {
         };
         let mut placed = vec![0u8; rack.len()];
         let (exchanged, value) = move_tiles_and_value(&board_snapshot, play, &mut placed);
-        let worth = |kept: &[u8]| leave[lat.rank(kept) as usize];
+        let worth = |kept: &[u8]| leave[lat.rank(kept).unwrap() as usize];
         match exchanged {
             Some(n) => tallies_of(rack, rack_tiles.len() - n)
                 .into_iter()
@@ -3571,7 +3589,7 @@ mod tests {
         let start = lat.size_start(5);
         let mut weights = vec![0.0; lat.size_start(6) - start];
         for (leave, weight) in normalized(leaves3.iter().cloned()) {
-            weights[lat.rank_bytes(&leave) as usize - start] += weight;
+            weights[lat.rank_bytes(&leave).unwrap() as usize - start] += weight;
         }
         let keeps = Carried {
             pool: carried3.pool.clone(),
@@ -3835,7 +3853,8 @@ mod tests {
             true,
             (&mut tables.movegen_rack, &mut tables.blank_deltas),
             &mut tables.sheet,
-        );
+        )
+        .unwrap();
         let ln_binom = LnBinom::new(pool_size);
         let is = InferSheet {
             lat: &tables.lat,
@@ -4623,7 +4642,8 @@ mod tests {
                         true,
                         (&mut Vec::new(), &mut Vec::new()),
                         &mut sheet,
-                    );
+                    )
+                    .unwrap();
                     let board_snapshot = movegen::BoardSnapshot {
                         board_tiles: &board_tiles,
                         game_config: &gc,
@@ -4656,7 +4676,7 @@ mod tests {
                             want = want.max(score);
                             played += 1;
                         }
-                        let got = sheet[lat.rank(tally) as usize];
+                        let got = sheet[lat.rank(tally).unwrap() as usize];
                         assert_eq!(got, want, "{jumbled} {side} {rack:?} {board_tiles:?}");
                         racks_checked += 1;
                     };
