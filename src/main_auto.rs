@@ -555,7 +555,7 @@ fn do_it(
                                     &play.play,
                                     leave_scale,
                                     recounted_score,
-                                );
+                                )?;
                                 if play.equity.raw() != recounted_equity {
                                     issues += 1;
                                     writeln!(

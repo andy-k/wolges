@@ -2633,7 +2633,7 @@ impl Session {
             &play,
             move_filter::LEAVE_SCALE_DENOM,
             score.raw(),
-        );
+        )?;
         let begun = self.sim.is_none();
         let sim = self.sim_mut()?;
         match sim.move_generator.plays.iter().position(|v| v.play == play) {
