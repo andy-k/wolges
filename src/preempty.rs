@@ -1567,10 +1567,12 @@ mod tests {
         state.bag.set_from_iter([1]);
         let mut original = simmer::Simmer::new(&f.gc).unwrap();
         original.set_preempty(Some(&move_filter::GenMoves::Unfiltered));
-        original.prepare(&f.gc, &state, &simmer::SimChoices::new(1, false, &[]));
-        let mut worker = original.prepared_clone(&f.gc);
+        original
+            .prepare(&f.gc, &state, &simmer::SimChoices::new(1, false, &[]))
+            .unwrap();
+        let mut worker = original.prepared_clone(&f.gc).unwrap();
         assert!(worker.preempty_enabled());
-        worker.prepare_iteration(None);
+        worker.prepare_iteration(None).unwrap();
         let dealt = worker.prepared_state();
         let rack = &dealt.players[1].rack;
         let snap = f.snap();
