@@ -203,13 +203,6 @@ impl LaneScaffold {
             &mut self.precomputed_square_multiplier[low_end..high_end];
         let indexes_to_descending_square_multiplier_slice =
             &mut self.indexes_to_descending_square_multiplier[low_end..high_end];
-        // a square's key: its multiplier flipped to sort descending, then its
-        // index. Each square's key is written at the count of empty squares
-        // before it, kept only if the square is empty (no branch on it: a
-        // tile's key is written over or cut), and a key's rank is the count of
-        // keys below it (they differ), found with no compare a branch, where a
-        // sort's compares were mispredicted. A tile's square's multiplier is
-        // never read.
         if self.square_keys.len() < strider_len {
             self.square_keys.resize(strider_len, 0);
         }
@@ -429,9 +422,7 @@ impl ShadowScores {
 }
 
 // a square a walk took: its multiplier under the walk's word multiplier in the
-// high half, the square in the low byte, as one word, so that each is written
-// and read whole (as a pair of an i32 and a u8 it was two stores, and the wide
-// loads that copy a list or shift it read them back only after they landed)
+// high half, the square in the low byte
 #[derive(Clone, Copy, Default)]
 struct Taken(u64);
 
@@ -1161,8 +1152,6 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         let mut score_gained = 0i32;
         let mut unknown = false;
         let board = &board_snapshot.board_tiles[..area];
-        // sixteen squares at a time: a generation's board mostly differs from
-        // the last one's in a few
         let mut base = 0;
         while base < area {
             let end = (base + 16).min(area);
@@ -1268,9 +1257,6 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             }
         }
 
-        // a full rack's leaves and subracks' order from the leaves' rack table,
-        // when the leaves are taken as walked: no adjustment, no dynamic
-        // leaves, and tiles left in the bag
         let setup = if self.num_tiles_in_bag > 0
             && dynamic_leaves.is_none()
             && matches!(adjust_leave_value, klv::AdjustLeave::Identity)
@@ -1293,7 +1279,6 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         });
         if self.num_tiles_in_bag <= 0 {
             if !LEAVES {
-                // no leave is read: the digits alone, and no table
                 self.multi_leaves
                     .init_digits(&self.rack_tally, dense_most, std::iter::empty());
             } else {
@@ -1321,8 +1306,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = play_out_bonus;
         } else {
-            // the bag term by tiles played: none for none played (a pass or an
-            // exchange); the bag is not empty here
+            // the bag is not empty here
             let bag = self.num_tiles_in_bag;
             let on_rack = self.num_tiles_on_rack as i16;
             let bag_terms = (if BAG_TERM {
@@ -1641,11 +1625,9 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         let mut sum = SpanPrefix::new();
         let mut empty = 0u128;
         let mut multiplied = 0u128;
-        // on an instance whose lane sets are u16 (W), in u16
         let narrow = W::BITS == u16::BITS;
         let mut empty16 = 0u16;
         let mut multiplied16 = 0u16;
-        // or u32 (W), in u32
         let mid = W::BITS == u32::BITS;
         let mut empty32 = 0u32;
         let mut multiplied32 = 0u32;
@@ -1867,7 +1849,6 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                 let mut q = kwg.seek(p_right, tile);
                                 if q > 0 {
                                     for qi in (prev_j..j - 1).rev() {
-                                        // mask off the blank bit: the seek needs the bare letter.
                                         q = kwg
                                             .seek(q, cross_set_buffer[qi as usize].b_letter & 0x7f);
                                         if q <= 0 {
@@ -1886,7 +1867,6 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                 let mut q = kwg.seek(p_left, tile);
                                 if q > 0 {
                                     for qi in j..j_end {
-                                        // mask off the blank bit: the seek needs the bare letter.
                                         q = kwg
                                             .seek(q, cross_set_buffer[qi as usize].b_letter & 0x7f);
                                         if q <= 0 {
@@ -2081,8 +2061,7 @@ impl SpanCheck for () {
 // a span through board tiles holds a word only if the key filter holds some
 // subrack of its size plus the tiles it crosses; the answer kept a generation
 // by (the crossed tiles' key, the tiles played). Asked only of a span that
-// plays min_played tiles or more: a shorter span nearly always holds a word, so
-// its probes would cost more than they save.
+// plays min_played tiles or more
 struct KeyCheck<'a> {
     source: &'a anagrams::Anagrams,
     subracks: &'a [Subrack],
@@ -3886,8 +3865,7 @@ impl RunLetters for &[u64] {
     }
 }
 
-// a lean walk's read of a strip at i (an i8), unchecked: the optimized walk
-// paid a bounds check on every read
+// a lean walk's read of a strip at i (an i8), unchecked
 macro_rules! strip_at {
     ($strip:expr, $i:expr) => {{
         let (strip, i) = ($strip, $i);
@@ -4095,7 +4073,6 @@ fn gen_classic_place_moves_lean<
                     }
                 }
             });
-            // a candidate tile played at node p of the run
             macro_rules! visit {
                 ($p:expr, $node:expr, $tile:expr) => {{
                     let (p, node, tile) = ($p, $node, $tile);
@@ -4346,8 +4323,6 @@ fn gen_classic_place_moves_lean<
                 }
             }
         });
-        // a candidate tile played at node p of the run, or the turn to the
-        // right at its tile 0
         macro_rules! visit {
             ($p:expr, $node:expr, $tile:expr) => {{
                 let (p, node, tile) = ($p, $node, $tile);
@@ -4967,8 +4942,6 @@ fn build_subracks<P: alphagram::KeyPlaces>(
     (order, spare): (&mut Vec<u64>, &mut Vec<Subrack>),
     (given, saved_shape): (Option<&[u8]>, Option<RackShape<'_>>),
 ) {
-    // walked into spare and copied over in order, so neither vector trades its
-    // capacity for the other's
     walk_subracks(multi_leaves, places, rack_tally, first_places, spare);
     subracks.clear();
     match given {
@@ -5162,8 +5135,6 @@ fn gen_classic_place_moves<
         let allowed = &env.params.allowed_strip[left..left + len as usize];
         debug_assert_eq!(found.len, len);
         'word: for word in found.iter() {
-            // each letter's test against what its square allows is and-ed in,
-            // so a word takes one branch, not one a letter
             let mut fits = 1u64;
             for (&a, &c) in allowed.iter().zip(word) {
                 fits &= a >> c;
@@ -5367,10 +5338,8 @@ fn gen_classic_place_moves<
     let lo = env.params.span_prefix[leftmost as usize];
     let hi = env.params.span_prefix[rightmost as usize];
     let (word_multiplier, blank_ok) = if W::BITS == u16::BITS {
-        // an instance's lanes in u16 sets (W)
         span_sets_u16(env.params, leftmost, rightmost, letters)
     } else if W::BITS == u32::BITS {
-        // an instance's lanes in u32 sets (W)
         span_sets_u32(env.params, leftmost, rightmost, letters)
     } else {
         let span_bits = (u128::MAX >> (128 - rightmost as u32)) & (u128::MAX << leftmost as u32);
@@ -5476,11 +5445,6 @@ fn gen_classic_place_moves<
             let from = env.params.subracks_by_played[e.num_played as usize] as usize;
             let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
             let kept_from = env.params.span_memo.visits.len() as u32;
-            // the key filter is probed for the subracks above the threshold a
-            // mask's width at a time, without a branch each (a probe's branch
-            // went either way and was mispredicted), the blank filter for those
-            // with one blank, then the ones they may hold and those with more
-            // blanks are visited in order
             let width = u64::BITS as usize;
             let mut base = from;
             let mut cut_at = i32::MAX;
@@ -6222,7 +6186,6 @@ impl JumbledMultisets {
         for &size in &self.found {
             ends[size as usize] += 1;
         }
-        // each list's start, then each advanced past its multisets to its end
         let mut at = from as u32;
         for end in ends.iter_mut() {
             let count = *end;
@@ -6230,7 +6193,6 @@ impl JumbledMultisets {
             at += count;
         }
         self.by_size.resize(from + self.found.len(), 0);
-        // each multiset as many letters as its size, after those before it
         let mut offset = self.found_from as u32;
         for &size in &self.found {
             let end = &mut ends[size as usize];
@@ -7090,7 +7052,6 @@ fn gen_jumbled_place_moves_walk<
         } else {
             let bits = env.params.allowed_strip[idx_l as usize];
             if bits == 1 {
-                // no letter can go here, so no span reaches past it.
                 break;
             }
             if bits & 1 == 0 {
@@ -7101,7 +7062,6 @@ fn gen_jumbled_place_moves_walk<
                 break;
             }
         }
-        // a word cannot start where a board tile touches it from the left.
         if idx_l == leftmost || env.params.board_strip[idx_l as usize - 1] == 0 {
             let mut main_score_right = 0;
             let mut empty_right = 0u8;
@@ -7109,7 +7069,6 @@ fn gen_jumbled_place_moves_walk<
             let mut idx_r = anchor;
             loop {
                 let num_played = empty_left + empty_right;
-                // one tile needs single_tile_plays or a square with no cross set
                 let is_unique = single_tile_plays || free_left || free_right;
                 if num_played > !is_unique as u8
                     && idx_r > idx_l
@@ -8929,8 +8888,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             });
             equity::Equity::NEG_INFINITY
         };
-        // the copy for any side in G, or (a generator with none: the wasm's)
-        // the copy compiled for the board's side
         let dim = board_snapshot.game_config.board_layout().dim();
         if working_buffer.num_tiles_on_board == 0 {
             if ANY_SIDE {
@@ -9104,7 +9061,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             threshold.set(floor);
         }
 
-        // an empty board's leave value comes with the opening's penalty
         let found_place_move = |down: bool,
                                 lane: i8,
                                 idx: i8,
@@ -9129,7 +9085,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             }
             threshold.get()
         };
-        // a rack of one tile has its plays from the cross sets, with no walk
         if working_buffer.num_tiles_on_rack == 1 {
             lean_cross_sets::<0, _, _, _, _, _>(params.board_snapshot, working_buffer);
             kurnia_gen_one_tile_moves(
@@ -9165,8 +9120,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 breathe().await;
             }
         }
-        // with the threshold above the best an exchange can be, push_move would
-        // turn each one away
         if threshold.get()
             <= best_exchange_equity::<BAG_TERM>(
                 params.board_snapshot.game_config,
@@ -9221,7 +9174,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     }
 
     #[inline(always)]
-    // The census sheet wants each WORD once, not each PLAY, so its descent
+    // the census sheet wants each word once, not each play, so its descent
     // takes a real tile before a blank. That is a different generator, not a
     // setting: the placement path that reads the anagrams does not run it, so
     // the census is the lean arm's, as gen_census_sheet_lean.
@@ -9897,7 +9850,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         // walks
         let no_leaves = matches!(equity_predicate, EquityPredicate::RejectAll);
         let mut empty_klvs = std::mem::take(&mut self.empty_klvs);
-        // a snapshot whose klv already has no leaves is read as it is
         let empty = (no_leaves && !params.board_snapshot.klv.is_empty())
             .then(|| L::kept_empty_klv(&mut empty_klvs))
             .flatten();
@@ -9991,9 +9943,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         lean: bool,
         mut other: OtherLeaves<'_, L>,
     ) {
-        // the generation by the tables (keyed by nibbles where they are, else
-        // by their layout); a turn it hands back, or a game with no anagrams,
-        // is the lean arm's
         let handed_back = match params.board_snapshot.anagrams.filter(|_| !lean) {
             Some(anagrams) if anagrams.nibble_side().is_some() => self
                 .gen_moves_tables::<15, u16, ByNibble, _, _>(
@@ -10004,8 +9953,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     steer,
                     other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
                 ),
-            // keyed by the tables' layout, compiled for a 15 by 15 board, a 21
-            // by 21 one, else for any
             Some(_)
                 if {
                     let dim = params.board_snapshot.game_config.board_layout().dim();
@@ -10164,9 +10111,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             working_buffer.multi_leaves.dense_most(),
             other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
         );
-        // what the arm plays: a classic turn its tables take (by nibble keys,
-        // once its tables fit the game's counts as init asked them and init
-        // made the subracks); a jumbled game is the lean arm's
         let classic = if T::NIBBLES {
             working_buffer.anagrams_fit_config && !working_buffer.subracks.is_empty()
         } else {
@@ -10235,8 +10179,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             }
             threshold.get()
         };
-        // steered (Steer): the lanes the walk may take narrowed to those
-        // touched and those of the others whose best equity is the best
         let lanes_before = (working_buffer.lane_rows, working_buffer.lane_cols);
         if let Some(steer) = steer
             && steer.census.nibbles == T::NIBBLES
@@ -10419,8 +10361,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         let working_buffer = &mut self.working_buffer;
-        // a generation keeping no play reads no leave, so keeps no leaves'
-        // table
         let dense_most = if matches!(equity_predicate, EquityPredicate::RejectAll) {
             0
         } else {
@@ -10447,7 +10387,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 .max(equity::Equity::new(working_buffer.jumbled.floor)),
         );
 
-        // an empty board's leave value comes with the opening's penalty
         let mut selected = CappedMoves {
             kept: K::from_vec(std::mem::take(&mut self.plays)),
             predicate: equity_predicate,
@@ -10494,8 +10433,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         };
         let empty = working_buffer.num_tiles_on_board == 0;
         match runs {
-            // a rack of one tile has its plays from the cross sets, with no
-            // walk
             _ if working_buffer.num_tiles_on_rack == 1 => {
                 lean_cross_sets::<D, _, _, _, _, _>(params.board_snapshot, working_buffer);
                 kurnia_gen_one_tile_moves(
@@ -10700,7 +10637,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         found_word: FoundWord,
     ) {
-        // with no limit, nothing is refused
         let _ = self.gen_remaining_words_within(board_snapshot, None, found_word);
     }
 
@@ -10821,7 +10757,6 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 );
             }
         }
-        // the next generation computes every cross set again, its own way
         working_buffer.prev_board_tiles.fill(0xff);
     }
 }
@@ -11767,7 +11702,6 @@ fn gen_empty_board_place_moves_made<
         if candidates == 0 || !env.runs.may_hold(p, candidates) {
             return;
         }
-        // a candidate tile at node p of the run, a real one before a blank
         macro_rules! visit {
             ($node:expr, $tile:expr) => {{
                 let (node, tile) = ($node, $tile);
@@ -12330,7 +12264,6 @@ fn kurnia_gen_raw_place_moves<
             &mut working_buffer.word_buffer_for_across_plays[start..end]
         };
         for &(anchor, leftmost, rightmost) in anchors.iter().rev() {
-            // a raw generation drops the leave, so the walk need not find it
             gen_place_moves_lean::<false, false, _, _, _, _>(
                 &mut GenPlaceMovesParams {
                     board_snapshot,
@@ -12688,8 +12621,6 @@ impl RcsGeometry<'_> {
     fn record(&mut self, walk: &RcsWalk, list: &[Taken], anchor: i8, left: i8, right: i8) {
         let at = self.kept.multipliers.len();
         let n = walk.num_played as usize;
-        // a fixed count of entries copied, then the rest of a longer span's, or
-        // those past the span's dropped
         self.kept.multipliers.extend_from_slice(&list[..RCS_COPIED]);
         if n > RCS_COPIED {
             self.kept
@@ -12771,8 +12702,6 @@ impl RcsGeometry<'_> {
         rightmost: i8,
     ) {
         let n = walk.num_played as usize;
-        // a fixed count of entries copied, then the rest of a longer walk's
-        // (those past the walk's are never read)
         lists.right[..RCS_COPIED].copy_from_slice(&lists.left[..RCS_COPIED]);
         if n > RCS_COPIED {
             lists.right[RCS_COPIED..n].copy_from_slice(&lists.left[RCS_COPIED..n]);
@@ -13110,8 +13039,6 @@ fn rcs_placements<
             } else {
                 stale_rows = stale_rows & !lane_bit;
             }
-            // every span any rack has, as the shadow pass finds them with every
-            // letter on hand and no count running out
             let mut jumps = std::mem::take(&mut kept.jumps);
             fill_multi_jumps::<D>(alphabet, tiles, &mut jumps);
             kept.spans.clear();
@@ -13247,10 +13174,6 @@ fn rcs_lane_placements(
         {
             continue;
         }
-        // by Abel's sum, the multipliers' steps (each >= 0) times the least of
-        // the rack's best scores and the squares' caps so far: summed the
-        // other way, each multiplier times what its square adds to that least
-        // (which never falls), the same sum with no look ahead
         let multipliers =
             &kept.multipliers[span.at as usize..span.at as usize + span.num_played as usize];
         let mut bound = span.fixed + best_leave_values[span.num_played as usize];
@@ -13275,7 +13198,6 @@ fn rcs_lane_placements(
             kept_at: span.at,
         });
     }
-    // the lane's caps back to none for the next
     let mut hooks = kept.hooks;
     while hooks != 0 {
         caps[hooks.trailing_zeros() as usize] = unrestricted_cap;
@@ -14615,7 +14537,6 @@ fn gen_remaining_words<
             kept_shapes.push((first, len));
         }
     }
-    // the lone words, then every line's last walk's words
     kept.clear();
     lone_words(
         board_snapshot.kwg,
@@ -15148,7 +15069,6 @@ mod tests {
                         rack_lengths: None,
                         klv: &klv,
                     };
-                    // the place plays with their scores, sorted
                     let places = |g: &KurniaMoveGenerator| {
                         let mut lines = g
                             .plays
@@ -15346,8 +15266,6 @@ mod tests {
                             if other == kept {
                                 continue;
                             }
-                            // a generation on a few lanes leaves the others
-                            // unlooked at
                             if round == 1 {
                                 move_generator.working_buffer.lane_rows = 1 << 7;
                                 move_generator.working_buffer.lane_cols = (1 << 6) | (1 << 9);
@@ -15411,7 +15329,6 @@ mod tests {
                         rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                         klv: &klv,
                     };
-                    // the place moves on the masks' lanes, as text, sorted
                     let on = |plays: &[ValuedMove], rows: u128, cols: u128| {
                         let mut lines = plays
                             .iter()
@@ -18757,7 +18674,6 @@ mod tests {
                 rack_lengths: nibbles.rack_lengths(),
                 klv: &klv,
             };
-            // the generation leaves the board's cross sets and multipliers
             place_plays(&mut generator, &snapshot, &rack, false);
             let wb = &mut generator.working_buffer;
             for at in 0..30 {
