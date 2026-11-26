@@ -2962,7 +2962,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         let passes = deficit.div_ceil(forced.len() as u64);
         forced_len = forced.len() as u64 * passes;
         forced_next.store(0, std::sync::atomic::Ordering::Relaxed);
-        // shuffled, so a snapshot's block is not racks next to each other in order
         let mut rng = GameRng::seed_from_u64(census_mix64(seed.wrapping_add(round)));
         for i in (1..forced.len()).rev() {
             forced.swap(i, rng.random_range(0..=i));
@@ -4101,8 +4100,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf).raw();
             ever[idx] = true;
         }
-        // and its means before their rounding, beside it, where the run that
-        // wrote it kept them (census_means_bytes)
         let mut exact = leave_cur.iter().map(|&v| v as f64).collect::<Vec<_>>();
         let means = census_means_path(&path);
         match read_input(&means) {
@@ -4314,7 +4311,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if let Some(slot) = cache_slot {
                         *slot.lock().unwrap() = Some((sheet.clone(), unseen_tally.clone()));
                     }
-                    } // end of the !reuse step-1 build branch
+                    }
 
 
                     let ts = std::time::Instant::now();
@@ -4363,8 +4360,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         ));
                     }
                     // each multiset's mean on this board, in the buffer
-                    // apportion_fused is done with: a full rack drawn keeps its
-                    // best there, which is its mean
                     let contrib = &mut maxsheet;
                     let (below, full) = contrib.split_at_mut(lo);
                     for (idx, slot) in below.iter_mut().enumerate() {
@@ -4440,8 +4435,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         seed.wrapping_add(census_mix64(b)),
                     ));
 
-                    // a board --min-boards adds past the generation's count was
-                    // never cached, so it is played afresh
                     let reuse_board = sheet_reuse
                         && (b as usize) < prior_max_boards
                         && b < board_counts[gen_idx];
@@ -4507,15 +4500,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             };
                             game_state.next_turn();
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                break; // game ended before the window; try a fresh game.
+                                break;
                             }
                         }
                         if got {
                             break;
                         }
                         tries += 1;
-                        // a slot plays fresh games until one stops in the
-                        // window, and says so each second it keeps missing
                         let secs = t_slot.elapsed().as_secs();
                         if !quiet && secs > ticked {
                             ticked = secs;
@@ -4523,7 +4514,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 "census: board slot {b} after {secs}s, {tries} games, none stopped in window [{low_tiles},{high_tiles}]").ok();
                         }
                     }
-                    } // end of the !reuse_board game replay
+                    }
                     value_board(
                         &mut move_generator,
                         &game_state,
@@ -4545,9 +4536,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
                     }
 
-                    // --min-boards: once the last generation's boards are done,
-                    // its leader finds the least-covered full rack and adds
-                    // boards for it, and every thread samples on
                     if min_boards > 0 && gen_idx + 1 == gens {
                         if barrier.wait().is_leader()
                             && !failed.load(std::sync::atomic::Ordering::Relaxed)
@@ -4799,8 +4787,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut totals = csv::Writer::from_writer(Vec::new());
     totals.serialize(("", total_points, total_count))?;
     summary_out.write_all(&totals.into_inner().map_err(|e| e.into_error())?)?;
-    // each full rack's row, a share of them a thread: each share's rows go to
-    // its own buffer, and the buffers then to the file in order
     let share = full_racks.len().div_ceil(threads.max(1));
     let (accum_sum, accum_cnt, lat) = (&accum_sum, &accum_cnt, &lat);
     let shares = std::thread::scope(|s| {
@@ -5415,7 +5401,6 @@ impl Losses {
         let mut floor = *top;
         let mut first = None;
         let mut shown = |equity: equity::Equity, play: &movegen::Play| {
-            // a play below the top and at or below the floor changes nothing
             if equity < *top && equity <= floor {
                 return true;
             }
@@ -5746,7 +5731,6 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
     }
     racks.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    // the lists, a size at a time: rack loss, count, word loss, and move loss
     let mut lists = Vec::<(usize, &str, fash::MyHashSet<bites::Bites>)>::new();
     let mut tally = vec![0u8; alphabet.len() as usize];
     for &size in sizes {
@@ -6034,9 +6018,6 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
                             };
-                            // one move generation finds the top, its tied top
-                            // plays, the words and racks they formed, what not
-                            // knowing them costs, and the play made
                             let play = losses.play_turn(&params)?;
 
                             // each word a tied top play formed, with the play
@@ -7868,7 +7849,6 @@ fn parse_infer_play<N: kwg::Node, L: kwg::Node>(
             if !(1..=game_config.rack_size() as usize).contains(&n) {
                 wolges::return_error!(format!("{s:?}: cannot exchange {n} tiles"));
             }
-            // only the count is seen; the tiles stand in for it
             Ok(movegen::Play::Exchange {
                 tiles: vec![0u8; n][..].into(),
             })
@@ -8320,7 +8300,6 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
             let arm_tables = &arm_tables;
             let claimed_games = &claimed_games;
             let (finished_games, tick, weighed) = (&finished_games, &tick, &weighed);
-            // each move's own sheet goes in at the move
             let is = InferSheet {
                 lat: &lat,
                 sheet: &[],
@@ -8517,7 +8496,6 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                         game_state.play(game_config, &mut rng, play)?;
                         num_turns += 1;
                         let secs = t0.elapsed().as_secs();
-                        // a line a second, from the first thread to end a turn in it
                         if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs {
                             writeln!(
                                 boxed_stdout_or_stderr(),
@@ -8539,8 +8517,6 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                 Ok((out, buckets))
             }));
         }
-        // each thread's moves and buckets after the others', the moves' places
-        // moved with them
         let mut moves = Vec::new();
         let mut all_buckets = Vec::new();
         for handle in thread_handles {
@@ -8818,7 +8794,6 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 break;
                             }
                             let secs = t0.elapsed().as_secs();
-                            // a line a second, from the first thread to begin a board in it
                             if !quiet
                                 && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs
                             {
@@ -9138,7 +9113,6 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         game_state.play(game_config, &mut rng, play)?;
                         num_turns += 1;
                         let secs = t0.elapsed().as_secs();
-                        // a line a second, from the first thread to end a turn in it
                         if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs {
                             writeln!(
                                 boxed_stdout_or_stderr(),
@@ -9159,8 +9133,6 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 Ok((out, cands))
             }));
             }
-            // each thread's positions and candidates after the others', the
-            // positions' places moved with them
             let mut positions = Vec::new();
             let mut all_cands = Vec::new();
             for handle in thread_handles {
