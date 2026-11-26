@@ -5223,7 +5223,7 @@ struct Losses {
     top: equity::Equity,
     tied: Vec<Vec<bites::Bites>>,  // the words each tied top play formed
     racks: Vec<Vec<bites::Bites>>, // the racks of each tied top play
-    tied_keys: Vec<Vec<bites::Bites>>, // the racks of each tied top play
+    tied_keys: Vec<Vec<bites::Bites>>, // the sorted tiles of the words each tied top play formed
     tied_best: Vec<Option<equity::Equity>>, // best forming none, if exact
     solved: Vec<(usize, equity::Equity)>, // by racks avoided: first tied top play
     move_loss: fash::MyHashMap<bites::Bites, f64>,
