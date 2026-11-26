@@ -225,13 +225,19 @@ impl<'a> From<&'a movegen::ValuedMove> for JsonPlayRefWithEquity<'a> {
     }
 }
 
-impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
+impl TryFrom<&JsonPlayWithEquity> for movegen::ValuedMove {
+    type Error = crate::error::BoxAnyError;
+
     #[inline(always)]
-    fn from(play: &JsonPlayWithEquity) -> Self {
-        Self {
-            equity: equity::Equity::new((play.equity * f64::from(equity::SCALE)).round() as i32),
-            play: (&play.play).into(),
+    fn try_from(play: &JsonPlayWithEquity) -> Result<Self, Self::Error> {
+        let millis = (play.equity * f64::from(equity::SCALE)).round();
+        if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&millis) {
+            crate::return_error!(format!("play equity is out of range: {}", play.equity));
         }
+        Ok(Self {
+            equity: equity::Equity::new(millis as i32),
+            play: (&play.play).into(),
+        })
     }
 }
 
@@ -406,8 +412,22 @@ mod tests {
             ),
         ] {
             let play = serde_json::from_str::<JsonPlayWithEquity>(json).unwrap();
-            let valued = movegen::ValuedMove::from(&play);
+            let valued = movegen::ValuedMove::try_from(&play).unwrap();
             assert_eq!(valued.equity, equity::Equity::new(millipoints), "{json}");
+        }
+        for equity in [
+            (f64::from(i32::MAX) + 1.0) / f64::from(equity::SCALE),
+            (f64::from(i32::MIN) - 1.0) / f64::from(equity::SCALE),
+            f64::INFINITY,
+            f64::NAN,
+        ] {
+            let play = JsonPlayWithEquity {
+                equity,
+                play: JsonPlay::Exchange {
+                    tiles: [][..].into(),
+                },
+            };
+            assert!(movegen::ValuedMove::try_from(&play).is_err(), "{equity}");
         }
     }
 
