@@ -288,7 +288,7 @@ fn write_leaves<T>(
     w += 4;
     bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
     w += leaves_kwg.len();
-    bin[w..w + 4].copy_from_slice(&(leaves.len() as u32).to_le_bytes());
+    bin[w..w + 4].copy_from_slice(&u32::try_from(leaves.len())?.to_le_bytes());
     w += 4;
     for (_, v) in leaves {
         write_value(v, &mut bin[w..w + value_size]);
@@ -801,8 +801,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             }
             let mut leaves = mixed
                 .drain()
-                .map(|(leave, value)| (leave, value as f32))
-                .collect::<Vec<_>>();
+                .map(|(leave, value)| {
+                    if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
+                        return Err("a blended leave does not fit in f32".into());
+                    }
+                    Ok((leave, value as f32))
+                })
+                .collect::<error::Returns<Vec<_>>>()?;
             leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             drop(mixed);
             let mut out = make_writer(&args.out)?;
@@ -1247,7 +1252,7 @@ fn old_main() -> error::Returns<()> {
                 (alphagram, word_prob.word_draw_ways(word))
             })
             .collect::<Box<_>>();
-        let mut iter_indexes = (0u32..v.len() as u32).collect::<Box<_>>();
+        let mut iter_indexes = (0..u32::try_from(v.len())?).collect::<Box<_>>();
         // sort by probability descending, then by alphagram ascending,
         // then by raw index (v is already sorted)
         iter_indexes.sort_unstable_by(|&a_idx, &b_idx| {
@@ -1469,7 +1474,8 @@ mod tests {
         assert_eq!(leave_value("QU", "-3.5").unwrap(), -3.5);
         let held = |v: f32| {
             let milli = (f64::from(v) * f64::from(equity::SCALE)).round();
-            i32::try_from(milli as i64).is_ok()
+            let least = i64::MIN as f64;
+            (least..-least).contains(&milli) && i32::try_from(milli as i64).is_ok()
         };
         for (value, ok) in [
             ("-2147483.648", false),
