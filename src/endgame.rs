@@ -14645,7 +14645,7 @@ mod tests {
         ] {
             let words = tiny_word_list();
             let words = if jumbled {
-                build::make_alphagrams(&words).into_vec()
+                build::make_alphagrams(&words).unwrap().into_vec()
             } else {
                 words
             };
@@ -14678,7 +14678,7 @@ mod tests {
                 let mut found = found.into_iter().collect::<Vec<_>>();
                 found.sort_unstable();
                 let found = if jumbled {
-                    build::make_alphagrams(&found).into_vec()
+                    build::make_alphagrams(&found).unwrap().into_vec()
                 } else {
                     found
                 };
