@@ -125,7 +125,7 @@ fn peg_draw_outcomes() {
                 state.bag.set_from_iter(draw.iter().copied());
                 state.play(&gc, &mut rng, &play).unwrap();
                 assert!(state.bag.is_empty(), "{name}");
-                state.next_turn();
+                state.next_turn().unwrap();
                 state
             };
             let after = after_play(draws.first_key_value().unwrap().0);

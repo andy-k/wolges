@@ -348,7 +348,7 @@ fn play_game<const N: usize>(
         on_turn(ply, state, &snapshot, chosen)?;
         state.play(gc, rng, &chosen.play)?;
         match state.check_game_ended(gc, &mut scores)? {
-            game_state::CheckGameEnded::NotEnded => state.next_turn(),
+            game_state::CheckGameEnded::NotEnded => state.next_turn()?,
             _ => return Ok(ply + 1),
         }
     }

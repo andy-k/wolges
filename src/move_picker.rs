@@ -3967,7 +3967,7 @@ mod tests {
         let first_board = game_state.board_tiles.clone();
         let play = move_generator.plays[kept.best_so_far()].play.clone();
         game_state.play(&game_config, &mut deal_rng, &play).unwrap();
-        game_state.next_turn();
+        game_state.next_turn().unwrap();
         assert_ne!(game_state.board_tiles, first_board);
         gen_candidates(&mut move_generator, &game_state);
         assert!(move_generator.plays.len() > 2);
@@ -4160,7 +4160,7 @@ mod tests {
         game_state
             .play(&game_config, &mut deal_rng, &opening)
             .unwrap();
-        game_state.next_turn();
+        game_state.next_turn().unwrap();
         let last = LastMove {
             board_before: &board_before,
             play: &opening,
@@ -4431,7 +4431,7 @@ mod tests {
                 .check_game_ended(&game_config, &mut final_scores)
                 .unwrap()
             {
-                game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+                game_state::CheckGameEnded::NotEnded => game_state.next_turn().unwrap(),
                 _ => break,
             }
         }

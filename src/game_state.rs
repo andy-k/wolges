@@ -286,10 +286,16 @@ impl GameState {
     }
 
     #[inline(always)]
-    pub fn next_turn(&mut self) {
-        let num_players = self.players.len() as u8;
-        self.turn += 1;
-        self.turn -= num_players & -i8::from(self.turn >= num_players) as u8;
+    pub fn next_turn(&mut self) -> error::Returns<()> {
+        let num_players = u8::try_from(self.players.len())?;
+        if self.turn >= num_players {
+            crate::return_error!(format!(
+                "turn {} is out of range for {num_players} players",
+                self.turn
+            ));
+        }
+        self.turn = (self.turn + 1) % num_players;
+        Ok(())
     }
 
     // whether turns that scored nothing, or passes, have ended the game
@@ -410,6 +416,13 @@ mod tests {
         let mut rack = game_state.players[0].rack.clone();
         rack.sort_unstable();
         assert_eq!(rack, [1, 2, 3, 4, 5, 6, 7]);
+        let turn = game_state.turn;
+        let player = game_state.players[0].clone();
+        game_state.players = vec![player; usize::from(u8::MAX) + 1].into_boxed_slice();
+        assert!(game_state.next_turn().is_err());
+        assert_eq!(game_state.turn, turn);
+        game_state.players = Box::new([]);
+        assert!(game_state.next_turn().is_err());
     }
 
     // a whole success takes tiles off exactly as swap_remove did

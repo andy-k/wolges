@@ -1882,7 +1882,7 @@ impl Session {
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
             loser = turn.loser();
             if final_scores.is_none() {
-                replay.state.next_turn();
+                replay.state.next_turn()?;
             }
         }
         moves_shown.truncate(game.at);
@@ -2107,7 +2107,7 @@ impl Session {
                         writeln!(out, "      note: {note}")?;
                     }
                 }
-                replay.state.next_turn();
+                replay.state.next_turn()?;
             }
             self.spare_state.set(Some(replay.state));
         }
@@ -3100,7 +3100,7 @@ impl Session {
             if final_scores.is_some() {
                 break;
             }
-            replay.state.next_turn();
+            replay.state.next_turn()?;
         }
         let board = &replay.state;
         let lost = game.at > 0 && game.turns[game.at - 1].loser().is_some();
@@ -3196,7 +3196,7 @@ impl Session {
                 })
             ));
             state.play(self.game_config, &mut rng, play)?;
-            state.next_turn();
+            state.next_turn()?;
         }
         Ok(text)
     }
@@ -3313,7 +3313,7 @@ impl Session {
             if replay.end_of_turn(self.game_config, turn, held)?.is_some() {
                 break;
             }
-            replay.state.next_turn();
+            replay.state.next_turn()?;
         }
         self.spare_state.set(Some(replay.state));
         Ok(())
