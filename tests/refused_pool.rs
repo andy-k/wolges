@@ -30,14 +30,14 @@ fn refusing<T>(f: impl FnOnce() -> T) -> T {
 // on this thread, counts what it holds, and refuses a request past its room
 struct Counting;
 
-// SAFETY: All allocations use System. The refusal and accounting only track
+// safety: all allocations use System. The refusal and accounting only track
 // sizes. A refused realloc leaves the original allocation in place.
 unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         if refused(layout.size()) {
             return std::ptr::null_mut();
         }
-        // SAFETY: The caller supplies a valid, nonzero allocation layout.
+        // safety: the caller supplies a valid, nonzero allocation layout.
         let p = unsafe { std::alloc::System.alloc(layout) };
         if !p.is_null() {
             held(layout.size() as isize);
@@ -49,7 +49,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
         if refused(layout.size()) {
             return std::ptr::null_mut();
         }
-        // SAFETY: The caller supplies a valid, nonzero allocation layout.
+        // safety: the caller supplies a valid, nonzero allocation layout.
         let p = unsafe { std::alloc::System.alloc_zeroed(layout) };
         if !p.is_null() {
             held(layout.size() as isize);
@@ -58,7 +58,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     }
 
     unsafe fn dealloc(&self, p: *mut u8, layout: std::alloc::Layout) {
-        // SAFETY: The caller passes a live allocation from System and its layout.
+        // safety: the caller passes a live allocation from System and its layout.
         unsafe { std::alloc::System.dealloc(p, layout) };
         held(-(layout.size() as isize));
     }
@@ -67,7 +67,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
         if new_size > layout.size() && refused(new_size - layout.size()) {
             return std::ptr::null_mut();
         }
-        // SAFETY: Forward the live System allocation, layout, and valid size.
+        // safety: forward the live System allocation, layout, and valid size.
         let q = unsafe { std::alloc::System.realloc(p, layout, new_size) };
         if !q.is_null() {
             held(new_size as isize - layout.size() as isize);
