@@ -269,7 +269,7 @@ pub fn build_sheet_spell_once<
         ),
         klv::AdjustLeave::Identity,
         movegen::EquityPredicate::RejectAll,
-    );
+    )?;
     match failure {
         Some(error) => Err(error),
         None => Ok(n_cand),
@@ -620,7 +620,7 @@ pub fn weigh_racks_by_generation<
     }: ObservedMove<'_>,
     scratch: &mut WeighScratch,
     f: &mut impl FnMut(u32, f64, i32, u32),
-) {
+) -> error::Returns<()> {
     let (lat, leave, ln_binom) = (is.lat, is.leave, is.ln_binom);
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
@@ -640,7 +640,7 @@ pub fn weigh_racks_by_generation<
         MoveTiles::Exchanged(_) => &none_placed[..],
     };
     let passed = matches!(tiles, MoveTiles::Placed(placed) if placed.iter().all(|&c| c == 0));
-    each_tally_of_size(avail, cap, 0, left, cur, &mut |drawn| {
+    let mut weigh = |drawn: &[u8]| -> error::Returns<()> {
         for (r, (&d, &p)) in rack.iter_mut().zip(drawn.iter().zip(placed)) {
             *r = d + p;
         }
@@ -660,9 +660,9 @@ pub fn weigh_racks_by_generation<
             dynamic_leaves: None,
         };
         if LEAN {
-            move_generator.gen_moves_unfiltered_lean(&params);
+            move_generator.gen_moves_unfiltered_lean(&params)?;
         } else {
-            move_generator.gen_moves_unfiltered(&params);
+            move_generator.gen_moves_unfiltered(&params)?;
         }
         let top = &move_generator.plays[0];
         let mut best = match &top.play {
@@ -697,7 +697,15 @@ pub fn weigh_racks_by_generation<
             .sum::<f64>()
             - ln_deals;
         f(rank, ln_prior, best - value, kept);
+        Ok(())
+    };
+    let mut found = Ok(());
+    each_tally_of_size(avail, cap, 0, left, cur, &mut |drawn| {
+        if found.is_ok() {
+            found = weigh(drawn);
+        }
     });
+    found
 }
 
 // the census sheet for the pool on this board: every multiset of the pool, the
@@ -2152,7 +2160,7 @@ fn kept_leaves_packed_impl<
             },
             weigh,
             &mut add,
-        );
+        )?;
     } else {
         infer_sheet_for(
             move_generator,
@@ -3380,7 +3388,8 @@ mod tests {
                 num_exchanges_by_this_player: 0,
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
-            });
+            })
+            .unwrap();
         let top = &tiny.move_generator.plays[0];
         let mut best = match &top.play {
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
@@ -3913,7 +3922,8 @@ mod tests {
                 &mut |rank, ln_prior, gap, kept| {
                     by_generation.push((rank, ln_prior.to_bits(), gap, kept));
                 },
-            );
+            )
+            .unwrap();
             assert_eq!(by_generation, by_sheet, "{which}");
         }
     }
@@ -4280,14 +4290,16 @@ mod tests {
                 .zip(tally)
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
                 .collect::<Vec<_>>();
-            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                board_snapshot,
-                rack: &rack,
-                max_gen: 1 << 20,
-                num_exchanges_by_this_player: 0,
-                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&movegen::GenMovesParams {
+                    board_snapshot,
+                    rack: &rack,
+                    max_gen: 1 << 20,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             let plays = &move_generator.plays;
             let best = plays
                 .iter()

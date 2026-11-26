@@ -106,12 +106,14 @@ fn peg_draw_outcomes() {
             klv: &klv,
         };
         let mut generator = movegen::KurniaMoveGenerator::new(&gc);
-        generator.gen_moves_raw_all_unsorted(
-            &snapshot,
-            &before.players[mover].rack,
-            0,
-            movegen::PassPolicy::AsACandidate,
-        );
+        generator
+            .gen_moves_raw_all_unsorted(
+                &snapshot,
+                &before.players[mover].rack,
+                0,
+                movegen::PassPolicy::AsACandidate,
+            )
+            .unwrap();
 
         for candidate in case.candidates {
             let play = movegen::Play::from(&candidate.play);

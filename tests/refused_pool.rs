@@ -209,22 +209,24 @@ fn offered_every_way(
     rack: &[u8],
 ) -> (usize, usize, bool) {
     let mut offered = 0usize;
-    generator.gen_moves_filtered_lean(
-        &movegen::GenMovesParams {
-            board_snapshot,
-            rack,
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: movegen::PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        },
-        movegen::PlacePredicate::Dyn(&mut |_, _, _, _, _| {
-            offered += 1;
-            true
-        }),
-        klv::AdjustLeave::Identity,
-        movegen::EquityPredicate::AcceptAll,
-    );
+    generator
+        .gen_moves_filtered_lean(
+            &movegen::GenMovesParams {
+                board_snapshot,
+                rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            },
+            movegen::PlacePredicate::Dyn(&mut |_, _, _, _, _| {
+                offered += 1;
+                true
+            }),
+            klv::AdjustLeave::Identity,
+            movegen::EquityPredicate::AcceptAll,
+        )
+        .unwrap();
     (offered, generator.plays.len(), generator.out_of_memory())
 }
 

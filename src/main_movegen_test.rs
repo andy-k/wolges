@@ -432,9 +432,9 @@ fn run(
 
             let t0 = std::time::Instant::now();
             if table.is_some() {
-                move_generator.gen_moves_unfiltered(&params);
+                move_generator.gen_moves_unfiltered(&params)?;
             } else {
-                move_generator.gen_moves_unfiltered_lean(&params);
+                move_generator.gen_moves_unfiltered_lean(&params)?;
             }
             let elapsed = t0.elapsed();
             total_elapsed += elapsed;
@@ -523,9 +523,9 @@ fn run(
                     dynamic_leaves: None,
                 };
                 if tables {
-                    g.gen_moves_unfiltered(&params);
+                    g.gen_moves_unfiltered(&params)?;
                 } else {
-                    g.gen_moves_unfiltered_lean(&params);
+                    g.gen_moves_unfiltered_lean(&params)?;
                 }
                 digest(g, case.max_gen)
             };
@@ -541,14 +541,14 @@ fn run(
                         &rack,
                         case.num_exchanges_by_this_player,
                         case.pass_policy,
-                    );
+                    )?;
                 } else {
                     move_generator.gen_moves_raw_all_unsorted_lean(
                         &board_snapshot,
                         &rack,
                         case.num_exchanges_by_this_player,
                         case.pass_policy,
-                    );
+                    )?;
                 }
                 let raw = digest(&move_generator, 0)?;
                 if (capped.0, capped.1) != (case.max_gen.min(all.0), all.3) {
@@ -620,9 +620,9 @@ fn run(
                 };
                 let t0 = std::time::Instant::now();
                 if tables {
-                    generator.gen_moves_unfiltered(&params);
+                    generator.gen_moves_unfiltered(&params)?;
                 } else {
-                    generator.gen_moves_unfiltered_lean(&params);
+                    generator.gen_moves_unfiltered_lean(&params)?;
                 }
                 if !warm {
                     timed += t0.elapsed();

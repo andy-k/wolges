@@ -163,8 +163,8 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
         dynamic_leaves: None,
     };
     let generate = |g: &mut KurniaMoveGenerator<G, JUMPS, ANY_SIDE>, max_gen: usize| match call {
-        Call::Tables => g.gen_moves_unfiltered(&params(max_gen)),
-        Call::Lean => g.gen_moves_unfiltered_lean(&params(max_gen)),
+        Call::Tables => g.gen_moves_unfiltered(&params(max_gen)).unwrap(),
+        Call::Lean => g.gen_moves_unfiltered_lean(&params(max_gen)).unwrap(),
     };
     let asked = |way: &str| ask.way == way || ask.way == "every";
     // all, then the best few, each the head of all
@@ -189,18 +189,22 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
     // raw: every move, unsorted and with no equity
     if asked("raw") {
         match call {
-            Call::Tables => generator.gen_moves_raw_all_unsorted(
-                board_snapshot,
-                ask.rack,
-                ask.num_exchanges_by_this_player,
-                ask.pass_policy,
-            ),
-            Call::Lean => generator.gen_moves_raw_all_unsorted_lean(
-                board_snapshot,
-                ask.rack,
-                ask.num_exchanges_by_this_player,
-                ask.pass_policy,
-            ),
+            Call::Tables => generator
+                .gen_moves_raw_all_unsorted(
+                    board_snapshot,
+                    ask.rack,
+                    ask.num_exchanges_by_this_player,
+                    ask.pass_policy,
+                )
+                .unwrap(),
+            Call::Lean => generator
+                .gen_moves_raw_all_unsorted_lean(
+                    board_snapshot,
+                    ask.rack,
+                    ask.num_exchanges_by_this_player,
+                    ask.pass_policy,
+                )
+                .unwrap(),
         }
         assert_same_set(
             &set_of(generator.plays.iter(), false),
@@ -228,10 +232,14 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
         if asked(&format!("lanes {lanes}")) {
             match call {
                 Call::Tables => {
-                    generator.gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols);
+                    generator
+                        .gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols)
+                        .unwrap();
                 }
                 Call::Lean => {
-                    generator.gen_moves_unfiltered_lanes_lean(&params(usize::MAX), rows, cols);
+                    generator
+                        .gen_moves_unfiltered_lanes_lean(&params(usize::MAX), rows, cols)
+                        .unwrap();
                 }
             }
             if forced {
@@ -248,22 +256,26 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
         }
         if asked(&format!("raw lanes {lanes}")) {
             match call {
-                Call::Tables => generator.gen_moves_raw_lanes_unsorted(
-                    board_snapshot,
-                    ask.rack,
-                    ask.num_exchanges_by_this_player,
-                    ask.pass_policy,
-                    rows,
-                    cols,
-                ),
-                Call::Lean => generator.gen_moves_raw_lanes_unsorted_lean(
-                    board_snapshot,
-                    ask.rack,
-                    ask.num_exchanges_by_this_player,
-                    ask.pass_policy,
-                    rows,
-                    cols,
-                ),
+                Call::Tables => generator
+                    .gen_moves_raw_lanes_unsorted(
+                        board_snapshot,
+                        ask.rack,
+                        ask.num_exchanges_by_this_player,
+                        ask.pass_policy,
+                        rows,
+                        cols,
+                    )
+                    .unwrap(),
+                Call::Lean => generator
+                    .gen_moves_raw_lanes_unsorted_lean(
+                        board_snapshot,
+                        ask.rack,
+                        ask.num_exchanges_by_this_player,
+                        ask.pass_policy,
+                        rows,
+                        cols,
+                    )
+                    .unwrap(),
             }
             if forced {
                 assert_eq!(
@@ -281,13 +293,15 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
             }
         }
         if asked(&format!("by runs {lanes}")) {
-            generator.gen_moves_raw_lanes_unsorted_by_runs(
-                ask.run_letter_bits,
-                board_snapshot,
-                ask.rack,
-                rows,
-                cols,
-            );
+            generator
+                .gen_moves_raw_lanes_unsorted_by_runs(
+                    ask.run_letter_bits,
+                    board_snapshot,
+                    ask.rack,
+                    rows,
+                    cols,
+                )
+                .unwrap();
             assert_same_set(
                 &set_of(generator.plays.iter(), true),
                 &set_of(on.iter(), true),
@@ -308,7 +322,12 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
                 || std::future::ready(()),
             ));
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-            while fut.as_mut().poll(&mut cx).is_pending() {}
+            loop {
+                if let std::task::Poll::Ready(result) = fut.as_mut().poll(&mut cx) {
+                    result.unwrap();
+                    break;
+                }
+            }
         }
         assert_same(&generator.plays, expected, board_snapshot, &|| {
             format!("{at}, async")
@@ -627,8 +646,8 @@ fn run_case<'a>(
                 dynamic_leaves: None,
             };
             match arms[0].call {
-                Call::Tables => fresh.gen_moves_unfiltered(&params),
-                Call::Lean => fresh.gen_moves_unfiltered_lean(&params),
+                Call::Tables => fresh.gen_moves_unfiltered(&params).unwrap(),
+                Call::Lean => fresh.gen_moves_unfiltered_lean(&params).unwrap(),
             }
             if best.is_none()
                 && matches!(pass_policy, PassPolicy::OnlyWhenForced)

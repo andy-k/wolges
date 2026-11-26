@@ -313,7 +313,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
-    });
+    })?;
     let plays = &move_generator.plays;
 
     writeln!(std::io::stdout(), "found {} moves", plays.len())?;
@@ -398,14 +398,16 @@ mod tests {
             klv: &klv,
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-            board_snapshot,
-            rack: &[1, 5, 20, 1, 5, 20, 1],
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: movegen::PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot,
+                rack: &[1, 5, 20, 1, 5, 20, 1],
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         let ret = moves_json(&move_generator.plays).unwrap();
         let moves = ret.as_array().unwrap();
         let mut seen = [false; 2];

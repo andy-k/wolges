@@ -54,7 +54,30 @@ pub enum AdjustLeave {
 
 impl AdjustLeave {
     #[inline(always)]
-    pub fn apply(&self, leave_value: i32) -> i32 {
+    pub fn apply(&self, leave_value: i32) -> error::Returns<i32> {
+        match *self {
+            AdjustLeave::Identity => Ok(leave_value),
+            AdjustLeave::Scaled { scale, denom } => {
+                let scaled = (i64::from(leave_value) * i64::from(scale))
+                    .checked_div(i64::from(denom))
+                    .ok_or("leave scale has a zero denominator")?;
+                Ok(i32::try_from(scaled)?)
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn check_for_klv<L: kwg::Node>(&self, klv: &Klv<L>) -> error::Returns<()> {
+        if matches!(self, Self::Scaled { .. }) {
+            let (low, high) = klv.leave_range();
+            self.apply(low.raw())?;
+            self.apply(high.raw())?;
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn apply_validated(&self, leave_value: i32) -> i32 {
         match *self {
             AdjustLeave::Identity => leave_value,
             AdjustLeave::Scaled { scale, denom } => {
@@ -68,6 +91,7 @@ pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
     counts: Box<[u32]>,
     leaves: Box<[i32]>, // millipoints, converted from f32 at load time
+    range: std::sync::OnceLock<(i32, i32)>,
     racks: Option<Box<racks::RackTable>>, // every full rack's setup from these leaves, if given
 }
 
@@ -386,6 +410,7 @@ impl<L: kwg::Node> Klv<L> {
             kwg,
             counts,
             leaves: leaves.into_boxed_slice(),
+            range: std::sync::OnceLock::new(),
             racks: None,
         })
     }
@@ -444,6 +469,7 @@ impl<L: kwg::Node> Klv<L> {
             kwg: kwg::Kwg(nodes),
             counts: counts.into_boxed_slice(),
             leaves: Box::new([]),
+            range: std::sync::OnceLock::new(),
             racks: None,
         })
     }
@@ -455,8 +481,9 @@ impl<L: kwg::Node> Klv<L> {
 
     #[inline]
     pub fn leave_range(&self) -> (equity::Equity, equity::Equity) {
-        let (lo, hi) =
-            (self.leaves.iter()).fold((0, 0), |(lo, hi), &leave| (lo.min(leave), hi.max(leave)));
+        let &(lo, hi) = self.range.get_or_init(|| {
+            (self.leaves.iter()).fold((0, 0), |(lo, hi), &leave| (lo.min(leave), hi.max(leave)))
+        });
         (equity::Equity::new(lo), equity::Equity::new(hi))
     }
 
@@ -535,6 +562,7 @@ impl<L: kwg::Node> Klv<L> {
             counts: self.counts.clone(),
             leaves,
             racks: None,
+            range: std::sync::OnceLock::new(),
         }
     }
 
@@ -893,6 +921,28 @@ impl MultiLeaves {
         adjust_leave_value: AdjustLeave,
         dense_most: u32,
         bag_terms: impl Iterator<Item = i32>,
+    ) -> error::Returns<()> {
+        adjust_leave_value.check_for_klv(klv)?;
+        self.init_validated(
+            rack_tally,
+            klv,
+            use_klv,
+            adjust_leave_value,
+            dense_most,
+            bag_terms,
+        );
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn init_validated<L: kwg::Node>(
+        &mut self,
+        rack_tally: &[u8],
+        klv: &Klv<L>,
+        use_klv: bool,
+        adjust_leave_value: AdjustLeave,
+        dense_most: u32,
+        bag_terms: impl Iterator<Item = i32>,
     ) {
         self.init_values::<true, false, _>(
             rack_tally,
@@ -1090,7 +1140,7 @@ impl MultiLeaves {
             if !matches!(adjust_leave_value, AdjustLeave::Identity) {
                 self.leave_values
                     .iter_mut()
-                    .for_each(|m| *m = adjust_leave_value.apply(*m));
+                    .for_each(|m| *m = adjust_leave_value.apply_validated(*m));
             }
         }
     }
@@ -1191,6 +1241,25 @@ impl MultiLeaves {
         num_tiles_on_rack: u8,
         adjust_leave_value: AdjustLeave,
         best_leave_values: &mut Vec<i32>,
+    ) -> error::Returns<()> {
+        adjust_leave_value.check_for_klv(klv)?;
+        Self::extract_best_validated(
+            rack_tally,
+            klv,
+            num_tiles_on_rack,
+            adjust_leave_value,
+            best_leave_values,
+        );
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn extract_best_validated<L: kwg::Node>(
+        rack_tally: &mut [u8],
+        klv: &Klv<L>,
+        num_tiles_on_rack: u8,
+        adjust_leave_value: AdjustLeave,
+        best_leave_values: &mut Vec<i32>,
     ) {
         best_leave_values.clear();
         best_leave_values.resize(num_tiles_on_rack as usize + 1, i32::MIN);
@@ -1223,7 +1292,9 @@ impl MultiLeaves {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_kept += 1;
                     if node.accepts() {
-                        let leave_val = env.adjust_leave_value.apply(env.klv.leave(idx).raw());
+                        let leave_val = env
+                            .adjust_leave_value
+                            .apply_validated(env.klv.leave(idx).raw());
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
                             && leave_val > env.best_leave_values[num_played]
@@ -1566,14 +1637,16 @@ mod tests {
         let klv = kbwg_from_bytes_alloc(make_klv2(&[(&[2, 3], 7.25)])).unwrap();
         let rack = [0, 1, 1, 1];
         let mut dense = MultiLeaves::new();
-        dense.init(
-            &rack,
-            &klv,
-            true,
-            AdjustLeave::Identity,
-            dense.dense_most(),
-            std::iter::empty(),
-        );
+        dense
+            .init(
+                &rack,
+                &klv,
+                true,
+                AdjustLeave::Identity,
+                dense.dense_most(),
+                std::iter::empty(),
+            )
+            .unwrap();
         for kept in [[0, 1, 0, 1], [0, 0, 1, 1]] {
             let idx = (1..kept.len())
                 .map(|tile| u32::from(kept[tile]) * dense.place_value(tile as u8))
@@ -1744,7 +1817,8 @@ mod tests {
                 rack.len() as u8,
                 AdjustLeave::Identity,
                 &mut found,
-            );
+            )
+            .unwrap();
             let mut want = vec![i32::MIN; rack.len() + 1];
             let mut kept = vec![0u8; 27];
             let root = klv.kwg.node_in_run(0).arc_index();
@@ -2229,14 +2303,16 @@ mod tests {
 
         let mut separate = MultiLeaves::new();
         for (table, values) in [&first, &second].into_iter().zip(&values) {
-            separate.init(
-                &rack,
-                table,
-                true,
-                AdjustLeave::Identity,
-                separate.dense_most(),
-                std::iter::empty(),
-            );
+            separate
+                .init(
+                    &rack,
+                    table,
+                    true,
+                    AdjustLeave::Identity,
+                    separate.dense_most(),
+                    std::iter::empty(),
+                )
+                .unwrap();
             assert_eq!(values, separate.leave_values());
         }
         for ((&bound, &first), &second) in
@@ -2258,6 +2334,7 @@ mod tests {
             kwg: empty.kwg,
             counts: empty.counts,
             leaves: Box::new([-2_500, 700, 12_345, -9]),
+            range: std::sync::OnceLock::new(),
             racks: None,
         };
         assert_eq!(
