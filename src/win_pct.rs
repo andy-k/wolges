@@ -4,7 +4,6 @@
 // runs merge by adding counts. The reader symmetrizes each key, which is what
 // makes win%(0) exactly 0.5, then reverse-cumulates for an O(1) read.
 
-use std::collections::HashMap;
 use std::io::Write as _;
 
 pub type Key = (u16, u8, u8);
@@ -144,7 +143,7 @@ impl WinPctAccumulator {
 
     #[inline(always)]
     pub fn finalize(&self) -> crate::error::Returns<WinPctTable> {
-        let mut rows = HashMap::new();
+        let mut rows = crate::fash::MyHashMap::default();
         rows.try_reserve(self.rows().count())?;
         for (key, hist) in self.rows() {
             let mut cap = None;
@@ -205,7 +204,7 @@ struct DenseRow {
 }
 
 pub struct WinPctTable {
-    rows: HashMap<Key, DenseRow>,
+    rows: crate::fash::MyHashMap<Key, DenseRow>,
 }
 
 impl WinPctTable {

@@ -491,14 +491,14 @@ fn run(
             };
             let digest = |g: &movegen::KurniaMoveGenerator, head: usize| {
                 use std::hash::{Hash, Hasher};
-                let mut ordered = std::hash::DefaultHasher::new();
-                let mut head_ordered = std::hash::DefaultHasher::new();
+                let mut ordered = fash::MyHasher::default();
+                let mut head_ordered = fash::MyHasher::default();
                 let mut unordered = 0u64;
                 let mut line = String::new();
                 for (i, p) in g.plays.iter().enumerate() {
                     line.clear();
                     write!(line, "{}", p.play.fmt(&board_snapshot)).unwrap();
-                    let mut one = std::hash::DefaultHasher::new();
+                    let mut one = fash::MyHasher::default();
                     line.hash(&mut one);
                     unordered = unordered.wrapping_add(one.finish());
                     (p.equity.raw(), &line).hash(&mut ordered);

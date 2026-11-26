@@ -337,13 +337,13 @@ pub struct Session {
     play_tiles: Vec<u8>, // a play's tiles as read, for the next
     kwg: Option<(String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>)>,
     klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
-    kwgs_read: std::collections::HashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
-    run_letters_found: std::collections::HashMap<usize, kwg::RunLetters<'static>>, // by graph's address
-    klvs_read: std::collections::HashMap<String, &'static std::sync::Arc<klv::Klv<kwg::Node24>>>,
+    kwgs_read: fash::MyHashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
+    run_letters_found: fash::MyHashMap<usize, kwg::RunLetters<'static>>, // by graph's address
+    klvs_read: fash::MyHashMap<String, &'static std::sync::Arc<klv::Klv<kwg::Node24>>>,
     arm_tables_built:
         fash::MyHashMap<(String, usize), &'static std::sync::Arc<anagrams::ArmTables>>,
-    endgame_solvers: std::collections::HashMap<String, ShellSolver>, // by lexicon path
-    rules_made: std::collections::HashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
+    endgame_solvers: fash::MyHashMap<String, ShellSolver>, // by lexicon path
+    rules_made: fash::MyHashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
     infer_tables: Option<([usize; 2], infer::InferTables)>, // for the rules' and klv's addresses, built at its first use
     game: Option<Game>,
     state: game_state::GameState,
