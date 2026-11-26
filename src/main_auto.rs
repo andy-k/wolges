@@ -189,7 +189,8 @@ fn do_it(
     let mut score_stats_1 = stats::Stats::new();
     let mut spread_stats_0 = stats::Stats::new();
     let mut win_stats_0 = stats::Stats::new();
-    let mut loss_draw_win = [0i64; 3];
+    let mut loss_draw_win = [0u64; 3];
+    let mut games_played = 0u64;
 
     let mut game_state = game_state::GameState::new(game_config);
     //let mut rng = GameRng::try_from_rng(&mut rand::rngs::SysRng)?;
@@ -692,12 +693,13 @@ fn do_it(
         score_stats_1.update(f64::from(display_scores[1]));
         spread_stats_0.update(f64::from(spr));
         win_stats_0.update(f64::from(p0dw) * 50.0);
+        games_played = games_played.checked_add(1).ok_or("too many games played")?;
         loss_draw_win[p0dw as usize] += 1;
 
         writeln!(
             std::io::stdout(),
             "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3}) after {:?}",
-            loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2],
+            games_played,
             loss_draw_win[2],
             loss_draw_win[0],
             loss_draw_win[1],
@@ -711,9 +713,7 @@ fn do_it(
             win_stats_0.standard_deviation(),
             t0.elapsed(),
         )?;
-        if games.is_some_and(|games| {
-            (loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2]) as u64 >= games
-        }) {
+        if games.is_some_and(|games| games_played >= games) {
             return Ok(());
         }
     } // loop
