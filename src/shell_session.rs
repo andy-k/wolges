@@ -2498,6 +2498,7 @@ impl Session {
                 infer::InferOptions {
                     fuzz: infer::FUZZ,
                     threads: parallelism::available(),
+                    weigh_passes: false,
                 },
                 (&mut leaves, (at != last_at).then_some(&mut next)),
             )?;
@@ -5797,6 +5798,7 @@ mod tests {
                     infer::InferOptions {
                         fuzz: infer::FUZZ,
                         threads: 1,
+                        weigh_passes: false,
                     },
                     (&mut leaves, Some(&mut carried)),
                 )
