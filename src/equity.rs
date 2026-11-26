@@ -143,7 +143,7 @@ impl std::fmt::Debug for Equity {
 }
 
 // a score in whole points, as a play, a rack, or a player has it
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(PartialEq)]
 pub struct Points(i32);
 
 impl Points {

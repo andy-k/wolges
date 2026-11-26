@@ -122,7 +122,7 @@ struct PossiblePlacement {
 // a placement no kept span made (the shadow pass's)
 const NO_KEPT: u32 = u32::MAX;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MultiJump {
     left_score: i32,
     right_score: i32,
@@ -514,7 +514,7 @@ impl Clone for RcsLane {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RcsSpan {
     anchor: i8,
     left: i8,
@@ -2292,7 +2292,7 @@ struct KeyCheck<'a> {
 const EXIST_MEMO_SLOTS: usize = 4096;
 const EXIST_MIN_PLAYED: u8 = 5;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ExistSlot {
     key: u128,
     turn: u32,
@@ -4862,7 +4862,7 @@ impl SpanPrefix {
 // a lane's sums as filled: the generation they are for, whether they are the
 // lane's inputs as the table walk keeps them (fill_span_lane), its empty
 // squares, and its empty squares whose word multiplier is not 1, a bit each
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SpanLane {
     turn: u32,
     kept: bool,
@@ -6031,7 +6031,6 @@ struct JumbledMultisets {
     stopped: Option<(u64, u32)>, // where a part walk stopped
 }
 
-#[derive(Clone)]
 pub struct PoolLists(JumbledMultisets);
 
 pub struct PoolWindow {
@@ -6051,7 +6050,7 @@ struct WoadwageScratch {
     placed: Vec<u8>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct PoolScratch {
     walked: Vec<u8>,
     letters: Vec<u8>,
@@ -6060,12 +6059,11 @@ struct PoolScratch {
 }
 
 // a windowed top walk's threshold so far, carried from one window to the next
-#[derive(Clone, Copy)]
 pub struct PoolFloor(i32);
 
 // where a part walk of a window stopped: the multiset, and its blank choice
 // the next part starts from
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 pub struct PoolPart(Option<(u64, u32)>);
 
 impl PoolPart {

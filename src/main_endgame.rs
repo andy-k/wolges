@@ -367,7 +367,7 @@ struct Solving {
 }
 
 // the models of a search with two or more tiles in the bag (endgame::PegModel)
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, clap::ValueEnum)]
 enum PegModelArg {
     InfoSets,
     RandomDraws,

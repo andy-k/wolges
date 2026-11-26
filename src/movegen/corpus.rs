@@ -33,7 +33,7 @@ struct Arm<'a> {
 }
 
 // a move as listed: its equity and the move, and the lane of a place move
-#[derive(Clone, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
 struct Listed {
     line: String,
     play: String,

@@ -2250,7 +2250,7 @@ pub struct Reply {
 
 // a reply's sums over the racks, each rack counted as many times as the pool
 // can deal it, in millipoints
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct ReplySums {
     deals: u64,
     equity: i128,

@@ -7523,7 +7523,7 @@ fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct RecallOne {
     static_rank: Option<usize>,
     in_field: bool,

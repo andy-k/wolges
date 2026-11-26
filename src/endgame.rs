@@ -59,7 +59,7 @@ const INFO_LEAD: u64 = 8 << 32;
 // counts the config checks (the position's own until the line places tiles;
 // none from then on) or that the line's move before was a pass. A pass
 // answering a pass ends the line, worth the game's end here whatever the counts
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum Scoreless {
     Counted { passes: u8, zeros: u8 },
     Answering,
@@ -516,7 +516,6 @@ impl Table {
 
 // a position's value as a search found it, and whether no line below it was cut
 // short by the depth
-#[derive(Clone, Copy)]
 struct Searched {
     value: equity::Equity,
     complete: bool,
@@ -1076,7 +1075,7 @@ const POOL_SHARE: usize = 8;
 // why a lane pool has no room for a walk's lists (LanePool::room_for): none
 // past its budget or what its ids number (full), or none the memory limit
 // leaves
-#[derive(Clone, Copy, PartialEq)]
+#[derive(PartialEq)]
 enum PoolRoom {
     Full,
     NoMemory,
@@ -9350,7 +9349,7 @@ struct PegBagValue {
 // (the bag's tiles, the deals giving it, the margin there), its chance to win
 // there (wins) and, where the model draws at the root (random draws), each
 // draw the move makes there (draws), all in the splits' order
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Default, PartialEq)]
 pub struct PegBagRows {
     pub hypotheses: Vec<(Vec<u8>, u64, equity::Equity)>,
     pub wins: Vec<f64>,
@@ -9359,7 +9358,7 @@ pub struct PegBagRows {
 
 // why a move has no rows: the answer has no value of it, or a limit stopped
 // their search (out of memory when the memory limit did)
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum PegBagRowsMissing {
     Unvalued,
     Stopped { out_of_memory: bool },
@@ -9367,7 +9366,7 @@ pub enum PegBagRowsMissing {
 
 // a draw a move makes at the root with tiles left in the bag: the tiles it
 // draws, the deals that give them, the margin then, and the chance to win
-#[derive(Clone, Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct PegBagDraw {
     pub tiles: Vec<u8>,
     pub ways: u64,
@@ -9379,7 +9378,6 @@ pub struct PegBagDraw {
 // deals won (a tie counted half), its mean margin, and whether every endgame
 // valuing it was searched to its end; its rows are
 // EndgameSolver::peg_bag_rows's
-#[derive(Clone)]
 pub struct PegBagMove {
     pub play: movegen::Play,
     pub win_pct: f64,
@@ -9405,7 +9403,6 @@ type PegBagWatch<'priority, 'report> = (
 // one (the share and margin then 0); every move the answering pass valued,
 // best first, each with its own; whether it is exact; and the pass it is of (0
 // none finished, i8::MAX one to the end)
-#[derive(Clone)]
 pub struct PegBagResult {
     pub win_pct: f64,
     pub expected_margin: equity::Equity,
@@ -9485,7 +9482,6 @@ fn peg_bag_ranks(valued: &[Option<PegBagValue>], a: usize, b: usize) -> std::cmp
 // a one-in-bag position's turn: the mover, the tile in the bag, the scoreless
 // turns before it (the passes and the zeros), and whether the move before it was
 // a pass
-#[derive(Clone, Copy)]
 struct OneInBagTurn {
     mover: u8,
     bag_tile: u8,
@@ -9542,7 +9538,6 @@ struct PassLine {
 // the board, the mover's rack, the tiles they cannot see with each one's count,
 // the alphabet's tile count (blank included: a move's run of margins, one a
 // tile), and the scoreless turns before it (the passes and the zeros)
-#[derive(Clone, Copy)]
 struct PegPosition<'a> {
     mover: u8,
     board: &'a [u8],
@@ -9929,7 +9924,6 @@ impl InBag {
 }
 
 // a position's scoreless turns before it (InBag), kept to unmake a move
-#[derive(Clone, Copy)]
 struct InBagTurn {
     passes: u8,
     zeros: u8,
@@ -12115,7 +12109,6 @@ mod tests {
 
     // a one-in-bag answer with every row's hypotheses read out of the search's
     // margins, as the tests compare them
-    #[derive(Clone)]
     struct Solved {
         win_pct: f64,
         expected_margin: equity::Equity,
@@ -12127,7 +12120,6 @@ mod tests {
         depth: i8,
     }
 
-    #[derive(Clone)]
     struct SolvedMove {
         play: PegMove,
         win_pct: f64,
