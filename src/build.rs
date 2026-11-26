@@ -583,7 +583,7 @@ impl StatesDefragger<'_> {
 }
 
 impl StatesDefragger<'_> {
-    // Walks the lists reached from p's list, each from its head: enter on first
+    // walks the lists reached from p's list, each from its head: enter on first
     // reaching a list, leave once every list its arcs reach is left (leave gets
     // what enter returned), the order of a recursion into each arc. A list that
     // is another's tail is reached at that one's head, whose other arcs lead
