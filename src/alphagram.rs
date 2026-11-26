@@ -113,12 +113,15 @@ impl KeyLayout {
         ((key >> self.shift[tile as usize]) & ((1u128 << width) - 1)) as u8
     }
 
+    #[inline(always)]
+    pub(crate) fn last_tile(&self) -> crate::error::Returns<u8> {
+        Ok(u8::try_from(self.max_count.len().saturating_sub(1))?)
+    }
+
     // each tile the key holds, once, ascending
     #[inline(always)]
-    pub fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_ {
-        (1..self.max_count.len())
-            .map(|tile| tile as u8)
-            .filter(move |&tile| self.count_in(key, tile) > 0)
+    pub fn tiles_in(&self, key: u128) -> crate::error::Returns<impl Iterator<Item = u8> + '_> {
+        Ok((1..=self.last_tile()?).filter(move |&tile| self.count_in(key, tile) > 0))
     }
 
     #[inline(always)]

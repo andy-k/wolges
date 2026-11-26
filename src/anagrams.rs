@@ -208,7 +208,14 @@ fn layout_for_config(
 // the game's layout, whose counts are the nibbles' counts)
 trait KeyBuild {
     fn key_of(&self, word: &[u8]) -> Option<u128>;
-    fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_;
+    fn count_in(&self, key: u128, tile: u8) -> u8;
+    fn last_tile(&self) -> error::Returns<u8>;
+
+    #[inline(always)]
+    fn tiles_in(&self, key: u128, last_tile: u8) -> impl Iterator<Item = u8> + '_ {
+        (1..=last_tile).filter(move |&tile| self.count_in(key, tile) > 0)
+    }
+
     fn place_value(&self, tile: u8) -> u128;
     fn kept(self) -> (alphagram::KeyLayout, u8);
 }
@@ -220,8 +227,13 @@ impl KeyBuild for alphagram::KeyLayout {
     }
 
     #[inline(always)]
-    fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_ {
-        alphagram::KeyLayout::tiles_in(self, key)
+    fn count_in(&self, key: u128, tile: u8) -> u8 {
+        alphagram::KeyLayout::count_in(self, key, tile)
+    }
+
+    #[inline(always)]
+    fn last_tile(&self) -> error::Returns<u8> {
+        alphagram::KeyLayout::last_tile(self)
     }
 
     #[inline(always)]
@@ -249,10 +261,13 @@ impl KeyBuild for NibbleKeys {
     }
 
     #[inline(always)]
-    fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_ {
-        (1..self.layout.max_counts().len())
-            .map(|tile| tile as u8)
-            .filter(move |&tile| alphagram::KeyPlaces::count_in(alphagram::Nibble, key, tile) > 0)
+    fn count_in(&self, key: u128, tile: u8) -> u8 {
+        alphagram::KeyPlaces::count_in(alphagram::Nibble, key, tile)
+    }
+
+    #[inline(always)]
+    fn last_tile(&self) -> error::Returns<u8> {
+        self.layout.last_tile()
     }
 
     #[inline(always)]
@@ -433,8 +448,9 @@ impl Anagrams {
         longest: u8,
         ledger: &mut Ledger,
     ) -> error::Returns<Option<Self>> {
+        let last_tile = layout.last_tile()?;
         Ok(match dawg_words(g, ledger)? {
-            Some(words) => Self::build_counted(g, layout, longest, words, ledger),
+            Some(words) => Self::build_counted(g, layout, last_tile, longest, words, ledger),
             None => None,
         })
     }
@@ -445,6 +461,7 @@ impl Anagrams {
     fn build_counted<N: kwg::Node, K: KeyBuild>(
         g: &kwg::Kwg<N>,
         layout: K,
+        last_tile: u8,
         longest: u8,
         words: usize,
         ledger: &mut Ledger,
@@ -496,7 +513,7 @@ impl Anagrams {
         pairs_of.resize(lengths, 0);
         for group in keyed.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
             keys_of[group[0].0 as usize] += 1;
-            pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1.key()).count();
+            pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1.key(), last_tile).count();
         }
 
         // where each word's letters go in the arena, by index; u32::MAX for a
@@ -546,7 +563,7 @@ impl Anagrams {
                     // the group's words end at an END
                     letters += 1;
                     table.insert(group[0].1, group_at);
-                    for tile in layout.tiles_in(key) {
+                    for tile in layout.tiles_in(key, last_tile) {
                         pairs.push((KeyBytes::of(key - layout.place_value(tile)), group_at, tile));
                     }
                 }
@@ -1450,6 +1467,19 @@ mod tests {
     #[test]
     #[inline]
     fn a_word_the_layout_cannot_key_is_left_out_rather_than_kept() {
+        let mut counts = vec![0; usize::from(u8::MAX) + 2];
+        counts[1] = 1;
+        let wide = alphagram::KeyLayout::of_max_counts(&counts).unwrap();
+        assert!(wide.tiles_in(wide.place_value(1)).is_err());
+        counts.pop();
+        let layout = alphagram::KeyLayout::of_max_counts(&counts).unwrap();
+        assert_eq!(
+            layout
+                .tiles_in(layout.place_value(1))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [1],
+        );
         let layout = test_layout();
         let twelve = vec![1u8; 12];
         let words = [vec![1u8, 2], twelve.clone()];
