@@ -146,13 +146,13 @@ impl<'a> Tilt<'a> {
     pub fn tilt_to(&mut self, new_tilt_factor: i32, bot_level: i8) {
         self.tilt_factor = new_tilt_factor.clamp(0, TILT_DENOM);
 
-        self.leave_scale =
-            (bot_level as i32 * 102 + TILT_DENOM - self.tilt_factor).clamp(0, LEAVE_SCALE_DENOM);
+        self.leave_scale = (i32::from(bot_level) * 102 + TILT_DENOM - self.tilt_factor)
+            .clamp(0, LEAVE_SCALE_DENOM);
     }
 
     #[inline(always)]
     pub fn tilt_by_rng<R: Rng + ?Sized>(&mut self, rng: &mut R, bot_level: i8) {
-        let lo = TILT_DENOM / 2 - bot_level as i32 * 102;
+        let lo = TILT_DENOM / 2 - i32::from(bot_level) * 102;
         self.tilt_to(rng.random_range(lo..TILT_DENOM), bot_level);
     }
 
@@ -168,11 +168,11 @@ impl<'a> Tilt<'a> {
             let max_wp = self.max_prob_by_len[word_len];
             // accept if importance[len] * p*(2-p) >= tilt_factor, p = this_wp / max_wp, cross
             // multiplied so every term stays a non-negative integer.
-            let imp = self.length_importances[word_len] as u128;
-            let twp = this_wp as u128;
-            let mwp = max_wp as u128;
+            let imp = u128::from(self.length_importances[word_len]);
+            let twp = u128::from(this_wp);
+            let mwp = u128::from(max_wp);
             let lhs = imp * twp * (2 * mwp - twp) * TILT_DENOM as u128;
-            let rhs = self.tilt_factor as u128 * IMPORTANCE_DENOM as u128 * mwp * mwp;
+            let rhs = self.tilt_factor as u128 * u128::from(IMPORTANCE_DENOM) * mwp * mwp;
             if lhs >= rhs {
                 true
             } else {

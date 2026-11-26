@@ -63,7 +63,7 @@ impl Equity {
 
     #[inline(always)]
     pub fn as_f64(self) -> f64 {
-        self.0 as f64 / SCALE as f64
+        f64::from(self.0) / f64::from(SCALE)
     }
 
     #[inline(always)]

@@ -23,7 +23,7 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
     let premiums = board_layout.premiums();
-    let rack_size = game_config.rack_size() as u32;
+    let rack_size = u32::from(game_config.rack_size());
     let empty_board = board_tiles.iter().all(|&t| t == 0);
     let star = dim.at_row_col(board_layout.star_row(), board_layout.star_col());
     let is_anchor = |row: i8, col: i8| {
@@ -56,8 +56,8 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
                 let premium = &premiums[dim.at_row_col(row, col)];
                 glance.anchors += 1;
                 glance.premium_anchors +=
-                    (premium.word_multiplier != 1 || premium.tile_multiplier != 1) as u32;
-                glance.word_premium_anchors += (premium.word_multiplier != 1) as u32;
+                    u32::from(premium.word_multiplier != 1 || premium.tile_multiplier != 1);
+                glance.word_premium_anchors += u32::from(premium.word_multiplier != 1);
             }
         }
     }
@@ -99,12 +99,12 @@ pub fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> G
                         continue;
                     }
                     glance.stretches += 1;
-                    glance.bingo_stretches += (empty == rack_size) as u32;
-                    glance.word_premium_stretches += word_premium as u32;
+                    glance.bingo_stretches += u32::from(empty == rack_size);
+                    glance.word_premium_stretches += u32::from(word_premium);
                     lane_has_bingo |= empty == rack_size;
                 }
             }
-            glance.bingo_lanes += lane_has_bingo as u32;
+            glance.bingo_lanes += u32::from(lane_has_bingo);
         }
     }
     glance

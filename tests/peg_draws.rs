@@ -169,7 +169,7 @@ fn peg_draw_outcomes() {
             let (win, _) = endgame::peg_aggregate(&hypotheses);
             assert_eq!(
                 win,
-                candidate.win_deals as f64 / case.deals as f64,
+                f64::from(candidate.win_deals) / f64::from(case.deals),
                 "{name}"
             );
         }

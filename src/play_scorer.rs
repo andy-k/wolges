@@ -409,7 +409,7 @@ impl PlayScorer {
                         let premium = &premiums[strider_at_i];
                         let placed_tile = if tile != 0 {
                             num_played += 1;
-                            word_multiplier *= premium.word_multiplier as i32;
+                            word_multiplier *= i32::from(premium.word_multiplier);
                             tile_multiplier = premium.tile_multiplier;
                             tile
                         } else {
@@ -417,7 +417,7 @@ impl PlayScorer {
                             board_snapshot.board_tiles[strider_at_i]
                         };
                         let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
-                        let tile_score = face_value_tile_score * tile_multiplier as i32;
+                        let tile_score = face_value_tile_score * i32::from(tile_multiplier);
                         word_score += tile_score;
                     }
                     let multiplied_word_score = word_score * word_multiplier;
@@ -450,7 +450,7 @@ impl PlayScorer {
                             let tile_multiplier;
                             let premium = &premiums[perpendicular_strider_at_j];
                             let placed_tile = if j == *lane {
-                                word_multiplier *= premium.word_multiplier as i32;
+                                word_multiplier *= i32::from(premium.word_multiplier);
                                 tile_multiplier = premium.tile_multiplier;
                                 tile
                             } else {
@@ -461,7 +461,7 @@ impl PlayScorer {
                                 break;
                             }
                             let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
-                            let tile_score = face_value_tile_score * tile_multiplier as i32;
+                            let tile_score = face_value_tile_score * i32::from(tile_multiplier);
                             word_score += tile_score;
                         }
                         let multiplied_word_score = word_score * word_multiplier;
@@ -472,7 +472,7 @@ impl PlayScorer {
                 // earns a full rack's bonus
                 let num_played_bonus =
                     game_config.num_played_bonus(num_played.min(game_config.rack_size()));
-                recounted_score += num_played_bonus as i32 * equity::SCALE;
+                recounted_score += i32::from(num_played_bonus) * equity::SCALE;
             }
         };
 
@@ -515,7 +515,9 @@ impl PlayScorer {
             if self.rack_tally.iter().any(|&count| count != 0) {
                 let kept_tiles_worth = (0u8..)
                     .zip(self.rack_tally.iter())
-                    .map(|(tile, &count)| count as i32 * game_config.alphabet().score(tile) as i32)
+                    .map(|(tile, &count)| {
+                        i32::from(count) * i32::from(game_config.alphabet().score(tile))
+                    })
                     .sum::<i32>();
                 let kept_tiles_penalty = 10 + 2 * kept_tiles_worth;
                 recounted_equity -= kept_tiles_penalty * equity::SCALE;
@@ -526,7 +528,7 @@ impl PlayScorer {
                         let their_tile_worth = player
                             .rack
                             .iter()
-                            .map(|&tile| game_config.alphabet().score(tile) as i32)
+                            .map(|&tile| i32::from(game_config.alphabet().score(tile)))
                             .sum::<i32>();
                         unplayed_tiles_worth += their_tile_worth;
                     }
@@ -539,8 +541,8 @@ impl PlayScorer {
                 .klv
                 .leave_value_from_tally(&self.rack_tally)
                 .raw();
-            recounted_equity += (leave_value as i64 * leave_scale as i64
-                / move_filter::LEAVE_SCALE_DENOM as i64) as i32;
+            recounted_equity += (i64::from(leave_value) * i64::from(leave_scale)
+                / i64::from(move_filter::LEAVE_SCALE_DENOM)) as i32;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
                     movegen::Play::Exchange { .. } => {}
@@ -638,13 +640,14 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
             let premium = &premiums[strider_at_i];
             let placed_tile = if tile != 0 {
                 num_played += 1;
-                word_multiplier *= premium.word_multiplier as i32;
+                word_multiplier *= i32::from(premium.word_multiplier);
                 tile_multiplier = premium.tile_multiplier;
 
                 let letter = tile & 0x7f;
                 out.push((
                     letter,
-                    (alphabet.scaled_score(letter).raw() - blank_scaled) * tile_multiplier as i32,
+                    (alphabet.scaled_score(letter).raw() - blank_scaled)
+                        * i32::from(tile_multiplier),
                 ));
                 letter
             } else {
@@ -652,7 +655,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                 board_snapshot.board_tiles[strider_at_i]
             };
             let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
-            word_score += face_value_tile_score * tile_multiplier as i32;
+            word_score += face_value_tile_score * i32::from(tile_multiplier);
         }
         recounted_score += word_score * word_multiplier;
 
@@ -690,9 +693,9 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                 let tile_multiplier;
                 let premium = &premiums[perpendicular_strider_at_j];
                 let placed_tile = if j == lane {
-                    word_multiplier *= premium.word_multiplier as i32;
+                    word_multiplier *= i32::from(premium.word_multiplier);
                     tile_multiplier = premium.tile_multiplier;
-                    placed_tile_multiplier = premium.tile_multiplier as i32;
+                    placed_tile_multiplier = i32::from(premium.tile_multiplier);
                     letter
                 } else {
                     tile_multiplier = 1;
@@ -702,7 +705,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                     break;
                 }
                 let face_value_tile_score = alphabet.scaled_score(placed_tile).raw();
-                word_score += face_value_tile_score * tile_multiplier as i32;
+                word_score += face_value_tile_score * i32::from(tile_multiplier);
             }
             recounted_score += word_score * word_multiplier;
             out[k].1 += (alphabet.scaled_score(letter).raw() - blank_scaled)
@@ -713,7 +716,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
     }
 
     let num_played_bonus = game_config.num_played_bonus(num_played);
-    recounted_score += num_played_bonus as i32 * equity::SCALE;
+    recounted_score += i32::from(num_played_bonus) * equity::SCALE;
 
     recounted_score
 }

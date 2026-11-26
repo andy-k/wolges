@@ -51,8 +51,8 @@ pub fn fitted_fuzz(bag_before: usize, start_bag: usize, exchanged: bool) -> (f64
 #[inline]
 pub fn bag_size(board_tiles: &[u8], game_config: &game_config::GameConfig) -> i64 {
     let on_board = board_tiles.iter().filter(|&&t| t != 0).count() as i64;
-    game_config.alphabet().num_tiles() as i64
-        - (on_board + game_config.num_players() as i64 * game_config.rack_size() as i64)
+    i64::from(game_config.alphabet().num_tiles())
+        - (on_board + i64::from(game_config.num_players()) * i64::from(game_config.rack_size()))
 }
 
 pub struct SpellTables<'a, N: kwg::Node, L: kwg::Node> {
@@ -755,7 +755,7 @@ pub fn equity_fuzz(fuzz: f64) -> error::Returns<f64> {
     if fuzz.is_nan() || fuzz < 0.0 {
         return_error!(format!("fuzz {fuzz} is not 0 or more"));
     }
-    Ok(fuzz * equity::SCALE as f64)
+    Ok(fuzz * f64::from(equity::SCALE))
 }
 
 // for a rack that gives up gap, where g0 is the smallest gap of the racks that
@@ -770,7 +770,7 @@ pub fn fuzz_ln_weight(gap: i32, g0: i32, fuzz: f64) -> f64 {
     if fuzz == 0.0 {
         if d == 0 { 0.0 } else { f64::NEG_INFINITY }
     } else {
-        -(d as f64) / fuzz
+        -f64::from(d) / fuzz
     }
 }
 
@@ -1715,7 +1715,7 @@ fn carry_exchange(
                         .map(|(j, &(l, c))| (l, if j == i { c - 1 } else { c }))
                         .filter(|&(_, c)| c > 0);
                     sum += below[lat.rank_sparse_iter(size - 1, without) as usize - start]
-                        * (pool[letter as usize] - count + 1) as f64;
+                        * f64::from(pool[letter as usize] - count + 1);
                 }
                 span[lat.rank_sparse_iter(size, items.iter().copied()) as usize - *first] +=
                     sum / left;
@@ -2270,8 +2270,8 @@ impl ReplySums {
     // the reply they sum to, over all deals of the pool
     #[inline(always)]
     fn reply(&self, deals: u64) -> Reply {
-        let scale = equity::SCALE as f64;
-        let n = deals as i128;
+        let scale = f64::from(equity::SCALE);
+        let n = i128::from(deals);
         Reply {
             mean: self.equity as f64 / deals as f64 / scale,
             variance: (n * self.squares - self.equity * self.equity) as f64
@@ -2348,8 +2348,8 @@ fn reply_sums(
             best = leave[rank];
         }
         sums.deals += deals;
-        sums.equity += deals as i128 * best as i128;
-        sums.squares += deals as i128 * (best as i128 * best as i128);
+        sums.equity += i128::from(deals) * i128::from(best);
+        sums.squares += i128::from(deals) * (i128::from(best) * i128::from(best));
         // only a play of every tile is entered for the whole rack, and it
         // scores at least its bonus
         if sheet[rank] > 0 {
@@ -3445,7 +3445,7 @@ mod tests {
         let game_config = game_config::make_exchange_test_game_config();
         let num_letters = game_config.alphabet().len() as usize;
         let fuzz = equity_fuzz(FUZZ).unwrap();
-        let kernel = |gap: i32| (-(gap.max(0) as f64) / fuzz).exp();
+        let kernel = |gap: i32| (-f64::from(gap.max(0)) / fuzz).exp();
         // 83 on the board: unseen are five T, four U, two V, two W, two Y, an
         // X, and the Z the watcher holds
         let board1 = board_of(&game_config, 83);
@@ -3608,7 +3608,7 @@ mod tests {
         let game_config = game_config::make_exchange_test_game_config();
         let num_letters = game_config.alphabet().len() as usize;
         let fuzz = equity_fuzz(FUZZ).unwrap();
-        let kernel = |gap: i32| (-(gap.max(0) as f64) / fuzz).exp();
+        let kernel = |gap: i32| (-f64::from(gap.max(0)) / fuzz).exp();
         let board1 = board_of(&game_config, 83);
         let (t, u, y, z) = (20u8, 21u8, 25u8, 26u8);
         let first = one_tile(7, y);
@@ -3991,8 +3991,8 @@ mod tests {
         for (deals, value, bingo) in [(1u64, 10_000i128, true), (3, 30_000, false)] {
             sums.add(&ReplySums {
                 deals,
-                equity: deals as i128 * value,
-                squares: deals as i128 * value * value,
+                equity: i128::from(deals) * value,
+                squares: i128::from(deals) * value * value,
                 bingos: if bingo { deals } else { 0 },
             });
         }
@@ -4273,8 +4273,8 @@ mod tests {
                 .map(|(&r, &u)| binom(u as usize, r as usize))
                 .product::<u64>();
             sums.deals += deals;
-            sums.equity += deals as i128 * *best as i128;
-            sums.squares += deals as i128 * (*best as i128 * *best as i128);
+            sums.equity += i128::from(deals) * i128::from(*best);
+            sums.squares += i128::from(deals) * (i128::from(*best) * i128::from(*best));
             if *bingo {
                 sums.bingos += deals;
             }
@@ -4315,7 +4315,7 @@ mod tests {
                 chance += w * draws as f64
                     / binom(pool_size - tiles.len(), rack_size - tiles.len()) as f64;
             }
-            let value = *best as f64;
+            let value = f64::from(*best);
             weight += chance;
             equity += chance * value;
             squares += chance * value * value;
@@ -4323,7 +4323,7 @@ mod tests {
                 bingos += chance;
             }
         }
-        let scale = equity::SCALE as f64;
+        let scale = f64::from(equity::SCALE);
         let mean = equity / weight;
         Reply {
             mean: mean / scale,

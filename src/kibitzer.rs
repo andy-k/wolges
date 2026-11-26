@@ -229,7 +229,7 @@ impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
     #[inline(always)]
     fn from(play: &JsonPlayWithEquity) -> Self {
         Self {
-            equity: equity::Equity::new((play.equity * equity::SCALE as f64).round() as i32),
+            equity: equity::Equity::new((play.equity * f64::from(equity::SCALE)).round() as i32),
             play: (&play.play).into(),
         }
     }
@@ -443,7 +443,7 @@ mod tests {
             );
             for equity in [32.0, -87.25, 71.303, 0.001, 0.0] {
                 let valued = movegen::ValuedMove {
-                    equity: equity::Equity::new((equity * equity::SCALE as f64).round() as i32),
+                    equity: equity::Equity::new((equity * f64::from(equity::SCALE)).round() as i32),
                     play: play.clone(),
                 };
                 assert_eq!(

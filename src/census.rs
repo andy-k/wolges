@@ -39,7 +39,7 @@ impl MultisetLattice {
         for (s, slot) in size_offset.iter_mut().enumerate().skip(1) {
             *slot = count;
             if s <= rack_size {
-                count = u64::try_from(count as u128 * (s + num_letters) as u128 / s as u128)
+                count = u64::try_from(u128::from(count) * (s + num_letters) as u128 / s as u128)
                     .ok()
                     .filter(|&n| usize::try_from(n).is_ok())
                     .ok_or_else(|| {
@@ -605,7 +605,7 @@ fn full_rack_ways(
         if c > 0 {
             nz[m] = (t, c);
             m += 1;
-            w *= n_choose_k(unseen[t] as u64, c as u64);
+            w *= n_choose_k(u64::from(unseen[t]), u64::from(c));
             if w == 0 {
                 break;
             }
@@ -635,7 +635,7 @@ pub fn apportion_table<T: ApportionSum>(
             most = most.max(u64::from(b.unsigned_abs()));
         }
     }
-    let pool = unseen.iter().map(|&c| c as u64).sum();
+    let pool = unseen.iter().map(|&c| u64::from(c)).sum();
     assert!(
         sums_fit::<T>(pool, lat.rack_size(), most, 1),
         "the sums of a pool of {pool} outgrow the table's type"
@@ -1022,7 +1022,7 @@ fn scatter_words(
         p_rest[n] = 0;
         p_tail[n] = 0;
         for t in (0..n).rev() {
-            suffix_cap[t] = suffix_cap[t + 1] + (avail[t] as u32).min(krem as u32);
+            suffix_cap[t] = suffix_cap[t + 1] + u32::from(avail[t]).min(krem as u32);
             p_rest[t] = p_rest[t + 1] + p_tally[t] as usize;
             p_tail[t] = p_tail[t + 1] + steps.of(t, p_rest[t], p_tally[t] as usize);
         }
@@ -1195,7 +1195,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
 
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];
     for t in (0..n).rev() {
-        suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+        suffix_cap[t] = suffix_cap[t + 1] + u32::from(unseen[t]).min(rack_size as u32);
     }
     struct Ctx<'a, T> {
         n: usize,
@@ -1268,7 +1268,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
                 if cs < cnt {
                     idx = self.add.add(idx, t);
                     if COMPLETIONS {
-                        binom = binom * (cnt - cs) as u64 / (cs + 1) as u64;
+                        binom = binom * u64::from(cnt - cs) / u64::from(cs + 1);
                     }
                 }
             }
@@ -1314,7 +1314,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
 
             self.enum_drawable::<SUM, COMPLETIONS>(t + 1, remaining, w, idx, m);
 
-            let nt = self.unseen[t] as u64;
+            let nt = u64::from(self.unseen[t]);
             let cap = nt.min(remaining as u64);
             let mut binom = 1u64;
             let mut idx_c = idx;
@@ -1399,7 +1399,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
         most: 0,
     };
     ctx.enum_drawable::<false, COMPLETIONS>(0, rack_size, 1, 0, 0);
-    let pool = unseen.iter().map(|&c| c as u64).sum();
+    let pool = unseen.iter().map(|&c| u64::from(c)).sum();
     // how much more than its draw ways a full rack's weight at a leave can be:
     // the ways to set the leave aside within the rack (apportion_rec), or the
     // tiles left to complete it, which the zeta sums are divided by
@@ -1495,7 +1495,7 @@ impl DrawCtx<'_> {
             // safety: ridx is the start dynamic_leave_value was given (below
             // lat.len(), it checks) or one of add's ranks, the lattice's; so it
             // is below lat.len(), best's length (it checks that too).
-            let b = unsafe { *self.best.get_unchecked(ridx) } as f64;
+            let b = f64::from(unsafe { *self.best.get_unchecked(ridx) });
             *num += w * b;
             *den += w;
             return;
@@ -1559,8 +1559,10 @@ pub fn leave_value_by_draw(
                 }
                 let mut w: i128 = 1;
                 for t in 0..self.n {
-                    w *= n_choose_k((self.unseen[t] - self.s_tally[t]) as u64, self.d[t] as u64)
-                        as i128;
+                    w *= i128::from(n_choose_k(
+                        u64::from(self.unseen[t] - self.s_tally[t]),
+                        u64::from(self.d[t]),
+                    ));
                     if w == 0 {
                         return;
                     }
@@ -1575,7 +1577,7 @@ pub fn leave_value_by_draw(
                 // safety: rank gives !0 for a tally the lattice does not hold,
                 // and otherwise its rank, below lat.len(), best's length
                 // (checked above).
-                *self.num += w * unsafe { *self.best.get_unchecked(ri as usize) } as i128;
+                *self.num += w * i128::from(unsafe { *self.best.get_unchecked(ri as usize) });
                 *self.den += w;
                 return;
             }
@@ -1622,7 +1624,7 @@ pub fn dynamic_leave_value(
     let rack_size = lat.rack_size();
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];
     for t in (0..n).rev() {
-        suffix_cap[t] = suffix_cap[t + 1] + (pool[t] as u32).min(rack_size as u32);
+        suffix_cap[t] = suffix_cap[t + 1] + u32::from(pool[t]).min(rack_size as u32);
     }
     let (mut num, mut den) = (0.0f64, 0.0f64);
     DrawCtx {
@@ -1681,8 +1683,8 @@ fn n_choose_k(n: u64, k: u64) -> u64 {
     let mut num: u128 = 1;
     let mut den: u128 = 1;
     for i in 0..k {
-        num *= (n - i) as u128;
-        den *= (i + 1) as u128;
+        num *= u128::from(n - i);
+        den *= u128::from(i + 1);
     }
     (num / den) as u64
 }
@@ -1993,7 +1995,7 @@ mod tests {
                     want,
                     "tally {tally:?} keep {keep}"
                 );
-                checked += (keep <= size) as usize;
+                checked += usize::from(keep <= size);
             }
         }
         assert!(checked > 0);
@@ -2117,12 +2119,12 @@ mod tests {
             let rk = lat.tally(ridx);
             let mut w = 1.0f64;
             for t in 0..n {
-                w *= n_choose_k(unseen[t] as u64, rk[t] as u64) as f64;
+                w *= n_choose_k(u64::from(unseen[t]), u64::from(rk[t])) as f64;
             }
             if w == 0.0 {
                 continue;
             }
-            let e = bval as f64;
+            let e = f64::from(bval);
             let mut s = vec![0u8; n];
 
             for a in 0..=rk[0] {
@@ -2289,10 +2291,13 @@ mod tests {
                         }
                         let ways: u64 = (0..pool.len())
                             .map(|t| {
-                                n_choose_k((pool[t] - kept[t]) as u64, (rack[t] - kept[t]) as u64)
+                                n_choose_k(
+                                    u64::from(pool[t] - kept[t]),
+                                    u64::from(rack[t] - kept[t]),
+                                )
                             })
                             .product();
-                        sum += ways as f64 * sheet[ridx] as f64;
+                        sum += ways as f64 * f64::from(sheet[ridx]);
                         weight += ways;
                     }
                     if weight == 0 {

@@ -11,7 +11,7 @@ use rand::prelude::*;
 // whole points, so a spread passes through here before either reads it.
 #[inline(always)]
 pub fn spread_points(millipoints: i32) -> f64 {
-    millipoints as f64 / equity::SCALE as f64
+    f64::from(millipoints) / f64::from(equity::SCALE)
 }
 
 #[inline(always)]
@@ -1301,7 +1301,7 @@ impl<
                     my,
                     opp,
                 ) {
-                    return win_prob as f64;
+                    return f64::from(win_prob);
                 }
             }
             win_prob_unfinished(final_spread, bag + racks_total)
@@ -1379,7 +1379,7 @@ mod tests {
     #[inline]
     fn win_prob_unfinished_hits_sigmoid_prob_at_the_crafted_lead() {
         let lead_points = 30.0 + 10.0;
-        let lead_millipoints = (lead_points * equity::SCALE as f64) as i32;
+        let lead_millipoints = (lead_points * f64::from(equity::SCALE)) as i32;
         assert!((win_prob_unfinished(lead_millipoints, 10) - 0.9).abs() < 1e-9);
         assert!((win_prob_unfinished(-lead_millipoints, 10) - (1.0 - 0.9)).abs() < 1e-9);
         assert_eq!(win_prob_unfinished(0, 10), 0.5);
@@ -1996,7 +1996,7 @@ mod tests {
                     }
                 }
             }
-            let mean = shared as f64 / draws as f64;
+            let mean = f64::from(shared) / draws as f64;
             assert!(
                 (mean - expected).abs() < 0.2,
                 "seat {decider} decides: the opponent's draws share {mean} of the rack it held, {expected} expected"

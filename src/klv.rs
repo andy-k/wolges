@@ -58,7 +58,7 @@ impl AdjustLeave {
         match *self {
             AdjustLeave::Identity => leave_value,
             AdjustLeave::Scaled { scale, denom } => {
-                (leave_value as i64 * scale as i64 / denom as i64) as i32
+                (i64::from(leave_value) * i64::from(scale) / i64::from(denom)) as i32
             }
         }
     }
@@ -273,8 +273,8 @@ pub fn value_text_into<F: ryu::Float>(value: F, out: &mut String) {
 // formatting into the wasm, which never prints one otherwise.
 #[inline(always)]
 fn millipoints(i: usize, value: f32) -> error::Returns<i32> {
-    let scaled = (f64::from(value) * equity::SCALE as f64).round();
-    if (i32::MIN as f64..-(i32::MIN as f64)).contains(&scaled) {
+    let scaled = (f64::from(value) * f64::from(equity::SCALE)).round();
+    if (f64::from(i32::MIN)..-f64::from(i32::MIN)).contains(&scaled) {
         Ok(scaled as i32)
     } else {
         let kind = if value.is_nan() {
@@ -376,7 +376,7 @@ impl<L: kwg::Node> Klv<L> {
                 // a klv's i16 counts 1/256 of a point, kept as the nearest
                 // millipoints, half away from zero as a klv2's f32 rounds
                 for value in piece.as_chunks::<2>().0 {
-                    let scaled = i16::from_le_bytes(*value) as i32 * equity::SCALE;
+                    let scaled = i32::from(i16::from_le_bytes(*value)) * equity::SCALE;
                     leaves.push((scaled + 128 * scaled.signum()) / 256);
                 }
             }
@@ -845,7 +845,7 @@ impl MultiLeaves {
                 self.unique_tiles.push(tile);
                 if dense {
                     self.digits[tile as usize] = MultiLeavesDigit { count, place_value };
-                    match place_value.checked_mul(count as u32 + 1) {
+                    match place_value.checked_mul(u32::from(count) + 1) {
                         Some(v) if v <= dense_most => {
                             place_value = v;
                         }
@@ -1049,7 +1049,7 @@ impl MultiLeaves {
                                     env.leave_values[leave_idx as usize] = value;
                                 }
                                 child = node.arc_index();
-                                child_idx = idx + node.accepts() as u32;
+                                child_idx = idx + u32::from(node.accepts());
                             }
                         }
                         precompute_leaves::<COUNT_PLAYED, PAIRED, _>(
@@ -1166,9 +1166,9 @@ impl MultiLeaves {
     ) {
         self.leave_values[0] = -equity::ENDGAME_PENALTY_BASE;
         for &tile in &self.unique_tiles {
-            let penalty = -2 * alphabet_score(tile) as i32 * equity::SCALE;
+            let penalty = -2 * i32::from(alphabet_score(tile)) * equity::SCALE;
             let &MultiLeavesDigit { count, place_value } = &self.digits[tile as usize];
-            for i in 0..place_value * count as u32 {
+            for i in 0..place_value * u32::from(count) {
                 self.leave_values[(i + place_value) as usize] =
                     self.leave_values[i as usize] + penalty;
             }
@@ -1224,7 +1224,7 @@ impl MultiLeaves {
                             env.best_leave_values[num_played] = leave_val;
                         }
                     }
-                    traverse(env, node.arc_index(), idx + node.accepts() as u32);
+                    traverse(env, node.arc_index(), idx + u32::from(node.accepts()));
                     env.num_kept -= 1;
                     env.rack_tally[tile as usize] += 1;
                 }
@@ -1286,7 +1286,7 @@ impl MultiLeaves {
             let mut s_size = 0usize;
             for &tile in &self.unique_tiles {
                 let digit = &self.digits[tile as usize];
-                let kept = (idx as u32 / digit.place_value) % (digit.count as u32 + 1);
+                let kept = (idx as u32 / digit.place_value) % (u32::from(digit.count) + 1);
                 s_tally[tile as usize] = kept as u8;
                 s_size += kept as usize;
             }
@@ -1693,7 +1693,9 @@ mod tests {
         leaves.dedup();
         let valued = (leaves.iter())
             .map(|leave| {
-                let v = leave.iter().fold(7i32, |a, &t| (a * 31 + t as i32) % 97);
+                let v = leave
+                    .iter()
+                    .fold(7i32, |a, &t| (a * 31 + i32::from(t)) % 97);
                 (&leave[..], (v - 40) as f32 / 4.0)
             })
             .collect::<Vec<_>>();
@@ -1814,9 +1816,9 @@ mod tests {
                     }
                     let want = if as_i16 {
                         let held = f64::from((value * 256.0).round() as i16) / 256.0;
-                        (held * equity::SCALE as f64).round() as i32
+                        (held * f64::from(equity::SCALE)).round() as i32
                     } else {
-                        (f64::from(value) * equity::SCALE as f64).round() as i32
+                        (f64::from(value) * f64::from(equity::SCALE)).round() as i32
                     };
                     assert_eq!(
                         klv.leave_value_from_tally(&tally).raw(),
@@ -1976,8 +1978,8 @@ mod tests {
         let mut num = 1u128;
         let mut den = 1u128;
         for i in 0..k {
-            num *= (n - i) as u128;
-            den *= (i + 1) as u128;
+            num *= u128::from(n - i);
+            den *= u128::from(i + 1);
         }
         (num / den) as u64
     }
@@ -2052,15 +2054,15 @@ mod tests {
                         if (da + db + dc) as usize != draw {
                             continue;
                         }
-                        let ways = binom(live_pool[0] as u64, da as u64)
-                            * binom(live_pool[1] as u64, db as u64)
-                            * binom(live_pool[2] as u64, dc as u64);
+                        let ways = binom(u64::from(live_pool[0]), u64::from(da))
+                            * binom(u64::from(live_pool[1]), u64::from(db))
+                            * binom(u64::from(live_pool[2]), u64::from(dc));
                         if ways == 0 {
                             continue;
                         }
                         let r = [kept_a + da, kept_b + db, dc];
                         let ri = lat.rank(&r) as usize;
-                        num += ways as f64 * full_v[ri] as f64;
+                        num += ways as f64 * f64::from(full_v[ri]);
                         den += ways as f64;
                     }
                 }
@@ -2095,8 +2097,8 @@ mod tests {
             }
             let mut r = [1u8, 0, 0];
             r[t] += 1;
-            num += avail as f64 * full_v[lat.rank(&r) as usize] as f64;
-            den += avail as f64;
+            num += f64::from(avail) * f64::from(full_v[lat.rank(&r) as usize]);
+            den += f64::from(avail);
         }
         assert_eq!(
             short_bag.leave_values[keep_one_a],

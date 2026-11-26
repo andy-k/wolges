@@ -289,7 +289,7 @@ impl GameState {
     pub fn next_turn(&mut self) {
         let num_players = self.players.len() as u8;
         self.turn += 1;
-        self.turn -= num_players & -((self.turn >= num_players) as i8) as u8;
+        self.turn -= num_players & -i8::from(self.turn >= num_players) as u8;
     }
 
     // whether turns that scored nothing, or passes, have ended the game
@@ -297,10 +297,10 @@ impl GameState {
     pub fn scoreless_turns_ended(&self, game_config: &game_config::GameConfig) -> bool {
         (self.pass_turns > 0
             && game_config.num_passes_to_end() != 0
-            && self.pass_turns >= game_config.num_passes_to_end() as u16)
+            && self.pass_turns >= u16::from(game_config.num_passes_to_end()))
             || (self.zero_turns > 0
                 && game_config.num_zeros_to_end() != 0
-                && self.zero_turns >= game_config.num_zeros_to_end() as u16
+                && self.zero_turns >= u16::from(game_config.num_zeros_to_end())
                 && (game_config.zeros_can_end_empty_board()
                     || self.board_tiles.iter().any(|&tile| tile != 0)))
     }

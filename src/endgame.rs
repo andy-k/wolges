@@ -86,7 +86,7 @@ impl Scoreless {
                 zeros: 0,
             } => 0,
             Scoreless::Counted { passes, zeros } => {
-                zobrist(SCORELESS_TURNS | ((passes as u64) << 8) | zeros as u64)
+                zobrist(SCORELESS_TURNS | (u64::from(passes) << 8) | u64::from(zeros))
             }
             Scoreless::Answering => zobrist(ANSWERING_A_PASS),
         }
@@ -113,7 +113,7 @@ impl Scoreless {
 // for
 #[inline(always)]
 fn square_key(square: usize, tile: u8) -> u64 {
-    zobrist(SQUARE_KEYS | ((square as u64) << 8) | tile as u64)
+    zobrist(SQUARE_KEYS | ((square as u64) << 8) | u64::from(tile))
 }
 
 // the change to a player's rack key when their count of a tile (a blank as 0)
@@ -121,7 +121,7 @@ fn square_key(square: usize, tile: u8) -> u64 {
 #[inline(always)]
 fn rack_step(player: u8, tile: u8, count: usize) -> u64 {
     let key = |count: usize| {
-        zobrist(RACK_KEYS | ((player as u64) << 24) | ((tile as u64) << 16) | count as u64)
+        zobrist(RACK_KEYS | (u64::from(player) << 24) | (u64::from(tile) << 16) | count as u64)
     };
     if count == 0 {
         key(1)
@@ -317,7 +317,7 @@ impl Table {
     // buckets
     #[inline(always)]
     fn bucket(&self, key: u64) -> usize {
-        ((key as u128 * self.buckets.len() as u128) >> 64) as usize
+        ((u128::from(key) * self.buckets.len() as u128) >> 64) as usize
     }
 
     #[inline(always)]
@@ -399,7 +399,7 @@ impl Table {
                 }
                 return false;
             }
-            let rank = depth as i32 + if old >> 58 == generation { 256 } else { 0 };
+            let rank = i32::from(depth) + if old >> 58 == generation { 256 } else { 0 };
             if rank < victim_rank {
                 victim = slot;
                 victim_rank = rank;
@@ -482,7 +482,7 @@ impl Table {
     #[inline(always)]
     fn touch(&mut self, key: u64) {
         if !self.old.is_empty() {
-            let index = ((key as u128 * self.old.len() as u128) >> 64) as usize;
+            let index = ((u128::from(key) * self.old.len() as u128) >> 64) as usize;
             if index >= self.moved {
                 self.move_bucket(index);
             }
@@ -905,8 +905,8 @@ fn lane_bytes(
     lane: i8,
     mut mix: impl FnMut(u8),
 ) {
-    mix(board_empty as u8);
-    mix(down as u8);
+    mix(u8::from(board_empty));
+    mix(u8::from(down));
     mix(lane as u8);
     let strider = dim.lane(down, lane);
     for i in 0..strider.len() {
@@ -994,7 +994,7 @@ impl KeyTable {
         while self.values[at] != NO_LIST && self.keys[at] != key {
             at = (at + 1) & mask;
         }
-        self.held += (self.values[at] == NO_LIST) as usize;
+        self.held += usize::from(self.values[at] == NO_LIST);
         self.keys[at] = key;
         self.values[at] = value;
         true
@@ -1071,7 +1071,7 @@ fn mix_move(key: u128, play: &movegen::Play) -> u128 {
     else {
         return key;
     };
-    let mix = |key: u128, part: u64| (key ^ part as u128).wrapping_mul(FNV128_PRIME);
+    let mix = |key: u128, part: u64| (key ^ u128::from(part)).wrapping_mul(FNV128_PRIME);
     let head = move_key_head(score.raw(), word.len(), *idx, *lane, *down);
     word.chunks(8).fold(mix(key, head), |key, chunk| {
         let mut bytes = [0u8; 8];
@@ -1346,7 +1346,7 @@ impl LanePool {
     #[inline(always)]
     fn held_by(&self, rack: &[u8]) -> Tiles {
         (rack.iter())
-            .map(|&tile| 1 << (4 * self.places[tile as usize] as u32))
+            .map(|&tile| 1 << (4 * u32::from(self.places[tile as usize])))
             .sum()
     }
 
@@ -1492,7 +1492,7 @@ impl LanePool {
                         if let movegen::Play::Place { word, .. } = &plays[i as usize].play {
                             let need: Tiles = (word.iter())
                                 .filter(|&&tile| tile != 0)
-                                .map(|&tile| 1 << (4 * places[held_tile(tile) as usize] as u32))
+                                .map(|&tile| 1 << (4 * u32::from(places[held_tile(tile) as usize])))
                                 .sum();
                             sorting.push((need, k as u32));
                         }
@@ -1557,7 +1557,7 @@ fn rack_places(rack: &[u8], word: &[u8], last: bool) -> u32 {
         let held = held_tile(tile);
         let first = rack.partition_point(|&t| t < held) as u32;
         let end = rack.partition_point(|&t| t <= held) as u32;
-        let taken = (places as u64 & ((1u64 << (end - first)) - 1) << first).count_ones();
+        let taken = (u64::from(places) & ((1u64 << (end - first)) - 1) << first).count_ones();
         places |= 1 << if last { end - 1 - taken } else { first + taken };
     }
     places
@@ -1592,8 +1592,8 @@ impl RackSlots {
         let mut places = 0u32;
         for &tile in word.iter().filter(|&&t| t != 0) {
             let held = held_tile(tile) as usize;
-            let (first, end) = (self.first[held] as u32, self.end[held] as u32);
-            let taken = (places as u64 & ((1u64 << (end - first)) - 1) << first).count_ones();
+            let (first, end) = (u32::from(self.first[held]), u32::from(self.end[held]));
+            let taken = (u64::from(places) & ((1u64 << (end - first)) - 1) << first).count_ones();
             places |= 1 << if last { end - 1 - taken } else { first + taken };
         }
         places
@@ -2508,7 +2508,10 @@ fn beta_equity(beta: f64) -> equity::Equity {
         equity::Equity::NEG_INFINITY
     } else {
         let beta = beta.ceil();
-        debug_assert!(beta > i32::MIN as f64 && beta < i32::MAX as f64, "{beta}");
+        debug_assert!(
+            beta > f64::from(i32::MIN) && beta < f64::from(i32::MAX),
+            "{beta}"
+        );
         equity::Equity::new(beta as i32)
     }
 }
@@ -4016,7 +4019,7 @@ impl<
     fn longest_line(&self, player_idx: u8) -> usize {
         let mine = self.racks[player_idx as usize].len().max(1);
         let theirs = self.racks[player_idx as usize ^ 1].len().max(1);
-        (2 * (mine + theirs) + (mine == 1) as usize - 3).min(COMPLETE as usize - 1)
+        (2 * (mine + theirs) + usize::from(mine == 1) - 3).min(COMPLETE as usize - 1)
     }
 
     // start a search of the position to solve within the limits, on the clock
@@ -6001,7 +6004,7 @@ impl<
             zeros,
             answering,
         } = turn;
-        let key = [bag_tile, mover, passes, zeros, answering as u8];
+        let key = [bag_tile, mover, passes, zeros, u8::from(answering)];
         if let Some(&(value, exact)) = search.line.as_ref().and_then(|line| line.valued.get(&key)) {
             search.exact &= exact;
             return Ok(value);
@@ -6183,7 +6186,7 @@ impl<
             zeros,
             answering,
         } = turn;
-        let mut key = zobrist(BAG_KEYS | ((bag_tile as u64) << 8) | 1);
+        let mut key = zobrist(BAG_KEYS | (u64::from(bag_tile) << 8) | 1);
         for (player, rack) in (0u8..).zip(racks) {
             key ^= rack_key(player, rack);
         }
@@ -6656,7 +6659,7 @@ impl<
         let at = |limits: &BagLimits, opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
             position.after_split(limits, scoreless, opp_rack, bag, pos)
         };
-        let score_diff = position.score_diff.raw() as f64;
+        let score_diff = f64::from(position.score_diff.raw());
         let state = &progress.state;
         let searched = if state.answer.is_none() || state.done {
             Some(&state.searched)
@@ -6865,7 +6868,7 @@ impl<
                 state.took = cells_of(cells, std::time::Duration::ZERO)?;
             }
         }
-        let score_diff = position.score_diff.raw() as f64;
+        let score_diff = f64::from(position.score_diff.raw());
         if state.searched.shards.is_empty() {
             state.searched = BagValued::new(threads);
         }
@@ -7486,8 +7489,10 @@ impl<
                 let value =
                     this.one_in_bag(mover, bag_tile, limits, &mut exact, memo, scoreless)?;
                 let margin = i64::from(value.raw()) + score_diff;
-                outcomes.record(count as u32, margin);
-                run[t] = equity::Equity::new(margin.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+                outcomes.record(u32::from(count), margin);
+                run[t] = equity::Equity::new(
+                    margin.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                );
             }
             let (win_pct, margin) = outcomes.averages();
             let expected_margin = equity::Equity::new(margin.round() as i32);
@@ -8098,7 +8103,7 @@ fn peg_value(
         let margin = i64::from(v.raw()) + lead;
         outcomes.record(w, margin);
         margins[t as usize] =
-            equity::Equity::new(margin.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            equity::Equity::new(margin.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
     }
     let (win, marg) = outcomes.averages();
     Ok(PegValue { win, marg, exact })
@@ -8192,7 +8197,7 @@ impl PegProgress {
             unseen_tally: unseen_tally.to_vec(),
             unseen: (unseen_tally.iter().enumerate())
                 .filter(|&(_, &c)| c != 0)
-                .map(|(t, &c)| (t as u8, c as u32))
+                .map(|(t, &c)| (t as u8, u32::from(c)))
                 .collect(),
             score_diff,
             scoreless: scoreless_counts(scoreless),
@@ -8604,7 +8609,7 @@ impl Iterator for PegHypotheses<'_> {
             self.at += 1;
             let count = self.tally[tile];
             if count != 0 {
-                return Some((tile as u8, count as u32, margin));
+                return Some((tile as u8, u32::from(count), margin));
             }
         }
         None
@@ -9582,7 +9587,7 @@ struct PegPosition<'a> {
 
 #[inline(always)]
 fn scoreless_counts(counts: [u16; 2]) -> [u8; 2] {
-    counts.map(|count| count.min(u8::MAX as u16) as u8)
+    counts.map(|count| count.min(u16::from(u8::MAX)) as u8)
 }
 
 #[inline(always)]
@@ -9744,7 +9749,7 @@ impl InBag {
         }
         for (tile, &count) in self.bag.iter().enumerate() {
             if count != 0 {
-                key ^= zobrist(BAG_KEYS | ((tile as u64) << 8) | count as u64);
+                key ^= zobrist(BAG_KEYS | ((tile as u64) << 8) | u64::from(count));
             }
         }
         if self.mover != 0 {
@@ -9948,9 +9953,11 @@ impl InBag {
     #[inline(always)]
     fn racks_lost(&self, gc: &game_config::GameConfig) -> f64 {
         let alphabet = gc.alphabet();
-        (alphabet.scaled_rack_score(&self.racks[(self.mover ^ 1) as usize])
-            - alphabet.scaled_rack_score(&self.racks[self.mover as usize]))
-        .raw() as f64
+        f64::from(
+            (alphabet.scaled_rack_score(&self.racks[(self.mover ^ 1) as usize])
+                - alphabet.scaled_rack_score(&self.racks[self.mover as usize]))
+            .raw(),
+        )
     }
 }
 
@@ -10438,7 +10445,8 @@ fn list_in_room<T>(limits: &BagLimits, n: usize) -> error::Returns<Vec<T>> {
 // many tiles in the bag
 #[inline(always)]
 fn exchange_legal(gc: &game_config::GameConfig, bag_len: usize, made: i16) -> bool {
-    bag_len as i64 >= gc.exchange_tile_limit() as i64 && made < gc.exchanges_allowed_per_player()
+    bag_len as i64 >= i64::from(gc.exchange_tile_limit())
+        && made < gc.exchanges_allowed_per_player()
 }
 
 // whether one player's exchanges can go on with no count of scoreless turns
@@ -10675,7 +10683,7 @@ impl<V> BagEntry<V> {
     fn worth(&self) -> u8 {
         match self {
             BagEntry::First(_) => 0,
-            BagEntry::Valued(_, _, exact) => 1 + *exact as u8,
+            BagEntry::Valued(_, _, exact) => 1 + u8::from(*exact),
         }
     }
 
@@ -10742,7 +10750,7 @@ impl<T> BagTable<T> {
     // a key's first place
     #[inline(always)]
     fn first(&self, key: u64) -> usize {
-        ((key as u128 * self.entries.len() as u128) >> 64) as usize
+        ((u128::from(key) * self.entries.len() as u128) >> 64) as usize
     }
 
     // the place after at, the first after the last
@@ -11078,7 +11086,7 @@ impl<
         for &tile in thrown {
             kept[tile as usize] -= 1;
         }
-        let value = score + self.klv.leave_value_from_tally(&kept).raw() as f64;
+        let value = score + f64::from(self.klv.leave_value_from_tally(&kept).raw());
         self.arena.give(self.ply, TALLY, kept);
         value
     }
@@ -11273,7 +11281,7 @@ impl<
                 {
                     // the best so far, or a tie with it coming first, needs the
                     // next mover's endgame worth score - best at most
-                    let room = score.raw() as f64 - best.0;
+                    let room = f64::from(score.raw()) - best.0;
                     let most = if i < best.1 {
                         room.floor()
                     } else {
@@ -11282,7 +11290,7 @@ impl<
                     (self.after_emptying(pos, &moves[i], |this, next| {
                         this.endgame_below(next, most + 1.0)
                     })?)
-                    .map(|theirs| score.raw() as f64 - theirs)
+                    .map(|theirs| f64::from(score.raw()) - theirs)
                 }
                 play if best.1 != usize::MAX && self.cannot_beat(pos, play, best, i)? => None,
                 play => Some(self.move_value(pos, play)?),
@@ -11334,7 +11342,7 @@ impl<
                 if !bounded {
                     return Ok(false);
                 }
-                score.raw() as f64 - sum / total as f64
+                f64::from(score.raw()) - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 if pos.a_pass_ends(self.gc) {
@@ -11415,7 +11423,7 @@ impl<
             unreachable!("a placement empties the bag");
         };
         let theirs = self.after_emptying(pos, &play, |this, next| this.endgame(next))?;
-        Ok(Some(score.raw() as f64 - theirs))
+        Ok(Some(f64::from(score.raw()) - theirs))
     }
 
     // the value to its mover of a position whose bag is empty: its endgame
@@ -11429,14 +11437,15 @@ impl<
         self.sub.init_after_scoreless_turns(
             &pos.board,
             [&pos.racks[0], &pos.racks[1]],
-            pos.passes as u16,
-            pos.zeros as u16,
+            u16::from(pos.passes),
+            u16::from(pos.zeros),
         );
         let mut exact = true;
-        let value = self
-            .sub
-            .solve_in_bag(pos.mover, self.limits, &mut exact)?
-            .raw() as f64;
+        let value = f64::from(
+            self.sub
+                .solve_in_bag(pos.mover, self.limits, &mut exact)?
+                .raw(),
+        );
         self.exact &= exact;
         self.keep_endgame(key, value, exact);
         Ok(value)
@@ -11449,7 +11458,7 @@ impl<
         let memory = self.limits.memory;
         (self.valued).write(key, |shard| {
             (shard.endgames).keep(key, Some((value, exact)), memory, |endgame| {
-                endgame.map_or(0, |(_, exact)| 1 + exact as u8)
+                endgame.map_or(0, |(_, exact)| 1 + u8::from(exact))
             })
         });
     }
@@ -11467,13 +11476,15 @@ impl<
         self.sub.init_after_scoreless_turns(
             &pos.board,
             [&pos.racks[0], &pos.racks[1]],
-            pos.passes as u16,
-            pos.zeros as u16,
+            u16::from(pos.passes),
+            u16::from(pos.zeros),
         );
         let mut exact = true;
-        let value = (self.sub)
-            .solve_in_bag_below(pos.mover, beta_equity(beta), self.limits, &mut exact)?
-            .raw() as f64;
+        let value = f64::from(
+            (self.sub)
+                .solve_in_bag_below(pos.mover, beta_equity(beta), self.limits, &mut exact)?
+                .raw(),
+        );
         self.exact &= exact;
         if value < beta {
             self.keep_endgame(key, value, exact);
@@ -11529,7 +11540,7 @@ impl<
                 if n < pos.bag_len() && self.at_horizon() {
                     let turn = pos.place(self.gc, play);
                     let value =
-                        self.estimate(score.raw() as f64, &pos.racks[pos.mover as usize], &[]);
+                        self.estimate(f64::from(score.raw()), &pos.racks[pos.mover as usize], &[]);
                     pos.unplace(self.gc, play, turn);
                     self.each_draw_at_root(pos, n, |drawn, ways| each(drawn, ways, value));
                     return Ok(value);
@@ -11543,14 +11554,14 @@ impl<
                     pos.next_turn();
                     pos.undraw(drawn);
                     let theirs = theirs?;
-                    each(drawn, ways, score.raw() as f64 - theirs);
+                    each(drawn, ways, f64::from(score.raw()) - theirs);
                     sum += ways as f64 * theirs;
                     total += ways;
                     Ok(true)
                 });
                 pos.unplace(self.gc, play, turn);
                 walked?;
-                Ok(score.raw() as f64 - sum / total as f64)
+                Ok(f64::from(score.raw()) - sum / total as f64)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 // the game's end where the pass answers a pass the line made or
@@ -11632,7 +11643,7 @@ impl<
     ) -> error::Returns<f64> {
         match play {
             movegen::Play::Place { word, score, .. } => {
-                let score = score.raw() as f64;
+                let score = f64::from(score.raw());
                 let n = word.iter().filter(|&&tile| tile != 0).count();
                 if n < pos.bag_len() && self.at_horizon() {
                     let turn = pos.place(self.gc, play);
@@ -11962,13 +11973,13 @@ impl<
             next.next_turn();
             // a win or a tie leaves the next mover the lead with the score at
             // most, every endgame value a whole number of millipoints
-            let most = info.lead as f64 + score.raw() as f64;
+            let most = f64::from(info.lead) + f64::from(score.raw());
             let below = self.endgame_below(&next, most + 1.0);
             self.arena.give_pos(self.ply, next);
             return Ok(match below? {
                 Some(theirs) => {
-                    let margin = score.raw() as f64 - theirs;
-                    (beats(info.lead as f64 + margin, 0.0), Some(margin))
+                    let margin = f64::from(score.raw()) - theirs;
+                    (beats(f64::from(info.lead) + margin, 0.0), Some(margin))
                 }
                 None => (0.0, None),
             });
@@ -11993,7 +12004,7 @@ impl<
         // split, and one that ends the game (an exchange with the scoreless
         // turns at the count, its draws averaged) visits no position at all
         self.stop_at_a_limit()?;
-        let lead = info.lead as f64;
+        let lead = f64::from(info.lead);
         match play {
             movegen::Play::Place { word, score, .. } => {
                 let n = word.iter().filter(|&&tile| tile != 0).count();
@@ -12006,12 +12017,12 @@ impl<
                     pos.next_turn();
                     let ev = self.endgame(&pos);
                     self.arena.give_pos(self.ply, pos);
-                    let margin = score.raw() as f64 - ev?;
+                    let margin = f64::from(score.raw()) - ev?;
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
                 if self.at_horizon() {
                     let margin =
-                        self.estimate(score.raw() as f64, &pos.racks[info.mover as usize], &[]);
+                        self.estimate(f64::from(score.raw()), &pos.racks[info.mover as usize], &[]);
                     self.arena.give_pos(self.ply, pos);
                     return Ok((beats(lead + margin, 0.0), margin));
                 }
@@ -12035,7 +12046,7 @@ impl<
                 let found = self.deeper(|this| this.info_value(&next));
                 self.arena.give_next(self.ply, next);
                 let (w, m) = found?;
-                Ok((1.0 - w, score.raw() as f64 - m))
+                Ok((1.0 - w, f64::from(score.raw()) - m))
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 // the game's end where the pass answers a pass the line made or
@@ -12045,9 +12056,11 @@ impl<
                 {
                     // each player loses their own rack (InBag::racks_lost)
                     let alphabet = self.gc.alphabet();
-                    let lost = (alphabet.scaled_rack_score(other)
-                        - alphabet.scaled_rack_score(&info.rack))
-                    .raw() as f64;
+                    let lost = f64::from(
+                        (alphabet.scaled_rack_score(other)
+                            - alphabet.scaled_rack_score(&info.rack))
+                        .raw(),
+                    );
                     return Ok((beats(lead + lost, 0.0), lost));
                 }
                 if self.at_horizon() {
@@ -13376,8 +13389,8 @@ mod tests {
                 if !got.exact && got.depth > 0 {
                     tally(
                         0,
-                        got.expected_margin.raw() as f64,
-                        full.expected_margin.raw() as f64,
+                        f64::from(got.expected_margin.raw()),
+                        f64::from(full.expected_margin.raw()),
                     );
                     tally(1, got.win_pct, full.win_pct);
                 }
@@ -13407,8 +13420,8 @@ mod tests {
             if !got.exact && got.best_move.is_some() {
                 tally(
                     2,
-                    got.expected_margin.raw() as f64,
-                    full.expected_margin.raw() as f64,
+                    f64::from(got.expected_margin.raw()),
+                    f64::from(full.expected_margin.raw()),
                 );
                 tally(3, got.win_pct, full.win_pct);
             }
@@ -13567,7 +13580,7 @@ mod tests {
                 let mut line = Vec::new();
                 egs.collect_pv(mover, &mut line);
                 skipped += egs.work_buffer.out_skips;
-                checks += egs.work_buffer.out_checks as u64;
+                checks += u64::from(egs.work_buffer.out_checks);
                 let want = reference(&mut fixed, &board, &pos.racks, mover as usize, 0, 0, false);
                 assert_eq!(value, super::to_equity(want), "{what}: value");
                 assert_a_best_line(&mut fixed, &board, &pos.racks, mover, &line, &what);
@@ -13773,7 +13786,7 @@ mod tests {
                         assert_eq!(solved.value.unwrap(), want, "{what}");
                         assert_eq!(line.first().map(|ply| ply.0), Some(want), "{what}");
                         assert_a_best_line(&mut fixed, &pos.board, &pos.racks, mover, &line, &what);
-                        same_line += (line == want_line) as usize;
+                        same_line += usize::from(line == want_line);
                         break;
                     }
                 }
@@ -14222,7 +14235,7 @@ mod tests {
                                 );
                                 made[ply] = true;
                                 checked += 1;
-                                chained += made[ply - 2] as usize;
+                                chained += usize::from(made[ply - 2]);
                             }
                             // a random move or pass, lanes and rack places set
                             // as the search sets them
@@ -14480,7 +14493,7 @@ mod tests {
                             "[{name}] lean={lean} the bound after move {i}"
                         );
                         let unreached = egs.one_tile_bound(0, mover, equity::Equity::NEG_INFINITY);
-                        zoned += (unreached < whole) as usize;
+                        zoned += usize::from(unreached < whole);
                         checked += 1;
                         egs.unplace(mover, &play);
                     }
@@ -14530,8 +14543,8 @@ mod tests {
                     egs.init_after_scoreless_turns(
                         &pos.board,
                         [&pos.racks[0][..], &pos.racks[1][..]],
-                        passes as u16,
-                        zeros as u16,
+                        u16::from(passes),
+                        u16::from(zeros),
                     );
                     let solvev = egs.solve(0).unwrap();
                     if solvev != super::to_equity(refv) {
@@ -15240,7 +15253,7 @@ mod tests {
                 "[{name}] a table that may not grow answers as an unlimited solve"
             );
             assert_eq!(egs.work_buffer.table.room(), 4);
-            crowded += (finished.last().unwrap().2 > 4) as usize;
+            crowded += usize::from(finished.last().unwrap().2 > 4);
 
             // one state past the first depth's: the search stops within a later
             // pass, or after it, and answers a depth that finished
@@ -15723,7 +15736,7 @@ mod tests {
             stores += 1;
             if work_buffer.table.growing() {
                 growing += 1;
-                small += (work_buffer.table.buckets.len() < super::GROW_AT_ONCE) as usize;
+                small += usize::from(work_buffer.table.buckets.len() < super::GROW_AT_ONCE);
             }
         }
         assert_eq!(work_buffer.table.buckets.len(), 4 * super::GROW_AT_ONCE);
@@ -15932,7 +15945,7 @@ mod tests {
                     deepest = solved.depth;
                     if solved.exact {
                         assert_eq!(solved.value.unwrap(), full, "[{name}]");
-                        stepped += (step > 1) as usize;
+                        stepped += usize::from(step > 1);
                         break;
                     }
                 }
@@ -16701,7 +16714,7 @@ mod tests {
                         match got {
                             Ok(got) => {
                                 assert_eq!(got, full, "{racks:?} with {bag_tile} in the bag");
-                                resumed += (step > 1) as usize;
+                                resumed += usize::from(step > 1);
                                 break;
                             }
                             Err(stopped) => assert!(stopped, "only a limit stops it"),
@@ -16824,7 +16837,7 @@ mod tests {
                                 (full.win_pct, full.expected_margin)
                             );
                             assert!(same_peg_move(&got.best_move, &full.best_move));
-                            stepped += (step > 1) as usize;
+                            stepped += usize::from(step > 1);
                             break;
                         }
                         last = Some(got);
@@ -17603,7 +17616,7 @@ mod tests {
                         "[{name}] with no limit: {free:?}"
                     );
                 }
-                skipped += (free.len() < depths[2].len()) as usize;
+                skipped += usize::from(free.len() < depths[2].len());
             }
         }
         assert!(skipped > 0, "no solve went deep enough to skip a depth");
@@ -17686,7 +17699,7 @@ mod tests {
                 solved.depth,
                 solved.partway
             );
-            stopped_late += (solved.depth >= 2) as usize;
+            stopped_late += usize::from(solved.depth >= 2);
         }
         assert!(
             stopped_late > 0,
@@ -18207,7 +18220,7 @@ mod tests {
                         let mut line = Vec::new();
                         alone.collect_pv(mover, &mut line);
                         kept +=
-                            (move_value(&mut fresh(&pos), mover, &line[0].1) <= margin) as usize;
+                            usize::from(move_value(&mut fresh(&pos), mover, &line[0].1) <= margin);
                     }
                 }
             }
@@ -18255,8 +18268,8 @@ mod tests {
             egs.init_after_scoreless_turns(
                 &board,
                 [&racks[0][..], &racks[1][..]],
-                passes as u16,
-                zeros as u16,
+                u16::from(passes),
+                u16::from(zeros),
             );
             let solvev = egs.solve_one_in_bag(0, bag).unwrap();
             assert_eq!(
@@ -18374,8 +18387,8 @@ mod tests {
             egs.init_after_scoreless_turns(
                 &pos.board,
                 [&pos.racks[0][..], &pos.racks[1][..]],
-                scoreless as u16,
-                scoreless as u16,
+                u16::from(scoreless),
+                u16::from(scoreless),
             );
             assert_eq!(
                 egs.solve_one_in_bag(mover, bag_tile).unwrap(),
@@ -18714,7 +18727,7 @@ mod tests {
                     if gap > worst_gap {
                         worst_gap = gap;
                     }
-                    n_gap_place += matches!(got.best_move, Some(PegMove::Place(_))) as usize;
+                    n_gap_place += usize::from(matches!(got.best_move, Some(PegMove::Place(_))));
                     if report.lines().count() < 25 {
                         report.push_str(&format!(
                             "gap win%={gap:.3} [{bname}] lean={lean} mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",
@@ -19036,7 +19049,7 @@ mod tests {
                     assert_eq!(win, want_win, "{n} parts");
                     deals += row.1;
                     won += row.1 as f64 * win;
-                    margin += row.1 as f64 * row.2.raw() as f64;
+                    margin += row.1 as f64 * f64::from(row.2.raw());
                 }
                 assert!(
                     (won / deals as f64 - valued.win_pct).abs() < 1e-9,
@@ -19271,7 +19284,7 @@ mod tests {
                             );
                             assert!(one.exact && any.exact, "{case:?}");
                             let mut hyps = (one.hypotheses.iter())
-                                .map(|&(tile, ways, value)| (vec![tile], ways as u64, value))
+                                .map(|&(tile, ways, value)| (vec![tile], u64::from(ways), value))
                                 .collect::<Vec<_>>();
                             hyps.sort_unstable();
                             let mut any_hyps = any_rows[0].hypotheses.clone();
@@ -20090,7 +20103,7 @@ mod tests {
                 bag_position(&board, mover_rack, &unseen_tally, bag_size, score_diff),
             );
             assert!(result.exact);
-            let lead = score_diff.raw() as f64;
+            let lead = f64::from(score_diff.raw());
             for (
                 super::PegBagMove {
                     play,
@@ -20159,11 +20172,11 @@ mod tests {
                         if draws > 1 {
                             unequal += 1;
                         }
-                        let value = score.raw() as f64 - theirs.raw() as f64 + lead;
+                        let value = f64::from(score.raw()) - f64::from(theirs.raw()) + lead;
                         let drawn_here = &split_draws[draw_at];
                         draw_at += 1;
                         assert_eq!(drawn_here.ways, draws);
-                        assert!((drawn_here.margin.raw() as f64 - value).abs() <= 1.0);
+                        assert!((f64::from(drawn_here.margin.raw()) - value).abs() <= 1.0);
                         assert_eq!(drawn_here.win, super::beats(value, 0.0));
                         let w = (ways * draws) as f64;
                         sum += w * value;
@@ -20214,10 +20227,10 @@ mod tests {
     ) -> f64 {
         if pos.bag_len() == 0 {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
-            let (passes, zeros) = (pos.passes as u16, pos.zeros as u16);
+            let (passes, zeros) = (u16::from(pos.passes), u16::from(pos.zeros));
             r.own
                 .init_after_scoreless_turns(&pos.board, racks, passes, zeros);
-            return r.own.solve(pos.mover).unwrap().raw() as f64;
+            return f64::from(r.own.solve(pos.mover).unwrap().raw());
         }
         let key = pos.key();
         if let Some(&value) = r.known.get(&key) {
@@ -20306,7 +20319,7 @@ mod tests {
                     sum += ways as f64 * theirs;
                     total += ways;
                 }
-                score.raw() as f64 - sum / total as f64
+                f64::from(score.raw()) - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 // a pass answering a pass ends the game, as one bringing the
@@ -20345,7 +20358,7 @@ mod tests {
                 let placed = placed(pos, gc, play);
                 let n = word.iter().filter(|&&tile| tile != 0).count();
                 if n < pos.bag_len() && horizon {
-                    return score.raw() as f64;
+                    return f64::from(score.raw());
                 }
                 let (mut sum, mut total) = (0.0, 0u64);
                 let mut draws = Vec::new();
@@ -20364,7 +20377,7 @@ mod tests {
                     sum += ways as f64 * theirs;
                     total += ways;
                 }
-                score.raw() as f64 - sum / total as f64
+                f64::from(score.raw()) - sum / total as f64
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 if pos.a_pass_ends(gc) {
@@ -20565,7 +20578,7 @@ mod tests {
         bag: &[u8],
     ) -> (f64, f64) {
         let gc = r.gc;
-        let lead = info.lead as f64;
+        let lead = f64::from(info.lead);
         let mut pos = super::InBag::default();
         let limits = super::BagLimits::new(&super::Limits::NONE, None);
         info.at(&limits, other, bag, &mut pos).unwrap();
@@ -20601,8 +20614,8 @@ mod tests {
                             .extend(std::iter::repeat_n(tile, count as usize));
                     }
                     r.own.init(&placed.board, [&racks[0], &racks[1]]);
-                    let ev = r.own.solve(info.mover ^ 1).unwrap().raw() as f64;
-                    let margin = score.raw() as f64 - ev;
+                    let ev = f64::from(r.own.solve(info.mover ^ 1).unwrap().raw());
+                    let margin = f64::from(score.raw()) - ev;
                     return (super::beats(lead + margin, 0.0), margin);
                 }
                 let next = theirs(
@@ -20614,7 +20627,7 @@ mod tests {
                     -(info.lead + score.raw()),
                 );
                 let (w, m) = info_reference(r, &next);
-                (1.0 - w, score.raw() as f64 - m)
+                (1.0 - w, f64::from(score.raw()) - m)
             }
             movegen::Play::Exchange { tiles } if tiles.is_empty() => {
                 let scoreless = [info.passes + 1, info.zeros + 1];
@@ -20726,12 +20739,13 @@ mod tests {
                     info.of(&limits, &pos, lead.raw()).unwrap();
                     let (w, m) = info_reference_split(&mut reference, &info, play, opp_rack, bag);
                     want_win += *ways as f64 * w;
-                    want_margin += *ways as f64 * (m + lead.raw() as f64);
+                    want_margin += *ways as f64 * (m + f64::from(lead.raw()));
                     total += ways;
                     assert!((wins[split_at] - w).abs() < 1e-9, "split {split_at}");
                     assert_eq!(hypotheses[split_at].1, *ways);
                     assert!(
-                        (hypotheses[split_at].2.raw() as f64 - (m + lead.raw() as f64)).abs()
+                        (f64::from(hypotheses[split_at].2.raw()) - (m + f64::from(lead.raw())))
+                            .abs()
                             <= 1.0,
                         "split {split_at}"
                     );
@@ -20956,8 +20970,8 @@ mod tests {
                     || (x.win_pct == y.win_pct && x.expected_margin >= y.expected_margin)
             }));
             assert!(states.is_some() || best.exact);
-            cut += (!best.exact && all.len() > 2) as usize;
-            later += (!best.exact && best.depth > 0) as usize;
+            cut += usize::from(!best.exact && all.len() > 2);
+            later += usize::from(!best.exact && best.depth > 0);
             for from in 0..=all.len() + 1 {
                 for to in from..=all.len() + 1 {
                     let some = progress.answer_moves(from..to);
@@ -20969,7 +20983,7 @@ mod tests {
                             && x.expected_margin == y.expected_margin
                             && x.exact == y.exact
                     }));
-                    ranged += (to - from > 1 && to - from < all.len()) as usize;
+                    ranged += usize::from(to - from > 1 && to - from < all.len());
                 }
             }
             for (place, listed) in all.iter().enumerate() {
@@ -21025,8 +21039,8 @@ mod tests {
                     || (x.win_pct == y.win_pct && x.expected_margin >= y.expected_margin)
             }));
             assert!(states.is_some() || best.exact);
-            cut += (!best.exact && all.len() > 2) as usize;
-            later += (!best.exact && best.depth > 0) as usize;
+            cut += usize::from(!best.exact && all.len() > 2);
+            later += usize::from(!best.exact && best.depth > 0);
             for from in 0..=all.len() + 1 {
                 for to in from..=all.len() + 1 {
                     let some = progress.answer_moves(from..to);
@@ -21039,7 +21053,7 @@ mod tests {
                             && x.row == y.row
                             && x.exact == y.exact
                     }));
-                    ranged += (to - from > 1 && to - from < all.len()) as usize;
+                    ranged += usize::from(to - from > 1 && to - from < all.len());
                 }
             }
             for (place, listed) in all.iter().enumerate() {

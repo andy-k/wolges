@@ -65,8 +65,8 @@ trait FinderKey: Clone + Default + Eq {
 impl FinderKey for State {
     #[inline(always)]
     fn hash_key(&self) -> u64 {
-        ((self.arc_index as u64) | ((self.next_index as u64) << 32))
-            ^ (((self.tile as u64) << 1) | self.accepts as u64).rotate_right(8)
+        (u64::from(self.arc_index) | (u64::from(self.next_index) << 32))
+            ^ ((u64::from(self.tile) << 1) | u64::from(self.accepts)).rotate_right(8)
     }
 }
 
@@ -786,9 +786,9 @@ impl StatesDefragger<'_> {
         }
         order.extend((1..self.states.len()).map(|p| {
             let field = u32::BITS;
-            ((!in_front(p) as u128) << (field * 3))
-                | ((!num_ways[p] as u128) << (field * 2))
-                | ((!self.to_end_lens[p] as u128) << field)
+            (u128::from(!in_front(p)) << (field * 3))
+                | (u128::from(!num_ways[p]) << (field * 2))
+                | (u128::from(!self.to_end_lens[p]) << field)
                 | p as u128
         }));
         order.sort_unstable();
@@ -820,8 +820,8 @@ impl StatesDefragger<'_> {
                 top_indexes[Self::ordered_state_index(key) as usize],
             );
         }
-        self.num_written =
-            ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
+        self.num_written = ((params.block_len.len() as u32 - 1) << 4)
+            + u32::from(*params.block_len.last().unwrap());
     }
 
     // order, used_in_dawg, and params are the builder's, emptied here
@@ -876,8 +876,8 @@ impl StatesDefragger<'_> {
                 return;
             }
         }
-        self.num_written =
-            ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
+        self.num_written = ((params.block_len.len() as u32 - 1) << 4)
+            + u32::from(*params.block_len.last().unwrap());
     }
 
     // encoding: little endian of
@@ -906,12 +906,12 @@ impl StatesDefragger<'_> {
                 out[0] = defragged_arc_index as u8;
                 out[1] = (defragged_arc_index >> 8) as u8;
                 out[2] = (((defragged_arc_index >> 16) & 0x3f) as u8)
-                    | ((is_end.0 as u8) << 6)
-                    | ((accepts.0 as u8) << 7);
+                    | (u8::from(is_end.0) << 6)
+                    | (u8::from(accepts.0) << 7);
                 out[3] = tile;
             }
             2 => {
-                out[0] = (tile & 0x3f) | ((is_end.0 as u8) << 6) | ((accepts.0 as u8) << 7);
+                out[0] = (tile & 0x3f) | (u8::from(is_end.0) << 6) | (u8::from(accepts.0) << 7);
                 out[1] = defragged_arc_index as u8;
                 out[2] = (defragged_arc_index >> 8) as u8;
                 out[3] = (defragged_arc_index >> 16) as u8;
@@ -1065,7 +1065,7 @@ fn gen_top_indexes(states: &[State], head_indexes: &[u32], top_indexes: &mut Vec
         .take(states_len)
         .skip(1)
     {
-        top_indexes[p_dest] = p as u32 | -((top_indexes[p_dest] != 0) as i32) as u32;
+        top_indexes[p_dest] = p as u32 | -i32::from(top_indexes[p_dest] != 0) as u32;
     }
     // [p] = 0 (no parent), parent_index, or !0 if > 1 parents.
     // if not unique, set [p] = p.
@@ -1153,7 +1153,7 @@ fn reorder_states(
 ) -> (u32, u32) {
     #[inline(always)]
     fn entry_key(state: &State) -> u64 {
-        ((state.arc_index as u64) << 9) | ((state.accepts as u64) << 8) | state.tile as u64
+        (u64::from(state.arc_index) << 9) | (u64::from(state.accepts) << 8) | u64::from(state.tile)
     }
 
     let ReorderBuffers {
@@ -1275,7 +1275,7 @@ fn reorder_states(
         movable
             .iter()
             .enumerate()
-            .map(|(i, &head)| ((!to_end_lens[head as usize] as u64) << u32::BITS) | i as u64),
+            .map(|(i, &head)| (u64::from(!to_end_lens[head as usize]) << u32::BITS) | i as u64),
     );
     by_len.sort_unstable();
 
@@ -2335,7 +2335,7 @@ mod tests {
         let mut num_moved_turnarounds = 0;
         for i in 2..reordered.0.len() {
             num_moved_turnarounds +=
-                (reordered[i as i32].tile() == 0 && !reordered[i as i32 - 1].is_end()) as usize;
+                usize::from(reordered[i as i32].tile() == 0 && !reordered[i as i32 - 1].is_end());
         }
         assert!(
             num_moved_turnarounds > 0,

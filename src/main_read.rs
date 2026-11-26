@@ -492,14 +492,14 @@ fn default_out(_b: u8) -> error::Returns<()> {
 
 #[inline(always)]
 fn read_le_u96(bytes: &[u8], p: usize) -> u128 {
-    read_le_u32(bytes, p) as u128
-        | ((read_le_u32(bytes, p + 4) as u128) << 32)
-        | ((read_le_u32(bytes, p + 8) as u128) << 64)
+    u128::from(read_le_u32(bytes, p))
+        | (u128::from(read_le_u32(bytes, p + 4)) << 32)
+        | (u128::from(read_le_u32(bytes, p + 8)) << 64)
 }
 
 #[inline(always)]
 fn read_le_u128_full(bytes: &[u8], p: usize) -> u128 {
-    read_le_u96(bytes, p) | ((read_le_u32(bytes, p + 12) as u128) << 96)
+    read_le_u96(bytes, p) | (u128::from(read_le_u32(bytes, p + 12)) << 96)
 }
 
 #[inline(always)]
@@ -512,7 +512,7 @@ fn wmp_read_bit_rack(
 ) -> u128 {
     if wmp_ver < 3 {
         let quotient = read_le_u96(bytes, p);
-        quotient * num_buckets as u128 + bucket_idx as u128
+        quotient * u128::from(num_buckets) + u128::from(bucket_idx)
     } else {
         read_le_u128_full(bytes, p)
     }
@@ -544,7 +544,7 @@ fn check_wmp_run(
     width: usize,
     section_len: usize,
 ) -> error::Returns<()> {
-    if initial_ofs as u64 + num_elts as u64 * width as u64 > section_len as u64 {
+    if u64::from(initial_ofs) + u64::from(num_elts) * width as u64 > section_len as u64 {
         return Err("an entry's words run past their section".into());
     }
     Ok(())
@@ -604,7 +604,7 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
         *r += 4;
         Ok(v)
     } else if !is_klv2 && klv_bytes.len() >= *r + 2 {
-        let v = (read_le_u16(klv_bytes, *r) as i16) as f32 * (1.0 / 256.0);
+        let v = f32::from(read_le_u16(klv_bytes, *r) as i16) * (1.0 / 256.0);
         *r += 2;
         Ok(v)
     } else {
@@ -1396,8 +1396,9 @@ fn do_wmp(
                                 + entry_idx as usize * wmp_entry_size
                                 + 16;
                             let quotient = read_le_u96(wmp_bytes, p);
-                            let bit_rack = quotient * wmp_bylen_num_double_blank_buckets as u128
-                                + bucket_idx as u128;
+                            let bit_rack = quotient
+                                * u128::from(wmp_bylen_num_double_blank_buckets)
+                                + u128::from(bucket_idx);
                             write!(ret, "  {bit_rack:032x} ")?;
                             for i in 0..32 {
                                 for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
@@ -1440,9 +1441,9 @@ fn do_wmp(
                                 {
                                     // shadow all the variables inside here.
                                     let mut sought_quotient =
-                                        unblanked_bit_rack / wmp_bylen_num_word_buckets as u128;
+                                        unblanked_bit_rack / u128::from(wmp_bylen_num_word_buckets);
                                     let bucket_idx = (unblanked_bit_rack
-                                        % wmp_bylen_num_word_buckets as u128)
+                                        % u128::from(wmp_bylen_num_word_buckets))
                                         as u32;
                                     // write something if ZA/ZE/ZO overflow.
                                     if sought_quotient >> 96 != 0 {
@@ -1488,7 +1489,7 @@ fn do_wmp(
                                 }
                             }
                             expected_max_word_lookup_results = expected_max_word_lookup_results
-                                .max((len as u32).saturating_mul(this_word_lookup_results));
+                                .max(u32::from(len).saturating_mul(this_word_lookup_results));
                             expected_max_blank_pair_results =
                                 expected_max_blank_pair_results.max(num_elts.saturating_mul(2));
                             ret.push('\n');
@@ -1543,10 +1544,10 @@ fn do_wmp(
                                         let mut sought_quotient = 0;
                                         let bucket_idx;
                                         if wmp_ver < 3 {
-                                            sought_quotient =
-                                                b1_bit_rack / wmp_bylen_num_blank_buckets as u128;
+                                            sought_quotient = b1_bit_rack
+                                                / u128::from(wmp_bylen_num_blank_buckets);
                                             bucket_idx = (b1_bit_rack
-                                                % wmp_bylen_num_blank_buckets as u128)
+                                                % u128::from(wmp_bylen_num_blank_buckets))
                                                 as u32;
                                             // write something if ZA/ZE/ZO overflow.
                                             if sought_quotient >> 96 != 0 {
@@ -1598,11 +1599,9 @@ fn do_wmp(
                                                                 if wmp_ver < 3 {
                                                                     sought_quotient =
                                                                     unblanked_bit_rack
-                                                                        / wmp_bylen_num_word_buckets
-                                                                            as u128;
+                                                                        / u128::from(wmp_bylen_num_word_buckets);
                                                                     bucket_idx = (unblanked_bit_rack
-                                                                        % wmp_bylen_num_word_buckets
-                                                                            as u128)
+                                                                        % u128::from(wmp_bylen_num_word_buckets))
                                                                         as u32;
                                                                     // write something if ZA/ZE/ZO overflow.
                                                                     if sought_quotient >> 96 != 0 {
@@ -1689,7 +1688,7 @@ fn do_wmp(
                                 }
                             }
                             expected_max_word_lookup_results = expected_max_word_lookup_results
-                                .max((len as u32).saturating_mul(this_word_lookup_results));
+                                .max(u32::from(len).saturating_mul(this_word_lookup_results));
                             ret.push('\n');
                         }
                     }
@@ -1774,7 +1773,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         v
                     } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                         r += 2;
-                        (read_le_u16(klv_bytes, r - 2) as i16) as f32 * scale
+                        f32::from(read_le_u16(klv_bytes, r - 2) as i16) * scale
                     } else {
                         return Err("missing leaves".into());
                     };
@@ -1956,7 +1955,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             // both counts come from the file: in 64 bits, no pair of them can
             // wrap the size
             if (ort_bytes.len() as u64)
-                < r as u64 + (ort_num_buckets as u64 + 1 + ort_num_values as u64) * 4
+                < r as u64 + (u64::from(ort_num_buckets) + 1 + u64::from(ort_num_values)) * 4
             {
                 return Err("out of bounds".into());
             }
@@ -1992,7 +1991,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     }
                     next_allowed_quotient = quotient + 1;
                     // bucket_num is remainder, i.e. orig_hash % ort_num_buckets == bucket_num.
-                    let orig_hash = quotient as u64 * ort_num_buckets as u64 + bucket_num as u64;
+                    let orig_hash =
+                        u64::from(quotient) * u64::from(ort_num_buckets) + u64::from(bucket_num);
                     rack_str.clear();
                     // recover rack_str from orig_hash, each tile uses 5 bits but can be shorter than 7 elements.
                     let mut last_seen_tile = 0;
@@ -2060,31 +2060,31 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         return Err("invalid tile".into());
                     }
                 }
-                let val = ((u8::from_str(&record[6])? as u32) << 29)
-                    | ((u8::from_str(&record[5])? as u32) << 26)
-                    | ((u8::from_str(&record[4])? as u32) << 23)
-                    | ((u8::from_str(&record[3])? as u32) << 20)
-                    | ((u8::from_str(&record[2])? as u32) << 17)
-                    | ((u8::from_str(&record[1])? as u32) << 14);
+                let val = (u32::from(u8::from_str(&record[6])?) << 29)
+                    | (u32::from(u8::from_str(&record[5])?) << 26)
+                    | (u32::from(u8::from_str(&record[4])?) << 23)
+                    | (u32::from(u8::from_str(&record[3])?) << 20)
+                    | (u32::from(u8::from_str(&record[2])?) << 17)
+                    | (u32::from(u8::from_str(&record[1])?) << 14);
                 let mut orig_hash = 0u64;
                 v.sort_unstable();
                 for &i in &v {
                     if i != 0 {
                         orig_hash <<= 5;
-                        orig_hash |= i as u64;
+                        orig_hash |= u64::from(i);
                     }
                 }
                 for &i in &v {
                     if i == 0 {
                         orig_hash <<= 5;
-                        orig_hash |= alphabet.len() as u64;
+                        orig_hash |= u64::from(alphabet.len());
                     }
                 }
-                let quotient = (orig_hash / (num_buckets as u64)) as u32;
+                let quotient = (orig_hash / u64::from(num_buckets)) as u32;
                 if quotient & 0x3fff != quotient {
                     return Err("quotient does not fit in 14 bits".into());
                 }
-                let bucket_num = (orig_hash % (num_buckets as u64)) as u32;
+                let bucket_num = (orig_hash % u64::from(num_buckets)) as u32;
                 values.push((bucket_num, quotient, val));
             }
             values.sort_unstable();
@@ -2317,7 +2317,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     let adjust_num_word_buckets = |len: u32, biggest: u128| {
                         let guess = next_prime(len);
                         let target = 1u128 << 96;
-                        if biggest / (guess as u128) < target {
+                        if biggest / u128::from(guess) < target {
                             // intentional floor division.
                             guess
                         } else {
@@ -2358,8 +2358,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 if is_v3_plus {
                                 ( wmp3_hash(bits_u128) % num_word_buckets, bits_u128, bits)
                                 } else {
-                                let mut quotient = bits_u128 / (num_word_buckets as u128);
-                                let remainder = (bits_u128 % num_word_buckets as u128) as u32;
+                                let mut quotient = bits_u128 / u128::from(num_word_buckets);
+                                let remainder = (bits_u128 % u128::from(num_word_buckets)) as u32;
                                 if quotient >> 96 != 0 {
                                     quotient &= (1u128 << 96) - 1;
                                     // hopefully this does not crash
@@ -2392,7 +2392,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     write_u32(&mut ret, linearized_buckets.len() as u32);
                     // pretend it was already re-sorted according to remainder order.
                     let mut cum_start_idx = 0;
-                    let inline_max = 16u32 / this_len as u32;
+                    let inline_max = 16u32 / u32::from(this_len);
                     let mut uninlined_len = 0u32;
                     for (_remainder, quotient, bits) in linearized_buckets.iter() {
                         let (start_idx, end_idx) = b0_bits[*bits];
@@ -2407,7 +2407,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                             uninlined_len += num_elts;
                             write_u32(&mut ret, 0);
                             write_u32(&mut ret, 0);
-                            write_u32(&mut ret, cum_start_idx * this_len as u32);
+                            write_u32(&mut ret, cum_start_idx * u32::from(this_len));
                             write_u32(&mut ret, num_elts);
                             cum_start_idx += num_elts;
                         }
@@ -2443,8 +2443,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         bits,
                                     )
                                 } else {
-                                    let mut quotient = bits_u128 / (num_blank_buckets as u128);
-                                    let remainder = (bits_u128 % num_blank_buckets as u128) as u32;
+                                    let mut quotient = bits_u128 / u128::from(num_blank_buckets);
+                                    let remainder = (bits_u128 % u128::from(num_blank_buckets)) as u32;
                                     if quotient >> 96 != 0 {
                                         quotient &= (1u128 << 96) - 1;
                                         // hopefully this does not crash
@@ -2503,9 +2503,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     bits.clone_from(bits_from_b2);
                                     let bits_u128 = u128::from_le_bytes(*bits_from_b2);
                                     let mut quotient =
-                                        bits_u128 / (num_double_blank_buckets as u128);
+                                        bits_u128 / u128::from(num_double_blank_buckets);
                                     let remainder =
-                                        (bits_u128 % num_double_blank_buckets as u128) as u32;
+                                        (bits_u128 % u128::from(num_double_blank_buckets)) as u32;
                                     if quotient >> 96 != 0 {
                                         quotient &= (1u128 << 96) - 1;
                                         // hopefully this does not crash
@@ -2639,9 +2639,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         )
                                     } else {
                                         let mut quotient =
-                                            bits_u128 / (num_double_blank_buckets as u128);
+                                            bits_u128 / u128::from(num_double_blank_buckets);
                                         let remainder =
-                                            (bits_u128 % num_double_blank_buckets as u128) as u32;
+                                            (bits_u128 % u128::from(num_double_blank_buckets)) as u32;
                                         if quotient >> 96 != 0 {
                                             quotient &= (1u128 << 96) - 1;
                                             // hopefully this does not crash
@@ -2688,7 +2688,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         }
                     }
                     max_word_lookup_results = max_word_lookup_results
-                        .max(max_word_lookup_results_before_multiplying_len * this_len as u32);
+                        .max(max_word_lookup_results_before_multiplying_len * u32::from(this_len));
                 }
             }
             ret[2..6].copy_from_slice(&max_word_lookup_results.to_le_bytes());
@@ -2783,7 +2783,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 }
                 i += l + 3;
                 klv::value_text_into(
-                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
+                    f32::from(read_le_u16(bytes, i - 2)) * (1.0 / 256.0) - 128.0,
                     &mut value_text,
                 );
                 csv_out.serialize((&s, &value_text))?;

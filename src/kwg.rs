@@ -48,7 +48,10 @@ impl Node for Node22 {
     #[inline(always)]
     fn pack(tile: u8, accepts: bool, is_end: bool, arc_index: i32) -> Option<u32> {
         (0..=0x3fffff).contains(&arc_index).then_some(
-            (tile as u32) << 24 | (accepts as u32) << 23 | (is_end as u32) << 22 | arc_index as u32,
+            u32::from(tile) << 24
+                | u32::from(accepts) << 23
+                | u32::from(is_end) << 22
+                | arc_index as u32,
         )
     }
 
@@ -90,7 +93,10 @@ impl Node for Node24 {
     #[inline(always)]
     fn pack(tile: u8, accepts: bool, is_end: bool, arc_index: i32) -> Option<u32> {
         (tile < 0x40 && (0..=0xffffff).contains(&arc_index)).then_some(
-            (arc_index as u32) << 8 | (accepts as u32) << 7 | (is_end as u32) << 6 | tile as u32,
+            (arc_index as u32) << 8
+                | u32::from(accepts) << 7
+                | u32::from(is_end) << 6
+                | u32::from(tile),
         )
     }
 
@@ -146,15 +152,15 @@ pub(crate) const READ_PIECE: usize = 1 << 16;
 
 #[inline(always)]
 pub fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
-    bytes[p] as u16 | ((bytes[p + 1] as u16) << 8)
+    u16::from(bytes[p]) | (u16::from(bytes[p + 1]) << 8)
 }
 
 #[inline(always)]
 pub fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
-    bytes[p] as u32
-        | ((bytes[p + 1] as u32) << 8)
-        | ((bytes[p + 2] as u32) << 16)
-        | ((bytes[p + 3] as u32) << 24)
+    u32::from(bytes[p])
+        | (u32::from(bytes[p + 1]) << 8)
+        | (u32::from(bytes[p + 2]) << 16)
+        | (u32::from(bytes[p + 3]) << 24)
 }
 
 pub struct Kwg<N: Node>(pub Vec<N>);
@@ -467,18 +473,18 @@ impl<N: Node> Kwg<N> {
         if word_counts[p as usize] == 0 {
             word_counts[p as usize] = !0; // marker
             let node = self[p];
-            let count = node.accepts() as u64
+            let count = u64::from(node.accepts())
                 + if node.arc_index() != 0 {
-                    self.count_words_at(word_counts, node.arc_index())? as u64
+                    u64::from(self.count_words_at(word_counts, node.arc_index())?)
                 } else {
                     0
                 }
                 + if node.is_end() {
                     0
                 } else {
-                    self.count_words_at(word_counts, p + 1)? as u64
+                    u64::from(self.count_words_at(word_counts, p + 1)?)
                 };
-            if count >= !0u32 as u64 {
+            if count >= u64::from(!0u32) {
                 return Err("the word graph holds too many words to count".into());
             }
             word_counts[p as usize] = count as u32;
@@ -672,7 +678,7 @@ impl<N: Node> Kwg<N> {
                 word_counts[p as usize] - word_counts[p as usize + 1]
             };
             if idx < words_here {
-                idx -= node.accepts() as u32;
+                idx -= u32::from(node.accepts());
                 out(node.tile());
                 p = node.arc_index();
             } else {
@@ -706,9 +712,9 @@ impl<N: Node> Kwg<N> {
             }
             idx -= word_counts[p as usize];
             if remaining == 0 {
-                return idx | ((node.accepts() as i32 - 1) as u32);
+                return idx | ((i32::from(node.accepts()) - 1) as u32);
             }
-            idx += node.accepts() as u32;
+            idx += u32::from(node.accepts());
             p = node.arc_index();
         }
         !0
@@ -740,10 +746,10 @@ impl<N: Node> Kwg<N> {
                         tile = t;
                     }
                     None => {
-                        return idx | ((node.accepts() as i32 - 1) as u32);
+                        return idx | ((i32::from(node.accepts()) - 1) as u32);
                     }
                 }
-                idx += node.accepts() as u32;
+                idx += u32::from(node.accepts());
                 p = node.arc_index();
             }
         }

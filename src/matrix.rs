@@ -44,7 +44,7 @@ impl Dim {
     #[inline(always)]
     pub fn across(&self, row: i8) -> Strider {
         Strider {
-            base: (row as i16) * (self.cols as i16),
+            base: i16::from(row) * i16::from(self.cols),
             step: 1,
             len: self.cols,
         }
@@ -53,7 +53,7 @@ impl Dim {
     #[inline(always)]
     pub fn down(&self, col: i8) -> Strider {
         Strider {
-            base: col as i16,
+            base: i16::from(col),
             step: self.cols,
             len: self.rows,
         }

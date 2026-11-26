@@ -14,7 +14,7 @@ impl std::hash::Hasher for MyHasher {
     #[inline(always)]
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.0 = self.0.wrapping_mul(3467) ^ (!b as u64);
+            self.0 = self.0.wrapping_mul(3467) ^ u64::from(!b);
         }
     }
 }

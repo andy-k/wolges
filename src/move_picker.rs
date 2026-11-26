@@ -1035,7 +1035,7 @@ fn tiles_placed(play: &movegen::Play) -> usize {
 fn play_score(play: &movegen::Play) -> i64 {
     match play {
         movegen::Play::Exchange { .. } => 0,
-        movegen::Play::Place { score, .. } => score.raw() as i64,
+        movegen::Play::Place { score, .. } => i64::from(score.raw()),
     }
 }
 
@@ -1043,7 +1043,7 @@ fn play_score(play: &movegen::Play) -> i64 {
 // side holding the rack is gone out on
 #[inline(always)]
 fn twice(game_config: &game_config::GameConfig, rack: &[u8]) -> i64 {
-    2 * equity::SCALE as i64 * game_config.alphabet().rack_score(rack).raw() as i64
+    2 * i64::from(equity::SCALE) * i64::from(game_config.alphabet().rack_score(rack).raw())
 }
 
 // the tiles a play takes from its rack, a blank as 0, sorted
@@ -1113,11 +1113,11 @@ fn winning_out(
     let mover = game_state.turn as usize;
     let rack_len = game_state.players[mover].rack.len();
     let other = &game_state.players[1 - mover];
-    let ending = game_state.players[mover].score.raw() as i64 + twice(game_config, &other.rack);
+    let ending = i64::from(game_state.players[mover].score.raw()) + twice(game_config, &other.rack);
     plays.iter().position(|m| {
         matches!(m.play, movegen::Play::Place { .. })
             && tiles_placed(&m.play) == rack_len
-            && ending + play_score(&m.play) > other.score.raw() as i64
+            && ending + play_score(&m.play) > i64::from(other.score.raw())
     })
 }
 
@@ -1485,8 +1485,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         Some(Self {
             board_snapshot,
             game_state,
-            lead: game_state.players[mover].score.raw() as i64
-                - game_state.players[1 - mover].score.raw() as i64,
+            lead: i64::from(game_state.players[mover].score.raw())
+                - i64::from(game_state.players[1 - mover].score.raw()),
             other_twice: twice(game_config, other_rack),
             replies,
             by_score,
@@ -1607,7 +1607,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         FootprintScratch { acc, t }: FootprintScratch<'_>,
     ) -> (i64, bool) {
         let c = score + self.other_twice;
-        let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - left_twice;
+        let stuck = -i64::from(equity::ENDGAME_PENALTY_BASE) - left_twice;
         let mut v = i64::MAX;
         for ((x, &o), &k) in t.0.iter_mut().zip(&self.going_out.0).zip(&changed.0) {
             *x = o & !k;
@@ -1687,7 +1687,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
             return Some(c);
         }
         let kept_twice = twice(game_config, kept);
-        let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - kept_twice;
+        let stuck = -i64::from(equity::ENDGAME_PENALTY_BASE) - kept_twice;
         let (rows, cols) = zone_lanes(dim, &choice.footprint.zone);
         // the mover's outs after it, best first, by score and zone
         let outs = &mut temps.after_outs;
@@ -3509,7 +3509,7 @@ mod tests {
         // iteration since; paired by position in its list instead, it would be
         // compared with the first's iterations 1 to 50 and look level
         let leader = (1..=100)
-            .map(|i| 100.0 + 10.0 * (i % 3) as f64)
+            .map(|i| 100.0 + 10.0 * f64::from(i % 3))
             .collect::<Vec<_>>();
         let joined = leader[50..].iter().map(|v| v - 1.0).collect::<Vec<_>>();
         let mut candidates = vec![
@@ -4675,7 +4675,7 @@ mod tests {
             return c;
         }
         let left_twice = twice(first.board_snapshot.game_config, first.left(choice));
-        let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - left_twice;
+        let stuck = -i64::from(equity::ENDGAME_PENALTY_BASE) - left_twice;
         let outs = first
             .standing_outs(choice, 0, 0)
             .map(|(s, fp)| (s, fp.zone))
@@ -4728,7 +4728,7 @@ mod tests {
             (place(0, false, 7, 5, &[0, 0, 20], 6).play, 10),
         ] {
             let i = first.choices.iter().position(|c| c.play == play).unwrap();
-            assert_eq!(values[i], want * equity::SCALE as i64);
+            assert_eq!(values[i], want * i64::from(equity::SCALE));
             assert_eq!(hopes[i], i64::MIN);
         }
         assert_eq!(first.choices.len(), 3);
@@ -4763,7 +4763,7 @@ mod tests {
         let at = |play: &movegen::Play| first.choices.iter().position(|c| c.play == *play).unwrap();
         let (i, j) = (at(&att.play), at(&attt.play));
         let (mut values, hopes) = first.values_and_hopes();
-        let scale = equity::SCALE as i64;
+        let scale = i64::from(equity::SCALE);
         assert_eq!((values[i], hopes[i]), (-3 * scale, 20 * scale));
         assert_eq!((values[j], hopes[j]), (14 * scale, i64::MIN));
         first.raise_openers(&mut scratch, &mut values, &hopes);
@@ -4813,7 +4813,7 @@ mod tests {
             return Some(c);
         }
         let kept_twice = twice(game_config, &scratch.kept);
-        let stuck = -(equity::ENDGAME_PENALTY_BASE as i64) - kept_twice;
+        let stuck = -i64::from(equity::ENDGAME_PENALTY_BASE) - kept_twice;
         gen_plays(
             &mut scratch.generator,
             board_snapshot,
@@ -4897,11 +4897,11 @@ mod tests {
         };
         assert_eq!(
             value_of(&at_down.play, &mut scratch),
-            Some(-6 * equity::SCALE as i64)
+            Some(-6 * i64::from(equity::SCALE))
         );
         assert_eq!(
             value_of(&att_along, &mut scratch),
-            Some(10 * equity::SCALE as i64)
+            Some(10 * i64::from(equity::SCALE))
         );
         for (lead, blocks) in [(-20, true), (6, true), (7, false)] {
             let game_state = at_endgame(&game_config, lead);
@@ -4963,7 +4963,7 @@ mod tests {
             let i = first.choices.iter().position(|c| c.play == *play).unwrap();
             assert_eq!(
                 first.value_after(&mut scratch, i),
-                Some(6 * equity::SCALE as i64)
+                Some(6 * i64::from(equity::SCALE))
             );
         }
         let found = out_in_two(
@@ -5009,11 +5009,11 @@ mod tests {
         };
         assert_eq!(
             value_of(&att_along, &mut scratch),
-            Some(12 * equity::SCALE as i64)
+            Some(12 * i64::from(equity::SCALE))
         );
         assert_eq!(
             value_of(&attt_along, &mut scratch),
-            Some(10 * equity::SCALE as i64)
+            Some(10 * i64::from(equity::SCALE))
         );
         let found = out_in_two(
             &board_snapshot,

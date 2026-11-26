@@ -73,7 +73,7 @@ impl Alphabet {
             let tile = if byte & 0x80 != 0 { 0 } else { byte };
             if let Some(tile) = tiles.get(tile) {
                 scores[byte] = tile.score;
-                scaled_scores[byte] = tile.scaled_score as i32;
+                scaled_scores[byte] = i32::from(tile.scaled_score);
             }
         }
         let mut tiles_by_descending_scores = Box::from_iter(0..num_letters);
@@ -88,7 +88,7 @@ impl Alphabet {
                 acc.max(tile.label.chars().count())
                     .max(tile.blank_label.chars().count())
             }),
-            num_tiles: tiles.iter().map(|tile| tile.freq as u16).sum(),
+            num_tiles: tiles.iter().map(|tile| u16::from(tile.freq)).sum(),
             same_score_tile,
             same_score_tile_bits: same_score_tile_bits.into_boxed_slice(),
             tiles_by_descending_scores,
@@ -136,7 +136,7 @@ impl Alphabet {
                 label,
                 blank_label,
                 freq,
-                scaled_score: score as i16 * equity::SCALE as i16,
+                scaled_score: i16::from(score) * equity::SCALE as i16,
                 score,
                 is_vowel,
                 alias_labels,
@@ -272,7 +272,7 @@ impl Alphabet {
 
     #[inline(always)]
     pub fn rack_score(&self, rack: &[u8]) -> equity::Points {
-        equity::Points::new(rack.iter().map(|&t| self.score(t) as i32).sum::<i32>())
+        equity::Points::new(rack.iter().map(|&t| i32::from(self.score(t))).sum::<i32>())
     }
 
     #[inline(always)]

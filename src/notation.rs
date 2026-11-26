@@ -80,8 +80,8 @@ pub fn read_place_word(
         let mut ix = 0;
         while ix < sb.len() {
             if let Some((tile, end_ix)) = plays_alphabet_reader.next_tile(sb, ix) {
-                let row = row + ((v.len() as i8) & -(coord.down as i8));
-                let col = col + ((v.len() as i8) & -(!coord.down as i8));
+                let row = row + ((v.len() as i8) & -i8::from(coord.down));
+                let col = col + ((v.len() as i8) & -i8::from(!coord.down));
                 if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
                     return Err(error::new(format!(
                         "invalid coord (row {row} col {col}) after {v:?} in {s:?}"
@@ -103,12 +103,12 @@ pub fn read_place_word(
                 } else {
                     // tile matches
                     v.push(0);
-                    num_in_paren += (num_in_paren >= 0) as isize;
+                    num_in_paren += isize::from(num_in_paren >= 0);
                 }
                 ix = end_ix;
             } else if sb[ix] == b'.' {
-                let row = row + ((v.len() as i8) & -(coord.down as i8));
-                let col = col + ((v.len() as i8) & -(!coord.down as i8));
+                let row = row + ((v.len() as i8) & -i8::from(coord.down));
+                let col = col + ((v.len() as i8) & -i8::from(!coord.down));
                 if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
                     return Err(error::new(format!(
                         "invalid coord (row {row} col {col}) after {v:?} in {s:?}"
@@ -122,7 +122,7 @@ pub fn read_place_word(
                 }
                 v.push(0);
                 ix += 1;
-                num_in_paren += (num_in_paren >= 0) as isize;
+                num_in_paren += isize::from(num_in_paren >= 0);
             } else if num_in_paren < 0 && sb[ix] == b'(' {
                 ix += 1;
                 num_in_paren = 0;

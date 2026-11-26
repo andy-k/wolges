@@ -149,8 +149,8 @@ fn read_leaves_kbwg(path: &str) -> error::Returns<Vec<(bites::Bites, f32)>> {
 #[inline(always)]
 fn leave_value(leave: &str, value: &str) -> error::Returns<f32> {
     let v = f32::from_str(value)?;
-    let milli = (f64::from(v) * equity::SCALE as f64).round();
-    if (i32::MIN as f64..=i32::MAX as f64).contains(&milli) {
+    let milli = (f64::from(v) * f64::from(equity::SCALE)).round();
+    if (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&milli) {
         Ok(v)
     } else {
         Err(format!("{leave:?} has the value {value:?}, which a leave table cannot hold").into())
@@ -310,7 +310,7 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
     let leaves = read_leave_records(&input, &alph, |record| {
         let rounded_leave = (leave_value(&record[0], &record[1])? * scale).round();
         let int_leave = rounded_leave as i16;
-        if (int_leave as f32 - rounded_leave).abs() != 0.0 {
+        if (f32::from(int_leave) - rounded_leave).abs() != 0.0 {
             wolges::return_error!(format!(
                 "for {}: {} (f32) {} (*{}) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
                 &record[0],
@@ -320,9 +320,9 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
                 f32::from_str(&record[1])? * scale,
                 rounded_leave,
                 int_leave,
-                int_leave as f32,
-                int_leave as f32 - rounded_leave,
-                (int_leave as f32 - rounded_leave).abs(),
+                f32::from(int_leave),
+                f32::from(int_leave) - rounded_leave,
+                (f32::from(int_leave) - rounded_leave).abs(),
             ));
         }
         Ok(int_leave)
@@ -786,11 +786,11 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             let num_b = leaves_b.len();
             let mut mixed = fash::MyHashMap::<bites::Bites, f64>::default();
             for (leave, value) in leaves_b {
-                mixed.insert(leave, value as f64);
+                mixed.insert(leave, f64::from(value));
             }
             let mut in_both = 0usize;
             for (leave, value) in leaves_a {
-                let value_a = value as f64;
+                let value_a = f64::from(value);
                 mixed
                     .entry(leave)
                     .and_modify(|value_b| {
@@ -1468,7 +1468,7 @@ mod tests {
     fn a_leave_value_is_a_number_a_leave_table_holds() {
         assert_eq!(leave_value("QU", "-3.5").unwrap(), -3.5);
         let held = |v: f32| {
-            let milli = (f64::from(v) * equity::SCALE as f64).round();
+            let milli = (f64::from(v) * f64::from(equity::SCALE)).round();
             i32::try_from(milli as i64).is_ok()
         };
         for (value, ok) in [

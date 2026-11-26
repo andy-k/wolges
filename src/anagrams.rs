@@ -297,7 +297,7 @@ impl std::hash::Hasher for KeyHasher {
     #[inline(always)]
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.0 = self.0.rotate_left(8) ^ b as u64;
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
         }
     }
 
