@@ -68,8 +68,7 @@ impl KeyLayout {
         })
     }
 
-    // whether this is the layout of(alphabet, board_dim) makes: its shifts and
-    // bits follow from its counts alone
+    // whether this is the layout of(alphabet, board_dim) makes
     #[inline(always)]
     pub fn is_of(&self, alphabet: &super::alphabet::Alphabet, board_dim: u8) -> bool {
         let blanks = alphabet.freq(0);
@@ -129,9 +128,8 @@ impl KeyLayout {
 
     #[inline(always)]
     pub fn matches(&self, alphabet: &super::alphabet::Alphabet, board_dim: u8) -> bool {
-        // the counts Self::of would give, compared where they are made: equal
-        // counts make the same layout, which this one shows fits, so no layout
-        // need be built (nor allocated) to ask
+        // the counts Self::of would give; no layout is built (nor allocated) to
+        // ask
         let blanks = alphabet.freq(0);
         let tiles = self.max_count.len().max(alphabet.len() as usize);
         (0..tiles).all(|tile| {
