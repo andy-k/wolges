@@ -12,8 +12,7 @@ use std::process::Command;
 // what a build is made of: an uncommitted change to any of these makes it dirty
 const BUILT_FROM: [&str; 5] = [".cargo", "Cargo.lock", "Cargo.toml", "build.rs", "src"];
 
-// git's output, trimmed, when it succeeds; git takes no optional lock, so git
-// status leaves the index as it was
+// git's output, trimmed, when it succeeds
 fn git(args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .env("TZ", "UTC0")
@@ -48,11 +47,8 @@ fn main() {
                 .is_some_and(|top| top == dir)
         });
     let commit = if own_repo {
-        // a commit, a checkout, or a reset moves HEAD: git rewrites HEAD or
-        // adds to logs/HEAD, or, where refs live in reftable/, rewrites
-        // tables.list there. Not the index: git status and staging rewrite it
-        // without changing what builds, and each rerun rebuilds the library and
-        // every program
+        // a commit, a checkout, or a reset moves HEAD; not the index, which git
+        // status and staging rewrite without changing what builds
         if let Some(git_dir) = git(&["rev-parse", "--git-dir"]) {
             for file in ["HEAD", "logs/HEAD", "reftable/tables.list"] {
                 rerun_if_changed(&Path::new(&git_dir).join(file));
