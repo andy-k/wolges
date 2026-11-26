@@ -3870,7 +3870,7 @@ macro_rules! strip_at {
     ($strip:expr, $i:expr) => {{
         let (strip, i) = ($strip, $i);
         debug_assert!(i >= 0 && (i as usize) < strip.len());
-        // Safety: play_left reads at leftmost <= i <= anchor (left of its
+        // safety: play_left reads at leftmost <= i <= anchor (left of its
         // square only while i > leftmost) and play_right at anchor < i <
         // rightmost, a window gen_classic_place_moves_lean asserts lies in each
         // strip it reads

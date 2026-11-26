@@ -28,13 +28,13 @@ impl std::ops::Deref for BitesStr {
     fn deref(&self) -> &Self::Target {
         if self.0[self.0.len() - 1] & 0x80 == 0 {
             // Inline: slice the backing slice.
-            // Safety: new copied the first bytes, as many as the last byte
+            // safety: new copied the first bytes, as many as the last byte
             // says, from a &str, so they are UTF-8; clone_from writes them only
             // as a new value made from another one's str.
             unsafe { std::str::from_utf8_unchecked(&self.0[0..self.0[self.0.len() - 1] as usize]) }
         } else {
             // Heap: turn off msb for actual length.
-            // Safety: the last byte's msb is set only by new's heap arm, which
+            // safety: the last byte's msb is set only by new's heap arm, which
             // put in bytes 0..8 the pointer Box::into_raw gave for a boxed str
             // of the length in bytes 8..16 (its msb aside); the box is this
             // value's own until drop, so the bytes are live and unaliased by
@@ -58,7 +58,7 @@ impl Drop for BitesStr {
             // Inline: nothing to do.
         } else {
             // Heap: free the pointer.
-            // Safety: the pointer and length are what new's heap arm took from
+            // safety: the pointer and length are what new's heap arm took from
             // Box::into_raw for the box this value owns (as in deref), a boxed
             // str of u8 by layout, taken back here once, as drop runs once.
             drop(unsafe {
@@ -95,7 +95,7 @@ impl Clone for BitesStr {
     fn clone_from(&mut self, source: &Self) {
         if self.0[self.0.len() - 1] & 0x80 != 0 && self.len() == source.len() {
             // Heap, same length.
-            // Safety: the heap bytes are live as in deref, and &mut self makes
+            // safety: the heap bytes are live as in deref, and &mut self makes
             // this the only borrow of them; source, borrowed at the same time,
             // is another value, and its bytes are copied over these at the same
             // length. They stay UTF-8: they become source's str.

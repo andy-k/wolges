@@ -297,7 +297,7 @@ impl SplitCtx<'_> {
             // reads as 0 + leave(K) = the exchange-keep-K value.
             let pr = (self.lat.size_offset[s_p] + within_p) as usize;
             let kr = (self.lat.size_offset[s_k] + within_k) as usize;
-            // Safety: pr and kr rank P and K, the parts of a rack of at most
+            // safety: pr and kr rank P and K, the parts of a rack of at most
             // rack_size tiles the lattice holds (unrank_into's, or a tally
             // best_equity_of checked), so each is below lat.len(), the length
             // of sheet and of leave (both callers check it).
@@ -654,7 +654,7 @@ pub fn apportion_table<T: ApportionSum>(
         fn rec(&mut self, i: usize, s_s: usize, within_s: u64) {
             if i == 0 {
                 let sr = (self.lat.size_offset[s_s] + within_s) as usize;
-                // Safety: sr ranks a sub-multiset of a full rack the lattice
+                // safety: sr ranks a sub-multiset of a full rack the lattice
                 // holds, so it is below lat.len(), the length of num and of den
                 // (apportion_table checks it).
                 unsafe {
@@ -685,7 +685,7 @@ pub fn apportion_table<T: ApportionSum>(
         if w == 0 {
             continue;
         }
-        // Safety: ridx runs over lo..lat.len(), and best's length is lat.len()
+        // safety: ridx runs over lo..lat.len(), and best's length is lat.len()
         // (checked above).
         let e = unsafe { *best.get_unchecked(ridx) };
         Ctx {
@@ -808,10 +808,10 @@ pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], 
     // a superset's value at least its subset's
     #[inline(always)]
     fn lift(dst: &mut [i32], idx: usize, sp: usize) {
-        // Safety: idx runs below full_rack_start(), so below lat.len(), dst's
+        // safety: idx runs below full_rack_start(), so below lat.len(), dst's
         // length (subset_max_transform checks it).
         let v = unsafe { *dst.get_unchecked(idx) };
-        // Safety: sp is one of add's ranks (by letter, or add's own), and add
+        // safety: sp is one of add's ranks (by letter, or add's own), and add
         // was made for this lattice, so sp is below lat.len(), dst's length
         // (both checked by subset_max_transform).
         let cur = unsafe { dst.get_unchecked_mut(sp) };
@@ -1005,7 +1005,7 @@ fn scatter_words(
     let mut from = [0u8; MAX_LETTERS + 1];
 
     for pj in 1..lat.len() {
-        // Safety: pj runs below lat.len(), sheet's length (apportion_fused, the
+        // safety: pj runs below lat.len(), sheet's length (apportion_fused, the
         // only caller, checks it).
         let sp_val = unsafe { *sheet.get_unchecked(pj) };
         if sp_val <= 0 {
@@ -1216,7 +1216,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
     impl<T: ApportionSum> Ctx<'_, T> {
         fn rec_max(&self, i: usize, p_idx: usize, k_idx: usize, best: &mut i32) {
             if i == 0 {
-                // Safety: p_idx and k_idx rank the played P and the kept K of a
+                // safety: p_idx and k_idx rank the played P and the kept K of a
                 // full rack R, built up from 0 by add, whose ranks are the
                 // lattice's; so each is below lat.len(), the length of sheet
                 // and of leave (apportion_fused checks both).
@@ -1292,7 +1292,7 @@ fn apportion_fused_with<T: ApportionSum, const COMPLETIONS: bool>(
                     return;
                 }
                 let best = if self.best_from_maxsheet {
-                    // Safety: idx ranks a full rack, built up from 0 by add,
+                    // safety: idx ranks a full rack, built up from 0 by add,
                     // whose ranks are the lattice's; so it is below lat.len(),
                     // maxsheet's length (apportion_fused checks it).
                     unsafe { *self.maxsheet.get_unchecked(idx) }
@@ -1492,7 +1492,7 @@ impl DrawCtx<'_> {
         den: &mut f64,
     ) {
         if remaining == 0 {
-            // Safety: ridx is the start dynamic_leave_value was given (below
+            // safety: ridx is the start dynamic_leave_value was given (below
             // lat.len(), it checks) or one of add's ranks, the lattice's; so it
             // is below lat.len(), best's length (it checks that too).
             let b = unsafe { *self.best.get_unchecked(ridx) } as f64;
@@ -1572,7 +1572,7 @@ pub fn leave_value_by_draw(
                 if ri == !0 {
                     return;
                 }
-                // Safety: rank gives !0 for a tally the lattice does not hold,
+                // safety: rank gives !0 for a tally the lattice does not hold,
                 // and otherwise its rank, below lat.len(), best's length
                 // (checked above).
                 *self.num += w * unsafe { *self.best.get_unchecked(ri as usize) } as i128;
