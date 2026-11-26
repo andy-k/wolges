@@ -7,10 +7,7 @@ use std::alloc::GlobalAlloc;
 use wolges::{endgame, error};
 
 // count every block of at least a page that the program holds, as it is
-// allocated and freed, for --max-memory. Smaller blocks come and go fastest (a
-// sim's threads allocate them all the time) and add up to little beside the
-// tables a limit is for, and counting each of them in one shared count would
-// make every thread wait on the others
+// allocated and freed, for --max-memory
 struct Counting;
 
 static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

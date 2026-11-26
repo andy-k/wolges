@@ -210,7 +210,7 @@ impl Moments {
         self.cxy / (self.vx * self.vy).sqrt()
     }
 
-    // how many plain iterations the control variate's are worth: 1 / (1 - rho^2)
+    // how many plain iterations the control variate's are worth
     fn worth(&self) -> f64 {
         1.0 / (1.0 - self.rho() * self.rho())
     }
