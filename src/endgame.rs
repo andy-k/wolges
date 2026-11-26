@@ -7514,7 +7514,7 @@ impl<
                 let value =
                     this.one_in_bag(mover, bag_tile, limits, &mut exact, memo, scoreless)?;
                 let margin = i64::from(value.raw()) + score_diff;
-                outcomes.record(u32::from(count), margin);
+                outcomes.record(u32::from(count), margin)?;
                 run[t] = equity::Equity::new(
                     margin.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
                 );
@@ -8126,7 +8126,7 @@ fn peg_value(
         }
         let v = endgame(t, drawn, opp_rack, &mut exact)?;
         let margin = i64::from(v.raw()) + lead;
-        outcomes.record(w, margin);
+        outcomes.record(w, margin)?;
         margins[t as usize] =
             equity::Equity::new(margin.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
     }
@@ -9669,8 +9669,11 @@ struct PegOutcomes {
 
 impl PegOutcomes {
     #[inline]
-    fn record(&mut self, weight: u32, margin: i64) {
-        self.deals += u64::from(weight);
+    fn record(&mut self, weight: u32, margin: i64) -> error::Returns<()> {
+        self.deals = self
+            .deals
+            .checked_add(u64::from(weight))
+            .ok_or("deal count is out of range")?;
         let weight = f64::from(weight);
         self.wins += weight
             * match margin.cmp(&0) {
@@ -9679,6 +9682,7 @@ impl PegOutcomes {
                 std::cmp::Ordering::Less => 0.0,
             };
         self.margin += weight * margin as f64;
+        Ok(())
     }
 
     #[inline]
@@ -9693,13 +9697,15 @@ impl PegOutcomes {
 }
 
 #[inline]
-pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f64, equity::Equity) {
+pub fn peg_aggregate(
+    hypotheses: &[(u32, equity::Equity)],
+) -> error::Returns<(f64, equity::Equity)> {
     let mut outcomes = PegOutcomes::default();
     for &(weight, value) in hypotheses {
-        outcomes.record(weight, i64::from(value.raw()));
+        outcomes.record(weight, i64::from(value.raw()))?;
     }
     let (win, margin) = outcomes.averages();
-    (win, equity::Equity::new(margin.round() as i32))
+    Ok((win, checked_expected_margin(margin)?))
 }
 
 // how many ways there are to choose k of n alike tiles, a deal telling them
@@ -16077,15 +16083,17 @@ mod tests {
     #[inline]
     fn peg_aggregate_weights_each_outcome_by_how_many_tiles_give_it() {
         let e = equity::Equity::new;
-        let (win_pct, expected) = super::peg_aggregate(&[(2, e(3000)), (1, e(0)), (1, e(-5000))]);
+        let (win_pct, expected) =
+            super::peg_aggregate(&[(2, e(3000)), (1, e(0)), (1, e(-5000))]).unwrap();
         assert_eq!(win_pct, 0.625);
         assert_eq!(expected, e(250));
 
-        let (win_pct, expected) = super::peg_aggregate(&[(1, e(1)), (1, e(0)), (1, e(-1))]);
+        let (win_pct, expected) =
+            super::peg_aggregate(&[(1, e(1)), (1, e(0)), (1, e(-1))]).unwrap();
         assert_eq!(win_pct, 0.5);
         assert_eq!(expected, e(0));
 
-        assert_eq!(super::peg_aggregate(&[]), (0.0, e(0)));
+        assert_eq!(super::peg_aggregate(&[]).unwrap(), (0.0, e(0)));
     }
 
     #[test]
@@ -16283,7 +16291,7 @@ mod tests {
                                 .map(|&(_, count, value)| (count, value))
                                 .collect::<Vec<_>>();
                             assert_eq!(
-                                super::peg_aggregate(&weighted),
+                                super::peg_aggregate(&weighted).unwrap(),
                                 (valued.win_pct, valued.expected_margin)
                             );
                         }
@@ -16598,7 +16606,7 @@ mod tests {
                 let weighted: Vec<(u32, equity::Equity)> =
                     got.hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
                 assert_eq!(
-                    super::peg_aggregate(&weighted),
+                    super::peg_aggregate(&weighted).unwrap(),
                     (got.win_pct, got.expected_margin)
                 );
             }
@@ -16672,7 +16680,7 @@ mod tests {
                 assert_eq!(got.hypotheses.len(), full.hypotheses.len());
                 assert!(got.moves.len() <= full.moves.len(), "each move once");
                 assert_eq!(
-                    super::peg_aggregate(&weighted),
+                    super::peg_aggregate(&weighted).unwrap(),
                     (got.win_pct, got.expected_margin),
                     "the answer's figures are those of its tiles' values"
                 );
