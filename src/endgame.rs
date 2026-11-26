@@ -6843,6 +6843,7 @@ impl<
                         score_diff,
                         arenas: &mut *arenas,
                         model: position.model,
+                        cuts: *cuts,
                     },
                     limits,
                     threads,
@@ -6998,13 +6999,17 @@ impl<
     where
         N: Sync,
     {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        use std::sync::atomic::{
+            AtomicBool, AtomicU64, AtomicUsize,
+            Ordering::{AcqRel, Relaxed},
+        };
         let PegBagRoot {
             splits,
             at,
             score_diff,
             arenas,
             model,
+            cuts,
         } = root;
         let gc = sub.game_config;
         let kwg = sub.kwg;
@@ -7042,7 +7047,10 @@ impl<
                 * (std::mem::size_of::<usize>()
                     + std::mem::size_of::<Found>()
                     + std::mem::size_of::<HandOver>())
-                + rest * std::mem::size_of::<AtomicUsize>(),
+                + rest
+                    * (std::mem::size_of::<AtomicUsize>()
+                        + 2 * std::mem::size_of::<AtomicU64>()
+                        + std::mem::size_of::<AtomicBool>()),
         ) else {
             return Ok(true); // stopped, nothing valued
         };
@@ -7060,6 +7068,20 @@ impl<
             .map(|_| AtomicUsize::new(num_splits))
             .collect::<Vec<_>>();
         let moves_valued = AtomicUsize::new(state.reached.len());
+        let all = splits.iter().map(|split| split.2).sum::<u64>().max(1);
+        state.lost.clear();
+        state.lost.resize_with(rest, || AtomicU64::new(0));
+        state.won.clear();
+        state.won.resize_with(rest, || AtomicU64::new(0));
+        state.cut.clear();
+        state.cut.resize_with(rest, || AtomicBool::new(false));
+        let (lost, won, cut) = (&state.lost[..], &state.won[..], &state.cut[..]);
+        let beat = AtomicU64::new(if cuts && !state.reached.is_empty() {
+            let best = peg_bag_best(&state.reached, &state.valued);
+            halves_down(state.valued[best].as_ref().unwrap().win, splits)
+        } else {
+            0
+        });
         let stop = AtomicBool::new(false);
         let refused = AtomicBool::new(false); // any thread's memory limit stopped it
         let memory_stopped = AtomicBool::new(false);
@@ -7091,6 +7113,13 @@ impl<
                     break;
                 };
                 let (m, s) = (task / num_splits, task % num_splits);
+                if cuts {
+                    let most = 2 * all - lost[m].load(Relaxed);
+                    if cut[m].load(Relaxed) || most < beat.load(Relaxed) {
+                        cut[m].store(true, Relaxed);
+                        continue;
+                    }
+                }
                 limits
                     .moves
                     .set(Some((moves_valued.load(Relaxed), order.len())));
@@ -7112,8 +7141,15 @@ impl<
                     Ok((value, win)) => {
                         let took = limits.t0.elapsed().saturating_sub(began);
                         mine.push((task, value, win, search.exact, took));
-                        if unvalued[m].fetch_sub(1, Relaxed) == 1 {
+                        let ways = splits[s].2;
+                        lost[m].fetch_add(2 * ways - halves_up(win, ways), Relaxed);
+                        let down = (win * (2 * ways) as f64).floor() as u64;
+                        won[m].fetch_add(down, Relaxed);
+                        if unvalued[m].fetch_sub(1, AcqRel) == 1 {
                             moves_valued.fetch_add(1, Relaxed);
+                            if cuts && !cut[m].load(Relaxed) {
+                                beat.fetch_max(won[m].load(Relaxed), Relaxed);
+                            }
                         }
                     }
                     Err(_) if limits.stopped.get() => {
@@ -7185,6 +7221,7 @@ impl<
             return Ok(true); // stopped, nothing valued
         };
         let deal = &sub.work_buffer.lane_pool.deal.clone();
+        let (other_endgames, other_nodes) = (&AtomicU64::new(0), &AtomicU64::new(0));
         // each other thread's table and lane pool as the pass before left them
         let mut kept = std::mem::take(&mut state.tables);
         kept.resize_with(threads - 1, || None);
@@ -7242,6 +7279,8 @@ impl<
                         arena,
                     };
                     let share = work(&mut search, &limits);
+                    other_endgames.fetch_add(limits.endgames.get(), Relaxed);
+                    other_nodes.fetch_add(limits.nodes.get(), Relaxed);
                     own.kept_mg = Some(mg);
                     let lanes = std::mem::take(&mut own.work_buffer.lane_pool);
                     let table = own.take_table();
@@ -7280,6 +7319,8 @@ impl<
         state.tables = kept;
         state.lanes = pools;
         sub.helpers = helpers;
+        state.others.0 += other_endgames.load(Relaxed);
+        state.others.1 += other_nodes.load(Relaxed);
         if refused.load(Relaxed) {
             limits.refused.set(true);
         }
@@ -7301,7 +7342,28 @@ impl<
         let (mut taken, mut left) = (Vec::new(), Vec::new());
         for (m, per_split) in found.chunks_mut(num_splits.max(1)).enumerate() {
             let i = state.order[base + m];
-            if per_split.iter().all(Option::is_some) {
+            if cut[m].load(Relaxed) && !per_split.iter().all(Option::is_some) {
+                let exact =
+                    (per_split.iter()).all(|found| found.as_ref().is_none_or(|found| found.2));
+                let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
+                for ((_, _, ways), found) in splits.iter().zip(per_split.iter()) {
+                    if let Some((value, chance, _)) = found {
+                        win += *ways as f64 * chance;
+                        marg += *ways as f64 * value;
+                        total += ways;
+                    }
+                }
+                let most = (win + (all - total) as f64) / all as f64;
+                let mean = peg_bag_value(win, marg, total, exact);
+                state.valued[i] = Some(PegBagValue {
+                    win: most,
+                    cut: true,
+                    ..mean
+                });
+                state.pass_exact &= exact;
+                state.reached.push(i);
+                taken.push(i);
+            } else if per_split.iter().all(Option::is_some) {
                 let exact = (per_split.iter()).all(|found| found.as_ref().unwrap().2);
                 let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
                 for ((_, _, ways), found) in splits.iter().zip(per_split.iter()) {
@@ -8586,6 +8648,11 @@ impl PegBagProgress {
         (self.endgames, self.nodes)
     }
 
+    pub fn searched_on_every_thread(&self) -> (u64, u64) {
+        let (endgames, nodes) = self.state.others;
+        (self.endgames + endgames, self.nodes + nodes)
+    }
+
     // the splits each move is valued over, and the deals giving them
     #[inline(always)]
     pub fn splits(&self) -> (usize, u64) {
@@ -8875,6 +8942,7 @@ struct PegBagRoot<'r, At: Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Ret
     score_diff: f64,
     arenas: &'r mut Vec<BagArena>, // each thread's, as PegBagProgress keeps them
     model: PegModel,
+    cuts: bool,
 }
 
 // the search so far: the moves; the order its pass values them in, the next to
@@ -8910,6 +8978,10 @@ struct PegBagState {
     stale: Vec<bool>,  // each answer value kept from an older pass
     split_order: Vec<usize>,
     split_found: Vec<(f64, f64)>,
+    others: (u64, u64),
+    lost: Vec<std::sync::atomic::AtomicU64>,
+    won: Vec<std::sync::atomic::AtomicU64>,
+    cut: Vec<std::sync::atomic::AtomicBool>,
 }
 
 // a move's standing in PegBagState::standing, and the marks steer_order sets
