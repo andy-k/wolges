@@ -8887,7 +8887,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
                 census::best_equity_of(lat, sheet, leaves.0, rack).raw(),
                 leaves.0[rank],
             ) as f64;
-        openness.bingo += chance * (sheet[rank] > floor) as u8 as f64;
+        openness.bingo += chance * f64::from(u8::from(sheet[rank] > floor));
     });
     openness
 }
