@@ -36,7 +36,7 @@ impl TransitionStack<'_> {
     }
 
     #[inline(always)]
-    fn pop(&mut self, state_maker: &mut StateMaker<'_>) -> Result<(), endgame::Refused> {
+    fn pop(&mut self, state_maker: &mut StateMaker<'_>) -> error::Returns<()> {
         let start_of_batch = self.indexes.pop().unwrap();
         let new_arc_index = state_maker.make_state(&self.transitions[start_of_batch..])?;
         self.transitions[start_of_batch - 1].arc_index = new_arc_index;
@@ -210,7 +210,7 @@ struct StateMaker<'a> {
 
 impl StateMaker<'_> {
     #[inline(always)]
-    fn make_state(&mut self, node_transitions: &[Transition]) -> Result<u32, endgame::Refused> {
+    fn make_state(&mut self, node_transitions: &[Transition]) -> error::Returns<u32> {
         let mut ret = 0;
         for node_transition in node_transitions.iter().rev() {
             let state = State {
@@ -219,7 +219,10 @@ impl StateMaker<'_> {
                 arc_index: node_transition.arc_index,
                 next_index: ret,
             };
-            let new_ret = self.states.len() as u32;
+            let new_ret = u32::try_from(self.states.len())?;
+            if new_ret == u32::MAX {
+                return Err("too many word graph states".into());
+            }
             endgame::room_in(self.memory, self.states, 1)?;
             ret = self
                 .states_finder
@@ -239,7 +242,7 @@ impl StateMaker<'_> {
         sorted_machine_words: &W,
         dawg_start_state: u32,
         is_gaddag_phase: bool,
-    ) -> Result<u32, endgame::Refused> {
+    ) -> error::Returns<u32> {
         transition_stack.transitions.clear();
         transition_stack.indexes.clear();
         for machine_word_index in 0..sorted_machine_words.num_words() {
@@ -570,6 +573,7 @@ struct StatesDefragger<'a> {
     stack: &'a mut Vec<(u32, u32, u32)>, // walk_lists': head, next arc, entered
     memory: Option<&'a endgame::MemoryLimit>, // the walk's growths' limit
     refused: bool,                       // one refused: it places no more
+    too_many_nodes: bool,
 }
 
 impl StatesDefragger<'_> {
@@ -604,6 +608,9 @@ impl StatesDefragger<'_> {
                 // temp value to break self-cycles.
                 self.destination[p as usize] = !0;
                 let entered = enter(self, p);
+                if self.too_many_nodes {
+                    return;
+                }
                 if self.refused || endgame::room_in(self.memory, self.stack, 1).is_err() {
                     self.refused = true;
                     return;
@@ -706,6 +713,15 @@ impl StatesDefragger<'_> {
                 // room for every push below: a block a 16 of num, one more to
                 // align, and one for the rest, and a stack entry each
                 let most = num as usize / 16 + 2;
+                if params
+                    .block_len
+                    .len()
+                    .checked_add(most)
+                    .is_none_or(|n| n > (u32::MAX / 16) as usize)
+                {
+                    this.too_many_nodes = true;
+                    return 0;
+                }
                 if !this.room(params.block_len, most)
                     || !(params.blocks_with_len.iter_mut()).all(|stack| this.room(stack, 2))
                 {
@@ -819,6 +835,9 @@ impl StatesDefragger<'_> {
                 params,
                 top_indexes[Self::ordered_state_index(key) as usize],
             );
+            if self.too_many_nodes {
+                return;
+            }
         }
         self.num_written = ((params.block_len.len() as u32 - 1) << 4)
             + u32::from(*params.block_len.last().unwrap());
@@ -872,7 +891,7 @@ impl StatesDefragger<'_> {
         params.blocks_with_len[self.num_written as usize].push(0u32);
         for &key in order.iter() {
             self.defrag_cache_friendly(params, Self::ordered_state_index(key));
-            if self.refused {
+            if self.refused || self.too_many_nodes {
                 return;
             }
         }
@@ -981,15 +1000,15 @@ fn gen_head_indexes(
     states: &[State],
     head_indexes: &mut Vec<u32>,
     memory: Option<&endgame::MemoryLimit>,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     let states_len = states.len();
     head_indexes.clear();
     endgame::room_in(memory, head_indexes, states_len)?;
-    head_indexes.extend(0..states_len as u32);
+    head_indexes.extend(0..u32::try_from(states_len)?);
 
     // point to immediate prev.
     for p in (1..states_len).rev() {
-        head_indexes[states[p].next_index as usize] = p as u32;
+        head_indexes[states[p].next_index as usize] = u32::try_from(p)?;
     }
     // head_indexes[0] is garbage, does not matter.
 
@@ -1053,7 +1072,11 @@ fn gen_num_ways(
 }
 
 #[inline]
-fn gen_top_indexes(states: &[State], head_indexes: &[u32], top_indexes: &mut Vec<u32>) {
+fn gen_top_indexes(
+    states: &[State],
+    head_indexes: &[u32],
+    top_indexes: &mut Vec<u32>,
+) -> error::Returns<()> {
     let states_len = states.len();
     top_indexes.clear();
     top_indexes.resize(states_len, 0);
@@ -1065,19 +1088,20 @@ fn gen_top_indexes(states: &[State], head_indexes: &[u32], top_indexes: &mut Vec
         .take(states_len)
         .skip(1)
     {
-        top_indexes[p_dest] = p as u32 | -i32::from(top_indexes[p_dest] != 0) as u32;
+        top_indexes[p_dest] = u32::try_from(p)? | -i32::from(top_indexes[p_dest] != 0) as u32;
     }
     // [p] = 0 (no parent), parent_index, or !0 if > 1 parents.
     // if not unique, set [p] = p.
     for (p, top_index) in top_indexes.iter_mut().enumerate().take(states_len) {
         if *top_index == 0 || *top_index == !0 {
-            *top_index = p as u32;
+            *top_index = u32::try_from(p)?;
         }
     }
     // adjust to point to prev tops's heads instead.
     for p in (1..states_len).rev() {
         top_indexes[p] = head_indexes[top_indexes[top_indexes[p] as usize] as usize];
     }
+    Ok(())
 }
 
 #[inline]
@@ -1150,7 +1174,7 @@ fn reorder_states(
     buffers: &mut ReorderBuffers,
     states_finder: &mut StatesFinder,
     transitions: &mut Vec<Transition>,
-) -> (u32, u32) {
+) -> error::Returns<(u32, u32)> {
     #[inline(always)]
     fn entry_key(state: &State) -> u64 {
         (u64::from(state.arc_index) << 9) | (u64::from(state.accepts) << 8) | u64::from(state.tile)
@@ -1212,7 +1236,7 @@ fn reorder_states(
     movable.clear();
     for p in 1..states_len {
         if is_head[p] && !has_dawg[p] {
-            movable.push(p as u32);
+            movable.push(u32::try_from(p)?);
         }
     }
 
@@ -1223,7 +1247,7 @@ fn reorder_states(
     for &head in movable.iter() {
         let mut p = head;
         while p != 0 {
-            let num_entries = entry_counts.len() as u32;
+            let num_entries = u32::try_from(entry_counts.len())?;
             let entry_index = unlimited(entry_indexes.find_or_insert(
                 &entry_key(&states[p as usize]),
                 num_entries,
@@ -1232,7 +1256,8 @@ fn reorder_states(
             if entry_index == num_entries {
                 entry_counts.push(0);
             }
-            entry_counts[entry_index as usize] += 1;
+            let count = &mut entry_counts[entry_index as usize];
+            *count = u32::checked_add(*count, 1).ok_or("too many graph postings")?;
             element_entries.push(entry_index);
             p = states[p as usize].next_index;
         }
@@ -1241,7 +1266,9 @@ fn reorder_states(
     let mut num_postings = 0u32;
     for &entry_count in entry_counts.iter() {
         postings_starts.push(num_postings);
-        num_postings += entry_count;
+        num_postings = num_postings
+            .checked_add(entry_count)
+            .ok_or("too many graph postings")?;
     }
     postings_starts.push(num_postings);
     postings.clear();
@@ -1255,7 +1282,7 @@ fn reorder_states(
         let mut p = head;
         while p != 0 {
             let entry_index = *element_entries.next().unwrap();
-            postings[postings_fill[entry_index as usize] as usize] = i as u32;
+            postings[postings_fill[entry_index as usize] as usize] = u32::try_from(i)?;
             postings_fill[entry_index as usize] += 1;
             let entry_count = entry_counts[entry_index as usize];
             if entry_count < rarest_count {
@@ -1374,7 +1401,7 @@ fn reorder_states(
         }
         let head = movable[i as usize];
         let tail_head = movable[tail as usize];
-        order_starts[head as usize] = order_cells.len() as u32;
+        order_starts[head as usize] = u32::try_from(order_cells.len())?;
         let mut p = head;
         let mut q = tail_head;
         while p != 0 {
@@ -1431,7 +1458,7 @@ fn reorder_states(
                 });
             }
         } else {
-            let mut q = p as u32;
+            let mut q = u32::try_from(p)?;
             while q != 0 {
                 let state = &states[q as usize];
                 transitions.push(Transition {
@@ -1442,13 +1469,13 @@ fn reorder_states(
                 q = state.next_index;
             }
         }
-        new_heads[p] = unlimited(state_maker.make_state(transitions));
+        new_heads[p] = state_maker.make_state(transitions)?;
     }
 
-    (
+    Ok((
         new_heads[dawg_start_state as usize],
         new_heads[gaddag_start_state as usize],
-    )
+    ))
 }
 
 // a word graph builder: every buffer a build fills, kept from one build to the
@@ -1656,7 +1683,7 @@ impl Builder {
                     reorder,
                     states_finder,
                     transitions,
-                );
+                )?;
                 (
                     &reorder.new_states[..],
                     dawg_start_state,
@@ -1688,6 +1715,7 @@ impl Builder {
             stack,
             memory,
             refused: false,
+            too_many_nodes: false,
         };
         let mut params = StateDefraggerExperimentalParams {
             block_len,
@@ -1707,7 +1735,7 @@ impl Builder {
                     num_ways,
                     None,
                 )?;
-                gen_top_indexes(states, states_defragger.head_indexes, top_indexes);
+                gen_top_indexes(states, states_defragger.head_indexes, top_indexes)?;
                 states_defragger.build_experimental(num_ways, top_indexes, order, &mut params)
             }
             BuildLayout::Wolges => {
@@ -1741,6 +1769,9 @@ impl Builder {
             },
         }
         states_defragger.destination[0] = 0; // useful for empty lexicon
+        if states_defragger.too_many_nodes {
+            return Err("too many word graph nodes".into());
+        }
         if states_defragger.refused {
             return Err(endgame::Refused.into());
         }

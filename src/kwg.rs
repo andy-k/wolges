@@ -496,7 +496,7 @@ impl<N: Node> Kwg<N> {
     pub fn count_words_alloc(&self) -> error::Returns<Box<[u32]>> {
         let mut word_counts = vec![0u32; self.0.len()];
         for p in (0..word_counts.len()).rev() {
-            self.count_words_at(&mut word_counts, p as i32)?;
+            self.count_words_at(&mut word_counts, i32::try_from(p)?)?;
         }
         Ok(word_counts.into_boxed_slice())
     }
@@ -670,12 +670,26 @@ impl<N: Node> Kwg<N> {
         mut idx: u32,
         mut out: F,
     ) -> error::Returns<()> {
-        let mut node = self[p];
-        while !(idx == 0 && node.accepts()) {
+        loop {
+            let at = usize::try_from(p)?;
+            let node = self.0.get(at).ok_or("word graph node out of range")?;
+            if idx == 0 && node.accepts() {
+                out(node.tile());
+                return Ok(());
+            }
+            let words_at = *word_counts
+                .get(at)
+                .ok_or("word counts do not cover the node")?;
             let words_here = if node.is_end() {
-                word_counts[p as usize]
+                words_at
             } else {
-                word_counts[p as usize] - word_counts[p as usize + 1]
+                words_at
+                    .checked_sub(
+                        *word_counts
+                            .get(at + 1)
+                            .ok_or("word counts do not cover the run")?,
+                    )
+                    .ok_or("word counts do not match the run")?
             };
             if idx < words_here {
                 idx -= u32::from(node.accepts());
@@ -686,12 +700,9 @@ impl<N: Node> Kwg<N> {
                 if node.is_end() {
                     return Err("the word graph has fewer words than the index".into());
                 }
-                p += 1;
+                p = p.checked_add(1).ok_or("word graph node out of range")?;
             }
-            node = self[p];
         }
-        out(node.tile());
-        Ok(())
     }
 
     #[inline(always)]
