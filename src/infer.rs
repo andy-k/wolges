@@ -895,7 +895,7 @@ fn weights_by_keep(
     (keep, g0, fuzz): (usize, i32, f64),
     scratch: &mut KeepScratch,
     weighed: &mut Vec<(u32, usize, f64)>,
-) {
+) -> error::Returns<()> {
     let KeepScratch {
         rack,
         keep: cur,
@@ -910,8 +910,10 @@ fn weights_by_keep(
     cap.clear();
     cap.resize(num_letters + 1, 0);
     let start = lat.size_start(keep);
+    let end = lat.size_start(keep + 1);
+    let ranks = u32::try_from(start)?..u32::try_from(end)?;
     by_keep.clear();
-    by_keep.resize(lat.size_start(keep + 1) - start, 0.0);
+    by_keep.resize(end - start, 0.0);
     for &(rank, best, ln_prior) in racks {
         lat.unrank_into(rank as usize, rack);
         let prior = ln_prior.exp();
@@ -928,11 +930,12 @@ fn weights_by_keep(
     }
     weighed.clear();
     weighed.extend(
-        (start as u32..)
+        ranks
             .zip(by_keep.iter())
             .filter(|&(_, &weight)| weight > 0.0)
             .map(|(kept, &weight)| (kept, 0, weight)),
     );
+    Ok(())
 }
 
 // the multiset lattice and its leave table, built by one inference and reused
@@ -2043,7 +2046,7 @@ fn kept_leaves_packed_impl<
     if exchanged.is_none() && placed.iter().map(|&c| c as usize).sum::<usize>() >= bag {
         return Ok(());
     }
-    let can_exchange = bag >= game_config.exchange_tile_limit() as usize;
+    let can_exchange = bag >= usize::try_from(game_config.exchange_tile_limit())?;
     if exchanged.is_some() && !can_exchange {
         return Ok(());
     }
@@ -2150,7 +2153,7 @@ fn kept_leaves_packed_impl<
         );
     }
     match keep {
-        Some(keep) => weights_by_keep(lat, leave, racks, (keep, g0, fuzz), keeps, weighed),
+        Some(keep) => weights_by_keep(lat, leave, racks, (keep, g0, fuzz), keeps, weighed)?,
         None => weights_by_leave(racks, fuzz, weighed),
     }
     let mix = *mix;
@@ -2164,7 +2167,7 @@ fn kept_leaves_packed_impl<
                 (keep, g0, f64::INFINITY),
                 keeps,
                 by_chance,
-            ),
+            )?,
             None => weights_by_leave(racks, f64::INFINITY, by_chance),
         }
         mix_weights((weighed, by_chance), mix, both);
@@ -2474,7 +2477,7 @@ pub fn reply_to<
     // leaves the bag as it was)
     let drawn = match play {
         movegen::Play::Exchange { tiles } => {
-            if !tiles.is_empty() && bag < game_config.exchange_tile_limit() as usize {
+            if !tiles.is_empty() && bag < usize::try_from(game_config.exchange_tile_limit())? {
                 return_error!("the bag is too small to exchange".into());
             }
             for &tile in tiles.iter() {
@@ -2507,7 +2510,7 @@ pub fn reply_to<
     if drawn >= bag {
         return Ok(None);
     }
-    let can_exchange = bag - drawn >= game_config.exchange_tile_limit() as usize;
+    let can_exchange = bag - drawn >= usize::try_from(game_config.exchange_tile_limit())?;
     infer_sheet_for(
         move_generator,
         board_tiles,
@@ -2998,7 +3001,8 @@ mod tests {
             (1, 7, equity_fuzz(3.105).unwrap()),
             &mut KeepScratch::default(),
             &mut weighed,
-        );
+        )
+        .unwrap();
         assert_eq!(weighed.len(), 2);
         let (hi, lo) = (
             weighed[0].2.max(weighed[1].2),
@@ -3111,7 +3115,8 @@ mod tests {
             (4, g0, fuzz),
             &mut KeepScratch::default(),
             &mut by_keep,
-        );
+        )
+        .unwrap();
         assert!(by_keep.len() > 1);
         assert_eq!(by_keep.len(), by_list.len());
         for (a, b) in by_keep.iter().zip(&by_list) {
