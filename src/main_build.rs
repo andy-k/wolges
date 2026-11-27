@@ -911,9 +911,6 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         Task::Trim(args) => {
             let min_len = args.min_len.unwrap_or(0);
             let max_len = args.max_len.unwrap_or(usize::MAX);
-            if min_len > max_len {
-                return Err("--min-len is more than --max-len".into());
-            }
             let alphabet = make_alphabet()?;
             // a leave may hold ? (tile 0), as sort-words and sort-leaves allow
             let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alphabet);
@@ -1384,6 +1381,36 @@ mod tests {
 
     #[test]
     #[inline]
+    fn trim_takes_a_min_len_past_the_max_len() {
+        let dir = format!(
+            "{}/target/trim_lengths-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let (input, out) = (format!("{dir}/words"), format!("{dir}/kept"));
+        std::fs::write(&input, "QI\nQUA\n").unwrap();
+        do_task(
+            &Task::Trim(Trim {
+                input: input.clone(),
+                out: out.clone(),
+                min_len: Some(4),
+                max_len: Some(3),
+                csv: false,
+                column: std::num::NonZeroUsize::new(1).unwrap(),
+                header: 0,
+            }),
+            || Ok(alphabet::make_english_alphabet()),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "");
+        std::fs::remove_file(&input).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    #[inline]
     fn trim_keeps_the_words_whose_tiles_fit() {
         let english = alphabet::make_english_alphabet();
         let reader = alphabet::AlphabetReader::new_for_racks(&english);
@@ -1393,6 +1420,7 @@ mod tests {
             "QUA\nQUIZ definition\n"
         );
         assert_eq!(trim_words(&reader, words, 0, 2).unwrap(), "QI\n");
+        assert_eq!(trim_words(&reader, words, 4, 3).unwrap(), "");
         assert!(trim_words(&reader, "A#\n", 0, 9).is_err());
         // a comma ends no word: a csv takes --csv
         assert!(trim_words(&reader, "QI,5\n", 0, 9).is_err());
