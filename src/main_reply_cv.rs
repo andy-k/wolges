@@ -327,7 +327,7 @@ fn main() -> error::Returns<()> {
             exact.push((reply, start.elapsed().as_secs_f64()));
         }
         sim_state(&gc, real, sgs, unseen);
-        sim.prepare(&gc, sgs, &simmer::SimChoices::new(plies, true, &[]));
+        sim.prepare(&gc, sgs, &simmer::SimChoices::new(plies, true, &[]))?;
         pristine.clone_from(sim.prepared_state());
         // per candidate: objective, spread (points), win, reply equity (points)
         rec.resize_with(candidates.len(), Default::default);
@@ -343,7 +343,7 @@ fn main() -> error::Returns<()> {
         for iteration in 1..=iterations {
             sim.restore_prepared(pristine);
             sim.reseed(iteration_seed(seed, iteration));
-            sim.prepare_iteration(Some(move_picker::stratum_at(seed, iteration)));
+            sim.prepare_iteration(Some(move_picker::stratum_at(seed, iteration)))?;
             for (c, candidate) in candidates.iter().enumerate() {
                 let ended = sim.simulate_lean(&gc, &kwg, no_tables, &klv, &candidate.play)?;
                 let final_spread = sim.final_equity_spread()?;

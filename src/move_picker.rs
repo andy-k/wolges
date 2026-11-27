@@ -626,7 +626,7 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
         for sim_iter in lo + 1..=hi {
             simmer.restore_prepared(pristine);
             simmer.reseed(mix(self.decision_seed, sim_iter));
-            simmer.prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)));
+            simmer.prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)))?;
             for play in plays {
                 let (value, sim_spread, win_prob) = match self.late_graph {
                     Some((kwg, arm_tables)) => rollout_objective(
@@ -2211,7 +2211,7 @@ impl<
             self.simmer.restore_prepared(&self.prepared_pristine);
             self.simmer.reseed(mix(self.decision_seed, sim_iter));
             self.simmer
-                .prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)));
+                .prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)))?;
             for candidate in candidates.iter_mut() {
                 let play = &move_generator.plays[candidate.play_index].play;
                 let (value, sim_spread, win_prob) = match &self.late_graph {
@@ -2313,7 +2313,7 @@ impl<
         hi: u64,
         plays: &[usize],
     ) -> error::Returns<SimRows> {
-        let mut simmer = self.simmer.prepared_clone(self.game_config);
+        let mut simmer = self.simmer.prepared_clone(self.game_config)?;
         let pristine = simmer.prepared_state().clone();
         let mut rows = SimRows {
             objective: Vec::new(),
@@ -2436,7 +2436,7 @@ impl<
         for (_, _, kept, ..) in &workers {
             let mut kept = kept.lock().map_err(|_| stopped())?;
             let (simmer, _, pristine) = &mut *kept;
-            simmer.prepare_as(self.game_config, &self.simmer);
+            simmer.prepare_as(self.game_config, &self.simmer)?;
             pristine.clone_from(simmer.prepared_state());
         }
         let plays = std::sync::Arc::clone(&workers[0].3);
@@ -2528,7 +2528,7 @@ impl<
         let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(u64, u64, u64)>(1);
         let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
         let kept = std::sync::Arc::new(std::sync::Mutex::new((
-            self.simmer.prepared_clone(self.game_config),
+            self.simmer.prepared_clone(self.game_config)?,
             SimRows {
                 objective: Vec::new(),
                 equity: Vec::new(),
@@ -2673,7 +2673,7 @@ impl<
                 packed,
                 ..simmer::SimChoices::new(self.num_sim_plies, OBSERVE, kept_leaves)
             },
-        );
+        )?;
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
         // late in the game, when it pays, the rollouts walk a graph of the
