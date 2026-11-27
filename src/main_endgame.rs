@@ -73,7 +73,7 @@ fn is_score_token(coord: &str) -> bool {
 #[inline(always)]
 fn is_cum_token(coord: &str) -> bool {
     let b = coord.as_bytes();
-    let b = &b[(!b.is_empty() && b[0] == b'-') as usize..];
+    let b = &b[usize::from(!b.is_empty() && b[0] == b'-')..];
     if b.is_empty() {
         return false;
     }

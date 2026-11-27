@@ -81,7 +81,7 @@ fn parse_embedded_words_board(
 #[inline(always)]
 fn isqrt(x: usize) -> usize {
     let lz = usize::leading_zeros(x);
-    let mut bit = 1 << ((usize::BITS - lz - (lz == 0) as u32) >> 1);
+    let mut bit = 1 << ((usize::BITS - lz - u32::from(lz == 0)) >> 1);
     let mut ret = bit;
     loop {
         if ret * ret > x {
@@ -277,7 +277,7 @@ fn test_find_embedded_words<'a, N: kwg::Node>(
                 None => 1,
             },
             record_finding: &mut |word, mul| {
-                let v = mul as i32
+                let v = i32::from(mul)
                     * match word.len() {
                         3 => 1,
                         4 => 2,

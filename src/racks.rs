@@ -488,9 +488,9 @@ mod tests {
         let tiles = gc.alphabet().len();
         let mut leaves = Vec::new();
         for a in 0..tiles {
-            leaves.push((vec![a], (a % 7) as f32 - 3.0));
+            leaves.push((vec![a], f32::from(a % 7) - 3.0));
             for b in (a..tiles).step_by(5) {
-                leaves.push((vec![a, b], (a + 2 * b) as f32 % 9.0 - 4.5));
+                leaves.push((vec![a, b], f32::from(a + 2 * b) % 9.0 - 4.5));
             }
         }
         leaves.sort_by(|x, y| x.0.cmp(&y.0));

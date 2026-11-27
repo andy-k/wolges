@@ -353,7 +353,7 @@ fn main() -> error::Returns<()> {
                 match sim.reply_equity() {
                     Some(equity) => {
                         rec[c].0.push(objective);
-                        rec[c].1.push(spread as f64 / 1000.0);
+                        rec[c].1.push(f64::from(spread) / 1000.0);
                         rec[c].2.push(win);
                         rec[c].3.push(equity.as_f64());
                     }

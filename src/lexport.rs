@@ -48,7 +48,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
         let mut mapped_tile = 0u8;
         for &(tile, _) in unicode_sorted_tiles.iter() {
             tile_mapping[tile as usize] = mapped_tile;
-            mapped_tile += (tile != 0) as u8; // branchless
+            mapped_tile += u8::from(tile != 0); // branchless
         }
         tile_mapping[0] = 0x32; // Macondo represents gaddag separator as 0x32.
     }
@@ -86,7 +86,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
             let node = env.kwg[p];
             let tile = node.tile();
             // Remap later after dedup.
-            letter_set_bitset |= (node.accepts() as u64) << tile;
+            letter_set_bitset |= u64::from(node.accepts()) << tile;
             if node.arc_index() != 0 {
                 arc_set_bitset |= 1 << tile;
                 env.nodes.push(0); // reserve the space first
@@ -114,7 +114,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
                 while env.kwg[p].tile() != tile {
                     p += 1;
                 }
-                env.nodes[w as usize] = ((env.tile_mapping[tile as usize] as u32) << 24)
+                env.nodes[w as usize] = (u32::from(env.tile_mapping[tile as usize]) << 24)
                     | (iter(env, env.kwg[p].arc_index()) & 0xffffff);
                 w += 1;
             }
@@ -150,7 +150,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
     bin[w..w + lexicon_name.len()].copy_from_slice(lexicon_name.as_bytes());
     w += lexicon_name.len();
 
-    bin[w..w + 4].copy_from_slice(&(alphabet_len_excluding_blank as u32).to_be_bytes());
+    bin[w..w + 4].copy_from_slice(&u32::from(alphabet_len_excluding_blank).to_be_bytes());
     w += 4;
     for tile in 1..alphabet.len() {
         let z = w + tile_mapping[tile as usize] as usize * 4;
@@ -170,7 +170,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
         let mut remapped_letter_set_bitset = 0u64;
         for tile in 1..alphabet.len() {
             remapped_letter_set_bitset |=
-                ((letter_set_bitset & (1 << tile) != 0) as u64) << tile_mapping[tile as usize];
+                u64::from(letter_set_bitset & (1 << tile) != 0) << tile_mapping[tile as usize];
         }
         bin[z..z + 8].copy_from_slice(&remapped_letter_set_bitset.to_be_bytes());
     }
@@ -273,7 +273,7 @@ pub fn to_lxd<'a, N: kwg::Node>(
         p = orig_p;
         loop {
             let node = env.kwg[p];
-            word_counts += node.accepts() as u32;
+            word_counts += u32::from(node.accepts());
             let next_p = node.arc_index();
             let mut next_w = 0;
             if next_p != 0 {
@@ -281,14 +281,14 @@ pub fn to_lxd<'a, N: kwg::Node>(
                 next_w = env.node_indexes[next_p as usize];
                 word_counts += env.word_counts[next_p as usize];
             }
-            env.nodes[w as usize] = ((node.is_end() as u32) << 31)
-                | ((node.accepts() as u32) << 30)
-                | ((env
-                    .alphabet
-                    .of_rack(node.tile())
-                    .and_then(str1_to_windows_u8)
-                    .ok_or("unrepresentable letter")? as u32)
-                    << 22)
+            env.nodes[w as usize] = (u32::from(node.is_end()) << 31)
+                | (u32::from(node.accepts()) << 30)
+                | (u32::from(
+                    env.alphabet
+                        .of_rack(node.tile())
+                        .and_then(str1_to_windows_u8)
+                        .ok_or("unrepresentable letter")?,
+                ) << 22)
                 | (next_w & 0x3fffff);
             if node.is_end() {
                 break;

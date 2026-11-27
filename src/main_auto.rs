@@ -688,10 +688,10 @@ fn do_it(
 
         let spr = display_scores[0] - display_scores[1];
         let p0dw = spr.signum() + 1; // double win
-        score_stats_0.update(display_scores[0] as f64);
-        score_stats_1.update(display_scores[1] as f64);
-        spread_stats_0.update(spr as f64);
-        win_stats_0.update(p0dw as f64 * 50.0);
+        score_stats_0.update(f64::from(display_scores[0]));
+        score_stats_1.update(f64::from(display_scores[1]));
+        spread_stats_0.update(f64::from(spr));
+        win_stats_0.update(f64::from(p0dw) * 50.0);
         loss_draw_win[p0dw as usize] += 1;
 
         writeln!(

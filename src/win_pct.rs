@@ -85,7 +85,7 @@ impl WinPctAccumulator {
         let mut field = Vec::new();
         for ((bag, my, opp), hist) in self.rows() {
             let total: u64 = hist.iter().map(|&(_, _, count)| count).sum();
-            for value in [bag as u64, my as u64, opp as u64, total] {
+            for value in [u64::from(bag), u64::from(my), u64::from(opp), total] {
                 field.clear();
                 write!(field, "{value}")?;
                 out.write_field(&field)?;

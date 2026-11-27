@@ -155,9 +155,9 @@ impl BoardPrinter<'_> {
     #[inline(always)]
     fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         let ncols: i8 = self.board_layout.dim().cols;
-        let max_col_label_width = 1 + ((ncols > 26) as usize);
+        let max_col_label_width = 1 + usize::from(ncols > 26);
         let nrows: i8 = self.board_layout.dim().rows;
-        let max_row_num_width = 1 + ((nrows >= 10) as usize) + ((nrows >= 100) as usize);
+        let max_row_num_width = 1 + usize::from(nrows >= 10) + usize::from(nrows >= 100);
         let max_tile_width = self.alphabet.widest_label_len();
         let w = max_col_label_width.max(max_tile_width);
         write!(f, "{:max_row_num_width$}", "")?;

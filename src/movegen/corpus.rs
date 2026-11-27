@@ -323,7 +323,7 @@ fn hash_of(list: &[Listed]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for l in list {
         for &b in l.line.as_bytes().iter().chain(b"\n") {
-            hash = (hash ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+            hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
     }
     hash
@@ -337,12 +337,12 @@ fn some_leaves(gc: &game_config::GameConfig) -> klv::Klv<kwg::Node24> {
     let paired = tiles.min(9);
     let mut leaves = Vec::<(Vec<u8>, f32)>::new();
     for a in 0..tiles {
-        leaves.push((vec![a], ((a as i32 * 37) % 17) as f32 * 2.5 - 20.0));
+        leaves.push((vec![a], ((i32::from(a) * 37) % 17) as f32 * 2.5 - 20.0));
         if a < paired {
             for b in a..paired {
                 leaves.push((
                     vec![a, b],
-                    ((a as i32 * 5 + b as i32 * 3) % 13) as f32 * 3.0 - 18.0,
+                    ((i32::from(a) * 5 + i32::from(b) * 3) % 13) as f32 * 3.0 - 18.0,
                 ));
             }
         }

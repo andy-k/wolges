@@ -166,7 +166,7 @@ fn run_stamp() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let ticks = (d.as_secs() << 16) | (d.subsec_nanos() as u64 * 65536 / 1_000_000_000);
+    let ticks = (d.as_secs() << 16) | (u64::from(d.subsec_nanos()) * 65536 / 1_000_000_000);
     format!("{ticks:012x}")
 }
 
@@ -1286,7 +1286,7 @@ fn run(
                 match w {
                     None => Ok(move_picker::DEFAULT_DEFT_WINDOW),
                     Some(w) if w.is_finite() && w >= 0.0 => {
-                        Ok((w * equity::SCALE as f64).round() as i32)
+                        Ok((w * f64::from(equity::SCALE)).round() as i32)
                     }
                     Some(_) => wolges::return_error!(
                         "a deft seat's window is points, 0 or more".to_string()
@@ -1574,7 +1574,7 @@ fn run(
                     num_games: a.games,
                     seed: a.seed,
                     threads,
-                    window: (a.window * equity::SCALE as f64).round() as i32,
+                    window: (a.window * f64::from(equity::SCALE)).round() as i32,
                     num_candidates: a.candidates,
                     quiet: a.quiet,
                 },
@@ -2379,7 +2379,7 @@ fn generate_autoplay_logs<
                             pool_one(
                                 &mut thread_full_rack_map,
                                 &sample_rack_buf[..],
-                                play.equity.raw() as i64,
+                                i64::from(play.equity.raw()),
                             );
                             undersampled_thread_racks
                                 .swap_remove(chosen_undersampled_thread_rack_index);
@@ -2529,7 +2529,7 @@ fn generate_autoplay_logs<
                             pool_one(
                                 &mut thread_full_rack_map,
                                 &cur_rack_as_vec[..],
-                                play.equity.raw() as i64,
+                                i64::from(play.equity.raw()),
                             );
                         }
 
@@ -2784,7 +2784,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let rack_size = game_config.rack_size();
     let num_tiles: u32 = {
         let alphabet = game_config.alphabet();
-        (0..alphabet.len()).map(|t| alphabet.freq(t) as u32).sum()
+        (0..alphabet.len())
+            .map(|t| u32::from(alphabet.freq(t)))
+            .sum()
     };
 
     let pool_min = (num_tiles / 4) as usize;
@@ -2815,8 +2817,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     // passing over them as often as their mean shortfall, until none is short.
     // A snapshot takes as many as a group makes racks at most (group_size choose
     // rack_size), so a forced snapshot costs no more than a sampled one.
-    let group_racks = (1..=rack_size as u64).fold(1u64, |ways, i| {
-        ways * (group_size as u64 - rack_size as u64 + i) / i
+    let group_racks = (1..=u64::from(rack_size)).fold(1u64, |ways, i| {
+        ways * (group_size as u64 - u64::from(rack_size) + i) / i
     });
     let mut forced = Vec::<bites::Bites>::new();
     let mut forced_len = 0u64;
@@ -2940,7 +2942,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                         dynamic_leaves: None,
                                     });
-                                    let millipoints = move_generator.plays[0].equity.raw() as i64;
+                                    let millipoints =
+                                        i64::from(move_generator.plays[0].equity.raw());
                                     pool_one(&mut thread_map, rack, millipoints);
                                     completed_samples
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3010,7 +3013,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                 },
                                             );
                                             let millipoints =
-                                                move_generator.plays[0].equity.raw() as i64;
+                                                i64::from(move_generator.plays[0].equity.raw());
                                             pool_one(thread_map, rack_bytes, millipoints);
                                             completed_samples
                                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3190,13 +3193,13 @@ struct RackSum {
 // a summary's sum, which it writes in points, back in millipoints
 #[inline]
 fn summary_millipoints(field: &str) -> error::Returns<i64> {
-    Ok((f64::from_str(field)? * equity::SCALE as f64).round() as i64)
+    Ok((f64::from_str(field)? * f64::from(equity::SCALE)).round() as i64)
 }
 
 // millipoints in points, as a summary writes a sum
 #[inline]
 fn summary_points(millipoints: i64) -> f64 {
-    millipoints as f64 / equity::SCALE as f64
+    millipoints as f64 / f64::from(equity::SCALE)
 }
 
 #[inline]
@@ -3370,7 +3373,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
             }
             if i16::from_str(&record[10])? > 0 {
                 let millipoints =
-                    (f64::from_str(&record[9])? * equity::SCALE as f64).round() as i64;
+                    (f64::from_str(&record[9])? * f64::from(equity::SCALE)).round() as i64;
                 //let score = i16::from_str(&record[5])? as i64;
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
@@ -3517,7 +3520,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let mut racks_in_file = fash::MyHashSet::<bites::Bites>::default();
     let mut key = Vec::new();
     let millipoints = |field: &str| -> error::Returns<i64> {
-        Ok((f64::from_str(field)? * equity::SCALE as f64).round() as i64)
+        Ok((f64::from_str(field)? * f64::from(equity::SCALE)).round() as i64)
     };
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
@@ -3591,7 +3594,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     }
     drop(csv_in);
     let losses = playability && fields == Some(6);
-    let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
+    let points = |millipoints: i64| millipoints as f64 / f64::from(equity::SCALE);
 
     full_rack_map.remove([][..].into());
     rack_sums.remove([][..].into());
@@ -3708,7 +3711,7 @@ fn endgame_leave_value(game_config: &game_config::GameConfig, tally: &[u8]) -> i
     let held: i32 = tally
         .iter()
         .enumerate()
-        .map(|(t, &n)| n as i32 * alphabet.score(t as u8) as i32)
+        .map(|(t, &n)| i32::from(n) * i32::from(alphabet.score(t as u8)))
         .sum();
     -equity::ENDGAME_PENALTY_BASE - 2 * held * equity::SCALE
 }
@@ -3719,10 +3722,10 @@ fn play_out_bonus(game_config: &game_config::GameConfig, unseen_tally: &[u8], ra
     let mut left: i32 = unseen_tally
         .iter()
         .enumerate()
-        .map(|(t, &n)| n as i32 * alphabet.score(t as u8) as i32)
+        .map(|(t, &n)| i32::from(n) * i32::from(alphabet.score(t as u8)))
         .sum();
     for &t in rack {
-        left -= alphabet.score(t) as i32;
+        left -= i32::from(alphabet.score(t));
     }
     2 * left * equity::SCALE
 }
@@ -3780,7 +3783,7 @@ fn census_klv2_bytes(
                 self.word.push(t as u8);
                 let idx = self.lat.rank(&self.tally) as usize;
                 if (self.is_valued)(idx) {
-                    let pts = ((self.value_mp)(idx) - self.baseline_mp) / equity::SCALE as f64;
+                    let pts = ((self.value_mp)(idx) - self.baseline_mp) / f64::from(equity::SCALE);
                     self.words.push(self.word[..].into());
                     self.values.push(pts as f32);
                 }
@@ -3877,7 +3880,7 @@ fn census_state_bytes(st: &CensusState) -> Vec<u8> {
     for v in &st.exact {
         bin.extend_from_slice(&v.to_le_bytes());
     }
-    bin.extend(st.ever.iter().map(|&v| v as u8));
+    bin.extend(st.ever.iter().map(|&v| u8::from(v)));
     bin
 }
 
@@ -4038,8 +4041,9 @@ fn census_more_boards(boards: u64, least: u64, min_boards: u64, threads: u64) ->
     if least >= min_boards {
         return 0;
     }
-    let want = (boards as u128 * (min_boards - least) as u128).div_ceil(least.max(1) as u128);
-    (want.min(boards as u128) as u64).max(threads)
+    let want =
+        (u128::from(boards) * u128::from(min_boards - least)).div_ceil(u128::from(least.max(1)));
+    (want.min(u128::from(boards)) as u64).max(threads)
 }
 
 // the multisets of up to a rack the tiles can make at all, each letter at most
@@ -4250,7 +4254,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf).raw();
             ever[idx] = true;
         }
-        let mut exact = leave_cur.iter().map(|&v| v as f64).collect::<Vec<_>>();
+        let mut exact = leave_cur.iter().map(|&v| f64::from(v)).collect::<Vec<_>>();
         let means = census_means_path(&path);
         match read_input(&means) {
             Ok(bytes) => census_means_from_bytes(&lat, &ever, &bytes, &mut exact, &means)?,
@@ -4319,7 +4323,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // the leaves as the means found them, before the rounding to whole
     // millipoints the next generation plays with: what the census writes
     let leave_exact = std::sync::Mutex::new(
-        resumed_exact.unwrap_or_else(|| leave_cur.iter().map(|&v| v as f64).collect()),
+        resumed_exact.unwrap_or_else(|| leave_cur.iter().map(|&v| f64::from(v)).collect()),
     );
     // each multiset's best leave among its subsets, where every board that
     // scatters starts: the same for a generation's boards, so worked out once a
@@ -4793,7 +4797,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
                             let p = match census_klv2_bytes(
                                 &lat,
-                                &|i| lv[i] as f64,
+                                &|i| f64::from(lv[i]),
                                 0.0,
                                 &|i| ever[i],
                                 true, // resume snapshots stay full
@@ -4881,7 +4885,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         lat.unrank_into(idx, &mut tally_buf);
         let size: usize = tally_buf.iter().map(|&c| c as usize).sum();
-        let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
+        let centered_points = (value_mp(idx) - baseline) / f64::from(equity::SCALE);
         let start = leaves_text.len();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {
@@ -4905,7 +4909,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         rows.len(),
         out_name,
         t0.elapsed().as_secs(),
-        baseline / equity::SCALE as f64,
+        baseline / f64::from(equity::SCALE),
     )?;
 
     let is_valued = |idx: usize| {
@@ -4930,7 +4934,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut total_count = 0u64;
     for idx in full_racks.clone() {
         if accum_cnt[idx] > 0 {
-            total_points += accum_sum[idx] as f64 / equity::SCALE as f64;
+            total_points += accum_sum[idx] as f64 / f64::from(equity::SCALE);
             total_count += accum_cnt[idx];
         }
     }
@@ -4961,7 +4965,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                         out.serialize((
                             &rack,
-                            accum_sum[idx] as f64 / equity::SCALE as f64,
+                            accum_sum[idx] as f64 / f64::from(equity::SCALE),
                             accum_cnt[idx],
                         ))?;
                         racks += 1;
@@ -5089,7 +5093,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         .remove([][..].into())
         .ok_or("input file does not include totals line")?;
 
-    let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
+    let leave_size = game_config.rack_size() - 1 + u8::from(IS_FULL_RACK);
 
     // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
@@ -5466,7 +5470,7 @@ impl Losses {
             let lost = if avoided {
                 0
             } else if let Some(best) = known.filter(|best| best.is_finite()) {
-                top.raw() as i64 - best.raw() as i64
+                i64::from(top.raw()) - i64::from(best.raw())
             } else {
                 let best = match solved.iter().find(|&&(other, _)| racks[other] == *keys) {
                     Some(&(_, best)) => best,
@@ -5503,9 +5507,9 @@ impl Losses {
                         best
                     }
                 };
-                top.raw() as i64 - best.raw() as i64
+                i64::from(top.raw()) - i64::from(best.raw())
             };
-            let credit = lost as f64 / equity::SCALE as f64 / formed.len() as f64;
+            let credit = lost as f64 / f64::from(equity::SCALE) / formed.len() as f64;
             for word in words {
                 *move_loss.entry(word.clone()).or_default() += credit;
             }
@@ -5711,7 +5715,7 @@ impl Losses {
             movegen::EquityPredicate::Dyn(&mut shown),
         );
         for target in targets.iter() {
-            let lost = top.raw() as i64 - target.best.raw() as i64;
+            let lost = i64::from(top.raw()) - i64::from(target.best.raw());
             let losses = if target.by_rack {
                 &mut *rack_loss
             } else {
@@ -6314,7 +6318,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         // then each word's losses in points: its own, its rack's (the same for
         // every word of a rack, the totals line counting each rack once), and
         // its moves'
-        let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
+        let points = |millipoints: i64| millipoints as f64 / f64::from(equity::SCALE);
         let word_loss =
             |k: &bites::Bites| points(mutex_guard.word_loss.get(k).copied().unwrap_or(0));
         let mut key = Vec::new();
@@ -6404,10 +6408,10 @@ impl GameStats {
         end_reason: game_state::CheckGameEnded,
     ) {
         self.p0_score
-            .update(equity::Equity::new(p0_final).descaled().raw() as f64);
+            .update(f64::from(equity::Equity::new(p0_final).descaled().raw()));
         self.p1_score
-            .update(equity::Equity::new(p1_final).descaled().raw() as f64);
-        self.turns.update(turns as f64);
+            .update(f64::from(equity::Equity::new(p1_final).descaled().raw()));
+        self.turns.update(f64::from(turns));
         match end_reason {
             game_state::CheckGameEnded::PlayedOut => self.played_out += 1,
             game_state::CheckGameEnded::ZeroScores => self.zero_scores += 1,
@@ -7079,7 +7083,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         );
                         let band = &mut bands[(bag / band_width).min(num_bands - 1)];
                         let tab = match table.get_opt(lead, bag, my, opp) {
-                            Some(tab) => tab as f64,
+                            Some(tab) => f64::from(tab),
                             None => {
                                 band.missing += 1;
                                 sig
@@ -7755,7 +7759,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     census::check_letters(num_letters)?;
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let can_exchange =
-        bag_size(&board_tiles, &game_config) >= game_config.exchange_tile_limit() as i64;
+        bag_size(&board_tiles, &game_config) >= i64::from(game_config.exchange_tile_limit());
     let sheet_floor = if can_exchange { 0 } else { i32::MIN / 4 };
     let mut sheet = lat.dense(sheet_floor)?;
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -8139,7 +8143,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         game_config
             .take_rack(&mut pool, &rack)
             .map_err(|e| format!("{rack_str}: {e}"))?;
-        pool.iter().map(|&c| c as i64).sum::<i64>() - rack_size as i64
+        pool.iter().map(|&c| i64::from(c)).sum::<i64>() - rack_size as i64
     } else {
         bag_size(&board_tiles, &game_config)
     };
@@ -8181,7 +8185,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     let mut leave = lat.dense(0i32)?;
     census::fill_lattice_klv_leaves(&lat, &mut leave, &klv);
     let ln_binom = LnBinom::new(pool_size);
-    let can_exchange = bag >= game_config.exchange_tile_limit() as i64;
+    let can_exchange = bag >= i64::from(game_config.exchange_tile_limit());
     if exchanged.is_some() && !can_exchange {
         wolges::return_error!(format!("{bag} in the bag is too few to exchange"));
     }
@@ -8274,7 +8278,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
             .zip(&tally)
             .zip(&placed)
         {
-            let k = (r - p) as f64;
+            let k = f64::from(r - p);
             *e += w / z * k;
             *e_prior += prior / z_prior * k;
         }
@@ -8354,7 +8358,7 @@ enum MoveKind {
 // rack gave up more than the smallest gap.
 #[inline]
 fn fit_log_likelihood(moves: &[FitMove], buckets: &[(i32, f64)], fuzz: f64) -> f64 {
-    let fuzz = fuzz * equity::SCALE as f64;
+    let fuzz = fuzz * f64::from(equity::SCALE);
     moves
         .iter()
         .map(|m| {
@@ -8539,7 +8543,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                                     census_mix64(
                                         game_idx
                                             .wrapping_mul(0x9e3779b97f4a7c15)
-                                            .wrapping_add(num_turns as u64),
+                                            .wrapping_add(u64::from(num_turns)),
                                     ),
                                 )));
                             }
@@ -8622,7 +8626,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                                     if rank == true_rank {
                                         seen = Some((prior, gap));
                                     }
-                                    num_short += (gap < 0) as usize;
+                                    num_short += usize::from(gap < 0);
                                     racks.push((gap, prior));
                                 },
                             );
@@ -8731,7 +8735,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
     // fuzz is in points; the likelihood is read on a grid of 0.01 to 1000, then
     // narrowed by golden sections around the grid's best
     let grid: Vec<f64> = (0..=250)
-        .map(|i| 10f64.powf(-2.0 + i as f64 / 50.0))
+        .map(|i| 10f64.powf(-2.0 + f64::from(i) / 50.0))
         .collect();
     let lls: Vec<f64> = grid
         .iter()
@@ -8834,7 +8838,7 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let can_exchange =
-        bag_size(board_tiles, game_config) >= game_config.exchange_tile_limit() as i64;
+        bag_size(board_tiles, game_config) >= i64::from(game_config.exchange_tile_limit());
     let OpennessScratch {
         movegen_rack,
         blank_deltas,
@@ -8880,13 +8884,16 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
         // with no play and no exchange a rack must pass: it scores nothing and
         // keeps every tile (the sheet has no entry for playing nothing)
         let or_pass = |best: i32, pass: i32| if best < i32::MIN / 8 { pass } else { best };
-        openness.best_score +=
-            chance * or_pass(census::best_equity_of(lat, sheet, leaves.1, rack).raw(), 0) as f64;
+        openness.best_score += chance
+            * f64::from(or_pass(
+                census::best_equity_of(lat, sheet, leaves.1, rack).raw(),
+                0,
+            ));
         openness.best_equity += chance
-            * or_pass(
+            * f64::from(or_pass(
                 census::best_equity_of(lat, sheet, leaves.0, rack).raw(),
                 leaves.0[rank],
-            ) as f64;
+            ));
         openness.bingo += chance * f64::from(u8::from(sheet[rank] > floor));
     });
     openness
@@ -8995,7 +9002,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     if n == 0 {
         wolges::return_error!("no board with more unseen tiles than a rack".to_string());
     }
-    let points = equity::SCALE as f64;
+    let points = f64::from(equity::SCALE);
     writeln!(
         std::io::stdout(),
         "{n} boards of {num_boards} read in {:?}; per board: line, unseen, best score, best equity, bingo%, anchors, premium anchors, word-premium anchors, bingo lanes, stretches, bingo stretches, word-premium stretches",
@@ -9042,46 +9049,52 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let counts: [(&str, Vec<f64>); 8] = [
         (
             "unseen",
-            found.iter().map(|(_, o, _)| o.pool as f64).collect(),
+            found.iter().map(|(_, o, _)| f64::from(o.pool)).collect(),
         ),
         (
             "anchors",
-            found.iter().map(|(_, _, g)| g.anchors as f64).collect(),
+            found.iter().map(|(_, _, g)| f64::from(g.anchors)).collect(),
         ),
         (
             "premium anchors",
             found
                 .iter()
-                .map(|(_, _, g)| g.premium_anchors as f64)
+                .map(|(_, _, g)| f64::from(g.premium_anchors))
                 .collect(),
         ),
         (
             "word-premium anchors",
             found
                 .iter()
-                .map(|(_, _, g)| g.word_premium_anchors as f64)
+                .map(|(_, _, g)| f64::from(g.word_premium_anchors))
                 .collect(),
         ),
         (
             "bingo lanes",
-            found.iter().map(|(_, _, g)| g.bingo_lanes as f64).collect(),
+            found
+                .iter()
+                .map(|(_, _, g)| f64::from(g.bingo_lanes))
+                .collect(),
         ),
         (
             "stretches",
-            found.iter().map(|(_, _, g)| g.stretches as f64).collect(),
+            found
+                .iter()
+                .map(|(_, _, g)| f64::from(g.stretches))
+                .collect(),
         ),
         (
             "bingo stretches",
             found
                 .iter()
-                .map(|(_, _, g)| g.bingo_stretches as f64)
+                .map(|(_, _, g)| f64::from(g.bingo_stretches))
                 .collect(),
         ),
         (
             "word-premium stretches",
             found
                 .iter()
-                .map(|(_, _, g)| g.word_premium_stretches as f64)
+                .map(|(_, _, g)| f64::from(g.word_premium_stretches))
                 .collect(),
         ),
     ];
@@ -9309,12 +9322,12 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     if n == 0 {
         wolges::return_error!("no move with two candidates in its window".to_string());
     }
-    let points = equity::SCALE as f64;
+    let points = f64::from(equity::SCALE);
     let num_cands: usize = positions.iter().map(|&(_, start, end)| end - start).sum();
     writeln!(
         std::io::stdout(),
         "{n} positions with 2 to {num_candidates} candidates within {} points of the best ({:.2} a position), in {:?}",
-        window as f64 / points,
+        f64::from(window) / points,
         num_cands as f64 / n as f64,
         t0.elapsed(),
     )?;
@@ -9325,10 +9338,11 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     for (name, label) in [
         (
             "best score",
-            (|o: &BoardOpenness| o.best_score / equity::SCALE as f64) as fn(&BoardOpenness) -> f64,
+            (|o: &BoardOpenness| o.best_score / f64::from(equity::SCALE))
+                as fn(&BoardOpenness) -> f64,
         ),
         ("best equity", |o: &BoardOpenness| {
-            o.best_equity / equity::SCALE as f64
+            o.best_equity / f64::from(equity::SCALE)
         }),
         ("bingo%", |o: &BoardOpenness| 100.0 * o.bingo),
     ] {
@@ -9342,7 +9356,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let least = least_of(&labels, |&x| x);
             spread += hi - lo;
             saved += labels[0] - labels[least];
-            cost += (cands[0].0 - cands[least].0) as f64 / points;
+            cost += f64::from(cands[0].0 - cands[least].0) / points;
         }
         writeln!(
             std::io::stdout(),
@@ -9358,15 +9372,17 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     // candidate
     type Count = fn(&Candidate) -> f64;
     let counts: [(&str, Count); 8] = [
-        ("equity", |c| c.0 as f64),
-        ("anchors", |c| c.2.anchors as f64),
-        ("premium anchors", |c| c.2.premium_anchors as f64),
-        ("word-premium anchors", |c| c.2.word_premium_anchors as f64),
-        ("bingo lanes", |c| c.2.bingo_lanes as f64),
-        ("stretches", |c| c.2.stretches as f64),
-        ("bingo stretches", |c| c.2.bingo_stretches as f64),
+        ("equity", |c| f64::from(c.0)),
+        ("anchors", |c| f64::from(c.2.anchors)),
+        ("premium anchors", |c| f64::from(c.2.premium_anchors)),
+        ("word-premium anchors", |c| {
+            f64::from(c.2.word_premium_anchors)
+        }),
+        ("bingo lanes", |c| f64::from(c.2.bingo_lanes)),
+        ("stretches", |c| f64::from(c.2.stretches)),
+        ("bingo stretches", |c| f64::from(c.2.bingo_stretches)),
         ("word-premium stretches", |c| {
-            c.2.word_premium_stretches as f64
+            f64::from(c.2.word_premium_stretches)
         }),
     ];
     writeln!(
@@ -9388,7 +9404,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     }
                 }
             }
-            picks += (least_of(cands, count) == least_of(cands, |c| c.1.best_score)) as u64;
+            picks += u64::from(least_of(cands, count) == least_of(cands, |c| c.1.best_score));
         }
         writeln!(
             std::io::stdout(),
@@ -10116,20 +10132,20 @@ fn print_rack_keeps<L: kwg::Node>(
     }
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     for (_, kept, static_value, dynamic) in rows {
-        let scale = equity::SCALE as f64;
+        let scale = f64::from(equity::SCALE);
         if dynamic == census::UNPLAYABLE.raw() {
             writeln!(
                 boxed_stdout_or_stderr(),
                 "  {kept:<16} {:>10.3}  undrawable",
-                static_value as f64 / scale,
+                f64::from(static_value) / scale,
             )?;
         } else {
             writeln!(
                 boxed_stdout_or_stderr(),
                 "  {kept:<16} {:>10.3} {:>10.3} {:>9.3}",
-                static_value as f64 / scale,
-                dynamic as f64 / scale,
-                (dynamic - static_value) as f64 / scale,
+                f64::from(static_value) / scale,
+                f64::from(dynamic) / scale,
+                f64::from(dynamic - static_value) / scale,
             )?;
         }
     }
@@ -10180,14 +10196,14 @@ fn dynamic_leaves_of_pool(
         let size: usize = tally.iter().map(|&c| c as usize).sum();
         let left = pool_size - size;
         if idx >= full_start || left == 0 {
-            value[idx] = full_v[idx] as f64;
+            value[idx] = f64::from(full_v[idx]);
             continue;
         }
         let mut sum = 0.0;
         for t in 0..n {
             let r = pool[t] - tally[t];
             if r != 0 {
-                sum += r as f64 * value[add.add(idx, t)];
+                sum += f64::from(r) * value[add.add(idx, t)];
             }
         }
         value[idx] = sum / left as f64;
@@ -10231,7 +10247,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
         writeln!(
             boxed_stdout_or_stderr(),
             "  {:>9.3}  {}",
-            play.equity.raw() as f64 / equity::SCALE as f64,
+            f64::from(play.equity.raw()) / f64::from(equity::SCALE),
             play.play.fmt(board_snapshot),
         )?;
     }
@@ -10488,7 +10504,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         writeln!(
             boxed_stdout_or_stderr(),
             "dynamic leaves: wrote {written} to {path}, keeping nothing worth {:.3}",
-            baseline / equity::SCALE as f64
+            baseline / f64::from(equity::SCALE)
         )?;
     }
     Ok(())
@@ -10682,13 +10698,14 @@ fn board_shape(board_layout: &board_layout::BoardLayout, board_tiles: &[u8]) -> 
                 sum_r += r as f64;
                 sum_c += c as f64;
                 for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                    perimeter += !filled(r + dr, c + dc) as usize;
+                    perimeter += usize::from(!filled(r + dr, c + dc));
                 }
             } else {
-                holes += [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                    .iter()
-                    .all(|&(dr, dc)| filled_or_off(r + dr, c + dc))
-                    as usize;
+                holes += usize::from(
+                    [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                        .iter()
+                        .all(|&(dr, dc)| filled_or_off(r + dr, c + dc)),
+                );
             }
         }
     }
@@ -11397,9 +11414,9 @@ fn compare_seats<
                                             pair_idx
                                                 .wrapping_mul(0x9e3779b97f4a7c15)
                                                 .wrapping_add(
-                                                    (game_in_pair as u64).wrapping_shl(40),
+                                                    u64::from(game_in_pair).wrapping_shl(40),
                                                 )
-                                                .wrapping_add(num_turns as u64),
+                                                .wrapping_add(u64::from(num_turns)),
                                         )),
                                     ));
                                     if fuzz_by_bag[!is_p0_seat as usize] {
@@ -12078,7 +12095,7 @@ WCMP_P1_SCORE 402.000000
             let draw = (lat.rack_size() - size).min(pool_size - size);
             let want = census::dynamic_leave_value(&lat, &add, &full_v, &rest, idx, draw).raw();
             assert!(
-                (got - want as f64).abs() <= 1.0,
+                (got - f64::from(want)).abs() <= 1.0,
                 "{tally:?}: {got} against {want}"
             );
             checked += 1;
@@ -12367,8 +12384,8 @@ WCMP_P1_SCORE 402.000000
             let weighed = weigh_by_fuzz(&racks, equity_fuzz(points).unwrap());
             for (&(w, prior, rank, gap), &(r, ln_prior, g)) in weighed.iter().zip(&racks) {
                 assert_eq!((prior, rank, gap), (ln_prior.exp(), r, g));
-                let fuzz = points * equity::SCALE as f64;
-                assert_eq!(w, prior * (-(g.max(0) as f64) / fuzz).exp());
+                let fuzz = points * f64::from(equity::SCALE);
+                assert_eq!(w, prior * (-f64::from(g.max(0)) / fuzz).exp());
             }
         }
     }

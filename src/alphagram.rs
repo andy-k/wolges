@@ -154,7 +154,7 @@ impl KeyLayout {
             }
             let width = u8::BITS - max.leading_zeros();
             let field = (key >> self.shift[tile]) & ((1u128 << width) - 1);
-            if field > max as u128 {
+            if field > u128::from(max) {
                 return false;
             }
         }

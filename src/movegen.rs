@@ -13,7 +13,7 @@ pub const MAX_ALPHABET_LEN: usize = 64;
 pub fn bag_count_from_board(game_config: &game_config::GameConfig, num_tiles_on_board: u16) -> i16 {
     game_config.alphabet().num_tiles() as i16
         - (num_tiles_on_board as i16
-            + game_config.num_players() as i16 * game_config.rack_size() as i16)
+            + i16::from(game_config.num_players()) * i16::from(game_config.rack_size()))
 }
 
 #[inline(always)]
@@ -45,7 +45,7 @@ pub fn live_pool_into(
 // a cross set allowing every letter of a 64-tile alphabet is not free.
 #[inline(always)]
 fn unhooked_letters(tile: u8) -> u64 {
-    let on_tile = ((tile != 0) as u64).wrapping_neg();
+    let on_tile = u64::from(tile != 0).wrapping_neg();
     (1u64 << (tile & 0x7f)) & on_tile | !1 & !on_tile
 }
 
@@ -209,11 +209,11 @@ impl LaneScaffold {
         }
         let mut n = 0;
         for j in 0..strider_len {
-            let multiplier = remaining_tile_multipliers_strip[j] as i32
-                * (k + perpendicular_word_multipliers_strip[j] as i32);
+            let multiplier = i32::from(remaining_tile_multipliers_strip[j])
+                * (k + i32::from(perpendicular_word_multipliers_strip[j]));
             precomputed_square_multiplier_slice[j] = multiplier;
-            self.square_keys[n] = (!(multiplier as u32) as u64) << u8::BITS | j as u64;
-            n += (board_strip[j] == 0) as usize;
+            self.square_keys[n] = u64::from(!(multiplier as u32)) << u8::BITS | j as u64;
+            n += usize::from(board_strip[j] == 0);
         }
         let keys = &self.square_keys[..n];
         let square_ranks_slice = &mut self.square_ranks[low_end..high_end];
@@ -255,7 +255,7 @@ impl LaneScaffold {
         self.aggregated_word_multipliers.clear();
         let mut last_was_one = false;
         for i in 0..strider_len {
-            let mut wm = remaining_word_multipliers_strip[i] as i32;
+            let mut wm = i32::from(remaining_word_multipliers_strip[i]);
             if last_was_one {
                 last_was_one = wm == 1;
                 continue;
@@ -272,7 +272,7 @@ impl LaneScaffold {
                     if wm > i32::MAX / equity::SCALE {
                         break;
                     }
-                    wm *= wm_val as i32;
+                    wm *= i32::from(wm_val);
                     if let Err(idx) = self.aggregated_word_multipliers.binary_search(&wm) {
                         if !self.aggregated_word_multipliers.room_for(room, 1) {
                             return false;
@@ -556,7 +556,7 @@ impl BagTerm {
     // the term for a play leaving bag_after tiles in the bag
     #[inline(always)]
     pub fn at(&self, bag_after: i16) -> i32 {
-        usize::try_from(bag_after as i32 - self.lowest as i32)
+        usize::try_from(i32::from(bag_after) - i32::from(self.lowest))
             .ok()
             .and_then(|i| self.values.get(i).copied())
             .unwrap_or(0)
@@ -576,8 +576,8 @@ impl BagTerm {
             };
             let b: i16 = b.parse()?;
             let v: f64 = v.parse()?;
-            let v = (v * equity::SCALE as f64).round();
-            if !v.is_finite() || v.abs() > (i32::MAX / 4) as f64 {
+            let v = (v * f64::from(equity::SCALE)).round();
+            if !v.is_finite() || v.abs() > f64::from(i32::MAX / 4) {
                 return_error!(format!("the bag term {v} for {b} is out of range"));
             }
             pairs.push((b, v as i32));
@@ -586,7 +586,7 @@ impl BagTerm {
             return_error!("a bag term needs at least one value".to_string());
         };
         let highest = pairs.iter().map(|&(b, _)| b).max().unwrap();
-        let mut values = vec![0i32; (highest as i32 - lowest as i32 + 1) as usize];
+        let mut values = vec![0i32; (i32::from(highest) - i32::from(lowest) + 1) as usize];
         let mut seen = vec![false; values.len()];
         for (b, v) in pairs {
             let i = (b - lowest) as usize;
@@ -1213,7 +1213,13 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         // the tiles and face values the squares that changed gained, against
         // prev_board_tiles's counts; a board it holds as unknown (0xff) is
         // counted afresh
-        let face = |t: u8| if t != 0 { alphabet.score(t) as i32 } else { 0 };
+        let face = |t: u8| {
+            if t != 0 {
+                i32::from(alphabet.score(t))
+            } else {
+                0
+            }
+        };
         let mut tiles_gained = 0i32;
         let mut score_gained = 0i32;
         let mut unknown = false;
@@ -1240,7 +1246,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 if prev == 0xff {
                     unknown = true;
                 } else {
-                    tiles_gained += (b != 0) as i32 - (prev != 0) as i32;
+                    tiles_gained += i32::from(b != 0) - i32::from(prev != 0);
                     score_gained += face(b) - face(prev);
                 }
                 let row = idx / dim.cols as usize;
@@ -1278,7 +1284,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             self.num_tiles_on_board = board.iter().filter(|&&t| t != 0).count() as u16;
             self.board_tile_score = board.iter().map(|&t| face(t)).sum();
         } else {
-            self.num_tiles_on_board = (self.prev_tile_count as i32 + tiles_gained) as u16;
+            self.num_tiles_on_board = (i32::from(self.prev_tile_count) + tiles_gained) as u16;
             self.board_tile_score = self.prev_tile_score + score_gained;
         }
         if was_empty || self.num_tiles_on_board == 0 {
@@ -1296,7 +1302,8 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             2 * ((0u8..)
                 .zip(self.rack_tally.iter().take(alphabet.len() as usize))
                 .map(|(tile, &num)| {
-                    (alphabet.freq(tile) as i32 - num as i32) * alphabet.score(tile) as i32
+                    (i32::from(alphabet.freq(tile)) - i32::from(num))
+                        * i32::from(alphabet.score(tile))
                 })
                 .sum::<i32>()
                 - self.board_tile_score)
@@ -1374,7 +1381,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         } else {
             // the bag is not empty here
             let bag = self.num_tiles_in_bag;
-            let on_rack = self.num_tiles_on_rack as i16;
+            let on_rack = i16::from(self.num_tiles_on_rack);
             let bag_terms = (if BAG_TERM {
                 self.bag_term.as_ref()
             } else {
@@ -1500,7 +1507,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
-                board_snapshot.game_config.num_played_bonus(i) as i32 * equity::SCALE;
+                i32::from(board_snapshot.game_config.num_played_bonus(i)) * equity::SCALE;
         }
         if let (true, Some(places)) = (
             board_snapshot.anagrams.is_some() && self.multi_leaves.is_dense(),
@@ -1588,7 +1595,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                         & -(*allowed as i8 & 1);
                     self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_across_plays[idx] =
-                        self.cross_score_for_across_plays[idx] * effective_pwm as i32;
+                        self.cross_score_for_across_plays[idx] * i32::from(effective_pwm);
                 }
             }
         }
@@ -1615,7 +1622,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                         self.remaining_word_multipliers_for_down_plays[idx] & -(*allowed as i8 & 1);
                     self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
                     self.perpendicular_scores_for_down_plays[idx] =
-                        self.cross_score_for_down_plays[idx] * effective_pwm as i32;
+                        self.cross_score_for_down_plays[idx] * i32::from(effective_pwm);
                 }
             }
         }
@@ -1705,29 +1712,29 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 sum.key += places.place_value(b & 0x7f);
             } else {
                 let bits = allowed[j];
-                sum.free += (bits & 1 == 0) as u8;
-                sum.dead += (bits == 1) as u8;
+                sum.free += u8::from(bits & 1 == 0);
+                sum.dead += u8::from(bits == 1);
                 sum.played += 1;
                 sum.perp += perpendicular_scores[j];
                 if narrow {
                     empty16 |= 1u16 << j;
-                    multiplied16 |= ((word_multipliers[j] != 1) as u16) << j;
+                    multiplied16 |= u16::from(word_multipliers[j] != 1) << j;
                 } else if mid {
                     empty32 |= 1u32 << j;
-                    multiplied32 |= ((word_multipliers[j] != 1) as u32) << j;
+                    multiplied32 |= u32::from(word_multipliers[j] != 1) << j;
                 } else {
                     empty |= 1u128 << j;
-                    multiplied |= ((word_multipliers[j] != 1) as u128) << j;
+                    multiplied |= u128::from(word_multipliers[j] != 1) << j;
                 }
             }
             out[j + 1] = sum;
         }
         if narrow {
-            empty = empty16 as u128;
-            multiplied = multiplied16 as u128;
+            empty = u128::from(empty16);
+            multiplied = u128::from(multiplied16);
         } else if mid {
-            empty = empty32 as u128;
-            multiplied = multiplied32 as u128;
+            empty = u128::from(empty32);
+            multiplied = u128::from(multiplied32);
         }
         self.span_lanes[lane_at] = SpanLane {
             turn: self.span_turn,
@@ -1923,7 +1930,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                         }
                                     }
                                     if q > 0 {
-                                        bits |= (kwg[q].accepts() as u64) << tile;
+                                        bits |= u64::from(kwg[q].accepts()) << tile;
                                     }
                                 }
                             }
@@ -1941,7 +1948,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                         }
                                     }
                                     if q > 0 {
-                                        bits |= (kwg[q].accepts() as u64) << tile;
+                                        bits |= u64::from(kwg[q].accepts()) << tile;
                                     }
                                 }
                             }
@@ -2053,7 +2060,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 cross_scores[wp] = score;
                 // if j == i, this is the left side of a possible lone island.
                 // otherwise set to !0.
-                prev_wp = wp | ((j == i) as isize - 1) as usize;
+                prev_wp = wp | (isize::from(j == i) - 1) as usize;
                 used_letters_tally.iter_mut().for_each(|m| *m = 0);
             }
         }
@@ -2323,7 +2330,7 @@ impl SpanCheck for Option<KeyCheck<'_>> {
         }
         let crossed = check.prefix[idx_right as usize].key - check.prefix[idx_left as usize].key;
         let crossed_part = anagrams::key_part(crossed);
-        let at = (anagrams::part_hash(crossed_part) ^ num_played as u64) as usize
+        let at = (anagrams::part_hash(crossed_part) ^ u64::from(num_played)) as usize
             & (EXIST_MEMO_SLOTS - 1);
         let slot = &mut check.memo[at];
         if slot.turn != check.turn || slot.key != crossed || slot.played != num_played {
@@ -2564,7 +2571,7 @@ impl TablePlaces for ByLayout {
 // keys
 #[inline(always)]
 fn span_source<T: TablePlaces>(anagrams: &anagrams::Anagrams) -> usize {
-    std::ptr::from_ref(anagrams) as usize | T::NIBBLES as usize
+    std::ptr::from_ref(anagrams) as usize | usize::from(T::NIBBLES)
 }
 
 // keys by nibbles
@@ -2871,7 +2878,7 @@ fn gen_place_placements_impl<
             // tiles have been placed from idx_left to idx - 1.
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
-            if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
+            if idx > env.anchor + 1 && num_played > u8::from(!is_unique) && idx - idx_left >= 2 {
                 shadow_record::<PER_SPAN, C>(env, &acc, idx_left, idx, num_played, low_end, ranked);
             }
             if num_played >= env.params.num_max_played {
@@ -2906,7 +2913,7 @@ fn gen_place_placements_impl<
                     took_a_tile = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
-                        & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
+                        & (-i64::from(env.params.rack_tally_shadowr[tile as usize] == 0)) as u64;
                     // fall-through to case 2 (assume the optimized asm does not recheck the condition).
                 }
                 if matching_bits.is_power_of_two()
@@ -2921,12 +2928,14 @@ fn gen_place_placements_impl<
                         .used_tile_scores_shadowr
                         .insert_sorted(tile_score);
                     let tile_value = tile_score
-                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                        * i32::from(env.params.remaining_tile_multipliers_strip[idx as usize]);
                     acc.main_score += tile_value;
                     acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
                         [idx as usize]
                         + tile_value
-                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                            * i32::from(
+                                env.params.perpendicular_word_multipliers_strip[idx as usize],
+                            );
                 } else {
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
@@ -2950,7 +2959,8 @@ fn gen_place_placements_impl<
                 break;
             }
             num_played += 1;
-            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier =
+                i32::from(env.params.remaining_word_multipliers_strip[idx as usize]);
             if word_multiplier != 1 {
                 acc.word_multiplier *= word_multiplier;
                 low_end = env.params.lane_scaffold.ranking(
@@ -3000,7 +3010,7 @@ fn gen_place_placements_impl<
             // tiles have been placed from env.anchor to idx + 1.
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
-            if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
+            if num_played > u8::from(!is_unique) && env.anchor - idx >= 2 {
                 shadow_record::<PER_SPAN, C>(
                     env,
                     &acc,
@@ -3062,7 +3072,7 @@ fn gen_place_placements_impl<
                     stale_rack = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
-                        & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
+                        & (-i64::from(env.params.rack_tally_shadowl[tile as usize] == 0)) as u64;
                     // fall-through to case 2 (assume the optimized asm does not recheck the condition).
                 }
                 if matching_bits.is_power_of_two()
@@ -3077,12 +3087,14 @@ fn gen_place_placements_impl<
                         .used_tile_scores_shadowl
                         .insert_sorted(tile_score);
                     let tile_value = tile_score
-                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                        * i32::from(env.params.remaining_tile_multipliers_strip[idx as usize]);
                     acc.main_score += tile_value;
                     acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
                         [idx as usize]
                         + tile_value
-                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                            * i32::from(
+                                env.params.perpendicular_word_multipliers_strip[idx as usize],
+                            );
                 } else {
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
@@ -3106,7 +3118,8 @@ fn gen_place_placements_impl<
                 break;
             }
             num_played += 1;
-            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier =
+                i32::from(env.params.remaining_word_multipliers_strip[idx as usize]);
             if word_multiplier != 1 {
                 acc.word_multiplier *= word_multiplier;
                 low_end = env.params.lane_scaffold.ranking(
@@ -3205,7 +3218,7 @@ fn gen_place_placements_impl<
         }
         {
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
-            let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8; // shadowing
+            let leftmost = leftmost + i8::from(leftmost > 0 && leftmost < rightmost); // shadowing
             for anchor in (leftmost..rightmost).rev() {
                 let cross_set_bits = env.params.allowed_strip[anchor as usize];
                 if cross_set_bits & 1 != 0 {
@@ -3475,7 +3488,7 @@ fn $name<
             // tiles have been placed from idx_left to idx - 1.
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
-            if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
+            if idx > env.anchor + 1 && num_played > u8::from(!is_unique) && idx - idx_left >= 2 {
                 shadow_record::<PER_SPAN, C>(env, &acc, idx_left, idx, num_played, low_end, ranked);
             }
             if num_played >= env.params.num_max_played {
@@ -3510,7 +3523,7 @@ fn $name<
                     took_a_tile = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
-                        & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
+                        & (-i64::from(env.params.rack_tally_shadowr[tile as usize] == 0)) as u64;
                     // fall-through to case 2 (assume the optimized asm does not recheck the condition).
                 }
                 if matching_bits.is_power_of_two()
@@ -3525,12 +3538,14 @@ fn $name<
                         .used_tile_scores_shadowr
                         .insert_sorted(tile_score);
                     let tile_value = tile_score
-                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                        * i32::from(env.params.remaining_tile_multipliers_strip[idx as usize]);
                     acc.main_score += tile_value;
                     acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
                         [idx as usize]
                         + tile_value
-                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                            * i32::from(
+                                env.params.perpendicular_word_multipliers_strip[idx as usize],
+                            );
                 } else {
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
@@ -3554,7 +3569,8 @@ fn $name<
                 break;
             }
             num_played += 1;
-            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier =
+                i32::from(env.params.remaining_word_multipliers_strip[idx as usize]);
             if word_multiplier != 1 {
                 acc.word_multiplier *= word_multiplier;
                 low_end = env.params.lane_scaffold.ranking(
@@ -3604,7 +3620,7 @@ fn $name<
             // tiles have been placed from env.anchor to idx + 1.
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
-            if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
+            if num_played > u8::from(!is_unique) && env.anchor - idx >= 2 {
                 shadow_record::<PER_SPAN, C>(
                     env,
                     &acc,
@@ -3666,7 +3682,7 @@ fn $name<
                     stale_rack = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
-                        & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
+                        & (-i64::from(env.params.rack_tally_shadowl[tile as usize] == 0)) as u64;
                     // fall-through to case 2 (assume the optimized asm does not recheck the condition).
                 }
                 if matching_bits.is_power_of_two()
@@ -3681,12 +3697,14 @@ fn $name<
                         .used_tile_scores_shadowl
                         .insert_sorted(tile_score);
                     let tile_value = tile_score
-                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                        * i32::from(env.params.remaining_tile_multipliers_strip[idx as usize]);
                     acc.main_score += tile_value;
                     acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
                         [idx as usize]
                         + tile_value
-                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                            * i32::from(
+                                env.params.perpendicular_word_multipliers_strip[idx as usize],
+                            );
                 } else {
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
@@ -3710,7 +3728,8 @@ fn $name<
                 break;
             }
             num_played += 1;
-            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier =
+                i32::from(env.params.remaining_word_multipliers_strip[idx as usize]);
             if word_multiplier != 1 {
                 acc.word_multiplier *= word_multiplier;
                 low_end = env.params.lane_scaffold.ranking(
@@ -3809,7 +3828,7 @@ fn $name<
         }
         {
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
-            let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8; // shadowing
+            let leftmost = leftmost + i8::from(leftmost > 0 && leftmost < rightmost); // shadowing
             for anchor in (leftmost..rightmost).rev() {
                 let cross_set_bits = env.params.allowed_strip[anchor as usize];
                 if cross_set_bits & 1 != 0 {
@@ -4015,7 +4034,7 @@ fn leave_value_of<const BAG_TERM: bool, L: kwg::Node>(
         } else {
             let residual: i32 = (0u8..)
                 .zip(rack_tally.iter().take(alphabet.len() as usize))
-                .map(|(tile, &count)| count as i32 * alphabet.score(tile) as i32)
+                .map(|(tile, &count)| i32::from(count) * i32::from(alphabet.score(tile)))
                 .sum();
             -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
         }
@@ -4168,12 +4187,12 @@ fn gen_classic_place_moves_lean<
         } else {
             acc.main_score * acc.word_multiplier
                 + acc.perpendicular_cumulative_score
-                + env
-                    .params
-                    .board_snapshot
-                    .game_config
-                    .num_played_bonus(env.num_played) as i32
-                    * equity::SCALE
+                + i32::from(
+                    env.params
+                        .board_snapshot
+                        .game_config
+                        .num_played_bonus(env.num_played),
+                ) * equity::SCALE
         };
         let leave_value = if SPELL_ONCE || !LEAVES {
             0
@@ -4238,7 +4257,7 @@ fn gen_classic_place_moves_lean<
         }
         let node = env.params.board_snapshot.kwg[p];
         if idx > env.params.anchor + 1
-            && env.num_played > !is_unique as u8
+            && env.num_played > u8::from(!is_unique)
             && idx - env.idx_left >= 2
             && node.accepts()
         {
@@ -4272,7 +4291,7 @@ fn gen_classic_place_moves_lean<
                 return;
             }
             let new_word_multiplier = acc.word_multiplier
-                * *strip_at!(env.params.remaining_word_multipliers_strip, idx) as i32;
+                * i32::from(*strip_at!(env.params.remaining_word_multipliers_strip, idx));
             let tile_multiplier = *strip_at!(env.params.remaining_tile_multipliers_strip, idx);
             let perpendicular_word_multiplier =
                 *strip_at!(env.params.perpendicular_word_multipliers_strip, idx);
@@ -4287,12 +4306,13 @@ fn gen_classic_place_moves_lean<
                         leave_idx: 0,
                     }
                 } else {
-                    let tile_value = env.alphabet.scaled_score(0).raw() * tile_multiplier as i32;
+                    let tile_value =
+                        env.alphabet.scaled_score(0).raw() * i32::from(tile_multiplier);
                     Accumulator {
                         main_score: acc.main_score + tile_value,
                         perpendicular_cumulative_score: acc.perpendicular_cumulative_score
                             + perpendicular_score
-                            + tile_value * perpendicular_word_multiplier as i32,
+                            + tile_value * i32::from(perpendicular_word_multiplier),
                         word_multiplier: new_word_multiplier,
                         leave_idx: if !LEAVES {
                             0
@@ -4310,7 +4330,7 @@ fn gen_classic_place_moves_lean<
                     env.params.board_snapshot.kwg.prefetch(node.arc_index());
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
-                        let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
+                        let spent = bit * u64::from(env.params.rack_tally[tile as usize] == 0);
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_right::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
@@ -4323,14 +4343,14 @@ fn gen_classic_place_moves_lean<
                                     leave_idx: 0,
                                 }
                             } else {
-                                let tile_value =
-                                    env.alphabet.scaled_score(tile).raw() * tile_multiplier as i32;
+                                let tile_value = env.alphabet.scaled_score(tile).raw()
+                                    * i32::from(tile_multiplier);
                                 Accumulator {
                                     main_score: acc.main_score + tile_value,
                                     perpendicular_cumulative_score: acc
                                         .perpendicular_cumulative_score
                                         + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
+                                        + tile_value * i32::from(perpendicular_word_multiplier),
                                     word_multiplier: new_word_multiplier,
                                     leave_idx: if !LEAVES {
                                         0
@@ -4449,7 +4469,7 @@ fn gen_classic_place_moves_lean<
             }
         }
         let node = env.params.board_snapshot.kwg[p];
-        if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
+        if env.num_played > u8::from(!is_unique) && env.params.anchor - idx >= 2 && node.accepts() {
             record::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                 env,
                 acc,
@@ -4522,7 +4542,7 @@ fn gen_classic_place_moves_lean<
             return;
         }
         let new_word_multiplier = acc.word_multiplier
-            * *strip_at!(env.params.remaining_word_multipliers_strip, idx) as i32;
+            * i32::from(*strip_at!(env.params.remaining_word_multipliers_strip, idx));
         let tile_multiplier = *strip_at!(env.params.remaining_tile_multipliers_strip, idx);
         let perpendicular_word_multiplier =
             *strip_at!(env.params.perpendicular_word_multipliers_strip, idx);
@@ -4537,12 +4557,12 @@ fn gen_classic_place_moves_lean<
                     leave_idx: 0,
                 }
             } else {
-                let tile_value = env.alphabet.scaled_score(0).raw() * tile_multiplier as i32;
+                let tile_value = env.alphabet.scaled_score(0).raw() * i32::from(tile_multiplier);
                 Accumulator {
                     main_score: acc.main_score + tile_value,
                     perpendicular_cumulative_score: acc.perpendicular_cumulative_score
                         + perpendicular_score
-                        + tile_value * perpendicular_word_multiplier as i32,
+                        + tile_value * i32::from(perpendicular_word_multiplier),
                     word_multiplier: new_word_multiplier,
                     leave_idx: if !LEAVES {
                         0
@@ -4572,7 +4592,7 @@ fn gen_classic_place_moves_lean<
                     env.params.board_snapshot.kwg.prefetch(node.arc_index());
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
-                        let spent = bit * (env.params.rack_tally[tile as usize] == 0) as u64;
+                        let spent = bit * u64::from(env.params.rack_tally[tile as usize] == 0);
                         env.rack_bits ^= spent;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_left::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
@@ -4585,14 +4605,14 @@ fn gen_classic_place_moves_lean<
                                     leave_idx: 0,
                                 }
                             } else {
-                                let tile_value =
-                                    env.alphabet.scaled_score(tile).raw() * tile_multiplier as i32;
+                                let tile_value = env.alphabet.scaled_score(tile).raw()
+                                    * i32::from(tile_multiplier);
                                 Accumulator {
                                     main_score: acc.main_score + tile_value,
                                     perpendicular_cumulative_score: acc
                                         .perpendicular_cumulative_score
                                         + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
+                                        + tile_value * i32::from(perpendicular_word_multiplier),
                                     word_multiplier: new_word_multiplier,
                                     leave_idx: if !LEAVES {
                                         0
@@ -4687,7 +4707,7 @@ fn gen_classic_place_moves_lean<
         num_played: 0,
         idx_left: 0,
         rack_bits,
-        letter_bits: (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
+        letter_bits: (u64::MAX >> (64 - u32::from(alphabet.len()))) & !1,
         left_bounds,
         runs,
     };
@@ -4735,7 +4755,7 @@ const UNSEEN_GROUP: u32 = u32::MAX;
 // bits (a rack of more tiles is bounded without them)
 #[inline(always)]
 fn taken_places(start: u8, taken: u8) -> u32 {
-    if start as u32 + taken as u32 > u32::BITS {
+    if u32::from(start) + u32::from(taken) > u32::BITS {
         return 0;
     }
     (((1u64 << taken) - 1) << start) as u32
@@ -4800,7 +4820,7 @@ impl SpanMemo {
     #[inline(always)]
     fn find(&self, key: u128, part: u128, len: u8, bound: i32) -> Result<(u32, u32), usize> {
         let mask = self.slots.len() - 1;
-        let mut at = (anagrams::part_hash(part) ^ len as u64) as usize & mask;
+        let mut at = (anagrams::part_hash(part) ^ u64::from(len)) as usize & mask;
         loop {
             let slot = &self.slots[at];
             if slot.turn != self.turn {
@@ -4889,8 +4909,8 @@ fn sort_subracks(subracks: &[Subrack], order: &mut Vec<u64>) {
     debug_assert!(subracks.len() <= 1 << 24);
     order.clear();
     order.extend(subracks.iter().enumerate().map(|(i, s)| {
-        (s.num_played as u64) << 56
-            | (!(s.leave_value as u32 ^ i32::MIN as u32) as u64) << 24
+        u64::from(s.num_played) << 56
+            | u64::from(!(s.leave_value as u32 ^ i32::MIN as u32)) << 24
             | i as u64
     }));
     order.sort_unstable();
@@ -4975,7 +4995,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
     let mut taken_at = 0u32;
     for (tile, &count) in rack_tally.iter().enumerate() {
         if count != 0 {
-            let blank = (tile == 0) as u8;
+            let blank = u8::from(tile == 0);
             let key_place_value = if tile == 0 {
                 0
             } else {
@@ -4990,8 +5010,8 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
                 blank,
                 first_places[tile],
             );
-            key += count as u128 * key_place_value;
-            part = part.wrapping_add(part_place_value.wrapping_mul(count as u128));
+            key += u128::from(count) * key_place_value;
+            part = part.wrapping_add(part_place_value.wrapping_mul(u128::from(count)));
             played += count;
             blanks += blank * count;
             taken_at |= taken_places(first_places[tile], count);
@@ -5033,9 +5053,9 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
                 break;
             }
             kept[i] = 0;
-            idx -= count as u32 * place_value;
-            key += count as u128 * key_place_value;
-            part = part.wrapping_add(part_place_value.wrapping_mul(count as u128));
+            idx -= u32::from(count) * place_value;
+            key += u128::from(count) * key_place_value;
+            part = part.wrapping_add(part_place_value.wrapping_mul(u128::from(count)));
             played += count;
             blanks += blank * count;
             taken_at |= taken_places(first, count);
@@ -5216,7 +5236,7 @@ fn span_sets_u16(
     while multiplied != 0 {
         let idx = multiplied.trailing_zeros() as usize;
         multiplied &= multiplied - 1;
-        word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
+        word_multiplier *= i32::from(params.remaining_word_multipliers_strip[idx]);
     }
     let mut blank_ok = 0u64;
     if params.has_blank {
@@ -5250,7 +5270,7 @@ fn span_sets_u32(
     while multiplied != 0 {
         let idx = multiplied.trailing_zeros() as usize;
         multiplied &= multiplied - 1;
-        word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
+        word_multiplier *= i32::from(params.remaining_word_multipliers_strip[idx]);
     }
     let mut blank_ok = 0u64;
     if params.has_blank {
@@ -5379,10 +5399,11 @@ fn gen_classic_place_moves<
                 if board_strip[pos] != 0 {
                     continue;
                 }
-                let tile_value = env.alphabet.scaled_score(c).raw() * tile_multipliers[pos] as i32;
+                let tile_value =
+                    env.alphabet.scaled_score(c).raw() * i32::from(tile_multipliers[pos]);
                 main_score += tile_value;
                 perpendicular_cumulative_score +=
-                    tile_value * perpendicular_word_multipliers[pos] as i32;
+                    tile_value * i32::from(perpendicular_word_multipliers[pos]);
             }
             for (i, &c) in word.iter().enumerate() {
                 let pos = left + i;
@@ -5392,12 +5413,12 @@ fn gen_classic_place_moves<
             }
             let score = main_score * env.word_multiplier
                 + perpendicular_cumulative_score
-                + env
-                    .params
-                    .board_snapshot
-                    .game_config
-                    .num_played_bonus(env.num_played) as i32
-                    * equity::SCALE;
+                + i32::from(
+                    env.params
+                        .board_snapshot
+                        .game_config
+                        .num_played_bonus(env.num_played),
+                ) * equity::SCALE;
             let leave_value = env.params.leave_values[leave_idx as usize];
             #[cfg(debug_assertions)]
             macro_rules! covered {
@@ -5433,10 +5454,10 @@ fn gen_classic_place_moves<
                     if c != blank_letter || board_strip[pos] != 0 {
                         continue;
                     }
-                    let delta = (blank_value - real_value) * tile_multipliers[pos] as i32;
+                    let delta = (blank_value - real_value) * i32::from(tile_multipliers[pos]);
                     let blanked_score = score
                         + delta * env.word_multiplier
-                        + delta * perpendicular_word_multipliers[pos] as i32;
+                        + delta * i32::from(perpendicular_word_multipliers[pos]);
                     covered!(blanked_score);
                     env.params.word_strip_buffer[pos] = c | 0x80;
                     env.params.threshold = (env.params.callback)(
@@ -5455,10 +5476,10 @@ fn gen_classic_place_moves<
                 if c != first_blank || board_strip[pos] != 0 {
                     continue;
                 }
-                let delta1 = (blank_value - first_value) * tile_multipliers[pos] as i32;
+                let delta1 = (blank_value - first_value) * i32::from(tile_multipliers[pos]);
                 let once_score = score
                     + delta1 * env.word_multiplier
-                    + delta1 * perpendicular_word_multipliers[pos] as i32;
+                    + delta1 * i32::from(perpendicular_word_multipliers[pos]);
                 env.params.word_strip_buffer[pos] = c | 0x80;
                 for (j, &d) in word.iter().enumerate() {
                     let pos2 = left + j;
@@ -5469,10 +5490,10 @@ fn gen_classic_place_moves<
                     {
                         continue;
                     }
-                    let delta2 = (blank_value - real_value) * tile_multipliers[pos2] as i32;
+                    let delta2 = (blank_value - real_value) * i32::from(tile_multipliers[pos2]);
                     let blanked_score = once_score
                         + delta2 * env.word_multiplier
-                        + delta2 * perpendicular_word_multipliers[pos2] as i32;
+                        + delta2 * i32::from(perpendicular_word_multipliers[pos2]);
                     covered!(blanked_score);
                     env.params.word_strip_buffer[pos2] = d | 0x80;
                     env.params.threshold = (env.params.callback)(
@@ -5533,14 +5554,14 @@ fn gen_classic_place_moves<
                 e.blank_ok |= bits & letters;
             }
             e.num_played += 1;
-            e.word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
+            e.word_multiplier *= i32::from(params.remaining_word_multipliers_strip[idx]);
             e.base_perp += params.perpendicular_scores_strip[idx];
         }
     }
 
     let alphabet = params.board_snapshot.game_config.alphabet();
     let places = T::of(source);
-    let letters = (u64::MAX >> (64 - alphabet.len() as u32)) & !1;
+    let letters = (u64::MAX >> (64 - u32::from(alphabet.len()))) & !1;
     let leftmost = params.leftmost;
     let rightmost = params.rightmost;
     let num_max_played = params.num_max_played;
@@ -5578,7 +5599,7 @@ fn gen_classic_place_moves<
         while multiplied != 0 {
             let idx = multiplied.trailing_zeros() as usize;
             multiplied &= multiplied - 1;
-            word_multiplier *= env.params.remaining_word_multipliers_strip[idx] as i32;
+            word_multiplier *= i32::from(env.params.remaining_word_multipliers_strip[idx]);
         }
         let mut blank_ok = 0u64;
         if env.params.has_blank {
@@ -5648,12 +5669,12 @@ fn gen_classic_place_moves<
     env.word_multiplier = e.word_multiplier;
     env.fixed = e.base_main * e.word_multiplier
         + e.base_perp
-        + env
-            .params
-            .board_snapshot
-            .game_config
-            .num_played_bonus(e.num_played) as i32
-            * equity::SCALE;
+        + i32::from(
+            env.params
+                .board_snapshot
+                .game_config
+                .num_played_bonus(e.num_played),
+        ) * equity::SCALE;
     let len = (rightmost - leftmost) as u8;
     // the playthrough's part, which each subrack's adds to
     let playthrough_part = anagrams::key_part(e.playthrough_key);
@@ -5696,7 +5717,7 @@ fn gen_classic_place_moves<
                         1 => env.source.blank_may_hold_part(part),
                         _ => true,
                     };
-                    may |= (held as u64) << (i - base);
+                    may |= u64::from(held) << (i - base);
                 }
                 while may != 0 {
                     let si = base + may.trailing_zeros() as usize;
@@ -5921,20 +5942,20 @@ fn gen_classic_place_moves<
                     continue;
                 }
                 let tile_value = env.alphabet.scaled_score(c).raw()
-                    * env.params.remaining_tile_multipliers_strip[pos] as i32;
+                    * i32::from(env.params.remaining_tile_multipliers_strip[pos]);
                 main_score += tile_value;
                 perpendicular_cumulative_score +=
-                    tile_value * env.params.perpendicular_word_multipliers_strip[pos] as i32;
+                    tile_value * i32::from(env.params.perpendicular_word_multipliers_strip[pos]);
                 env.params.word_strip_buffer[pos] = c;
             }
             let score = main_score * env.word_multiplier
                 + perpendicular_cumulative_score
-                + env
-                    .params
-                    .board_snapshot
-                    .game_config
-                    .num_played_bonus(env.num_played) as i32
-                    * equity::SCALE;
+                + i32::from(
+                    env.params
+                        .board_snapshot
+                        .game_config
+                        .num_played_bonus(env.num_played),
+                ) * equity::SCALE;
             let leave_value = env.params.leave_values[leave_idx as usize];
             place_blanks(env, word, letters, 0, 0, score, leave_value);
         }
@@ -5988,10 +6009,10 @@ fn gen_classic_place_moves<
                 continue;
             }
             let delta = (blank_value - real_value)
-                * env.params.remaining_tile_multipliers_strip[pos] as i32;
+                * i32::from(env.params.remaining_tile_multipliers_strip[pos]);
             let blanked = score
                 + delta * env.word_multiplier
-                + delta * env.params.perpendicular_word_multipliers_strip[pos] as i32;
+                + delta * i32::from(env.params.perpendicular_word_multipliers_strip[pos]);
             env.params.word_strip_buffer[pos] = c | 0x80;
             place_blanks(env, word, letters, i + 1, j + 1, blanked, leave_value);
             env.params.word_strip_buffer[pos] = c;
@@ -6197,7 +6218,7 @@ fn arrangements(counts: &[u8]) -> usize {
     let mut ways = 1u128;
     let mut placed = 0u128;
     for &count in counts {
-        for i in 1..=count as u128 {
+        for i in 1..=u128::from(count) {
             placed += 1;
             let Some(more) = ways.checked_mul(placed) else {
                 return usize::MAX;
@@ -6440,7 +6461,7 @@ impl JumbledMultisets {
             let end = &mut ends[size as usize];
             self.by_size[*end as usize] = offset;
             *end += 1;
-            offset += size as u32;
+            offset += u32::from(size);
         }
     }
 
@@ -6617,12 +6638,12 @@ fn gen_jumbled_place_moves_walk<
     ) {
         let score = acc.main_score * acc.word_multiplier
             + acc.perpendicular_cumulative_score
-            + env
-                .params
-                .board_snapshot
-                .game_config
-                .num_played_bonus(env.num_played) as i32
-                * equity::SCALE;
+            + i32::from(
+                env.params
+                    .board_snapshot
+                    .game_config
+                    .num_played_bonus(env.num_played),
+            ) * equity::SCALE;
         let leave_value = leave_value_of::<BAG_TERM, _>(
             env.params.multi_leaves,
             env.params.board_snapshot.klv,
@@ -6986,10 +7007,10 @@ fn gen_jumbled_place_moves_walk<
             share_classes(
                 s,
                 cell + 1,
-                score + count as i32 * value * s.class_weights[class],
+                score + i32::from(count) * value * s.class_weights[class],
                 penalty
                     + if vowel {
-                        count as i32 * s.class_penalties[class]
+                        i32::from(count) * s.class_penalties[class]
                     } else {
                         0
                     },
@@ -7200,19 +7221,19 @@ fn gen_jumbled_place_moves_walk<
         let this_cross_bits = env.params.allowed_strip[idx as usize];
         // bit 0 is no letter; unplaced_bits drops it
         let mut usable = this_cross_bits & env.unplaced_bits;
-        let new_word_multiplier =
-            acc.word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+        let new_word_multiplier = acc.word_multiplier
+            * i32::from(env.params.remaining_word_multipliers_strip[idx as usize]);
         let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
         let perpendicular_word_multiplier =
             env.params.perpendicular_word_multipliers_strip[idx as usize];
         let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
         let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
-            let tile_value = env.alphabet.scaled_score(0).raw() * tile_multiplier as i32;
+            let tile_value = env.alphabet.scaled_score(0).raw() * i32::from(tile_multiplier);
             Accumulator {
                 main_score: acc.main_score + tile_value,
                 perpendicular_cumulative_score: acc.perpendicular_cumulative_score
                     + perpendicular_score
-                    + tile_value * perpendicular_word_multiplier as i32,
+                    + tile_value * i32::from(perpendicular_word_multiplier),
                 word_multiplier: new_word_multiplier,
                 leave_idx: acc
                     .leave_idx
@@ -7228,7 +7249,7 @@ fn gen_jumbled_place_moves_walk<
             }
             if env.params.rack_tally[tile as usize] > 0 {
                 env.params.rack_tally[tile as usize] -= 1;
-                let tile_value = env.alphabet.scaled_score(tile).raw() * tile_multiplier as i32;
+                let tile_value = env.alphabet.scaled_score(tile).raw() * i32::from(tile_multiplier);
                 env.params.word_strip_buffer[idx as usize] = tile;
                 fill_span::<BAG_TERM, _, _, _>(
                     env,
@@ -7236,7 +7257,7 @@ fn gen_jumbled_place_moves_walk<
                         main_score: acc.main_score + tile_value,
                         perpendicular_cumulative_score: acc.perpendicular_cumulative_score
                             + perpendicular_score
-                            + tile_value * perpendicular_word_multiplier as i32,
+                            + tile_value * i32::from(perpendicular_word_multiplier),
                         word_multiplier: new_word_multiplier,
                         leave_idx: acc
                             .leave_idx
@@ -7369,21 +7390,21 @@ fn gen_jumbled_place_moves_walk<
                         let mut perpendicular = 0i32;
                         for idx in idx_l..=idx_r {
                             if env.params.board_strip[idx as usize] == 0 {
-                                word_multiplier *= env.params.remaining_word_multipliers_strip
-                                    [idx as usize]
-                                    as i32;
+                                word_multiplier *= i32::from(
+                                    env.params.remaining_word_multipliers_strip[idx as usize],
+                                );
                                 perpendicular +=
                                     env.params.perpendicular_scores_strip[idx as usize];
                             }
                         }
                         fixed = (main_score_left + main_score_right) * word_multiplier
                             + perpendicular
-                            + env
-                                .params
-                                .board_snapshot
-                                .game_config
-                                .num_played_bonus(num_played) as i32
-                                * equity::SCALE;
+                            + i32::from(
+                                env.params
+                                    .board_snapshot
+                                    .game_config
+                                    .num_played_bonus(num_played),
+                            ) * equity::SCALE;
                         let s = &mut env.params.jumbled.splits;
                         s.squares.clear();
                         s.square_classes.clear();
@@ -7395,11 +7416,12 @@ fn gen_jumbled_place_moves_walk<
                             if env.params.board_strip[idx as usize] != 0 {
                                 continue;
                             }
-                            let weight = env.params.remaining_tile_multipliers_strip[idx as usize]
-                                as i32
-                                * (word_multiplier
-                                    + env.params.perpendicular_word_multipliers_strip[idx as usize]
-                                        as i32);
+                            let weight = i32::from(
+                                env.params.remaining_tile_multipliers_strip[idx as usize],
+                            ) * (word_multiplier
+                                + i32::from(
+                                    env.params.perpendicular_word_multipliers_strip[idx as usize],
+                                ));
                             let penalty = opening_penalty(idx);
                             let class = match (0..s.class_sizes.len()).find(|&c| {
                                 s.class_weights[c] == weight && s.class_penalties[c] == penalty
@@ -7470,10 +7492,10 @@ fn gen_jumbled_place_moves_walk<
                                 let mut perpendicular = 0i32;
                                 for idx in idx_l..=idx_r {
                                     if env.params.board_strip[idx as usize] == 0 {
-                                        word_multiplier *=
+                                        word_multiplier *= i32::from(
                                             env.params.remaining_word_multipliers_strip
-                                                [idx as usize]
-                                                as i32;
+                                                [idx as usize],
+                                        );
                                         perpendicular +=
                                             env.params.perpendicular_scores_strip[idx as usize];
                                     }
@@ -7481,13 +7503,14 @@ fn gen_jumbled_place_moves_walk<
                                 let mut n = 0;
                                 for idx in idx_l..=idx_r {
                                     if env.params.board_strip[idx as usize] == 0 {
-                                        weights[n] = env.params.remaining_tile_multipliers_strip
-                                            [idx as usize]
-                                            as i32
-                                            * (word_multiplier
-                                                + env.params.perpendicular_word_multipliers_strip
-                                                    [idx as usize]
-                                                    as i32);
+                                        weights[n] = i32::from(
+                                            env.params.remaining_tile_multipliers_strip
+                                                [idx as usize],
+                                        ) * (word_multiplier
+                                            + i32::from(
+                                                env.params.perpendicular_word_multipliers_strip
+                                                    [idx as usize],
+                                            ));
                                         n += 1;
                                     }
                                 }
@@ -7495,15 +7518,15 @@ fn gen_jumbled_place_moves_walk<
                                 // fill_span's bound at each square
                                 if ((idx_r + 1 - idx_l) as usize) <= JUMBLED_BOUND_SQUARES {
                                     for idx in idx_l..=idx_r {
-                                        env.square_weights[(idx - idx_l) as usize] = env
-                                            .params
-                                            .remaining_tile_multipliers_strip
-                                            [idx as usize]
-                                            as i32
+                                        env.square_weights[(idx - idx_l) as usize] = i32::from(
+                                            env.params.remaining_tile_multipliers_strip
+                                                [idx as usize],
+                                        )
                                             * (word_multiplier
-                                                + env.params.perpendicular_word_multipliers_strip
-                                                    [idx as usize]
-                                                    as i32);
+                                                + i32::from(
+                                                    env.params.perpendicular_word_multipliers_strip
+                                                        [idx as usize],
+                                                ));
                                     }
                                     env.span_word_multiplier = word_multiplier;
                                     env.span_leave =
@@ -8551,10 +8574,11 @@ fn gen_place_moves_at<
             leave_values: multi_leaves.leave_values(),
             score_bound: placement.best_possible_equity
                 - working_buffer.best_leave_values[placement.num_played as usize]
-                + board_snapshot
-                    .game_config
-                    .num_played_bonus(placement.num_played) as i32
-                    * equity::SCALE,
+                + i32::from(
+                    board_snapshot
+                        .game_config
+                        .num_played_bonus(placement.num_played),
+                ) * equity::SCALE,
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
@@ -11899,7 +11923,7 @@ impl Kept for KeptOne {
 
     #[inline(always)]
     fn len(&self) -> usize {
-        self.best.is_some() as usize
+        usize::from(self.best.is_some())
     }
 
     #[inline(always)]
@@ -12097,7 +12121,7 @@ fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool, S: 
         {
             // an exchange gets no bag term: take it back out, when there is one
             sure.push(equity::Equity::new(best_leave_value.saturating_sub(
-                game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE
+                i32::from(game_config.num_played_bonus(exchanged as u8)) * equity::SCALE
                     + if BAG_TERM {
                         multi_leaves.bag_term(exchanged)
                     } else {
@@ -12138,7 +12162,7 @@ fn best_exchange_equity<const BAG_TERM: bool>(
         (1..best_leave_values.len())
             .map(|exchanged| {
                 best_leave_values[exchanged].saturating_sub(
-                    game_config.num_played_bonus(exchanged as u8) as i32 * equity::SCALE
+                    i32::from(game_config.num_played_bonus(exchanged as u8)) * equity::SCALE
                         + if BAG_TERM {
                             multi_leaves.bag_term(exchanged)
                         } else {
@@ -12808,7 +12832,7 @@ fn gen_empty_board_place_moves_made<
             let mut num_blanked = 0;
             for &tile in &env.word[..len] {
                 blanked[num_blanked] = tile & 0x7f;
-                num_blanked += (tile & 0x80 != 0) as usize;
+                num_blanked += usize::from(tile & 0x80 != 0);
             }
             let mut spelled = [0u8; 128];
             for (to, &tile) in spelled.iter_mut().zip(&env.word[..len]) {
@@ -12871,7 +12895,7 @@ fn gen_empty_board_place_moves_made<
             env.alphabet,
         );
         let game_config = env.board_snapshot.game_config;
-        let bonus = game_config.num_played_bonus(len as u8) as i32 * equity::SCALE;
+        let bonus = i32::from(game_config.num_played_bonus(len as u8)) * equity::SCALE;
         let squares = (1u128 << len) - 1;
         for lane in env.lanes.into_iter().flatten() {
             let first = (lane.star as isize + 1 - len as isize).max(0);
@@ -12884,8 +12908,8 @@ fn gen_empty_board_place_moves_made<
                 let mut main_score = 0i32;
                 let mut word_multiplier = 1i32;
                 for i in 0..len {
-                    main_score += env.tile_values[i] * lane.tile_multipliers[start + i] as i32;
-                    word_multiplier *= lane.word_multipliers[start + i] as i32;
+                    main_score += env.tile_values[i] * i32::from(lane.tile_multipliers[start + i]);
+                    word_multiplier *= i32::from(lane.word_multipliers[start + i]);
                 }
                 let score = main_score * word_multiplier + bonus;
                 if score + leave_value < env.threshold {
@@ -12942,7 +12966,7 @@ fn gen_empty_board_place_moves_made<
                 env.board_snapshot.kwg.prefetch(next);
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
-                    let spent = (1u64 << tile) * (env.rack_tally[tile as usize] == 0) as u64;
+                    let spent = (1u64 << tile) * u64::from(env.rack_tally[tile as usize] == 0);
                     env.rack_bits ^= spent;
                     env.word[depth] = tile;
                     env.tile_values[depth] = env.alphabet.scaled_score(tile).raw();
@@ -13019,7 +13043,7 @@ fn gen_empty_board_place_moves_made<
             };
             let mut open = 0u128;
             for (i, &bits) in allowed.iter().enumerate() {
-                open |= ((bits != 1) as u128) << i;
+                open |= u128::from(bits != 1) << i;
             }
             StarLane {
                 down,
@@ -13059,7 +13083,7 @@ fn gen_empty_board_place_moves_made<
         multi_leaves,
         rack_tally: &mut working_buffer.rack_tally,
         rack_bits: working_buffer.rack_bits,
-        letter_bits: (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
+        letter_bits: (u64::MAX >> (64 - u32::from(alphabet.len()))) & !1,
         max_len,
         num_tiles_in_bag: working_buffer.num_tiles_in_bag,
         play_out_bonus: working_buffer.play_out_bonus,
@@ -14023,7 +14047,7 @@ fn kurnia_gen_one_tile_moves<
     // multiplier, and the leave once it is played, as the walk has them
     let (letters, value, blank_bit) = if tile == 0 {
         (
-            (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
+            (u64::MAX >> (64 - u32::from(alphabet.len()))) & !1,
             alphabet.scaled_score(0).raw(),
             0x80,
         )
@@ -14043,7 +14067,7 @@ fn kurnia_gen_one_tile_moves<
         alphabet,
     );
     working_buffer.rack_tally[tile as usize] += 1;
-    let bonus = game_config.num_played_bonus(1) as i32 * equity::SCALE;
+    let bonus = i32::from(game_config.num_played_bonus(1)) * equity::SCALE;
     let mut threshold = i32::MIN;
     for at in (0..rows + cols).rev() {
         let down = at >= rows;
@@ -14114,10 +14138,11 @@ fn kurnia_gen_one_tile_moves<
                 return;
             }
             let mut fits = words_allowed[idx * stride] & letters & bits;
-            let tile_value = value * tile_multipliers[idx] as i32;
-            let score = (words_scores[idx * stride] + tile_value) * word_multipliers[idx] as i32
+            let tile_value = value * i32::from(tile_multipliers[idx]);
+            let score = (words_scores[idx * stride] + tile_value)
+                * i32::from(word_multipliers[idx])
                 + perpendicular_scores[idx]
-                + tile_value * perpendicular_word_multipliers[idx] as i32
+                + tile_value * i32::from(perpendicular_word_multipliers[idx])
                 + bonus;
             while fits != 0 {
                 let letter = fits.trailing_zeros() as u8;
@@ -14323,8 +14348,8 @@ impl RcsGeometry<'_> {
         idx: i8,
     ) {
         let multiplier_of = |i: usize| {
-            self.tile_multipliers[i] as i32
-                * (walk.word_multiplier + self.perpendicular_word_multipliers[i] as i32)
+            i32::from(self.tile_multipliers[i])
+                * (walk.word_multiplier + i32::from(self.perpendicular_word_multipliers[i]))
         };
         let n = walk.num_played as usize;
         if walk.word_multiplier != word_multiplier {
@@ -14358,7 +14383,7 @@ impl RcsGeometry<'_> {
         walk.cross_score += self.perpendicular_scores[idx as usize];
         walk.placed |= 1 << idx;
         walk.num_played += 1;
-        walk.word_multiplier *= self.word_multipliers[idx as usize] as i32;
+        walk.word_multiplier *= i32::from(self.word_multipliers[idx as usize]);
         true
     }
 
@@ -14385,7 +14410,7 @@ impl RcsGeometry<'_> {
                 walk.crossed |= multi_jump.right_idx != idx;
                 idx = multi_jump.right_idx;
             }
-            if idx > anchor + 1 && walk.num_played > !is_unique as u8 && idx - idx_left >= 2 {
+            if idx > anchor + 1 && walk.num_played > u8::from(!is_unique) && idx - idx_left >= 2 {
                 self.record(&walk, &lists.right, anchor, idx_left, idx);
             }
             if walk.num_played >= self.num_max_played || idx >= rightmost {
@@ -14419,7 +14444,7 @@ impl RcsGeometry<'_> {
                 walk.crossed |= multi_jump.left_idx != idx;
                 idx = multi_jump.left_idx;
             }
-            if walk.num_played > !is_unique as u8 && anchor - idx >= 2 {
+            if walk.num_played > u8::from(!is_unique) && anchor - idx >= 2 {
                 self.record(&walk, &lists.left, anchor, idx + 1, anchor + 1);
             }
             if walk.num_played >= self.num_max_played {
@@ -14458,7 +14483,7 @@ impl RcsGeometry<'_> {
                 self.from(lists, leftmost - 1, 0, rightmost);
             }
             {
-                let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8;
+                let leftmost = leftmost + i8::from(leftmost > 0 && leftmost < rightmost);
                 for anchor in (leftmost..rightmost).rev() {
                     let bits = self.allowed[anchor as usize];
                     if bits & 1 != 0 {
@@ -15754,7 +15779,7 @@ impl FoundWords {
             if slot == 0 {
                 break;
             }
-            if slot & !(u32::MAX as u64) == tag {
+            if slot & !u64::from(u32::MAX) == tag {
                 let index = (slot as u32 - 1) as usize;
                 if self.word(index) == word {
                     return Some(index);
@@ -15904,7 +15929,7 @@ fn gen_remaining_jumbled_words<
                 };
                 tally[index] -= 1;
                 env.word.push(tile as u8);
-                let owed = owed - required as usize;
+                let owed = owed - usize::from(required);
                 if left == 1 {
                     if owed == 0 && node.accepts() {
                         env.found.insert(env.word, env.memory);
@@ -16505,7 +16530,11 @@ pub(crate) mod tests {
                 let shape = rack_shape(&rack, bits, rack_size);
                 let mut starts = vec![0u32; rack_size + 2];
                 for (i, subrack) in walked.iter().enumerate() {
-                    assert_eq!(shape.leave_indices[i] as u32, subrack.leave_idx, "{gaps}");
+                    assert_eq!(
+                        u32::from(shape.leave_indices[i]),
+                        subrack.leave_idx,
+                        "{gaps}"
+                    );
                     starts[subrack.num_played as usize + 1] += 1;
                 }
                 for i in 1..starts.len() {
@@ -17518,8 +17547,8 @@ pub(crate) mod tests {
                     alphabet.scaled_score(tile).raw()
                 };
                 if board_tiles[sq] == 0 {
-                    sum += face * premiums[sq].tile_multiplier as i32;
-                    times *= premiums[sq].word_multiplier as i32;
+                    sum += face * i32::from(premiums[sq].tile_multiplier);
+                    times *= i32::from(premiums[sq].word_multiplier);
                 } else {
                     sum += face;
                 }
@@ -17578,8 +17607,8 @@ pub(crate) mod tests {
                             }
                             let covers = placed.iter().any(|&(s, _)| s == star);
                             if ok && formed > 0 && (touches || (empty_board && covers)) {
-                                score +=
-                                    gc.num_played_bonus(placed.len() as u8) as i32 * equity::SCALE;
+                                score += i32::from(gc.num_played_bonus(placed.len() as u8))
+                                    * equity::SCALE;
                                 let mut key = placed.clone();
                                 key.sort_unstable();
                                 found.insert((key, score));
@@ -17859,7 +17888,9 @@ pub(crate) mod tests {
         let valued = leaves
             .iter()
             .map(|leave| {
-                let v = leave.iter().fold(7i32, |a, &t| (a * 31 + t as i32) % 97);
+                let v = leave
+                    .iter()
+                    .fold(7i32, |a, &t| (a * 31 + i32::from(t)) % 97);
                 (&leave[..], (v - 40) as f32 / 4.0)
             })
             .collect::<Vec<_>>();
@@ -18078,7 +18109,7 @@ pub(crate) mod tests {
                             want,
                             "[{fen}] row {r} col {c}, jumbled {jumbled}"
                         );
-                        hooked += (want.0 | want.1 > 1) as usize;
+                        hooked += usize::from(want.0 | want.1 > 1);
                     }
                 }
             }
@@ -18207,7 +18238,7 @@ pub(crate) mod tests {
                 score,
             } => (
                 *equity,
-                1 + *down as u8,
+                1 + u8::from(*down),
                 *lane,
                 *idx,
                 word.to_vec(),
@@ -19614,7 +19645,7 @@ pub(crate) mod tests {
 
     #[inline]
     fn uneven_premium(row: i8, col: i8) -> board_layout::Premium {
-        let (row, col) = (row as i32, col as i32);
+        let (row, col) = (i32::from(row), i32::from(col));
         let (word_multiplier, tile_multiplier) = if (row * 7 + col * 3) % 19 == 0 {
             (3, 1)
         } else if (row * 5 + col * 11) % 13 == 0 {
@@ -21140,7 +21171,7 @@ pub(crate) mod tests {
         let rack = parse_test_rack(gc.alphabet(), "?AEST");
         let mut board_tiles = vec![0u8; 15 * 15];
         for i in 0..8 {
-            let (row, col) = (i, ((i as i32 * 7 + 3) % 15) as i8);
+            let (row, col) = (i, ((i32::from(i) * 7 + 3) % 15) as i8);
             board_tiles[gc.board_layout().dim().at_row_col(row, col)] =
                 rack[1 + i as usize % (rack.len() - 1)];
         }
@@ -21210,7 +21241,7 @@ pub(crate) mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let racks = ["AEST", "?AEST", "??AE"].map(|r| parse_test_rack(gc.alphabet(), r));
         let tiles = (0..15)
-            .map(|i| (i, ((i as i32 * 7 + 3) % 15) as i8))
+            .map(|i| (i, ((i32::from(i) * 7 + 3) % 15) as i8))
             .collect::<Vec<_>>();
         let mut board_tiles = vec![0u8; 15 * 15];
         let mut by_nibbles = KurniaMoveGenerator::new(&gc);
@@ -21267,7 +21298,7 @@ pub(crate) mod tests {
                 let at = gc
                     .board_layout()
                     .dim()
-                    .at_row_col(step - 1, (((step - 1) as i32 * 7 + 3) % 15) as i8);
+                    .at_row_col(step - 1, ((i32::from(step - 1) * 7 + 3) % 15) as i8);
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
@@ -21921,7 +21952,7 @@ pub(crate) mod tests {
             let at = gc
                 .board_layout()
                 .dim()
-                .at_row_col(i, ((i as i32 * 7 + 3) % 15) as i8);
+                .at_row_col(i, ((i32::from(i) * 7 + 3) % 15) as i8);
             board_tiles[at] = placed[i as usize % placed.len()];
         }
         let pool = parse_test_rack(gc.alphabet(), "AAEEIILNORSST");
@@ -21986,10 +22017,10 @@ pub(crate) mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let rack_size = gc.rack_size();
-        let every_letter = u64::MAX >> (u64::BITS - gc.alphabet().len() as u32);
+        let every_letter = u64::MAX >> (u64::BITS - u32::from(gc.alphabet().len()));
         let zeros = vec![0i32; rack_size as usize + 1];
         let tiles = (0..15)
-            .map(|i| (i, ((i as i32 * 7 + 3) % 15) as i8))
+            .map(|i| (i, ((i32::from(i) * 7 + 3) % 15) as i8))
             .collect::<Vec<_>>();
         let mut board_tiles = vec![0u8; 15 * 15];
         let mut generator = KurniaMoveGenerator::new(&gc);
@@ -22124,7 +22155,7 @@ pub(crate) mod tests {
         let rack = parse_test_rack(gc.alphabet(), "?AEST");
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         for i in 0..8 {
-            let (row, col) = (i, ((i as i32 * 7 + 3) % 15) as i8);
+            let (row, col) = (i, ((i32::from(i) * 7 + 3) % 15) as i8);
             board_tiles[dim.at_row_col(row, col)] = rack[1 + i as usize % (rack.len() - 1)];
         }
         let [by_nibbles, by_layout] = [&nibbles, &layout].map(|tables| BoardSnapshot {
@@ -22504,7 +22535,7 @@ pub(crate) mod tests {
                     "transposed and reused at step {step}"
                 );
                 for (down, lane, ..) in &fresh {
-                    lanes_played[*down as usize][*lane as usize] = true;
+                    lanes_played[usize::from(*down)][*lane as usize] = true;
                 }
             }
             assert!(
@@ -22522,7 +22553,7 @@ pub(crate) mod tests {
     #[inline]
     fn a_long_narrow_board_agrees_with_its_transpose() {
         let tiles = (0..100)
-            .map(|row| (row, ((row as i32 * 7 + 3) % 20) as i8))
+            .map(|row| (row, ((i32::from(row) * 7 + 3) % 20) as i8))
             .collect::<Vec<_>>();
         for per_step in [5, 25] {
             a_reused_generator_agrees_on_an_uneven_board(100, 20, 66, 9, &tiles, per_step);
@@ -22533,7 +22564,7 @@ pub(crate) mod tests {
     #[inline]
     fn the_widest_board_agrees_with_its_transpose() {
         let tiles = (0..127)
-            .map(|row| (row, ((row as i32 * 45 + 7) % 127) as i8))
+            .map(|row| (row, ((i32::from(row) * 45 + 7) % 127) as i8))
             .collect::<Vec<_>>();
         a_reused_generator_agrees_on_an_uneven_board(127, 127, 70, 90, &tiles, 4);
     }
@@ -23212,8 +23243,8 @@ pub(crate) mod tests {
                 for (text, equity, num_played) in without {
                     let (with_equity, _) = with.remove(&text).unwrap();
                     // the bag the board leaves, less the tiles the play places
-                    let expected = num_played.map_or(0, |n| term.at(BAG_TERM_BAG - n as i16));
-                    placements += num_played.is_some() as u32;
+                    let expected = num_played.map_or(0, |n| term.at(BAG_TERM_BAG - i16::from(n)));
+                    placements += u32::from(num_played.is_some());
                     assert_eq!(with_equity - equity, expected, "{text} {dense} {lean}");
                 }
                 assert!(placements > 5);
@@ -23262,8 +23293,8 @@ pub(crate) mod tests {
                         .collect::<crate::fash::MyHashMap<_, _>>();
                     let mut placements = 0;
                     for (text, equity, num_played) in &without {
-                        let expected = num_played.map_or(0, |n| term.at(bag - n as i16));
-                        placements += num_played.is_some() as u32;
+                        let expected = num_played.map_or(0, |n| term.at(bag - i16::from(n)));
+                        placements += u32::from(num_played.is_some());
                         assert_eq!(with_by_text[text] - equity, expected, "{text} {why}");
                     }
                     assert!(placements > 0, "{why}");

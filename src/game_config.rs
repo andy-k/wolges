@@ -142,7 +142,7 @@ impl GameConfig {
         match self {
             GameConfig::Static(..) => {
                 // branchless
-                -(((!clock_ms / 60000) + 1) * 10) & -((clock_ms < 0) as i64)
+                -(((!clock_ms / 60000) + 1) * 10) & -i64::from(clock_ms < 0)
             }
         }
     }
@@ -961,9 +961,9 @@ impl GameConfig {
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
         let alphabet = self.alphabet();
-        let rack_size = self.rack_size() as u128;
+        let rack_size = u128::from(self.rack_size());
         let tile_score = (0..alphabet.len())
-            .map(|tile| alphabet.score(tile).unsigned_abs() as u128)
+            .map(|tile| u128::from(alphabet.score(tile).unsigned_abs()))
             .max()
             .unwrap_or(0);
         let tile_multiplier = premiums
@@ -1006,7 +1006,7 @@ impl GameConfig {
         let face = dim.rows.max(dim.cols) as u128 * tile_score
             + rack_size * tile_score * (tile_multiplier - 1);
         let bonus = (0..=u8::MAX)
-            .map(|num_played| self.num_played_bonus(num_played).unsigned_abs() as u128)
+            .map(|num_played| u128::from(self.num_played_bonus(num_played).unsigned_abs()))
             .max()
             .unwrap_or(0);
         face.saturating_mul(lane_word_multiplier)
@@ -1031,19 +1031,19 @@ impl GameConfig {
 
     #[inline]
     pub fn check_leaves(&self, (min_leave, max_leave): (i32, i32)) -> error::Returns<()> {
-        let scale = equity::SCALE as i128;
+        let scale = i128::from(equity::SCALE);
         let most = self.most_one_play_can_score().min(i32::MAX as u128) as i128 * scale;
         let alphabet = self.alphabet();
-        let score = |tile| alphabet.score(tile).unsigned_abs() as i128;
+        let score = |tile| i128::from(alphabet.score(tile).unsigned_abs());
         let total_face = (0..alphabet.len())
-            .map(|tile| alphabet.freq(tile) as i128 * score(tile))
+            .map(|tile| i128::from(alphabet.freq(tile)) * score(tile))
             .sum::<i128>();
         let rack_face =
-            self.rack_size() as i128 * (0..alphabet.len()).map(score).max().unwrap_or(0);
+            i128::from(self.rack_size()) * (0..alphabet.len()).map(score).max().unwrap_or(0);
         let play_out = 2 * scale * total_face;
-        let penalty = equity::ENDGAME_PENALTY_BASE as i128 + 2 * scale * rack_face;
-        if most + (max_leave as i128).max(play_out) > i32::MAX as i128
-            || -most + (min_leave as i128).min(-penalty) < i32::MIN as i128
+        let penalty = i128::from(equity::ENDGAME_PENALTY_BASE) + 2 * scale * rack_face;
+        if most + i128::from(max_leave).max(play_out) > i128::from(i32::MAX)
+            || -most + i128::from(min_leave).min(-penalty) < i128::from(i32::MIN)
         {
             return_error!(format!(
                 "leaves from {min_leave} to {max_leave} millipoints can take an equity past what it holds"

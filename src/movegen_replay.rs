@@ -472,13 +472,13 @@ fn throughput_using<const N: usize>(
                         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(
                             args.seed.wrapping_add(game as u64),
                         );
-                        turns += play_game(
+                        turns += u64::from(play_game(
                             engine,
                             &mut generator,
                             &mut state,
                             &mut rng,
                             |_, _, _, _| Ok(()),
-                        )? as u64;
+                        )?);
                     }
                     Ok(turns)
                 })
