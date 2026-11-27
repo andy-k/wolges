@@ -1286,7 +1286,7 @@ fn run(
                 match w {
                     None => Ok(move_picker::DEFAULT_DEFT_WINDOW),
                     Some(w) if w.is_finite() && w >= 0.0 => {
-                        Ok((w * f64::from(equity::SCALE)).round() as i32)
+                        checked_rounded_millipoints(w * f64::from(equity::SCALE))
                     }
                     Some(_) => wolges::return_error!(
                         "a deft seat's window is points, 0 or more".to_string()
@@ -1574,7 +1574,7 @@ fn run(
                     num_games: a.games,
                     seed: a.seed,
                     threads,
-                    window: (a.window * f64::from(equity::SCALE)).round() as i32,
+                    window: checked_rounded_millipoints(a.window * f64::from(equity::SCALE))?,
                     num_candidates: a.candidates,
                     quiet: a.quiet,
                 },
@@ -2199,6 +2199,7 @@ fn generate_autoplay_logs<
                                             &mut thread_full_rack_map,
                                             &mut mutex_guard.full_rack_map,
                                         );
+                                        let deficit = i64::try_from(deficit.map_err(&fail)?).map_err(|e| fail(e.into()))?;
                                         mutex_guard.undersampled_generation = 0;
                                         mutex_guard.undersampling_comment.clear();
                                         if deficit != 0 {
@@ -2211,7 +2212,7 @@ fn generate_autoplay_logs<
                                             .unwrap();
                                         }
                                         undersampling_remediation_countdown.store(
-                                            deficit as i64,
+                                            deficit,
                                             std::sync::atomic::Ordering::Relaxed,
                                         );
                                     }
@@ -2268,6 +2269,7 @@ fn generate_autoplay_logs<
                                     &mut thread_full_rack_map,
                                     &mut mutex_guard.full_rack_map,
                                 );
+                                let deficit = i64::try_from(deficit.map_err(&fail)?).map_err(|e| fail(e.into()))?;
                                 mutex_guard.undersampled_generation = current_generation;
                                 mutex_guard.undersampling_comment.clear();
                                 if deficit != 0 {
@@ -2279,7 +2281,7 @@ fn generate_autoplay_logs<
                                     .unwrap();
                                 }
                                 undersampling_remediation_countdown.store(
-                                    deficit as i64,
+                                    deficit,
                                     std::sync::atomic::Ordering::Relaxed,
                                 );
                             }
@@ -3102,7 +3104,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             },
             rack_size,
             min_samples,
-        );
+        )?;
         if forced.is_empty() {
             writeln!(
                 boxed_stdout_or_stderr(),
@@ -3190,10 +3192,26 @@ struct RackSum {
     count: u64,
 }
 
+#[inline(always)]
+fn checked_rounded_millipoints(value: f64) -> error::Returns<i32> {
+    let value = value.round();
+    if (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&value) {
+        Ok(value as i32)
+    } else {
+        Err(format!("{value} millipoints does not fit in i32").into())
+    }
+}
+
 // a summary's sum, which it writes in points, back in millipoints
 #[inline]
 fn summary_millipoints(field: &str) -> error::Returns<i64> {
-    Ok((f64::from_str(field)? * f64::from(equity::SCALE)).round() as i64)
+    let value = (f64::from_str(field)? * f64::from(equity::SCALE)).round();
+    let least = i64::MIN as f64;
+    if (least..-least).contains(&value) {
+        Ok(value as i64)
+    } else {
+        Err(format!("{field:?} does not fit in i64 millipoints").into())
+    }
 }
 
 // millipoints in points, as a summary writes a sum
@@ -3299,7 +3317,7 @@ fn recompute_undersampled_racks(
     scratch: RecomputeScratch<'_>,
     rack_size: u8,
     min_samples: u64,
-) -> u64 {
+) -> error::Returns<u64> {
     let RecomputeScratch {
         full_rack_tally,
         alphabet_freqs,
@@ -3308,11 +3326,11 @@ fn recompute_undersampled_racks(
 
     undersampled.clear();
     if min_samples == 0 {
-        return 0;
+        return Ok(0);
     }
     full_rack_tally.copy_from_slice(alphabet_freqs);
     let frozen_freq: &[u8] = full_rack_tally;
-    let mut remaining = 0u64;
+    let mut remaining = Some(0u64);
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut i = 0;
@@ -3332,7 +3350,7 @@ fn recompute_undersampled_racks(
             let count = full_rack_map.get(rack_bytes).map_or(0, |c| c.count);
             if count < min_samples {
                 undersampled.push(rack_bytes.into());
-                remaining += min_samples - count;
+                remaining = remaining.and_then(|n| n.checked_add(min_samples - count));
             }
         },
         rack_tally: alphabet_freqs,
@@ -3340,7 +3358,7 @@ fn recompute_undersampled_racks(
         max_len: rack_size,
         exchange_buffer,
     });
-    remaining
+    remaining.ok_or_else(|| "sample deficit does not fit in u64".into())
 }
 
 #[inline]
@@ -3372,8 +3390,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 return Err("a log line has fewer than 11 fields".into());
             }
             if i16::from_str(&record[10])? > 0 {
-                let millipoints =
-                    (f64::from_str(&record[9])? * f64::from(equity::SCALE)).round() as i64;
+                let millipoints = summary_millipoints(&record[9])?;
                 //let score = i16::from_str(&record[5])? as i64;
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
@@ -3519,9 +3536,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let mut move_loss = fash::MyHashMap::<bites::Bites, f64>::default();
     let mut racks_in_file = fash::MyHashSet::<bites::Bites>::default();
     let mut key = Vec::new();
-    let millipoints = |field: &str| -> error::Returns<i64> {
-        Ok((f64::from_str(field)? * f64::from(equity::SCALE)).round() as i64)
-    };
+    let millipoints = summary_millipoints;
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
     // each line read into the one record, counted from 1
@@ -3733,17 +3748,17 @@ fn play_out_bonus(game_config: &game_config::GameConfig, unseen_tally: &[u8], ra
 type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
 
 #[inline]
-fn census_sheet_reuse_plan(board_counts: &[u64]) -> (Vec<usize>, usize) {
+fn census_sheet_reuse_plan(board_counts: &[u64]) -> error::Returns<(Vec<usize>, usize)> {
     let gens = board_counts.len();
     let mut live_after = vec![0usize; gens];
-    for g in (0..gens.saturating_sub(1)).rev() {
-        live_after[g] = (board_counts[g + 1] as usize).max(live_after[g + 1]);
+    let (mut later_max, mut cache_len) = (0, 0);
+    for (g, &count) in board_counts.iter().enumerate().rev() {
+        let count = usize::try_from(count)?;
+        live_after[g] = later_max;
+        cache_len = cache_len.max(count.min(later_max));
+        later_max = later_max.max(count);
     }
-    let cache_len = (0..gens)
-        .map(|g| (board_counts[g] as usize).min(live_after[g]))
-        .max()
-        .unwrap_or(0);
-    (live_after, cache_len)
+    Ok((live_after, cache_len))
 }
 
 #[inline]
@@ -3777,7 +3792,7 @@ fn census_klv2_bytes(
         values: Vec<f32>,
     }
     impl Walk<'_> {
-        fn from(&mut self, low: usize) {
+        fn from(&mut self, low: usize) -> error::Returns<()> {
             for t in low..self.tally.len() {
                 self.tally[t] += 1;
                 self.word.push(t as u8);
@@ -3785,14 +3800,18 @@ fn census_klv2_bytes(
                 if (self.is_valued)(idx) {
                     let pts = ((self.value_mp)(idx) - self.baseline_mp) / f64::from(equity::SCALE);
                     self.words.push(self.word[..].into());
+                    if !pts.is_finite() || pts.abs() > f64::from(f32::MAX) {
+                        return Err(format!("leave at {idx} does not fit in f32").into());
+                    }
                     self.values.push(pts as f32);
                 }
                 if self.word.len() < self.max_keep {
-                    self.from(t);
+                    self.from(t)?;
                 }
                 self.word.pop();
                 self.tally[t] -= 1;
             }
+            Ok(())
         }
     }
     let mut walk = Walk {
@@ -3807,7 +3826,7 @@ fn census_klv2_bytes(
         values: Vec::new(),
     };
     if max_keep > 0 {
-        walk.from(0);
+        walk.from(0)?;
     }
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
@@ -3822,7 +3841,7 @@ fn census_klv2_bytes(
     w += 4;
     bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
     w += leaves_kwg.len();
-    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
+    bin[w..w + 4].copy_from_slice(&u32::try_from(leave_values.len())?.to_le_bytes());
     w += 4;
     for v in &leave_values[..] {
         bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
@@ -4160,13 +4179,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     // the generations a continued census has done stand first in its spec, with
     // no boards, so that the next one is numbered as the one it follows
+    let resumed_gens = usize::try_from(continued.as_ref().map_or(0, |st| st.gens))?;
     let (board_counts, seed) = match &continued {
-        Some(st) => (
-            std::iter::repeat_n(0, st.gens as usize)
-                .chain(board_counts)
-                .collect::<Vec<_>>(),
-            Some(st.seed),
-        ),
+        Some(st) => {
+            let mut counts = Vec::new();
+            counts.try_reserve_exact(
+                resumed_gens
+                    .checked_add(board_counts.len())
+                    .ok_or("too many census generations")?,
+            )?;
+            counts.resize(resumed_gens, 0);
+            counts.extend(board_counts);
+            (counts, Some(st.seed))
+        }
         None => (board_counts, seed),
     };
 
@@ -4177,7 +4202,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let sheet_reuse = multigen;
 
-    let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
+    let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts)?;
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
 
@@ -4286,7 +4311,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             .into());
         }
         leave_cur.copy_from_slice(&st.leave);
-        (st.gens as usize, run_stamp(), Some((st.ever, st.exact)))
+        (resumed_gens, run_stamp(), Some((st.ever, st.exact)))
     } else {
         (0, run_stamp(), None)
     };
@@ -4337,7 +4362,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     });
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
-    let num_threads = threads.max(1).min(max_boards as usize);
+    let num_threads = threads.max(1).min(usize::try_from(max_boards)?);
 
     let lat_len = lat.len();
 
@@ -4567,7 +4592,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // the first a top-up adds
                 let mut batch_from = 0u64;
 
-                let mut prior_max_boards = 0usize;
+                let mut prior_max_boards = 0u64;
                 loop {
 
                     {
@@ -4590,7 +4615,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     ));
 
                     let reuse_board = sheet_reuse
-                        && (b as usize) < prior_max_boards
+                        && b < prior_max_boards
                         && b < board_counts[gen_idx];
                     if !reuse_board {
 
@@ -4598,7 +4623,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         low_tiles
                     } else {
 
-                        low_tiles + (b as usize % (high_tiles - low_tiles + 1))
+                        low_tiles + ((b % board_span) as usize)
                     };
 
                     let mut tries = 0u64;
@@ -4677,10 +4702,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         null_leave,
                         !quiet && b == 0,
 
-                        if sheet_reuse
-                            && (reuse_board || (b as usize) < live_after[gen_idx])
-                        {
-                            Some(&sheet_cache[b as usize])
+                        if sheet_reuse && (reuse_board || b < live_after[gen_idx] as u64) {
+                            match usize::try_from(b) {
+                                Ok(index) => Some(&sheet_cache[index]),
+                                Err(e) => {
+                                    error = Some(e.into());
+                                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    break 'boards;
+                                }
+                            }
                         } else {
                             None
                         },
@@ -4749,10 +4779,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     if cnt[idx] > 0 {
                                         ever[idx] = true;
                                         exact[idx] = sum[idx] as f64 / cnt[idx] as f64 - base;
-                                        lv[idx] = exact[idx].round() as i32;
+                                        match checked_rounded_millipoints(exact[idx]) {
+                                            Ok(value) => lv[idx] = value,
+                                            Err(e) => {
+                                                error = Some(e);
+                                                failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                leads = false;
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
-                                if scatter && gen_idx + 1 < gens {
+                                if leads && scatter && gen_idx + 1 < gens {
                                     census::subset_max_transform(
                                         &lat,
                                         &add_table,
@@ -4760,7 +4798,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         &mut leave_max_lock.write().unwrap(),
                                     );
                                 }
-                                if !quiet {
+                                if leads && !quiet {
                                     writeln!(boxed_stdout_or_stderr(),
                                         "census: gen {}/{} done ({}s), {} of {} leaves valued",
                                         gen_idx + 1,
@@ -4769,7 +4807,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         *valued,
                                         lat_len,).ok();
                                 }
-                                if gen_idx + 1 < gens {
+                                if leads && gen_idx + 1 < gens {
 
                                     for idx in 0..lat_len {
                                         sum[idx] = 0;
@@ -4826,7 +4864,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                         if gen_idx + 1 < gens && !failed.load(std::sync::atomic::Ordering::Relaxed) {
 
-                            prior_max_boards = prior_max_boards.max(num_boards as usize);
+                            prior_max_boards = prior_max_boards.max(num_boards);
                             gen_idx += 1;
                             num_boards = board_counts[gen_idx];
                             batch_from = 0;
@@ -5008,7 +5046,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             for idx in 0..lat_len {
                 if accum_cnt[idx] > 0 {
                     exact[idx] = accum_sum[idx] as f64 / accum_cnt[idx] as f64 - base;
-                    leave[idx] = exact[idx].round() as i32;
+                    leave[idx] = checked_rounded_millipoints(exact[idx])?;
                 }
             }
             (leave, exact, accum_cnt.iter().map(|&c| c > 0).collect())
@@ -6890,7 +6928,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
     let seed = seed_or_random(seed)?;
-    let num_threads = threads.max(1).min(num_games.max(1) as usize);
+    let num_threads = threads.max(1).min(usize::try_from(num_games.max(1))?);
     use_writer(out_path);
     writeln!(
         boxed_stdout_or_stderr(),
@@ -7019,7 +7057,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let game_config = std::sync::Arc::new(game_config);
     let table = std::sync::Arc::new(table);
     let seed = seed_or_random(seed)?;
-    let num_threads = threads.max(1).min(num_games.max(1) as usize);
+    let num_threads = threads.max(1).min(usize::try_from(num_games.max(1))?);
     writeln!(
         boxed_stdout_or_stderr(),
         "winpct-eval: seed {seed}, {num_games} games, {num_threads} threads"
@@ -11605,7 +11643,7 @@ mod tests {
     #[inline]
     fn census_sheet_reuse_plan_looks_past_the_next_generation() {
         for &(counts, want_live, want_len) in SHEET_PLANS {
-            let (live_after, cache_len) = census_sheet_reuse_plan(counts);
+            let (live_after, cache_len) = census_sheet_reuse_plan(counts).unwrap();
             assert_eq!(live_after, want_live, "live_after for {counts:?}");
             assert_eq!(cache_len, want_len, "cache_len for {counts:?}");
         }
@@ -11664,7 +11702,7 @@ WCMP_P1_SCORE 402.000000
     #[inline]
     fn census_sheet_reuse_plan_never_reads_an_uncached_slot() {
         for &(counts, _, want_len) in SHEET_PLANS {
-            let (live_after, cache_len) = census_sheet_reuse_plan(counts);
+            let (live_after, cache_len) = census_sheet_reuse_plan(counts).unwrap();
             let mut cached = fash::MyHashSet::<usize>::default();
             let mut prior_max = 0usize;
             let mut high_water = 0usize;
