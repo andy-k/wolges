@@ -43,7 +43,8 @@ impl PlayScorer {
             movegen::Play::Exchange { tiles } => {
                 if tiles.is_empty() {
                     return Ok(None);
-                } else if game_state.bag.len() < game_config.exchange_tile_limit() as usize {
+                } else if game_state.bag.len() < usize::try_from(game_config.exchange_tile_limit())?
+                {
                     return_error!("not enough tiles to allow exchanges".into());
                 }
 

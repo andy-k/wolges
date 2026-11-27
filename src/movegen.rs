@@ -589,7 +589,7 @@ impl BagTerm {
         let mut values = vec![0i32; (i32::from(highest) - i32::from(lowest) + 1) as usize];
         let mut seen = vec![false; values.len()];
         for (b, v) in pairs {
-            let i = (b - lowest) as usize;
+            let i = usize::try_from(i32::from(b) - i32::from(lowest))?;
             if seen[i] {
                 return_error!(format!("the bag term for {b} is given twice"));
             }
@@ -23459,6 +23459,9 @@ pub(crate) mod tests {
             assert_eq!(term.at(-2), -1500);
             assert_eq!(term.at(1), 6040);
             assert_eq!(term.at(2), 0);
+            let full_range = BagTerm::parse(&format!("{} 1\n{} -1\n", i16::MIN, i16::MAX)).unwrap();
+            assert_eq!(full_range.at(i16::MIN), equity::SCALE);
+            assert_eq!(full_range.at(i16::MAX), -equity::SCALE);
             assert!(BagTerm::parse("").is_err());
             assert!(BagTerm::parse("1 2\n1 3\n").is_err());
             assert!(BagTerm::parse("1\n").is_err());
