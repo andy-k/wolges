@@ -380,7 +380,7 @@ impl<
 
     #[inline(always)]
     pub fn begin_within(&mut self, memory: Option<endgame::MemoryLimit>) {
-        self.room = endgame::Room::of(memory);
+        self.room = endgame::Room::of(memory.clone());
         self.move_generator.begin_within(memory);
     }
 
