@@ -52,6 +52,7 @@ fn autoplay(
     let mut game = GameState::new(gc);
     let klv = Klv::<Node24>::empty()?;
     let mut generator = KurniaMoveGenerator::new(gc);
+    let vocab = wolges::movegen::Vocab::new(gc, kwg)?;
     let mut scores = vec![0; usize::from(gc.num_players())];
     for game_idx in 0..games {
         game.reset_and_draw_tiles_double_ended(gc, &mut rng);
@@ -75,7 +76,7 @@ fn autoplay(
                 board_snapshot: &BoardSnapshot {
                     board_tiles: &game.board_tiles,
                     game_config: gc,
-                    vocab: &wolges::movegen::Vocab::lean(kwg),
+                    vocab: &vocab,
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -132,7 +133,7 @@ struct Measured {
 
 struct Search<'a> {
     gc: &'a GameConfig,
-    kwg: &'a std::sync::Arc<Kwg<Node24>>,
+    vocab: wolges::movegen::Vocab<'a, Node24>,
     tables: ArmTables,
     run_letters: RunLetters<'a>,
 }
@@ -146,17 +147,16 @@ impl<'a> Search<'a> {
         };
         Ok(Self {
             gc,
-            kwg,
+            vocab: wolges::movegen::Vocab::new(gc, kwg)?,
             tables,
             run_letters,
         })
     }
 
     fn measure(&self, pos: &Position, width: Option<NonZeroU32>) -> error::Returns<Measured> {
-        let vocab = wolges::movegen::Vocab::lean(self.kwg);
         let mut solver = EndgameSolver::<Node24, Node24>::with_generator(
             self.gc,
-            &vocab,
+            &self.vocab,
             &self.tables,
             self.run_letters.clone(),
             KurniaMoveGenerator::new(self.gc),
