@@ -2539,6 +2539,29 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_graph_builds_on_a_stack_the_size_of_its_words() {
+        let words = word_pairs();
+        let bytes = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(words.iter().map(|w| w.len()).sum())
+                .spawn_scoped(s, || {
+                    build(
+                        BuildContent::Gaddawg,
+                        BuildLayout::Wolges,
+                        BuildOrder::Reordered,
+                        &words,
+                    )
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words);
+    }
+
+    #[test]
+    #[inline]
     fn an_empty_word_is_refused_not_a_panic() {
         // a leave file's ",1.5" reaches here as an empty leave
         let machine_words: Vec<bites::Bites> = vec![[0u8; 0][..].into(), [1u8, 2][..].into()];
