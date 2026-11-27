@@ -6100,6 +6100,7 @@ struct JumbledMultisets {
     budget: u64,      // blank choices a part walk has left
     designation: u32, // the current multiset's next blank choice
     stopped: Option<(u64, u32)>, // where a part walk stopped
+    subset_scratch: SubsetScratch,
 }
 
 pub struct PoolLists(JumbledMultisets);
@@ -6390,6 +6391,7 @@ impl JumbledMultisets {
             budget: u64::MAX,
             designation: 0,
             stopped: None,
+            subset_scratch: SubsetScratch::default(),
         }
     }
 
@@ -8009,6 +8011,15 @@ fn gen_jumbled_woadwage_place_moves<
         }
     }
 
+    if LEAVES && params.jumbled.walk == JUMBLED_EVERY_ARRANGEMENT {
+        gen_jumbled_woadwage_subsets::<BAG_TERM, _, _, _>(
+            params,
+            single_tile_plays,
+            opening,
+            left_bounds,
+        );
+        return;
+    }
     let alphabet = params.board_snapshot.game_config.alphabet();
     let anchor = params.anchor;
     let leftmost = params.leftmost;
@@ -8092,6 +8103,628 @@ fn gen_jumbled_woadwage_place_moves<
         }
     }
     env.params.woadwage.found = found;
+}
+
+#[derive(Clone, Default)]
+struct SubsetScratch {
+    naturals: Vec<(u8, u8)>,
+    faces: Vec<u8>,
+    kinds: Vec<(u8, bool, u8)>,
+    strides: Vec<usize>,
+    sizes: Vec<u8>,
+    holes: Vec<i8>,
+    weights: Vec<i32>,
+    worth: Vec<i32>,
+    left: Vec<i32>,
+    right: Vec<i32>,
+    old_left: Vec<[u8; MAX_ALPHABET_LEN]>,
+    holes_left: Vec<u8>,
+    subs: Vec<usize>,
+    jumbles: crate::fash::MyHashMap<[u8; MAX_ALPHABET_LEN], bool>,
+    bound: Vec<i32>,
+    scores: Vec<i32>,
+}
+
+struct SubsetSpan {
+    idx_left: i8,
+    idx_right: i8,
+    fixed: i32,
+    face_bits: u64,
+    leave_value: i32,
+}
+
+fn gen_jumbled_woadwage_subsets<
+    'a,
+    const BAG_TERM: bool,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
+    single_tile_plays: bool,
+    opening: Option<bool>,
+    left_bounds: &'a [i32],
+) {
+    let mut s = std::mem::take(&mut params.jumbled.subset_scratch);
+    s.jumbles.clear();
+    s.naturals.clear();
+    let alphabet = params.board_snapshot.game_config.alphabet();
+    for letter in 1..alphabet.len() {
+        let count = params.rack_tally[letter as usize];
+        if count > 0 {
+            s.naturals.push((letter, count));
+        }
+    }
+    let anchor = params.anchor;
+    let leftmost = params.leftmost;
+    let mut empties = 0u8;
+    let mut idx_l = anchor;
+    while idx_l >= leftmost {
+        if params.board_strip[idx_l as usize] == 0 {
+            if params.allowed_strip[idx_l as usize] == 1 {
+                break;
+            }
+            empties += 1;
+            if empties > params.num_max_played {
+                break;
+            }
+        }
+        if !left_bounds.is_empty()
+            && left_bounds[left_bounds.len() / 2 + idx_l as usize] < params.threshold
+        {
+            break;
+        }
+        if (idx_l == leftmost || params.board_strip[idx_l as usize - 1] == 0)
+            && (left_bounds.is_empty() || left_bounds[idx_l as usize] >= params.threshold)
+        {
+            subset_spans_from::<BAG_TERM, _, _, _>(
+                params,
+                &mut s,
+                single_tile_plays,
+                opening,
+                idx_l,
+            );
+            if stops_walk(params.threshold) {
+                break;
+            }
+        }
+        idx_l -= 1;
+    }
+    params.jumbled.subset_scratch = s;
+}
+
+fn subset_spans_from<
+    const BAG_TERM: bool,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    single_tile_plays: bool,
+    opening: Option<bool>,
+    idx_left: i8,
+) {
+    let alphabet_len = params.board_snapshot.game_config.alphabet().len() as u32;
+    let usable = if params.rack_tally[0] > 0 {
+        (u64::MAX >> (64 - alphabet_len)) & !1
+    } else {
+        params.rack_bits
+    };
+    s.holes.clear();
+    let mut is_unique = single_tile_plays;
+    let mut idx = idx_left;
+    loop {
+        let num_played = s.holes.len() as u8;
+        if (idx >= params.rightmost || params.board_strip[idx as usize] == 0)
+            && idx > params.anchor
+            && idx - idx_left >= 2
+            && num_played > u8::from(!is_unique)
+            && num_played >= params.num_min_played
+        {
+            subset_span::<BAG_TERM, _, _, _>(params, s, opening, idx_left, idx);
+            if stops_walk(params.threshold) {
+                return;
+            }
+        }
+        if idx >= params.rightmost {
+            return;
+        }
+        if params.board_strip[idx as usize] == 0 {
+            if num_played >= params.num_max_played {
+                return;
+            }
+            let allowed = params.allowed_strip[idx as usize];
+            if allowed & !1 & usable == 0 {
+                return;
+            }
+            is_unique |= allowed & 1 == 0;
+            s.holes.push(idx);
+        }
+        idx += 1;
+    }
+}
+
+fn subset_span<
+    const BAG_TERM: bool,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    opening: Option<bool>,
+    idx_left: i8,
+    idx_right: i8,
+) {
+    let game_config = params.board_snapshot.game_config;
+    let alphabet = game_config.alphabet();
+    let num_played = s.holes.len();
+    let mut word_multiplier = 1i32;
+    let mut perpendicular = 0i32;
+    let mut old = 0i32;
+    let mut tally = [0u8; MAX_ALPHABET_LEN];
+    let mut holes_seen = 0u8;
+    s.old_left.clear();
+    s.holes_left.clear();
+    s.old_left.push(tally);
+    s.holes_left.push(0);
+    let letters = (u64::MAX >> (64 - alphabet.len() as u32)) & !1;
+    let mut face_bits = 0u64;
+    for idx in idx_left..idx_right {
+        let b = params.board_strip[idx as usize];
+        if b != 0 {
+            tally[(b & 0x7f) as usize] += 1;
+            old += params.face_value_scores_strip[idx as usize];
+        } else {
+            word_multiplier *= i32::from(params.remaining_word_multipliers_strip[idx as usize]);
+            perpendicular += params.perpendicular_scores_strip[idx as usize];
+            face_bits |= params.allowed_strip[idx as usize] & letters;
+            holes_seen += 1;
+        }
+        s.old_left.push(tally);
+        s.holes_left.push(holes_seen);
+    }
+    s.weights.clear();
+    for &idx in &s.holes {
+        s.weights.push(
+            i32::from(params.remaining_tile_multipliers_strip[idx as usize])
+                * (word_multiplier
+                    + i32::from(params.perpendicular_word_multipliers_strip[idx as usize])),
+        );
+    }
+    let fixed = old * word_multiplier
+        + perpendicular
+        + i32::from(game_config.num_played_bonus(num_played as u8)) * equity::SCALE;
+    if params.threshold != i32::MIN {
+        s.bound.clear();
+        s.bound.extend_from_slice(&s.weights);
+        s.bound.sort_unstable_by(|a, b| b.cmp(a));
+        s.scores.clear();
+        for (tile, &count) in params.rack_tally.iter().enumerate() {
+            for _ in 0..count {
+                s.scores.push(alphabet.scaled_score(tile as u8).raw());
+            }
+        }
+        s.scores.sort_unstable_by(|a, b| b.cmp(a));
+        let bound = s.bound.iter().zip(&s.scores).fold(
+            old * word_multiplier + perpendicular + params.best_leave_values[num_played],
+            |sum, (&weight, &score)| sum + weight * score,
+        );
+        if bound < params.threshold {
+            return;
+        }
+    }
+    let natural_total = s
+        .naturals
+        .iter()
+        .map(|&(_, count)| count as usize)
+        .sum::<usize>();
+    let blanks = params.rack_tally[0] as usize;
+    let mut span = SubsetSpan {
+        idx_left,
+        idx_right,
+        fixed,
+        face_bits,
+        leave_value: 0,
+    };
+    for num_blanks in 0..=blanks.min(num_played) {
+        if num_played - num_blanks > natural_total {
+            continue;
+        }
+        s.faces.clear();
+        subset_faces::<BAG_TERM, _, _, _>(params, s, opening, &mut span, num_blanks, 1);
+        if stops_walk(params.threshold) {
+            break;
+        }
+    }
+    for &idx in &s.holes {
+        params.word_strip_buffer[idx as usize] = 0;
+    }
+}
+
+fn subset_faces<
+    const BAG_TERM: bool,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    opening: Option<bool>,
+    span: &mut SubsetSpan,
+    blanks_left: usize,
+    from: u8,
+) {
+    if blanks_left == 0 {
+        subset_solve::<BAG_TERM, _, _, _>(params, s, opening, span);
+        return;
+    }
+    let mut bits = span.face_bits & !((1u64 << from) - 1);
+    while bits != 0 {
+        let face = bits.trailing_zeros() as u8;
+        bits &= bits - 1;
+        s.faces.push(face);
+        subset_faces::<BAG_TERM, _, _, _>(params, s, opening, span, blanks_left - 1, face);
+        s.faces.pop();
+        if stops_walk(params.threshold) {
+            return;
+        }
+    }
+}
+
+#[inline(always)]
+fn subset_digit(s: &SubsetScratch, state: usize, kind: usize) -> usize {
+    (state / s.strides[kind]) % (s.kinds[kind].2 as usize + 1)
+}
+
+fn subset_jumble<N: kwg::Node, L: kwg::Node>(
+    s: &mut SubsetScratch,
+    board_snapshot: &BoardSnapshot<'_, N, L>,
+    mut tally: [u8; MAX_ALPHABET_LEN],
+    state: usize,
+) -> bool {
+    for kind in 0..s.kinds.len() {
+        tally[s.kinds[kind].0 as usize] += subset_digit(s, state, kind) as u8;
+    }
+    let alphabet_len = board_snapshot.game_config.alphabet().len() as usize;
+    let kwg = board_snapshot.kwg;
+    *s.jumbles
+        .entry(tally)
+        .or_insert_with(|| kwg.accepts_alpha_of_len(&tally[..alphabet_len], alphabet_len as u8))
+}
+
+fn subset_cuts<N: kwg::Node, L: kwg::Node>(
+    s: &mut SubsetScratch,
+    board_snapshot: &BoardSnapshot<'_, N, L>,
+    cut: usize,
+    before: usize,
+    after: usize,
+) -> bool {
+    let left = s.old_left[cut];
+    let all = *s.old_left.last().unwrap();
+    let mut right = [0u8; MAX_ALPHABET_LEN];
+    for (r, (&a, &l)) in right.iter_mut().zip(all.iter().zip(left.iter())) {
+        *r = a - l;
+    }
+    subset_jumble(s, board_snapshot, left, before) && subset_jumble(s, board_snapshot, right, after)
+}
+
+fn subset_solve<
+    const BAG_TERM: bool,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    opening: Option<bool>,
+    span: &mut SubsetSpan,
+) {
+    let game_config = params.board_snapshot.game_config;
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let num_played = s.holes.len();
+    s.kinds.clear();
+    for &(letter, count) in &s.naturals {
+        s.kinds.push((letter, false, count));
+    }
+    for &face in &s.faces {
+        match s.kinds.last_mut() {
+            Some(last) if last.1 && last.0 == face => last.2 += 1,
+            _ => s.kinds.push((face, true, 1)),
+        }
+    }
+    let num_kinds = s.kinds.len();
+    s.strides.clear();
+    let mut num_states = 1usize;
+    for &(_, _, count) in &s.kinds {
+        s.strides.push(num_states);
+        num_states *= count as usize + 1;
+    }
+    s.sizes.clear();
+    s.sizes.push(0);
+    for state in 1..num_states {
+        let kind = (0..num_kinds)
+            .find(|&kind| subset_digit(s, state, kind) != 0)
+            .unwrap();
+        let size = s.sizes[state - s.strides[kind]] + 1;
+        s.sizes.push(size);
+    }
+    s.worth.clear();
+    for (i, &idx) in s.holes.iter().enumerate() {
+        let allowed = params.allowed_strip[idx as usize];
+        let penalized = match opening {
+            Some(down) => board_layout.danger_stars(down)[usize::from(idx.cast_unsigned())],
+            None => false,
+        };
+        for &(letter, blank, _) in &s.kinds {
+            s.worth.push(if allowed & (1 << letter) == 0 {
+                i32::MIN
+            } else {
+                alphabet.scaled_score(if blank { 0 } else { letter }).raw() * s.weights[i]
+                    - if penalized && alphabet.is_vowel(letter) {
+                        equity::OPENING_HOTSPOT_PENALTY
+                    } else {
+                        0
+                    }
+            });
+        }
+    }
+    for side in 0..2 {
+        let mut table = std::mem::take(if side == 0 { &mut s.left } else { &mut s.right });
+        table.clear();
+        table.push(0);
+        for state in 1..num_states {
+            let size = s.sizes[state] as usize;
+            let mut best = i32::MIN;
+            if size <= num_played {
+                let hole = if side == 0 {
+                    size - 1
+                } else {
+                    num_played - size
+                };
+                for kind in 0..num_kinds {
+                    if subset_digit(s, state, kind) == 0 {
+                        continue;
+                    }
+                    let before = table[state - s.strides[kind]];
+                    let worth = s.worth[hole * num_kinds + kind];
+                    if before != i32::MIN && worth != i32::MIN {
+                        best = best.max(before + worth);
+                    }
+                }
+            }
+            table.push(best);
+        }
+        if side == 0 {
+            s.left = table;
+        } else {
+            s.right = table;
+        }
+    }
+    let span_len = (span.idx_right - span.idx_left) as usize;
+    let num_naturals = s.naturals.len();
+    for full in 0..num_states {
+        if s.sizes[full] as usize != num_played
+            || s.left[full] == i32::MIN
+            || (num_naturals..num_kinds)
+                .any(|kind| subset_digit(s, full, kind) != s.kinds[kind].2 as usize)
+        {
+            continue;
+        }
+        let mut leave_idx = params.multi_leaves.pass_leave_idx();
+        for kind in 0..num_kinds {
+            let (letter, blank, _) = s.kinds[kind];
+            let spent = if blank { 0 } else { letter };
+            let count = subset_digit(s, full, kind) as u8;
+            params.rack_tally[spent as usize] -= count;
+            for _ in 0..count {
+                leave_idx = leave_idx.wrapping_sub(params.multi_leaves.place_value(spent));
+            }
+        }
+        span.leave_value = leave_value_of::<BAG_TERM, _>(
+            params.multi_leaves,
+            params.board_snapshot.klv,
+            params.rack_tally,
+            leave_idx,
+            params.num_tiles_in_bag,
+            params.play_out_bonus,
+            alphabet,
+        );
+        subset_full::<_, _, _>(params, s, span, full, span_len);
+        for kind in 0..num_kinds {
+            let (letter, blank, _) = s.kinds[kind];
+            let spent = if blank { 0 } else { letter };
+            params.rack_tally[spent as usize] += subset_digit(s, full, kind) as u8;
+        }
+        if stops_walk(params.threshold) {
+            return;
+        }
+    }
+}
+
+fn subset_full<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    span: &SubsetSpan,
+    full: usize,
+    span_len: usize,
+) {
+    let base = span.fixed + span.leave_value;
+    if base + s.left[full] < params.threshold {
+        return;
+    }
+    let all = *s.old_left.last().unwrap();
+    if subset_jumble(s, params.board_snapshot, all, full) {
+        subset_place_left(params, s, span, full, 0, 0, 0);
+        return;
+    }
+    s.subs.clear();
+    let num_kinds = s.kinds.len();
+    for state in 0..=full {
+        if (0..num_kinds).all(|kind| subset_digit(s, state, kind) <= subset_digit(s, full, kind)) {
+            s.subs.push(state);
+        }
+    }
+    for cut in 1..span_len {
+        let before_size = s.holes_left[cut];
+        for i in 0..s.subs.len() {
+            let before = s.subs[i];
+            if s.sizes[before] != before_size {
+                continue;
+            }
+            let after = full - before;
+            let (l, r) = (s.left[before], s.right[after]);
+            if l == i32::MIN
+                || r == i32::MIN
+                || base + l + r < params.threshold
+                || !subset_cuts(s, params.board_snapshot, cut, before, after)
+            {
+                continue;
+            }
+            subset_place_left(params, s, span, before, after, 0, cut);
+            if stops_walk(params.threshold) {
+                return;
+            }
+        }
+    }
+}
+
+fn subset_place_left<
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    span: &SubsetSpan,
+    before: usize,
+    after: usize,
+    worth: i32,
+    cut: usize,
+) {
+    if before == 0 {
+        subset_place_right(params, s, span, after, worth, cut);
+        return;
+    }
+    let hole = s.sizes[before] as usize - 1;
+    let num_kinds = s.kinds.len();
+    let base = span.fixed + span.leave_value + worth + s.right[after];
+    for kind in 0..num_kinds {
+        if subset_digit(s, before, kind) == 0 {
+            continue;
+        }
+        let rest = before - s.strides[kind];
+        let here = s.worth[hole * num_kinds + kind];
+        if s.left[rest] == i32::MIN
+            || here == i32::MIN
+            || base + here + s.left[rest] < params.threshold
+        {
+            continue;
+        }
+        let (letter, blank, _) = s.kinds[kind];
+        params.word_strip_buffer[s.holes[hole] as usize] = letter | if blank { 0x80 } else { 0 };
+        subset_place_left(params, s, span, rest, after, worth + here, cut);
+        if stops_walk(params.threshold) {
+            return;
+        }
+    }
+}
+
+fn subset_place_right<
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    span: &SubsetSpan,
+    after: usize,
+    worth: i32,
+    cut: usize,
+) {
+    let num_played = s.holes.len();
+    if after == 0 {
+        if subset_cut_earlier(params, s, cut) {
+            return;
+        }
+        let alphabet = params.board_snapshot.game_config.alphabet();
+        let mut score = span.fixed;
+        for (i, &idx) in s.holes.iter().enumerate() {
+            let written = params.word_strip_buffer[idx as usize];
+            let spent = if written & 0x80 != 0 { 0 } else { written };
+            score += alphabet.scaled_score(spent).raw() * s.weights[i];
+        }
+        if score + span.leave_value < params.threshold {
+            return;
+        }
+        params.threshold = (params.callback)(
+            span.idx_left,
+            &params.word_strip_buffer[span.idx_left as usize..span.idx_right as usize],
+            score,
+            span.leave_value,
+        );
+        return;
+    }
+    let hole = num_played - s.sizes[after] as usize;
+    let num_kinds = s.kinds.len();
+    let base = span.fixed + span.leave_value + worth;
+    for kind in 0..num_kinds {
+        if subset_digit(s, after, kind) == 0 {
+            continue;
+        }
+        let rest = after - s.strides[kind];
+        let here = s.worth[hole * num_kinds + kind];
+        if s.right[rest] == i32::MIN
+            || here == i32::MIN
+            || base + here + s.right[rest] < params.threshold
+        {
+            continue;
+        }
+        let (letter, blank, _) = s.kinds[kind];
+        params.word_strip_buffer[s.holes[hole] as usize] = letter | if blank { 0x80 } else { 0 };
+        subset_place_right(params, s, span, rest, worth + here, cut);
+        if stops_walk(params.threshold) {
+            return;
+        }
+    }
+}
+
+fn subset_cut_earlier<
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &GenPlaceMovesParams<'_, CallbackType, N, L>,
+    s: &mut SubsetScratch,
+    cut: usize,
+) -> bool {
+    let mut all = *s.old_left.last().unwrap();
+    for &idx in &s.holes {
+        all[(params.word_strip_buffer[idx as usize] & 0x7f) as usize] += 1;
+    }
+    let mut placed = [0u8; MAX_ALPHABET_LEN];
+    let mut holes_placed = 0usize;
+    for earlier in 1..cut {
+        while holes_placed < s.holes_left[earlier] as usize {
+            let idx = s.holes[holes_placed] as usize;
+            placed[(params.word_strip_buffer[idx] & 0x7f) as usize] += 1;
+            holes_placed += 1;
+        }
+        let mut left = s.old_left[earlier];
+        let mut right = [0u8; MAX_ALPHABET_LEN];
+        for letter in 0..MAX_ALPHABET_LEN {
+            left[letter] += placed[letter];
+            right[letter] = all[letter] - left[letter];
+        }
+        if subset_jumble(s, params.board_snapshot, left, 0)
+            && subset_jumble(s, params.board_snapshot, right, 0)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[inline]
@@ -20814,6 +21447,81 @@ pub(crate) mod tests {
         eprintln!(
             "jumbled woadwage brute force: {cases} cases, {plays_seen} plays, {collapsed} collapsed"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn the_jumbled_woadwage_best_plays_lead_every_play() {
+        let (kad, explicit) = jumbled_woadwage_toy();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 572u64;
+        let mut cases = 0usize;
+        for side in [5i8, 7] {
+            let boards = woadwage_toy_boards(side, &explicit, &mut seed, 6, 8);
+            let gc = woadwage_toy_config(side).jumbled_woadwage();
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            for board_tiles in &boards {
+                for _rack in 0..3 {
+                    let rack = woadwage_toy_rack(&mut seed, woadwage_toy_most_tiles());
+                    let board_snapshot = BoardSnapshot {
+                        board_tiles,
+                        game_config: &gc,
+                        kwg: &kad,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: &klv,
+                    };
+                    let params = |max_gen| GenMovesParams {
+                        board_snapshot: &board_snapshot,
+                        rack: &rack,
+                        max_gen,
+                        num_exchanges_by_this_player: 0,
+                        pass_policy: PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    };
+                    let places = |plays: &[ValuedMove]| {
+                        let mut out = plays
+                            .iter()
+                            .filter_map(|valued| match &valued.play {
+                                Play::Place {
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    score,
+                                } => Some((*down, *lane, *idx, word.to_vec(), score.raw())),
+                                Play::Exchange { .. } => None,
+                            })
+                            .collect::<Vec<_>>();
+                        out.sort_unstable();
+                        out
+                    };
+                    move_generator
+                        .gen_moves_raw_all_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            0,
+                            PassPolicy::OnlyWhenForced,
+                        )
+                        .unwrap();
+                    let walked = places(&move_generator.plays);
+                    move_generator
+                        .gen_moves_unfiltered(&params(usize::MAX))
+                        .unwrap();
+                    let every = move_generator.plays.clone();
+                    assert_eq!(places(&every), walked, "{side} {rack:?} {board_tiles:?}");
+                    for k in 1..=every.len() {
+                        move_generator.gen_moves_unfiltered(&params(k)).unwrap();
+                        assert!(
+                            move_generator.plays[..] == every[..k],
+                            "{side} {k} {rack:?} {board_tiles:?}"
+                        );
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert!(cases > 0, "{cases}");
     }
 
     pub(crate) struct WoadwageToyRules(
