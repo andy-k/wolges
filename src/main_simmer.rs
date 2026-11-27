@@ -336,7 +336,7 @@ fn simulate(
     let sim_iters = 10000u64;
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         game_config,
-        &smaller_kwg,
+        &vocab,
         &arm_tables,
         klv,
         move_picker::SimmerParams {

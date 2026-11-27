@@ -1459,7 +1459,7 @@ fn run(
             })?;
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
-                &kwg,
+                vocab,
                 &arm_tables,
                 &klv,
                 move_picker::SimmerParams {
@@ -1670,7 +1670,7 @@ fn run(
             })?;
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
-                &kwg,
+                vocab,
                 &arm_tables,
                 &klv,
                 move_picker::SimmerParams {
@@ -7755,7 +7755,7 @@ fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
     })?;
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
-        &kwg,
+        vocab,
         &arm_tables,
         &klv,
         move_picker::SimmerParams {
@@ -7887,7 +7887,7 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
     let driver = |iters| {
         move_picker::Simmer::<_, _, false>::new(
             game_config,
-            kwg,
+            vocab,
             &arm_tables,
             klv,
             move_picker::SimmerParams {
@@ -8766,7 +8766,6 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
         let mut thread_handles = Vec::new();
         for _ in 0..threads {
             let game_config = &game_config;
-            let kwg = &kwg;
             let klv = &klv;
             let arm_tables = &arm_tables;
             let claimed_games = &claimed_games;
@@ -8783,7 +8782,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                 let mut driver = seat_picker(
                     mover,
                     game_config,
-                    kwg,
+                    vocab,
                     arm_tables,
                     klv,
                     SeatParams {
@@ -11216,7 +11215,7 @@ struct SeatParams<'a> {
 fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
     picker: SeatPicker,
     game_config: &'a std::sync::Arc<game_config::GameConfig>,
-    kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
+    vocab: &'a wolges::movegen::Vocab<'a, N>,
     arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
     klv: &'a std::sync::Arc<klv::Klv<L>>,
     SeatParams {
@@ -11244,7 +11243,7 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         (SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot, positional) => {
             let simmer = move_picker::Simmer::with_rng(
                 game_config,
-                kwg,
+                vocab,
                 arm_tables,
                 klv,
                 simmer_params,
@@ -11646,7 +11645,6 @@ fn compare_seats<
         let mut thread_handles = Vec::new();
         for _ in 0..num_threads {
             let game_config = std::sync::Arc::clone(&game_config);
-            let kwg = std::sync::Arc::clone(&kwg);
             let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
             let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
             let arm_tables = &arm_tables;
@@ -11665,7 +11663,7 @@ fn compare_seats<
                 let mut driver_p0 = seat_picker(
                     p0_picker,
                     &game_config,
-                    &kwg,
+                    vocab,
                     arm_tables,
                     &arc_klv0,
                     SeatParams {
@@ -11686,7 +11684,7 @@ fn compare_seats<
                 let mut driver_p1 = seat_picker(
                     p1_picker,
                     &game_config,
-                    &kwg,
+                    vocab,
                     arm_tables,
                     &arc_klv1,
                     SeatParams {

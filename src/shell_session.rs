@@ -2435,7 +2435,6 @@ impl Session {
         if self.final_scores.is_some() {
             return Err("the game is over".into());
         }
-        let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
         // with the bag empty, both racks are known (a given seat's rack is all
         // the unseen tiles, once they fit in it), so solve rather than sim; the
@@ -2500,7 +2499,7 @@ impl Session {
         let t0 = std::time::Instant::now();
         let mut simmer = move_picker::Simmer::<_, _, false>::new(
             self.game_config,
-            kwg,
+            self.vocab()?,
             arm_tables,
             self.klv,
             move_picker::SimmerParams {
@@ -2699,7 +2698,7 @@ impl Session {
                 Some((was_for, simmer)) if was_for == made_for => simmer,
                 _ => move_picker::Simmer::<_, _, true>::new(
                     self.game_config,
-                    kwg,
+                    self.vocab()?,
                     arm_tables,
                     self.klv,
                     move_picker::SimmerParams {

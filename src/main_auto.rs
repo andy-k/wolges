@@ -173,7 +173,7 @@ fn do_it(
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
     let mut move_picker_1 = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,
-        kwg,
+        &vocab,
         &arm_tables,
         klv,
         move_picker::SimmerParams {

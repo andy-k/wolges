@@ -257,7 +257,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,
-        kwg,
+        &vocab,
         &arm_tables,
         klv,
         move_picker::SimmerParams {

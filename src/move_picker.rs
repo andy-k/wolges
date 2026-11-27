@@ -482,7 +482,7 @@ pub struct Simmer<
     game_config: &'a std::sync::Arc<game_config::GameConfig>,
     #[cfg(not(target_family = "wasm"))]
     kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
-    graphs: movegen::Vocab<'a, N>,
+    graphs: &'a movegen::Vocab<'a, N>,
     arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
     klv: &'a std::sync::Arc<klv::Klv<L>>,
     candidates: Vec<Candidate>,
@@ -531,6 +531,7 @@ struct LatePrune {
     builder: build::Builder,
     spare: Option<std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
     spare_tables: anagrams::ArmTables,
+    spare_kad: Option<std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
     arm_scratch: anagrams::ArmScratch,
 }
 
@@ -553,7 +554,11 @@ pub struct SimBlock {
 }
 
 // a late graph and its tables
-type LateGraph = (std::sync::Arc<kwg::Kwg<kwg::Node24>>, anagrams::ArmTables);
+type LateGraph = (
+    std::sync::Arc<kwg::Kwg<kwg::Node24>>,
+    anagrams::ArmTables,
+    Option<std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
+);
 
 // a sim thread: where its jobs go (the iterations after lo up to hi, and the
 // decision's seed), where it says each is done, and what it works in: its
@@ -648,9 +653,9 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
             return Err(out_of_memory());
         }
         simmer.begin_within(self.memory);
-        let late = self
-            .late_graph
-            .map(|(late, arm_tables)| (movegen::Vocab::lean(late), arm_tables));
+        let late = self.late_graph.map(|(late, arm_tables, kad)| {
+            (movegen::Vocab::with_kad(late, kad.clone()), arm_tables)
+        });
         for sim_iter in lo + 1..=hi {
             simmer.restore_prepared(pristine);
             simmer.reseed(mix(self.decision_seed, sim_iter));
@@ -711,14 +716,14 @@ pub struct SimmerParams<'a> {
 impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
     pub fn new(
         game_config: &'a std::sync::Arc<game_config::GameConfig>,
-        kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
+        vocab: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
         klv: &'a std::sync::Arc<klv::Klv<L>>,
         params: SimmerParams<'a>,
     ) -> error::Returns<Self> {
         Ok(Self::with_rng(
             game_config,
-            kwg,
+            vocab,
             arm_tables,
             klv,
             params,
@@ -737,7 +742,7 @@ impl<
 {
     pub fn with_rng(
         game_config: &'a std::sync::Arc<game_config::GameConfig>,
-        kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
+        vocab: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
         klv: &'a std::sync::Arc<klv::Klv<L>>,
         params: SimmerParams<'a>,
@@ -747,8 +752,8 @@ impl<
         Self {
             game_config,
             #[cfg(not(target_family = "wasm"))]
-            kwg,
-            graphs: movegen::Vocab::lean(kwg),
+            kwg: vocab.shared_words(),
+            graphs: vocab,
             arm_tables,
             klv,
             candidates: Vec::new(),
@@ -788,6 +793,7 @@ impl<
                 builder: Default::default(),
                 spare: None,
                 spare_tables: anagrams::ArmTables::None,
+                spare_kad: None,
                 arm_scratch: Default::default(),
             },
             thread_kept: Vec::new(),
@@ -2310,10 +2316,9 @@ impl<
         let start = self.iters_done;
         let memory = self.memory;
         self.simmer.begin_within(memory);
-        let late = self
-            .late_graph
-            .as_ref()
-            .map(|(late, arm_tables)| (movegen::Vocab::lean(late), arm_tables));
+        let late = self.late_graph.as_ref().map(|(late, arm_tables, kad)| {
+            (movegen::Vocab::with_kad(late, kad.clone()), arm_tables)
+        });
         for sim_iter in (start + 1)..=(start + count) {
             self.iters_done = sim_iter;
             self.simmer.restore_prepared(&self.prepared_pristine);
@@ -2335,7 +2340,7 @@ impl<
                     None => rollout_objective(
                         &mut self.simmer,
                         self.game_config,
-                        &self.graphs,
+                        self.graphs,
                         self.arm_tables,
                         &self.rollout_klv,
                         play,
@@ -2448,7 +2453,7 @@ impl<
     fn rows_of<'s, 'g>(&'s self, late_graph: Option<&'g LateGraph>) -> RowsOf<'s, 'g, N, L> {
         RowsOf {
             game_config: self.game_config,
-            graphs: &self.graphs,
+            graphs: self.graphs,
             arm_tables: self.arm_tables,
             klv: &self.rollout_klv,
             win_pct_table: self.win_pct_table.map(|table| &**table),
@@ -2644,6 +2649,7 @@ impl<
         let theirs = std::sync::Arc::clone(&kept);
         let game_config = std::sync::Arc::clone(self.game_config);
         let kwg = std::sync::Arc::clone(self.kwg);
+        let kad = self.graphs.shared_kad().cloned();
         let arm_tables = std::sync::Arc::clone(self.arm_tables);
         let klv = std::sync::Arc::clone(&self.rollout_klv);
         let win_pct_table = self.win_pct_table.cloned();
@@ -2654,7 +2660,7 @@ impl<
         };
         let (ours, our_late) = (std::sync::Arc::clone(&plays), std::sync::Arc::clone(&late));
         std::thread::Builder::new().spawn(move || {
-            let graphs = &movegen::Vocab::lean(&kwg);
+            let graphs = &movegen::Vocab::with_kad(&kwg, kad);
             for (lo, hi, decision_seed) in job_rx {
                 let made = (|| -> error::Returns<()> {
                     let stopped = || "a sim thread's share was dropped";
@@ -2734,7 +2740,7 @@ impl<
             &movegen::BoardSnapshot {
                 board_tiles: last.board_before,
                 game_config: self.game_config,
-                vocab: &self.graphs,
+                vocab: self.graphs,
                 anagrams: None,
                 rack_lengths: None,
                 klv: self.klv,
@@ -2826,6 +2832,7 @@ impl<
             builder,
             spare,
             spare_tables,
+            spare_kad,
             arm_scratch,
         } = &mut self.late_prune;
         self.late_graph = if keep {
@@ -2843,7 +2850,7 @@ impl<
                     &movegen::BoardSnapshot {
                         board_tiles: &game_state.board_tiles,
                         game_config: self.game_config,
-                        vocab: &self.graphs,
+                        vocab: self.graphs,
                         anagrams: None,
                         rack_lengths: None,
                         klv: self.klv,
@@ -2872,11 +2879,12 @@ impl<
                     Err(e) if e.is::<endgame::Refused>() => true,
                     Err(e) => return Err(e),
                 };
-                let (mut kwg, mut arm_tables) = match self.late_graph.take() {
+                let (mut kwg, mut arm_tables, mut kad) = match self.late_graph.take() {
                     Some(late) => late,
                     None => (
                         (spare.take()).unwrap_or_else(|| std::sync::Arc::new(kwg::Kwg(Vec::new()))),
                         std::mem::replace(spare_tables, anagrams::ArmTables::None),
+                        spare_kad.take(),
                     ),
                 };
                 // where the limit has no room for the prune or the graph, the sim
@@ -2904,6 +2912,7 @@ impl<
                 if !refilled {
                     *spare = Some(kwg);
                     *spare_tables = arm_tables;
+                    *spare_kad = kad;
                     break 'late None;
                 }
                 match &**self.arm_tables {
@@ -2915,12 +2924,36 @@ impl<
                     }
                     anagrams::ArmTables::None => arm_tables = anagrams::ArmTables::None,
                 }
-                Some((kwg, arm_tables))
+                let joined = self.graphs.kad().is_some()
+                    && match builder.build_alphagrams_within(words, memory) {
+                        Ok(bytes) => {
+                            let kad = kad
+                                .get_or_insert_with(|| std::sync::Arc::new(kwg::Kwg(Vec::new())));
+                            match std::sync::Arc::get_mut(kad) {
+                                Some(kad) => {
+                                    endgame::room_in(memory, &mut kad.0, (bytes.len() / 4).max(2))
+                                        .is_ok()
+                                        && {
+                                            kad.refill_from_bytes(bytes)?;
+                                            true
+                                        }
+                                }
+                                None => false,
+                            }
+                        }
+                        Err(e) if e.is::<endgame::Refused>() => false,
+                        Err(e) => return Err(e),
+                    };
+                if !joined {
+                    *spare_kad = kad.take();
+                }
+                Some((kwg, arm_tables, kad))
             }
         } else {
-            if let Some((kwg, arm_tables)) = self.late_graph.take() {
+            if let Some((kwg, arm_tables, kad)) = self.late_graph.take() {
                 *spare = Some(kwg);
                 *spare_tables = arm_tables;
+                *spare_kad = kad;
             }
             None
         };
@@ -3797,10 +3830,11 @@ mod tests {
         )
         .unwrap();
         assert!(move_generator.plays.len() > 2);
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let new_simmer = |sim_threads| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &kwg,
+                &vocab,
                 &arm_tables,
                 &klv,
                 SimmerParams {
@@ -3951,10 +3985,11 @@ mod tests {
         )
         .unwrap();
         assert!(move_generator.plays.len() > 2);
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let decide = |sim_threads| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &kwg,
+                &vocab,
                 &arm_tables,
                 &klv,
                 SimmerParams {
@@ -4023,11 +4058,12 @@ mod tests {
             &mut Vec::new(),
         )
         .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         assert!(move_generator.plays.len() > 2);
         let made = |memory: Option<endgame::MemoryLimit>| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &kwg,
+                &vocab,
                 &arm_tables,
                 &klv,
                 SimmerParams {
@@ -4097,6 +4133,7 @@ mod tests {
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let gen_candidates = |move_generator: &mut movegen::KurniaMoveGenerator,
                               game_state: &game_state::GameState| {
             gen_simmer_candidates(
@@ -4120,7 +4157,7 @@ mod tests {
         let new_simmer = || {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &kwg,
+                &vocab,
                 &arm_tables,
                 &klv,
                 SimmerParams {
@@ -4185,6 +4222,7 @@ mod tests {
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut scratch = Vec::new();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
             &mut move_generator,
@@ -4199,7 +4237,7 @@ mod tests {
         assert!(num_plays > 2);
         let mut simmer = Simmer::<_, _, false>::new(
             &game_config,
-            &kwg,
+            &vocab,
             &arm_tables,
             &klv,
             SimmerParams {
@@ -4344,6 +4382,7 @@ mod tests {
             held: infer::Held::Any,
         };
         let rack = game_state.current_player().rack.clone();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let params = || SimmerParams {
             num_sim_iters: 8,
             num_sim_plies: 2,
@@ -4355,7 +4394,7 @@ mod tests {
 
         // the leaves are the inference's own, as the shell asks for them
         let mut simmer =
-            Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params()).unwrap();
+            Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
         let leaves = simmer.kept_leaves(&rack, last).unwrap();
         assert!(!leaves.is_empty());
         let shell_leaves = infer::kept_leaves(
@@ -4375,12 +4414,13 @@ mod tests {
             1,
         )
         .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         assert_eq!(leaves, shell_leaves);
 
         let fuzz = infer::fitted_fuzz(bag_before, bag_before, false);
         assert_eq!(fuzz, (1.507, infer::FUZZ_PRIOR_MIX));
         let mut fitted_simmer =
-            Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params()).unwrap();
+            Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
         fitted_simmer.set_infer_fuzz(fuzz);
         let fitted = fitted_simmer.kept_leaves(&rack, last).unwrap();
         let mut mixed_tables = infer::InferTables::new(&game_config, &klv).unwrap();
@@ -4407,6 +4447,7 @@ mod tests {
 
         // and the move picked with the last move given is the one a decision
         // handed those leaves picks
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
@@ -4416,7 +4457,7 @@ mod tests {
             klv: &klv,
         };
         let mut by_hand =
-            Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params()).unwrap();
+            Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
         by_hand.reseed(3);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         gen_simmer_candidates(
@@ -4495,6 +4536,7 @@ mod tests {
             std::sync::Arc::new(arm_tables),
             std::sync::Arc::new(klv),
         );
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let params = || SimmerParams {
             num_sim_iters: 2,
             num_sim_plies: 1,
@@ -4505,7 +4547,7 @@ mod tests {
         };
         let mut pickers = [0, 1].map(|_| {
             MovePicker::Simmer(Box::new(
-                Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params())
+                Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params())
                     .unwrap(),
             ))
         });
@@ -5892,6 +5934,7 @@ mod tests {
             quiet: true,
             memory: None,
         };
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
@@ -5902,7 +5945,7 @@ mod tests {
         };
         let decide = |rollout_klv: Option<std::sync::Arc<klv::Klv<_>>>| {
             let mut simmer =
-                Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params())
+                Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params())
                     .unwrap();
             if let Some(rollout_klv) = rollout_klv {
                 simmer.set_rollout_klv(rollout_klv);
@@ -5960,6 +6003,7 @@ mod tests {
             klv: &klv,
         };
         let decide = |term: Option<PositionalTerm>| {
+            let vocab = crate::movegen::Vocab::lean(&kwg);
             let params = SimmerParams {
                 num_sim_iters: 8,
                 num_sim_plies: 2,
@@ -5969,7 +6013,8 @@ mod tests {
                 memory: None,
             };
             let mut simmer =
-                Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params).unwrap();
+                Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params)
+                    .unwrap();
             if let Some(term) = term {
                 simmer = simmer.with_positional(term);
             }

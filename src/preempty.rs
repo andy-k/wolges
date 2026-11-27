@@ -1404,9 +1404,10 @@ mod tests {
             min_keep: 0,
             take_kept: false,
         };
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let simmer = move_picker::Simmer::new(
             &gc,
-            &kwg,
+            &vocab,
             &tables,
             &klv,
             move_picker::SimmerParams {
