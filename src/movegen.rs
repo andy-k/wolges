@@ -19080,6 +19080,15 @@ pub(crate) mod tests {
     }
 
     #[inline]
+    pub(crate) fn woadwage_toy_longest() -> u64 {
+        WOADWAGE_TOY_WORDS
+            .iter()
+            .map(|word| word.len())
+            .max()
+            .unwrap() as u64
+    }
+
+    #[inline]
     pub(crate) fn woadwage_toy() -> (kwg::Kwg<kwg::Node24>, std::collections::BTreeSet<Vec<u8>>) {
         let words = WOADWAGE_TOY_WORDS
             .iter()
