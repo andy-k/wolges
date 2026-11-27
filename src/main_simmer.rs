@@ -151,7 +151,7 @@ fn simulate(
     memory: Option<wolges::endgame::MemoryLimit>,
 ) -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/43
-    let scores = [336000, 298000];
+    let scores = [336_000, 298_000];
     let question = Question::from_fen(
         game_config,
         "C14/O2TOY9/mIRADOR8/F4DAB2PUGH1/I5GOOEY3V/T4XI2MALTHA/14N/6GUM3OWN/7PEW2DOE/9EF1DOR/2KUNA1J1BEVELS/3TURRETs2S2/7A4T2/7N7/7S7",

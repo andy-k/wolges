@@ -1481,7 +1481,7 @@ mod tests {
             assert_eq!(leave_value("QU", value).is_ok(), ok, "{value:?}");
             assert_eq!(held(f32::from_str(value).unwrap()), ok, "{value:?}");
         }
-        let edge = 2147483648.0 / equity::SCALE as f32;
+        let edge = 2_147_483_648.0 / equity::SCALE as f32;
         for edge in [edge, -edge] {
             for step in -64..=64 {
                 let v = f32::from_bits(edge.to_bits().wrapping_add_signed(step));

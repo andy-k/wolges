@@ -1892,7 +1892,7 @@ mod tests {
         let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             if (h & 3) != 0 {
                 sheet[idx] = h.rem_euclid(20_000);
             }
@@ -1917,7 +1917,7 @@ mod tests {
         let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             if (h & 3) != 0 {
                 sheet[idx] = h.rem_euclid(20_000);
             }
@@ -1972,7 +1972,7 @@ mod tests {
         let lat = MultisetLattice::new(4, 4).unwrap();
         let mut leave = vec![0i32; lat.len()];
         for (idx, slot) in leave.iter_mut().enumerate() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             // few values, so that ties are common
             *slot = h.rem_euclid(5) - 2;
         }
@@ -2020,7 +2020,7 @@ mod tests {
         let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             sheet[idx] = h.rem_euclid(20_000);
             leave[idx] = h.rem_euclid(8_000) - 4_000;
         }
@@ -2081,7 +2081,7 @@ mod tests {
         let pool = [3u8, 2u8, 2u8];
         let mut full_v = vec![UNPLAYABLE.raw(); lat.len()];
         for (idx, slot) in full_v.iter_mut().enumerate() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
         }
         for s_idx in 0..lat.len() {
@@ -2105,7 +2105,7 @@ mod tests {
         let unseen = [4u8, 3u8, 2u8];
         let mut best = vec![UNPLAYABLE.raw(); lat.len()];
         for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             *slot = h.rem_euclid(20_000) - 5_000;
         }
         let mut num = vec![0i64; lat.len()];
@@ -2170,7 +2170,7 @@ mod tests {
             let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
             let mut leave = vec![0i32; lat.len()];
             for idx in 0..lat.len() {
-                let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+                let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
                 if (h & 3) != 0 {
                     sheet[idx] = h.rem_euclid(top);
                 }
@@ -2322,7 +2322,7 @@ mod tests {
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
         let leave = vec![0i32; lat.len()]; // null klv -> all zero
         for (idx, slot) in sheet.iter_mut().enumerate() {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            let h = (idx as i32).wrapping_mul(2_654_435_761u32 as i32);
             if (h & 3) != 0 {
                 *slot = h.rem_euclid(20_000);
             }
