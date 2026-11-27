@@ -53,7 +53,6 @@ impl Step {
     }
 }
 
-#[derive(Clone)]
 pub struct StackedStep {
     first: i32,
     lo: usize,
