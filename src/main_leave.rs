@@ -612,13 +612,13 @@ struct Compare {
     #[arg(
         long,
         value_name = "FILE",
-        help = "seat p0, when deft, adds to each of its moves' equity the positional term of this values file"
+        help = "seat p0 adds to each of its moves' equity the positional term of this values file"
     )]
     p0_positional: Option<String>,
     #[arg(
         long,
         value_name = "FILE",
-        help = "seat p1, when deft, adds to each of its moves' equity the positional term of this values file"
+        help = "seat p1 adds to each of its moves' equity the positional term of this values file"
     )]
     p1_positional: Option<String>,
     #[arg(
@@ -1300,13 +1300,9 @@ fn run(
             };
             let p0_window = window(a.p0_window, ever_deft(a.p0_picker, a.p0_endgame))?;
             let p1_window = window(a.p1_window, ever_deft(a.p1_picker, a.p1_endgame))?;
-            let positional = |path: Option<String>, picker: SeatPicker| -> error::Returns<_> {
+            let positional = |path: Option<String>| -> error::Returns<_> {
                 match path {
                     None => Ok(None),
-                    Some(_) if !matches!(picker, SeatPicker::Deft) => wolges::return_error!(
-                        "--p0-positional and --p1-positional are for a seat whose picker is deft"
-                            .to_string()
-                    ),
                     Some(path) => {
                         let text = String::from_utf8(read_input(&path)?)?;
                         let term = move_picker::PositionalTerm::parse(&text)?;
@@ -1314,10 +1310,7 @@ fn run(
                     }
                 }
             };
-            let positional = [
-                positional(a.p0_positional, a.p0_picker)?,
-                positional(a.p1_positional, a.p1_picker)?,
-            ];
+            let positional = [positional(a.p0_positional)?, positional(a.p1_positional)?];
             let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
             let (klv0, klv1) = match &a.racks {
                 None => read_klv_pair(&game_config, &a.klv0, &a.klv1)?,
@@ -1355,6 +1348,7 @@ fn run(
             }
             let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
                 && hasty_throughout(a.p1_picker, a.p1_endgame)
+                && positional.iter().all(Option::is_none)
                 && preempty
                     .iter()
                     .all(|mode| matches!(mode, move_picker::PreemptyMode::Off));
@@ -8611,7 +8605,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                             memory: None,
                         },
                         deft_window: move_picker::DEFAULT_DEFT_WINDOW,
-                        deft_positional: None,
+                        positional: None,
                     },
                 );
                 let mut game_state = game_state::GameState::new(game_config);
@@ -11000,7 +10994,7 @@ struct SeatParams<'a> {
     simmer_params: move_picker::SimmerParams<'a>,
     turn_time: Option<std::time::Duration>,
     deft_window: i32,
-    deft_positional: Option<move_picker::PositionalTerm>,
+    positional: Option<move_picker::PositionalTerm>,
 }
 
 #[inline]
@@ -11015,18 +11009,24 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         simmer_params,
         turn_time,
         deft_window,
-        deft_positional,
+        positional,
     }: SeatParams<'a>,
 ) -> move_picker::MovePicker<'a, N, L> {
-    match picker {
-        SeatPicker::Hasty => move_picker::MovePicker::Hasty,
-        SeatPicker::Deft => {
-            move_picker::MovePicker::Deft(move_picker::Deft::new(deft_window, deft_positional))
+    match (picker, positional) {
+        (SeatPicker::Hasty, None) => move_picker::MovePicker::Hasty,
+        (SeatPicker::Hasty, Some(term)) => {
+            move_picker::MovePicker::Positional(Box::new(move_picker::Positional::new(None, term)))
         }
-        SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
+        (SeatPicker::Deft, positional) => {
+            move_picker::MovePicker::Deft(move_picker::Deft::new(deft_window, positional))
+        }
+        (SeatPicker::Dynamic, None) => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
+        (SeatPicker::Dynamic, Some(term)) => move_picker::MovePicker::Positional(Box::new(
+            move_picker::Positional::new(Some(dynamic_leaves.unwrap()), term),
+        )),
         // reseeded before each of its turns, so its first generator is fixed
         // rather than drawn from the system
-        SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot => {
+        (SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot, positional) => {
             let simmer = move_picker::Simmer::with_rng(
                 game_config,
                 kwg,
@@ -11041,6 +11041,10 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
             };
             let simmer = match turn_time {
                 Some(time) => simmer.with_turn_time(time),
+                None => simmer,
+            };
+            let simmer = match positional {
+                Some(term) => simmer.with_positional(term),
                 None => simmer,
             };
             move_picker::MovePicker::Simmer(Box::new(simmer))
@@ -11342,16 +11346,17 @@ fn compare_seats<
                 win_pct.unwrap_or("sigmoid"),
             ),
             SeatPicker::Deft => format!(
-                "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes; with the bag empty, the first that goes out and wins, else out in two; with two to a rack's worth in the bag, one leaving exactly one there){}",
+                "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes; with the bag empty, the first that goes out and wins, else out in two; with two to a rack's worth in the bag, one leaving exactly one there)",
                 picker_name(picker),
                 equity::Equity::new(window),
-                match positional {
-                    Some(path) =>
-                        format!("; each move's equity with the positional term of {path} added"),
-                    None => String::new(),
-                },
             ),
             SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
+        };
+        let line = match positional {
+            Some(path) => {
+                format!("{line}; each move's equity with the positional term of {path} added")
+            }
+            None => line,
         };
         match endgame {
             None => line,
@@ -11454,7 +11459,7 @@ fn compare_seats<
                             memory: None,
                         },
                         deft_window: p0_window,
-                        deft_positional: positional[0].as_ref().map(|(_, term)| term.clone()),
+                        positional: positional[0].as_ref().map(|(_, term)| term.clone()),
                     },
                 );
                 let mut driver_p1 = seat_picker(
@@ -11475,7 +11480,7 @@ fn compare_seats<
                             memory: None,
                         },
                         deft_window: p1_window,
-                        deft_positional: positional[1].as_ref().map(|(_, term)| term.clone()),
+                        positional: positional[1].as_ref().map(|(_, term)| term.clone()),
                     },
                 );
                 let mut end_p0 = p0_endgame.map(|endgame| end_picker(endgame, p0_window));
