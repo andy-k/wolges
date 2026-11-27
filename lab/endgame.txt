@@ -113,157 +113,30 @@ Reserving the capacity up front only changes when the buffer is allocated,
 never what the search computes, so every solve value is unchanged.
 
 
-ONE STEP BEFORE THE BAG IS EMPTY: THE ONE-KNOWN-BAG-TILE CASE
+PRE-ENDGAMES
 
-Everything so far only ever solves once the bag is already empty. This adds a
-bag holding exactly one tile, where that tile's identity is passed in as
-already known.
+The solver considers each possible bag drawn from the unseen tiles. The
+remaining tiles form the opponent's rack. It weighs each distinct split by
+how many ways the tiles can be drawn. A root move is chosen across all splits.
+Placements, passes, and exchanges are valued where legal. Each move is ranked
+by the share of games it wins (a draw counts as half a win), then by expected
+game margin.
 
-The rules at that point are simple enough to solve exactly with a small extra
-layer on top of the empty-bag solver, never touching its search logic. Placing
-any tile always draws that single bag tile back (a play draws min(placed, 1) =
-1 whenever it places at least one tile), refilling the mover's rack -- so a
-play here can never empty the mover's rack, and there is no play-out to worry
-about while this one tile remains. After the draw, the position is a plain
-empty-bag endgame with the opponent to move, so the existing solver handles it
-unchanged. Passing draws nothing, leaving the one tile in the bag; two
-consecutive passes end the game with that tile staying unseen and unscored for
-either side.
-
-solve_one_in_bag(player_idx, bag_tile) runs this shallow bag-phase minimax: for
-the mover's own turn only, try every legal play, draw the known tile (landing
-on the rack as an undesignated blank if that tile is a blank -- its letter is
-only chosen once it is actually played), and hand the resulting fully-known
-position to one reused empty-bag sub-solver; or pass, and recurse one ply with
-the roles swapped. Tests add a trusted, independently-written plain-negamax
-reference for this one-in-bag case and check the fast solver against it for
-both movers and several different bag tiles, plus two hand-checkable positions
-(a forced double pass, and a play that must draw before it can end). The
-empty-bag solver's own differential check is unchanged.
-
-
-WHEN THE MOVER DOESN'T KNOW WHICH TILE IS LEFT: PEG
-
-The one-known-bag-tile solver assumes the mover already knows which tile is
-sitting in the bag. In a real game that is almost never true: the mover only
-knows which tiles are UNSEEN -- not on the board and not on their own rack --
-and the single bag tile could be any one of them, with the rest making up the
-opponent's rack. This situation, one tile left in an otherwise fully-known
-position, is what this file calls PEG (pre-endgame): not yet an ordinary
-empty-bag endgame, but one move away from becoming one.
-
-solve_peg_one_in_bag solves it exactly rather than by sampling: for every
-distinct unseen tile, try it as the hypothesis for the bag tile (the remaining
-unseen tiles then form the opponent's rack, making that hypothesis fully known)
-and hand it to the one-known-bag-tile solver. Each hypothesis is weighted by
-how many copies of that tile are unseen -- a tile with three copies still
-unseen is three times as likely to be the one actually in the bag as a tile
-with only one copy left. peg_aggregate then folds all the weighted hypotheses
-into a single win rate (a draw scoring half a win) and a single expected point
-margin, both from the mover's point of view. Full enumeration, not sampling:
-every distinct unseen tile is tried, so the mover's uncertainty about the bag
-is modeled exactly, not estimated.
-
-This enumeration weighs only plays and passes, so it is correct only where an
-exchange is not an option. With a single tile in the bag an exchange is legal
-only when the config permits exchanging that few tiles (Spanish does; English
-and most others require a fuller bag), and there the mover could exchange
-instead. Rather than report a number that silently assumes the exchange away,
-solve_peg_one_in_bag returns a result that DECLINES such a config with an
-honest "exchange not modeled" -- every other config is still answered exactly.
-The exchange case is left unsolved here.
-
-The solver's scope is exactly zero or one tile in the bag. One tile is the
-PEG-1 case -- the one-in-bag pre-endgame this section solves; zero tiles is
-already an ordinary empty-bag endgame. A bag holding two or more tiles is a
-larger pre-endgame -- PEG-2, PEG-3, and larger -- and each extra tile in the
-bag multiplies the draws the mover must weigh. Those larger pre-endgames
-are a genuine generalization this file does not attempt, not merely an input it
-rejects: such a position falls through to the same "not endgame yet" error the
-CLI raises for any position with too many tiles left unaccounted for. Only
-PEG-1 (and the plain empty bag) is in scope here.
-
+With --peg-model info-sets, each player chooses from the tiles they can see
+until the bag empties. With --peg-model random-draws, the players know both
+racks after the first move. They average unseen draws as they arise.
 
 SOLVING A REAL POSITION FROM THE COMMAND LINE
 
-Everything above could only be exercised through the built-in demo positions or
-a batch file of harvested positions. A minimal command line now takes a
-word-graph file, a board (in FEN, the same compact board notation the
-rest of wolges uses), and the mover's own rack, works out the opponent's tiles
-from whatever is unseen, and runs whichever solver actually applies: an
-ordinary empty-bag endgame, or the one-in-bag PEG enumeration when exactly one
-tile is left in the bag. The batch mode plays the same game and reads the word
-graph given after its file; the built-in demo positions are unchanged.
+  cargo run --release --bin endgame -- CSW24.kwg FEN RACK
 
-The game is English on the standard board unless options say otherwise: the
-same --preset, --tiles, --board, --rack-size, --jumbled, --players,
---bingo-bonus, --zeros-to-end, --passes-to-end, --exchange-limit and
---exchanges that leave takes (lab/leavegen.txt). The game selects only the
-alphabet, board layout, and tile set, never a particular word list, so any word
-graph built for that game works without recompiling; the file argument is that
-graph. --jumbled plays the anagram game, where any arrangement of a rack's
-letters counts as a word and the word graph is an alphagram dawg rather than a
-spell-it-out gaddawg. --kbwg reads a word graph that uses the wider 24-bit node
-index, for word lists too large to fit the usual layout. The solver plays two
-seats, so a game of any other number of players is refused.
+Give the board in FEN notation and the mover's rack. The solver fills the
+opponent's rack from the unseen tiles and treats the rest as the bag. It
+solves an empty bag as an endgame and chooses a move with tiles in the bag
+as a pre-endgame. A trailing score difference is the number of points the
+mover leads by, and is added to the future margin to evaluate the outcome.
 
-By default the result covers only the tiles still to be played: the win, draw,
-or loss and the point margin describe the rest of the game, not the game so
-far. An optional trailing number says how many points the mover is ahead of the
-opponent right now (negative if behind), and it is added to the solver's margin
-so the reported outcome reflects the whole game rather than just the value of
-the remaining plays.
-
-
-EXCHANGING WITH ONE TILE IN THE BAG
-
-The one-in-bag section above weighed only plays and passes, so the PEG
-enumeration declined any config where an exchange was legal against the
-one-tile bag -- reporting an honest "exchange not modeled" rather than a number
-that assumed the exchange away. Spanish is exactly that config: its rules let a
-player exchange even with a single tile left in the bag (most rule sets require
-a fuller bag). This section solves that case, so Spanish is answered rather
-than declined.
-
-With one tile in the bag an exchange can only be a one-for-one swap: the mover
-puts one rack tile back, draws the single bag tile, and the tile just returned
-becomes the new bag tile. The bag therefore stays at exactly one tile and the
-position stays fully known, so the game is still finite and can be solved
-exactly. Alongside every play and the pass, the bag-phase search now tries each
-distinct rack tile as the one to swap out, with the opponent to move afterward.
-
-Ending the game needs more care than before. A pass leaves both racks exactly
-as they were, so a run of passes always ends in the same leftover-tile margin
-no matter how many passes it takes -- which is why the plain one-in-bag solver
-could treat two passes in a row as the end and read off that margin. An
-exchange breaks that: it changes a rack, so a later end scores a different
-leftover. The search therefore counts scoreless turns instead of assuming two
-passes end it. It keeps two counts, consecutive passes and consecutive
-scoreless turns (a pass is both; an exchange, which the rules here count as a
-scoreless turn, is only the latter and resets the pass count), and ends the
-game when either reaches the limit its rules set (num_passes_to_end or
-num_zeros_to_end). Because a position's value now depends on how close that
-scoreless-turn limit already is, the search remembers answers keyed by whose
-turn it is, both racks, the bag tile, and those two counts; the board never
-changes while the bag holds its one tile, so it is not part of the key. Plays
-still draw the bag tile and hand the now-empty-bag position to the same solver
-as before, so the empty-bag search and every English value are untouched.
-
-One honesty note. Like the enumeration it extends, this is exact only under a
-generous assumption: within each guess for the bag tile, the mover is treated
-as if it already knew that guess was right. The solver takes, for each possible
-bag tile, the mover's best line ASSUMING that tile, and then averages those
-best lines weighted by how likely each tile is. A real player cannot peek: it
-must pick one move that has to do well across every tile the bag might hold,
-then see which tile was actually there. Choosing with knowledge first and
-averaging after can only score at least as high as choosing one move for all
-cases, so this "clairvoyant" value is an upper bound on what a real player can
-guarantee, off by the worth of the peek. Every engine that solves these
-pre-endgames makes the same assumption; adding the exchange fits inside it and
-does not widen the gap.
-
-A config is still declined when an exchange is legal but its rules can never
-end the game through scoreless turns (nothing forces a run of passes and
-exchanges to stop), since then the swap-and-swap-back line need never terminate
-and there is no exact value to report. That honest decline, not a wrong number,
-is the only case left unsolved.
+Use --preset, --tiles, --board, --rack-size, --jumbled, --players,
+--bingo-bonus, --zeros-to-end, --passes-to-end, --exchange-limit, and
+--exchanges to specify the game (see lab/leavegen.txt). Use --kbwg for a
+word graph with wider node indices. This command takes two seats.
