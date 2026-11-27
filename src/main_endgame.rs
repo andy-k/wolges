@@ -355,11 +355,7 @@ impl Question {
     }
 }
 
-// how each solve runs: on which arm, within which limits, with how big a table
-// from the start, on how many threads with two or more tiles in the bag,
-// whether it prints its progress, after which scoreless turns (the passes and
-// the zeros, as the game counts them), and under which model with two or more
-// tiles in the bag
+// scoreless holds the preceding pass count followed by the scoreless count
 struct Solving {
     lean: bool,
     limits: endgame::Limits,
@@ -373,7 +369,7 @@ struct Solving {
     peg_cuts: Option<bool>,
 }
 
-// the models of a search with two or more tiles in the bag (endgame::PegModel)
+// the models of a search with tiles in the bag (endgame::PegModel)
 #[derive(Clone, clap::ValueEnum)]
 enum PegModelArg {
     InfoSets,
@@ -604,8 +600,8 @@ struct Cli {
     lean: bool,
     #[arg(
         long,
-        help = "worker threads; with one tile in the bag or none, only with no time or \
-                state limit [default: every core]"
+        help = "worker threads [default: every core]. An empty-bag search under a time limit \
+                uses one thread. A state limit does the same."
     )]
     threads: Option<std::num::NonZeroUsize>,
     #[arg(
@@ -680,7 +676,7 @@ struct Cli {
         long,
         value_enum,
         default_value = "info-sets",
-        help = "with two or more tiles in the bag, what each player knows after the first move: \
+        help = "with tiles in the bag, what each player knows after the first move: \
                 info-sets, each player to move chooses blind over every split of the tiles they \
                 cannot see until the bag empties; random-draws, a fast approximation, both \
                 racks then known, each draw averaged over every set of tiles it may bring"
@@ -688,19 +684,19 @@ struct Cli {
     peg_model: PegModelArg,
     #[arg(
         long,
-        help = "for positions with two or more tiles in the bag, estimate lines that still have tiles in the bag at each pass's cutoff"
+        help = "for positions with tiles in the bag, estimate lines that still have tiles in the bag at each pass's cutoff"
     )]
     peg_estimates: bool,
     #[arg(
         long,
         conflicts_with = "peg_estimates",
-        help = "value root moves exactly in one score-ordered pass for positions with two or more tiles in the bag"
+        help = "value root moves exactly in one score-ordered pass for positions with tiles in the bag"
     )]
     peg_exact_pass: bool,
     #[arg(
         long,
         value_name = "BOOL",
-        help = "for positions with two or more tiles in the bag, whether to stop valuing a move \
+        help = "for positions with tiles in the bag, whether to stop valuing a move \
                 once it cannot win as often as the best so far (its win% then the most it could \
                 reach, marked <=); on by default, off under a time limit"
     )]
@@ -1757,7 +1753,7 @@ fn solve_position<N: kwg::Node>(
         endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(game_config, &vocab, &arm_tables)?;
     reserve_table(&mut egs, solving);
     let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| -> error::Returns<()> {
-        if bag_size > 1 {
+        if bag_size != 0 {
             let scaled_score_diff =
                 (equity::Points::new(score_diff).checked_scaled()).ok_or("score overflow")?;
             let mut progress = endgame::PegBagProgress::new(
@@ -1935,112 +1931,6 @@ fn solve_position<N: kwg::Node>(
                     )?,
                 }
             }
-            if !result.exact {
-                say_where_a_limit_stopped(result.depth)?;
-            }
-        } else if bag_size == 1 {
-            let scaled_score_diff =
-                (equity::Points::new(score_diff).checked_scaled()).ok_or("score overflow")?;
-            let mut progress = endgame::PegProgress::new(
-                0,
-                &board_tiles,
-                &question.rack,
-                &available_tally,
-                scaled_score_diff,
-                solving.scoreless,
-            );
-            let result = egs.resume_peg_one_in_bag_on_threads(
-                &mut progress,
-                &solving.limits,
-                solving.threads,
-            )?;
-
-            let result = match result {
-                Ok(result) => result,
-                Err(unsupported) => {
-                    writeln!(std::io::stdout(), "peg: {unsupported}")?;
-                    return Ok(());
-                }
-            };
-            let hypotheses = progress.hypotheses(result.row).collect::<Vec<_>>();
-            let total_unseen: u32 = hypotheses.iter().map(|&(_, weight, _)| weight).sum();
-
-            match &result.best_move {
-                Some(endgame::PegMove::Pass) => {
-                    writeln!(
-                        std::io::stdout(),
-                        "peg: model = committed; best move = pass"
-                    )?;
-                }
-                Some(endgame::PegMove::Place(movegen::Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word,
-                    score,
-                })) => {
-                    let coord = if *down {
-                        format!("{}{}", display::column(*lane)?, idx + 1)
-                    } else {
-                        format!("{}{}", lane + 1, display::column(*idx)?)
-                    };
-                    let mut word_str = String::new();
-                    for &t in word.iter() {
-                        if t == 0 {
-                            word_str.push('.');
-                        } else {
-                            word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
-                        }
-                    }
-                    writeln!(
-                        std::io::stdout(),
-                        "peg: model = committed; best move = {coord} {word_str} (scores {})",
-                        *score,
-                    )?;
-                }
-                Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
-                None => {
-                    writeln!(
-                        std::io::stdout(),
-                        "peg: model = clairvoyant bound (exchange-legal config; not the in-game value)"
-                    )?;
-                }
-            }
-            writeln!(
-                std::io::stdout(),
-                "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
-                 (current score {score_diff:+})",
-                hypotheses.len(),
-                total_unseen,
-            )?;
-            for &(bag_tile, weight, value) in &hypotheses {
-                let mut opp = Vec::new();
-                for (u, &c) in available_tally.iter().enumerate() {
-                    let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
-                    opp.extend(std::iter::repeat_n(u as u8, take));
-                }
-
-                let outcome = match value.cmp(&equity::Equity::ZERO) {
-                    std::cmp::Ordering::Greater => "win",
-                    std::cmp::Ordering::Equal => "draw",
-                    std::cmp::Ordering::Less => "loss",
-                };
-                writeln!(
-                    std::io::stdout(),
-                    "  bag={} (x{}): opp rack [{}] -> game margin {:>4} ({})",
-                    alphabet.of_rack(bag_tile).unwrap_or("?"),
-                    weight,
-                    alphabet.fmt_rack(&opp),
-                    value,
-                    outcome,
-                )?;
-            }
-            writeln!(
-                std::io::stdout(),
-                "peg: win% {:.4}, expected game margin {}",
-                result.win_pct * 100.0,
-                result.expected_margin,
-            )?;
             if !result.exact {
                 say_where_a_limit_stopped(result.depth)?;
             }

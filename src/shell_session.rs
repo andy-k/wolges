@@ -3584,57 +3584,29 @@ fn solve_pre_endgame(
     );
     let scoreless = [state.pass_turns, state.zero_turns];
     let threads = parallelism::available();
-    let solved = if state.bag.len() == 1 {
-        let mut progress = endgame::PegProgress::new(
-            state.turn,
-            &state.board_tiles,
-            rack,
-            &unseen,
-            score_diff,
-            scoreless,
-        );
-        listened(solver, quiet, |solver| {
-            solver.resume_peg_one_in_bag_on_threads(&mut progress, limits, threads)
-        })?
-        .map(|result| PreEndgame {
-            best_move: result.best_move.map(|play| match play {
-                endgame::PegMove::Pass => movegen::Play::Exchange {
-                    tiles: [][..].into(),
-                },
-                endgame::PegMove::Place(play) => play,
-            }),
-            win_pct: result.win_pct,
-            expected_margin: result.expected_margin,
-            exact: result.exact,
-        })
-    } else {
-        let mut progress = endgame::PegBagProgress::new(
-            endgame::PegBagPosition {
-                mover: state.turn,
-                board: state.board_tiles.to_vec(),
-                mover_rack: rack.to_vec(),
-                unseen_tally: unseen,
-                bag_size: state.bag.len(),
-                score_diff,
-                scoreless,
-                exchanges: [
-                    state.players[0].num_exchanges,
-                    state.players[1].num_exchanges,
-                ],
-                model: endgame::PegModel::InfoSets,
-            },
-            endgame::PegBagChoices::WHOLE,
-        )?;
-        listened(solver, quiet, |solver| {
-            solver.resume_peg(&mut progress, limits, threads)
-        })?
-        .map(|result| PreEndgame {
-            best_move: result.best_move,
-            win_pct: result.win_pct,
-            expected_margin: result.expected_margin,
-            exact: result.exact,
-        })
+    let position = endgame::PegBagPosition {
+        mover: state.turn,
+        board: state.board_tiles.to_vec(),
+        mover_rack: rack.to_vec(),
+        unseen_tally: unseen,
+        bag_size: state.bag.len(),
+        score_diff,
+        scoreless,
+        exchanges: [
+            state.players[0].num_exchanges,
+            state.players[1].num_exchanges,
+        ],
+        model: endgame::PegModel::InfoSets,
     };
+    let solved = listened(solver, quiet, |solver| {
+        solver.solve_peg(position, limits, threads)
+    })?
+    .map(|result| PreEndgame {
+        best_move: result.best_move,
+        win_pct: result.win_pct,
+        expected_margin: result.expected_margin,
+        exact: result.exact,
+    });
     solved.map_err(|unsupported| unsupported.to_string().into())
 }
 
