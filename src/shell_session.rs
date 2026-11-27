@@ -8,8 +8,8 @@ use crate::{endgame_watch, run_line};
 use rand::{Rng, SeedableRng};
 use std::io::Write;
 use wolges::{
-    alphabet, anagrams, display, endgame, equity, error, game_config, game_state, infer, klv, kwg,
-    move_filter, move_picker, movegen, notation, parallelism, play_scorer, text,
+    alphabet, anagrams, display, endgame, equity, error, fash, game_config, game_state, infer, klv,
+    kwg, move_filter, move_picker, movegen, notation, parallelism, play_scorer, text,
 };
 
 type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
@@ -341,10 +341,10 @@ pub struct Session {
     run_letters_found: std::collections::HashMap<usize, kwg::RunLetters<'static>>, // by graph's address
     klvs_read: std::collections::HashMap<String, &'static std::sync::Arc<klv::Klv<kwg::Node24>>>,
     arm_tables_built:
-        std::collections::HashMap<String, &'static std::sync::Arc<anagrams::ArmTables>>,
+        fash::MyHashMap<(String, usize), &'static std::sync::Arc<anagrams::ArmTables>>,
     endgame_solvers: std::collections::HashMap<String, ShellSolver>, // by lexicon path
     rules_made: std::collections::HashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
-    infer_tables: Option<infer::InferTables>, // for klv, built at its first use
+    infer_tables: Option<([usize; 2], infer::InferTables)>, // for the rules' and klv's addresses, built at its first use
     game: Option<Game>,
     state: game_state::GameState,
     moves_shown: Vec<ShownMove>,
@@ -1569,13 +1569,17 @@ impl Session {
     }
 
     // play by these rules from here on: the game ends (its tiles were the old
-    // rules'), the tables built for the old rules go (the lexicon stays, read
+    // rules'), the endgame solvers built for other rules go while the tables
+    // built for any rules stay, kept by them (the lexicon stays, read
     // again by the next lexicon command if it is another alphabet's), and a
     // lexicon or leaves with tiles or values the new rules cannot hold go too
     fn use_rules(
         &mut self,
         game_config: &'static std::sync::Arc<game_config::GameConfig>,
     ) -> error::Returns<()> {
+        if !std::ptr::eq(game_config, self.game_config) {
+            self.endgame_solvers.clear();
+        }
         self.game_config = game_config;
         self.readers = Readers::new(game_config);
         self.spare_state.take();
@@ -1589,9 +1593,6 @@ impl Session {
         self.sim = None;
         self.sim_generator = None;
         self.sim_driver = None;
-        self.arm_tables_built.clear();
-        self.endgame_solvers.clear();
-        self.infer_tables = None;
         self.moves_shown.clear();
         self.spare_shown.clear();
         self.final_scores = None;
@@ -1676,16 +1677,16 @@ impl Session {
         Ok(())
     }
 
-    // the word graph's anagram tables, built at their first use
     fn arm_tables(&mut self) -> error::Returns<&'static std::sync::Arc<anagrams::ArmTables>> {
         let (path, kwg) = self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?;
-        Ok(match self.arm_tables_built.get(path) {
+        let key = (path.clone(), std::ptr::from_ref(self.game_config).addr());
+        Ok(match self.arm_tables_built.get(&key) {
             Some(&arm_tables) => arm_tables,
             None => {
                 let arm_tables: &'static _ = Box::leak(Box::new(std::sync::Arc::new(
                     anagrams::ArmTables::build(*kwg, self.game_config, false)?,
                 )));
-                self.arm_tables_built.insert(path.clone(), arm_tables);
+                self.arm_tables_built.insert(key, arm_tables);
                 arm_tables
             }
         })
@@ -2245,13 +2246,7 @@ impl Session {
                 pass_policy: movegen::PassPolicy::AsACandidate,
                 dynamic_leaves: None,
             });
-        let tables = match &mut self.infer_tables {
-            Some(tables) => tables,
-            tables @ None => {
-                self.game_config.supports(game_config::Op::Inference)?;
-                tables.insert(infer::InferTables::new(self.game_config, self.klv)?)
-            }
-        };
+        let tables = infer_tables_for(&mut self.infer_tables, self.game_config, self.klv)?;
         let mut out = std::io::stdout();
         for (i, valued) in self.move_generator.plays.iter().enumerate() {
             let equity = valued.equity.as_f64();
@@ -2458,13 +2453,7 @@ impl Session {
         let (mover, last_at) = (last.seat, self.moves_shown.len() - 1);
         let watcher_seat = self.state.turn as usize;
         let kwg = self.kwg()?;
-        let tables = match &mut self.infer_tables {
-            Some(tables) => tables,
-            tables @ None => {
-                self.game_config.supports(game_config::Op::Inference)?;
-                tables.insert(infer::InferTables::new(self.game_config, self.klv)?)
-            }
-        };
+        let tables = infer_tables_for(&mut self.infer_tables, self.game_config, self.klv)?;
         let mut leaves = infer::PackedLeaves::new();
         let (mut carried, mut next) = (infer::Carried::default(), infer::Carried::default());
         // the tiles the watcher has put back in the bag since the mover's last
@@ -3368,6 +3357,26 @@ impl Session {
     }
 }
 
+fn infer_tables_for<'a>(
+    kept: &'a mut Option<([usize; 2], infer::InferTables)>,
+    game_config: &'static std::sync::Arc<game_config::GameConfig>,
+    klv: &'static std::sync::Arc<klv::Klv<kwg::Node24>>,
+) -> error::Returns<&'a mut infer::InferTables> {
+    let made_for = [
+        std::ptr::from_ref(game_config).addr(),
+        std::ptr::from_ref(klv).addr(),
+    ];
+    if kept
+        .as_ref()
+        .is_none_or(|(was_for, _)| *was_for != made_for)
+    {
+        *kept = None;
+        game_config.supports(game_config::Op::Inference)?;
+        *kept = Some((made_for, infer::InferTables::new(game_config, klv)?));
+    }
+    Ok(&mut kept.as_mut().unwrap().1)
+}
+
 // how many of the tiles are vowels, consonants, and blanks, by the alphabet's
 // marks (a blank is neither)
 fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usize, usize, usize) {
@@ -4055,6 +4064,62 @@ mod tests {
         run(&mut session, "rules english").unwrap();
         assert!(std::ptr::eq(session.game_config, english));
         assert_eq!(session.rules_made.len(), 2);
+    }
+
+    #[test]
+    #[inline]
+    fn tables_kept_over_a_rules_change_are_as_built_fresh() {
+        let mut session = session();
+        run(&mut session, "rules english").unwrap();
+        let ran = |session: &mut Session| {
+            for line in GAME {
+                run(session, line).unwrap();
+            }
+        };
+        ran(&mut session);
+        let arm_tables = session.arm_tables().unwrap();
+        let kept = session.kept_leaves().unwrap();
+        let infer_at = std::ptr::from_ref(&session.infer_tables.as_ref().unwrap().1).addr();
+        run(&mut session, "rules french").unwrap();
+        run(&mut session, "rules english").unwrap();
+        ran(&mut session);
+        assert!(std::ptr::eq(session.arm_tables().unwrap(), arm_tables));
+        assert_eq!(session.kept_leaves().unwrap(), kept);
+        assert_eq!(
+            std::ptr::from_ref(&session.infer_tables.as_ref().unwrap().1).addr(),
+            infer_at
+        );
+        let mut fresh = self::session();
+        fresh.use_rules(session.game_config).unwrap();
+        ran(&mut fresh);
+        assert_eq!(fresh.kept_leaves().unwrap(), kept);
+        let kwg = session.kwg().unwrap();
+        let built = anagrams::ArmTables::build(kwg, session.game_config, false).unwrap();
+        let rack = session.state.current_player().rack.clone();
+        let plays = |arm_tables: &anagrams::ArmTables| {
+            let mut move_generator = movegen::KurniaMoveGenerator::new(session.game_config);
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &session.state.board_tiles,
+                    game_config: session.game_config,
+                    kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: session.klv,
+                },
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: movegen::PassPolicy::AsACandidate,
+                dynamic_leaves: None,
+            });
+            (move_generator.plays.iter())
+                .map(|valued| (valued.play.clone(), valued.equity))
+                .collect::<Vec<_>>()
+        };
+        let cached = plays(arm_tables);
+        assert!(!cached.is_empty());
+        assert!(cached == plays(&built));
     }
 
     // no leave values asked for are the session's one empty leaves
