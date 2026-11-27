@@ -371,6 +371,9 @@ pub struct Session {
     klvs_read: fash::MyHashMap<String, &'static std::sync::Arc<klv::Klv<kwg::Node24>>>,
     arm_tables_built:
         fash::MyHashMap<(String, usize), &'static std::sync::Arc<anagrams::ArmTables>>,
+    vocabs_built: std::cell::RefCell<
+        fash::MyHashMap<(String, usize), &'static movegen::Vocab<'static, kwg::Node24>>,
+    >,
     endgame_solvers: fash::MyHashMap<String, ShellSolver>, // by lexicon path
     seats_endgame_solvers: fash::MyHashMap<String, AnySolver<false>>,
     rules_made: fash::MyHashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
@@ -590,6 +593,7 @@ impl Session {
             run_letters_found: Default::default(),
             klvs_read: [("-".to_string(), none)].into_iter().collect(),
             arm_tables_built: Default::default(),
+            vocabs_built: Default::default(),
             endgame_solvers: Default::default(),
             seats_endgame_solvers: Default::default(),
             rules_made: Default::default(),
@@ -931,7 +935,7 @@ impl Session {
                     let board_snapshot = &movegen::BoardSnapshot {
                         board_tiles: board_before,
                         game_config: self.game_config,
-                        graphs: movegen::KwgForMovegen::for_game(self.game_config, self.kwg()?),
+                        vocab: self.vocab()?,
                         anagrams: None,
                         rack_lengths: None,
                         klv: self.klv,
@@ -1469,10 +1473,7 @@ impl Session {
                             .fmt(&movegen::BoardSnapshot {
                                 board_tiles: &state.board_tiles,
                                 game_config: self.game_config,
-                                graphs: movegen::KwgForMovegen::for_game(
-                                    self.game_config,
-                                    self.kwg()?,
-                                ),
+                                vocab: self.vocab()?,
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: self.klv,
@@ -1729,7 +1730,7 @@ impl Session {
     where
         AnySolver<TWO_SEATS>: KeptSolvers,
     {
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let arm_tables = self.arm_tables()?;
         let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
         let kept = AnySolver::<TWO_SEATS>::kept(
@@ -1745,7 +1746,7 @@ impl Session {
                 self.game_config.supports(game_config::Op::Endgame)?;
                 endgame::EndgameSolver::with_generator(
                     self.game_config,
-                    wolges::movegen::KwgForMovegen::for_game(self.game_config, kwg),
+                    vocab,
                     arm_tables,
                     self.run_letters()?,
                     movegen::KurniaMoveGenerator::new(self.game_config),
@@ -1812,6 +1813,21 @@ impl Session {
                 )));
                 self.arm_tables_built.insert(key, arm_tables);
                 arm_tables
+            }
+        })
+    }
+
+    fn vocab(&self) -> error::Returns<&'static movegen::Vocab<'static, kwg::Node24>> {
+        let (path, kwg) = self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?;
+        let key = (path.clone(), std::ptr::from_ref(self.game_config).addr());
+        let mut vocabs_built = self.vocabs_built.borrow_mut();
+        Ok(match vocabs_built.get(&key) {
+            Some(&vocab) => vocab,
+            None => {
+                let vocab: &'static _ =
+                    Box::leak(Box::new(movegen::Vocab::new(self.game_config, kwg)?));
+                vocabs_built.insert(key, vocab);
+                vocab
             }
         })
     }
@@ -2044,7 +2060,7 @@ impl Session {
         if self.final_scores.is_some() {
             return Err("the game is over".into());
         }
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let play = match args {
             [pass] if pass == "pass" => movegen::Play::Exchange {
                 tiles: [][..].into(),
@@ -2081,7 +2097,7 @@ impl Session {
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
+            vocab,
             anagrams: None,
             rack_lengths: None,
             klv: self.klv,
@@ -2175,9 +2191,9 @@ impl Session {
             self.spare_unseen.set(unseen);
             written?;
         }
-        if let Some((_, kwg)) = self.kwg {
+        if self.kwg.is_some() {
             let (mut replay, mut rng) = self.dealt(game)?;
-            let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
+            let graphs = self.vocab()?;
             for (i, turn) in game.turns.iter().enumerate() {
                 let held = replay.ready_rack(self.game_config, turn)?;
                 let board = &mut replay.state;
@@ -2198,7 +2214,7 @@ impl Session {
                         turn.play.fmt(&movegen::BoardSnapshot {
                             board_tiles: &board.board_tiles,
                             game_config: self.game_config,
-                            graphs,
+                            vocab: graphs,
                             anagrams: None,
                             rack_lengths: None,
                             klv: self.klv,
@@ -2309,12 +2325,12 @@ impl Session {
         if self.game.is_none() {
             return Err("no game: new first".into());
         }
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let arm_tables = self.arm_tables()?;
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
+            vocab,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
@@ -2351,12 +2367,12 @@ impl Session {
             return Err("no game: new first".into());
         }
         let kept = self.kept_leaves()?;
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let arm_tables = self.arm_tables()?;
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
+            vocab,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
@@ -2455,7 +2471,7 @@ impl Session {
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
+            vocab: self.vocab()?,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
@@ -2581,7 +2597,7 @@ impl Session {
         };
         let (mover, last_at) = (last.seat, self.moves_shown.len() - 1);
         let watcher_seat = self.state.turn as usize;
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let tables = infer_tables_for(&mut self.infer_tables, self.game_config, self.klv)?;
         let mut leaves = infer::PackedLeaves::new();
         let (mut carried, mut next) = (infer::Carried::default(), infer::Carried::default());
@@ -2589,7 +2605,7 @@ impl Session {
         // move, and whether they are known (an exchange no one saw is not)
         let mut put_back = Vec::new();
         let mut known = true;
-        let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
+        let graphs = vocab;
         for (at, shown) in self.moves_shown.iter().enumerate() {
             if shown.seat != mover {
                 if let movegen::Play::Exchange { tiles } = &shown.play
@@ -2618,7 +2634,7 @@ impl Session {
                 &movegen::BoardSnapshot {
                     board_tiles: &shown.board_before,
                     game_config: self.game_config,
-                    graphs,
+                    vocab: graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
@@ -2663,7 +2679,7 @@ impl Session {
                 &movegen::BoardSnapshot {
                     board_tiles: &self.state.board_tiles,
                     game_config: self.game_config,
-                    graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
+                    vocab: self.vocab()?,
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv: self.klv,
@@ -2744,7 +2760,7 @@ impl Session {
     // and one that is out (dropped, or retired by the sim) comes back with what
     // it had; one already in stays as it is
     fn sim_add(&mut self, play: movegen::Play) -> error::Returns<()> {
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let score = match &play {
             movegen::Play::Place { score, .. } => *score,
             movegen::Play::Exchange { .. } => equity::Equity::ZERO,
@@ -2753,7 +2769,7 @@ impl Session {
             &movegen::BoardSnapshot {
                 board_tiles: &self.state.board_tiles,
                 game_config: self.game_config,
-                graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
+                vocab,
                 anagrams: None,
                 rack_lengths: None,
                 klv: self.klv,
@@ -2803,7 +2819,7 @@ impl Session {
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            graphs: movegen::KwgForMovegen::for_game(self.game_config, self.kwg()?),
+            vocab: self.vocab()?,
             anagrams: None,
             rack_lengths: None,
             klv: self.klv,
@@ -3298,11 +3314,11 @@ impl Session {
     ) -> error::Returns<Vec<String>> {
         let mut line = Vec::new();
         solver.collect_pv(state.turn, &mut line)?;
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let mut state = state.clone();
         let mut rng = GameRng::seed_from_u64(0);
         let mut text = Vec::new();
-        let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
+        let graphs = vocab;
         for (i, (_, play)) in line.iter().enumerate() {
             let mover = state.turn as usize;
             text.push(format!(
@@ -3313,7 +3329,7 @@ impl Session {
                 play.fmt(&movegen::BoardSnapshot {
                     board_tiles: &state.board_tiles,
                     game_config: self.game_config,
-                    graphs,
+                    vocab: graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
@@ -3397,11 +3413,11 @@ impl Session {
         let Some(game) = &self.game else {
             return Ok(());
         };
-        let kwg = self.kwg()?;
+        let vocab = self.vocab()?;
         let alphabet = self.game_config.alphabet();
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut words = play_scorer::PlayScorer::new();
-        let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
+        let graphs = vocab;
         for (number, turn) in (1..).zip(&game.turns[..game.at]) {
             let held = replay.ready_rack(self.game_config, turn)?;
             let (nickname, _) = self.gcg_name(replay.state.turn as usize);
@@ -3412,7 +3428,7 @@ impl Session {
                 &movegen::BoardSnapshot {
                     board_tiles: &replay.state.board_tiles,
                     game_config: self.game_config,
-                    graphs,
+                    vocab: graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
@@ -3468,7 +3484,7 @@ impl Session {
                     play.fmt(&movegen::BoardSnapshot {
                         board_tiles: &self.state.board_tiles,
                         game_config: self.game_config,
-                        graphs: movegen::KwgForMovegen::for_game(self.game_config, self.kwg()?),
+                        vocab: self.vocab()?,
                         anagrams: None,
                         rack_lengths: None,
                         klv: self.klv,
@@ -4309,7 +4325,7 @@ mod tests {
                     board_snapshot: &movegen::BoardSnapshot {
                         board_tiles: &session.state.board_tiles,
                         game_config: session.game_config,
-                        graphs: movegen::KwgForMovegen::for_game(session.game_config, kwg),
+                        vocab: &movegen::Vocab::lean(kwg),
                         anagrams: arm_tables.anagrams(),
                         rack_lengths: arm_tables.rack_lengths(),
                         klv: session.klv,
@@ -4828,10 +4844,7 @@ mod tests {
             board_snapshot: &movegen::BoardSnapshot {
                 board_tiles: &session.state.board_tiles,
                 game_config: session.game_config,
-                graphs: movegen::KwgForMovegen::for_game(
-                    session.game_config,
-                    session.kwg().unwrap(),
-                ),
+                vocab: &movegen::Vocab::lean(session.kwg().unwrap()),
                 anagrams: None,
                 rack_lengths: None,
                 klv: session.klv,
@@ -6047,7 +6060,7 @@ mod tests {
                     &movegen::BoardSnapshot {
                         board_tiles: &shown.board_before,
                         game_config,
-                        graphs: movegen::KwgForMovegen::for_game(game_config, kwg),
+                        vocab: &movegen::Vocab::lean(kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv,
@@ -6551,7 +6564,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles: &first.state.board_tiles,
                 game_config: first.game_config,
-                graphs: movegen::KwgForMovegen::for_game(first.game_config, first.kwg().unwrap()),
+                vocab: &movegen::Vocab::lean(first.kwg().unwrap()),
                 anagrams: None,
                 rack_lengths: None,
                 klv: first.klv,

@@ -257,12 +257,12 @@ impl PlayScorer {
         move |word: &[u8]| {
             let mut p = 0;
             for &tile in word {
-                p = board_snapshot.graphs.words().seek(p, tile);
+                p = board_snapshot.vocab.words().seek(p, tile);
                 if p <= 0 {
                     return false;
                 }
             }
-            board_snapshot.graphs.words().node_in_run(p).accepts()
+            board_snapshot.vocab.words().node_in_run(p).accepts()
         }
     }
 
@@ -271,7 +271,7 @@ impl PlayScorer {
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
     ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
-        move |word: &[u8]| woadwage::accepts(board_snapshot.graphs.words(), word)
+        move |word: &[u8]| woadwage::accepts(board_snapshot.vocab.words(), word)
     }
 
     #[inline(always)]
@@ -279,7 +279,7 @@ impl PlayScorer {
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
     ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
-        move |word: &[u8]| jumbled_woadwage::accepts(board_snapshot.graphs.words(), word)
+        move |word: &[u8]| jumbled_woadwage::accepts(board_snapshot.vocab.words(), word)
     }
 
     #[inline(always)]
@@ -294,7 +294,7 @@ impl PlayScorer {
             while let Some(&current_tile) = current_min_tile {
                 for &tile in word {
                     if tile == current_tile {
-                        p = board_snapshot.graphs.words().seek(p, tile);
+                        p = board_snapshot.vocab.words().seek(p, tile);
                         if p <= 0 {
                             return false;
                         }
@@ -302,7 +302,7 @@ impl PlayScorer {
                 }
                 current_min_tile = word.iter().filter(|&&tile| tile > current_tile).min();
             }
-            board_snapshot.graphs.words().node_in_run(p).accepts()
+            board_snapshot.vocab.words().node_in_run(p).accepts()
         }
     }
 
@@ -744,25 +744,27 @@ mod tests {
     fn a_tile_onto_a_punctured_square_is_refused() {
         let game_config = game_config::make_punctured_english_game_config();
         let words: [bites::Bites; 1] = [[1u8, 20][..].into()];
-        let kwg = kwg::kbwg_from_bytes_alloc(
-            build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &words,
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(
+                build::build(
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
+                    build::BuildOrder::Sorted,
+                    &words,
+                )
+                .unwrap()
+                .to_vec(),
+                false,
             )
-            .unwrap()
-            .to_vec(),
-            false,
-        )
-        .unwrap();
+            .unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.players[0].rack = vec![1, 20];
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
-            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+            vocab: &crate::movegen::Vocab::lean(&kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -796,7 +798,7 @@ mod tests {
     fn a_jumbled_woadwage_play_takes_a_jumble_or_two_joined_in_every_word_it_forms() {
         let words = [vec![4u8, 1], vec![2, 3], vec![4, 1, 2, 3]];
         let explicit = jumbled_woadwage::tests::explicit_variant(&words);
-        let kad = jumbled_woadwage::tests::kad_for(&words);
+        let kad = std::sync::Arc::new(jumbled_woadwage::tests::kad_for(&words));
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let premiums = vec![
             board_layout::Premium {
@@ -819,7 +821,7 @@ mod tests {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
-            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kad),
+            vocab: &crate::movegen::Vocab::lean(&kad),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -899,18 +901,20 @@ mod tests {
             .iter()
             .map(|word| bites::Bites::from(word.as_slice()))
             .collect::<Vec<_>>();
-        let kwg = kwg::kbwg_from_bytes_alloc(
-            build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &machine_words,
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(
+                build::build(
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
+                    build::BuildOrder::Sorted,
+                    &machine_words,
+                )
+                .unwrap()
+                .to_vec(),
+                false,
             )
-            .unwrap()
-            .to_vec(),
-            false,
-        )
-        .unwrap();
+            .unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let premiums = vec![
             board_layout::Premium {
@@ -933,7 +937,7 @@ mod tests {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
-            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+            vocab: &crate::movegen::Vocab::lean(&kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,

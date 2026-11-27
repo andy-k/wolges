@@ -41,7 +41,7 @@ fn peg_draw_outcomes() {
         serde_json::from_str(include_str!("fixtures/peg_draws.json")).unwrap();
     let graph = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lexbin/CSW24.kwg");
     let bytes = std::fs::read(&graph).unwrap_or_else(|e| panic!("{}: {e}", graph.display()));
-    let kwg = kwg::kbwg_from_bytes_alloc(bytes, false).unwrap();
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(bytes, false).unwrap());
     let gc = game_config::make_english_game_config();
     let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
     let arm_tables = anagrams::ArmTables::None;
@@ -86,7 +86,7 @@ fn peg_draw_outcomes() {
         let snapshot = movegen::BoardSnapshot {
             board_tiles: &before.board_tiles,
             game_config: &gc,
-            graphs: wolges::movegen::KwgForMovegen::for_game(&gc, &kwg),
+            vocab: &wolges::movegen::Vocab::lean(&kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -129,12 +129,9 @@ fn peg_draw_outcomes() {
                 )
                 .unwrap();
             let pruned = build::graph_for_game(&gc, &words).unwrap();
-            let mut solver = endgame::EndgameSolver::<_, kwg::Node24>::new(
-                &gc,
-                wolges::movegen::KwgForMovegen::for_game(&gc, pruned.kwg()),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = wolges::movegen::Vocab::lean(pruned.kwg());
+            let mut solver =
+                endgame::EndgameSolver::<_, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
 
             assert_eq!(margins.len(), draws.len(), "{name}");
             let mut hypotheses = Vec::new();

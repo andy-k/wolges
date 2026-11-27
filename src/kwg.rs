@@ -230,7 +230,7 @@ impl RunBits {
 // a graph held with its run letters, found once as it is made: read only
 // through this, so the letters it lends are always its own
 pub struct RunGraph<N: Node> {
-    kwg: Kwg<N>,
+    kwg: std::sync::Arc<Kwg<N>>,
     bits: RunBits,
 }
 
@@ -245,7 +245,10 @@ impl<N: Node> RunGraph<N> {
     #[inline]
     pub fn new_if(kwg: Kwg<N>, keep: impl FnOnce(usize) -> bool) -> Self {
         let bits = kwg.run_bits_if(keep);
-        Self { kwg, bits }
+        Self {
+            kwg: std::sync::Arc::new(kwg),
+            bits,
+        }
     }
 
     // as new, for a graph whose runs ascend by how it was built
@@ -253,7 +256,10 @@ impl<N: Node> RunGraph<N> {
     #[inline]
     pub(crate) fn ascending(kwg: Kwg<N>) -> Self {
         let bits = kwg.run_bits_ascending();
-        Self { kwg, bits }
+        Self {
+            kwg: std::sync::Arc::new(kwg),
+            bits,
+        }
     }
 
     // a graph of no nodes, to be read only once refill_ascending has filled it
@@ -264,7 +270,10 @@ impl<N: Node> RunGraph<N> {
             bits: None,
             nodes: kwg.0.as_ptr().addr(),
         };
-        Self { kwg, bits }
+        Self {
+            kwg: std::sync::Arc::new(kwg),
+            bits,
+        }
     }
 
     // the graph made again in place from buf (Kwg::refill_from_bytes), a graph
@@ -272,20 +281,21 @@ impl<N: Node> RunGraph<N> {
     // for it with no scan
     #[inline]
     pub(crate) fn refill_ascending(&mut self, buf: &[u8]) -> error::Returns<()> {
-        let refilled = self.kwg.refill_from_bytes(buf);
-        self.bits = self.kwg.run_bits_ascending();
+        let kwg = std::sync::Arc::get_mut(&mut self.kwg).ok_or("the graph is lent out")?;
+        let refilled = kwg.refill_from_bytes(buf);
+        self.bits = kwg.run_bits_ascending();
         refilled
     }
 
     #[inline(always)]
-    pub fn kwg(&self) -> &Kwg<N> {
+    pub fn kwg(&self) -> &std::sync::Arc<Kwg<N>> {
         &self.kwg
     }
 
     // the graph, its run letters let go, for a holder that makes another graph
     // in its nodes
     #[inline(always)]
-    pub fn into_kwg(self) -> Kwg<N> {
+    pub fn into_kwg(self) -> std::sync::Arc<Kwg<N>> {
         self.kwg
     }
 

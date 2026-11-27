@@ -403,14 +403,14 @@ struct Kept {
 #[inline]
 fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
     let gc = &config.gc;
-    let kwg = match gc.game_rules() {
+    let kwg = std::sync::Arc::new(match gc.game_rules() {
         game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
             sweep_kwg_covering(gc)
         }
         game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
             test_kad(gc, SWEEP_WORDS)
         }
-    };
+    });
     let run_letter_bits = kwg.compute_letter_bits().letter_bits;
     let detected = anagrams::ArmTables::build(&kwg, gc, false).unwrap();
     let by_layout = anagrams::ArmTables::build_by_layout(&kwg, gc).unwrap();
@@ -590,7 +590,7 @@ struct CasePosition<'a> {
 }
 
 struct CaseArms<'a, 'b> {
-    kwg: &'a kwg::Kwg<kwg::Node24>,
+    kwg: &'a std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: &'a klv::Klv<kwg::Node24>,
     arms: &'a [Arm<'b>],
 }
@@ -619,7 +619,7 @@ fn run_case<'a>(
         ("forced", PassPolicy::OnlyWhenForced),
         ("candidate", PassPolicy::AsACandidate),
     ] {
-        let graphs = crate::movegen::KwgForMovegen::for_game(gc, kwg);
+        let graphs = &crate::movegen::Vocab::lean(kwg);
         for num_exchanges_by_this_player in [0, gc.exchanges_allowed_per_player()] {
             let at = format!("{case} {policy_name} {num_exchanges_by_this_player}");
             let picked = picks.iter().filter(|p| p.case == at).collect::<Vec<_>>();
@@ -630,7 +630,7 @@ fn run_case<'a>(
             let snapshot = |arm: &Arm<'a>| BoardSnapshot {
                 board_tiles,
                 game_config: gc,
-                graphs,
+                vocab: graphs,
                 anagrams: arm.anagrams,
                 rack_lengths: arm.rack_lengths,
                 klv,

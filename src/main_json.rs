@@ -280,7 +280,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &kibitzer.board_tiles,
         game_config,
-        graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
+        vocab: &wolges::movegen::Vocab::lean(kwg),
         anagrams: arm_tables.anagrams(),
         rack_lengths: arm_tables.rack_lengths(),
         klv,
@@ -418,7 +418,8 @@ mod tests {
             &words,
         )
         .unwrap();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let game_config = game_config::make_english_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
@@ -430,7 +431,7 @@ mod tests {
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
-            graphs: wolges::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+            vocab: &wolges::movegen::Vocab::lean(&kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,

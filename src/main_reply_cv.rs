@@ -32,14 +32,14 @@ fn iteration_seed(seed: u64, iteration: u64) -> u64 {
 
 fn snapshot<'a>(
     gc: &'a game_config::GameConfig,
-    kwg: &'a Kwg,
+    vocab: &'a movegen::Vocab<'a, kwg::Node24>,
     klv: &'a Klv,
     board_tiles: &'a [u8],
 ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
     movegen::BoardSnapshot {
         board_tiles,
         game_config: gc,
-        graphs: wolges::movegen::KwgForMovegen::for_game(gc, kwg),
+        vocab,
         anagrams: None,
         rack_lengths: None,
         klv,
@@ -102,7 +102,7 @@ struct PositionScratch<'a> {
 fn position(
     mg: &mut movegen::KurniaMoveGenerator,
     gc: &game_config::GameConfig,
-    kwg: &Kwg,
+    vocab: &movegen::Vocab<'_, kwg::Node24>,
     klv: &Klv,
     seed: u64,
     turns: usize,
@@ -116,7 +116,7 @@ fn position(
     gs.reset_and_draw_tiles(gc, &mut rng);
     for _ in 0..turns {
         mg.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
-            board_snapshot: &snapshot(gc, kwg, klv, &gs.board_tiles),
+            board_snapshot: &snapshot(gc, vocab, klv, &gs.board_tiles),
             rack: &gs.current_player().rack,
             max_gen: 1,
             num_exchanges_by_this_player: gs.current_player().num_exchanges,
@@ -235,9 +235,10 @@ fn main() -> error::Returns<()> {
         );
     }
     let kwg_bytes = std::fs::read(&args[1])?;
-    let kwg = Kwg::from_reader::<kwg::Node22>(kwg_bytes.len(), |at, piece| {
-        piece.copy_from_slice(&kwg_bytes[at..at + piece.len()])
-    })?;
+    let kwg = std::sync::Arc::new(Kwg::from_reader::<kwg::Node22>(
+        kwg_bytes.len(),
+        |at, piece| piece.copy_from_slice(&kwg_bytes[at..at + piece.len()]),
+    )?);
     let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args[2])?)?;
     let num_candidates = args[3].parse::<usize>()?;
     let iterations = args[4].parse::<u64>()?;
@@ -258,7 +259,7 @@ fn main() -> error::Returns<()> {
         "kwg {} klv {} candidates {num_candidates} iterations {iterations} plies {}",
         args[1], args[2], args[5]
     );
-    let graphs = wolges::movegen::KwgForMovegen::for_game(&gc, &kwg);
+    let graphs = &movegen::Vocab::lean(&kwg);
     for spec in &args[6..] {
         let (seed, turns) = spec.split_once(':').ok_or("seed:turns")?;
         let (seed, turns) = (seed.parse::<u64>()?, turns.parse::<usize>()?);
@@ -279,7 +280,7 @@ fn main() -> error::Returns<()> {
         position(
             &mut mg,
             &gc,
-            &kwg,
+            graphs,
             &klv,
             seed,
             turns,
@@ -303,7 +304,7 @@ fn main() -> error::Returns<()> {
                 .collect::<Vec<_>>()
         );
         mg.gen_moves_unfiltered_lean(&movegen::GenMovesParams {
-            board_snapshot: &snapshot(&gc, &kwg, &klv, &real.board_tiles),
+            board_snapshot: &snapshot(&gc, graphs, &klv, &real.board_tiles),
             rack,
             max_gen: num_candidates,
             num_exchanges_by_this_player: real.players[turn].num_exchanges,
@@ -319,7 +320,7 @@ fn main() -> error::Returns<()> {
             let reply = infer::reply_to(
                 &mut tables,
                 &mut mg,
-                &snapshot(&gc, &kwg, &klv, &real.board_tiles),
+                &snapshot(&gc, graphs, &klv, &real.board_tiles),
                 rack,
                 &[],
                 &candidate.play,
