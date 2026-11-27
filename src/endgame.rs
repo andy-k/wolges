@@ -9304,7 +9304,7 @@ impl PegBagProgress {
     }
 
     // a search of the position, not yet begun; an error for a bag that the
-    // tiles the mover cannot see do not fill, or that holds none
+    // tiles the mover cannot see do not fill
     #[inline]
     pub fn new(position: PegBagPosition, choices: PegBagChoices) -> error::Returns<Self> {
         match Self::new_within(position, choices, None)? {
@@ -9324,9 +9324,9 @@ impl PegBagProgress {
         let unseen = (position.unseen_tally.iter())
             .map(|&count| count as usize)
             .sum::<usize>();
-        if position.bag_size == 0 || position.bag_size > unseen {
+        if position.bag_size > unseen {
             return Err(format!(
-                "bag_size: 1 to the {unseen} tiles the mover cannot see, found {}",
+                "bag_size: at most the {unseen} tiles the mover cannot see, found {}",
                 position.bag_size
             )
             .into());
@@ -11980,6 +11980,9 @@ impl<
 
     // the value to its mover of a position whose bag is empty: its endgame
     fn endgame(&mut self, pos: &InBag) -> error::Returns<f64> {
+        if let Some(value) = self.played_out(pos) {
+            return Ok(value);
+        }
         let key = pos.key();
         let found = (self.valued).read(key, |shard| shard.endgames.get(key).copied().flatten());
         if let Some((value, exact)) = found {
@@ -12003,6 +12006,17 @@ impl<
         Ok(value)
     }
 
+    #[inline(always)]
+    fn played_out(&self, pos: &InBag) -> Option<f64> {
+        if !pos.racks[(pos.mover ^ 1) as usize].is_empty() {
+            return None;
+        }
+        let rack = &pos.racks[pos.mover as usize];
+        Some(f64::from(
+            -2 * self.gc.alphabet().scaled_rack_score(rack).raw(),
+        ))
+    }
+
     // an endgame's value kept, and whether exact: what a full table gives up
     // first is one a shallower pass found not exact, then one not exact
     #[inline(always)]
@@ -12019,6 +12033,9 @@ impl<
     // millipoints, as every endgame value is), else none: searched below beta
     // alone, which stops sooner than a search for the value
     fn endgame_below(&mut self, pos: &InBag, beta: f64) -> error::Returns<Option<f64>> {
+        if let Some(value) = self.played_out(pos) {
+            return Ok((value < beta).then_some(value));
+        }
         let key = pos.key();
         let found = (self.valued).read(key, |shard| shard.endgames.get(key).copied().flatten());
         if let Some((value, exact)) = found {
@@ -20164,6 +20181,40 @@ mod tests {
                     answers[0] == answers[1] && answers[0] == answers[2],
                     "rack {rack:?} estimates {estimates}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bag_search_with_an_empty_bag_answers_as_the_endgame() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        for (other, rack) in [
+            (&[1u8, 2, 8][..], &[1u8, 20, 8][..]),
+            (&[1, 1, 20], &[2, 1, 8]),
+        ] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in other {
+                unseen_tally[tile as usize] += 1;
+            }
+            own.init_after_scoreless_turns(&board, [rack, other], 0, 0);
+            let value = own.solve(0).unwrap();
+            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+                for lead in [e(0), e(-3000), e(5000)] {
+                    let mut position = bag_position(&board, rack, &unseen_tally, 0, lead);
+                    position.model = model;
+                    let result = uncut_peg(&mut egs, position).unwrap().unwrap();
+                    assert!(result.exact);
+                    assert_eq!(result.expected_margin, value + lead);
+                }
             }
         }
     }
