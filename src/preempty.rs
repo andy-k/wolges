@@ -833,10 +833,9 @@ mod tests {
 
         fn snap(&self) -> movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24> {
             movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &self.board,
                 game_config: &self.gc,
-                kwg: &self.kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&self.gc, &self.kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &self.klv,
@@ -1352,10 +1351,9 @@ mod tests {
         let klv = Arc::new(klv);
         let tables = Arc::new(anagrams::ArmTables::None);
         let snap = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -1590,7 +1588,7 @@ mod tests {
         worker
             .simulate(
                 &f.gc,
-                &f.kwg,
+                crate::movegen::KwgForMovegen::for_game(&f.gc, &f.kwg),
                 &anagrams::ArmTables::None,
                 &f.klv,
                 &movegen::Play::Exchange {

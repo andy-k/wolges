@@ -1804,15 +1804,79 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct KwgForMovegen<'a, N: kwg::Node> {
+    kwg: Option<&'a kwg::Kwg<N>>,
+    kad: Option<&'a kwg::Kwg<N>>,
+    words: &'a kwg::Kwg<N>,
+    split: bool,
+}
+
+impl<'a, N: kwg::Node> KwgForMovegen<'a, N> {
+    pub fn new(
+        game_config: &game_config::GameConfig,
+        kwg: Option<&'a kwg::Kwg<N>>,
+        kad: Option<&'a kwg::Kwg<N>>,
+    ) -> error::Returns<Self> {
+        let (words, split) = match game_config.game_rules() {
+            game_config::GameRules::Classic => (kwg.ok_or("these rules need a kwg")?, false),
+            game_config::GameRules::Woadwage => {
+                (kwg.ok_or("these rules need a kwg")?, kad.is_some())
+            }
+            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+                (kad.ok_or("these rules need a kad")?, false)
+            }
+        };
+        Ok(Self {
+            kwg,
+            kad,
+            words,
+            split,
+        })
+    }
+
+    #[inline(always)]
+    pub fn for_game(game_config: &game_config::GameConfig, words: &'a kwg::Kwg<N>) -> Self {
+        match game_config.game_rules() {
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => Self {
+                kwg: Some(words),
+                kad: None,
+                words,
+                split: false,
+            },
+            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => Self {
+                kwg: None,
+                kad: Some(words),
+                words,
+                split: false,
+            },
+        }
+    }
+
+    #[inline(always)]
+    pub fn kwg(&self) -> Option<&'a kwg::Kwg<N>> {
+        self.kwg
+    }
+
+    #[inline(always)]
+    pub fn kad(&self) -> Option<&'a kwg::Kwg<N>> {
+        self.kad
+    }
+
+    #[inline(always)]
+    pub fn words(&self) -> &'a kwg::Kwg<N> {
+        self.words
+    }
+}
+
 // kwg must be Gaddawg for Classic and Woadwage, AlphaDawg for Jumbled and
 // JumbledWoadwage.
 pub struct BoardSnapshot<'a, N: kwg::Node, L: kwg::Node> {
     pub board_tiles: &'a [u8],
     pub game_config: &'a game_config::GameConfig,
-    pub kwg: &'a kwg::Kwg<N>,
+    pub graphs: KwgForMovegen<'a, N>,
     pub anagrams: Option<&'a anagrams::Anagrams>,
     pub rack_lengths: Option<&'a anagrams::RackLengths>,
-    pub alphagrams: Option<&'a kwg::Kwg<kwg::Node24>>,
     pub klv: &'a klv::Klv<L>,
 }
 
@@ -1846,7 +1910,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 
     let len = output_strider.len();
     let step = output_strider.step() as usize;
-    let kwg = board_snapshot.kwg;
+    let kwg = board_snapshot.graphs.words();
     let mut last_nonempty = len;
     {
         let alphabet = board_snapshot.game_config.alphabet();
@@ -2049,7 +2113,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     let len = output_strider.len();
     let step = output_strider.step() as usize;
     let mut wp = output_strider.base() as usize;
-    let kwg = board_snapshot.kwg;
+    let kwg = board_snapshot.graphs.words();
     let alphabet = board_snapshot.game_config.alphabet();
     let mut prev_wp = !0;
     for i in 0..len {
@@ -2181,7 +2245,7 @@ fn gen_jumbled_woadwage_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     let len = output_strider.len() as usize;
     let step = output_strider.step() as usize;
     let mut wp = output_strider.base() as usize;
-    let kwg = board_snapshot.kwg;
+    let kwg = board_snapshot.graphs.words();
     let alphabet = board_snapshot.game_config.alphabet();
     let alphabet_len = alphabet.len() as usize;
     let tally_of = |tiles: &[u8], more: &[u8]| {
@@ -2262,7 +2326,7 @@ fn gen_woadwage_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     let len = output_strider.len() as usize;
     let step = output_strider.step() as usize;
     let mut wp = output_strider.base() as usize;
-    let kwg = board_snapshot.kwg;
+    let kwg = board_snapshot.graphs.words();
     let alphabet = board_snapshot.game_config.alphabet();
     for i in 0..len {
         let b = board_strip[i];
@@ -4293,7 +4357,7 @@ fn gen_classic_place_moves_lean<
             if b == 0 {
                 break;
             }
-            let graph = env.params.board_snapshot.kwg;
+            let graph = env.params.board_snapshot.graphs.words();
             p = env
                 .runs
                 .find(graph, graph.node_in_run(p).arc_index(), b & 0x7f);
@@ -4305,7 +4369,7 @@ fn gen_classic_place_moves_lean<
             }
             idx += 1;
         }
-        let node = env.params.board_snapshot.kwg.node_in_run(p);
+        let node = env.params.board_snapshot.graphs.words().node_in_run(p);
         if idx > env.params.anchor + 1
             && env.num_played > u8::from(!is_unique)
             && idx - env.idx_left >= 2
@@ -4377,7 +4441,11 @@ fn gen_classic_place_moves_lean<
                 ($p:expr, $node:expr, $tile:expr) => {{
                     let (p, node, tile) = ($p, $node, $tile);
                     let bit = 1u64 << tile;
-                    env.params.board_snapshot.kwg.prefetch(node.arc_index());
+                    env.params
+                        .board_snapshot
+                        .graphs
+                        .words()
+                        .prefetch(node.arc_index());
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
                         let spent = bit * u64::from(env.params.rack_tally[tile as usize] == 0);
@@ -4442,13 +4510,13 @@ fn gen_classic_place_moves_lean<
                         let tile = hits.trailing_zeros() as u8;
                         hits &= hits - 1;
                         let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
-                        let node = env.params.board_snapshot.kwg.node_in_run(at);
+                        let node = env.params.board_snapshot.graphs.words().node_in_run(at);
                         debug_assert_eq!(node.tile(), tile);
                         visit!(at, node, tile);
                     }
                 }
                 None => loop {
-                    let node = env.params.board_snapshot.kwg.node_in_run(p);
+                    let node = env.params.board_snapshot.graphs.words().node_in_run(p);
                     let tile = node.tile();
                     let bit = 1u64 << tile;
                     if candidates & bit != 0 {
@@ -4508,7 +4576,7 @@ fn gen_classic_place_moves_lean<
                 if b == 0 {
                     break;
                 }
-                let graph = env.params.board_snapshot.kwg;
+                let graph = env.params.board_snapshot.graphs.words();
                 p = env
                     .runs
                     .find(graph, graph.node_in_run(p).arc_index(), b & 0x7f);
@@ -4521,7 +4589,7 @@ fn gen_classic_place_moves_lean<
                 idx -= 1;
             }
         }
-        let node = env.params.board_snapshot.kwg.node_in_run(p);
+        let node = env.params.board_snapshot.graphs.words().node_in_run(p);
         if env.num_played > u8::from(!is_unique) && env.params.anchor - idx >= 2 && node.accepts() {
             record::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                 env,
@@ -4568,7 +4636,9 @@ fn gen_classic_place_moves_lean<
             if turn == 0 {
                 return;
             }
-            let turnaround_p = env.runs.find(env.params.board_snapshot.kwg, p, 0);
+            let turnaround_p = env
+                .runs
+                .find(env.params.board_snapshot.graphs.words(), p, 0);
             if turnaround_p > 0 {
                 // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
                 env.idx_left = idx + 1;
@@ -4642,7 +4712,11 @@ fn gen_classic_place_moves_lean<
                     );
                     env.num_played += 1;
                 } else {
-                    env.params.board_snapshot.kwg.prefetch(node.arc_index());
+                    env.params
+                        .board_snapshot
+                        .graphs
+                        .words()
+                        .prefetch(node.arc_index());
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
                         let spent = bit * u64::from(env.params.rack_tally[tile as usize] == 0);
@@ -4707,7 +4781,7 @@ fn gen_classic_place_moves_lean<
                 let tile = hits.trailing_zeros() as u8;
                 hits &= hits - 1;
                 let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
-                let node = env.params.board_snapshot.kwg.node_in_run(at);
+                let node = env.params.board_snapshot.graphs.words().node_in_run(at);
                 debug_assert_eq!(node.tile(), tile);
                 visit!(at, node, tile);
             }
@@ -4715,7 +4789,7 @@ fn gen_classic_place_moves_lean<
             return;
         }
         loop {
-            let node = env.params.board_snapshot.kwg.node_in_run(p);
+            let node = env.params.board_snapshot.graphs.words().node_in_run(p);
             let tile = node.tile();
             let bit = 1u64 << tile;
             if candidates & bit != 0 {
@@ -7426,7 +7500,7 @@ fn gen_jumbled_place_moves_walk<
                         if !kept {
                             collect_multisets(
                                 &mut Collect {
-                                    kwg: env.params.board_snapshot.kwg,
+                                    kwg: env.params.board_snapshot.graphs.words(),
                                     alphabet_len,
                                     forced: &forced,
                                     rack_tally: env.params.rack_tally,
@@ -7957,7 +8031,7 @@ fn gen_jumbled_woadwage_place_moves<
         tally: &[u8; crate::census::MAX_LETTERS],
     ) -> bool {
         let alphabet_len = env.alphabet.len() as usize;
-        let kwg = env.params.board_snapshot.kwg;
+        let kwg = env.params.board_snapshot.graphs.words();
         *env.params
             .woadwage
             .jumbles
@@ -8392,7 +8466,7 @@ fn subset_jumble<N: kwg::Node, L: kwg::Node>(
         tally[s.kinds[kind].0 as usize] += subset_digit(s, state, kind) as u8;
     }
     let alphabet_len = board_snapshot.game_config.alphabet().len() as usize;
-    let kwg = board_snapshot.kwg;
+    let kwg = board_snapshot.graphs.words();
     *s.jumbles
         .entry(tally)
         .or_insert_with(|| kwg.accepts_alpha_of_len(&tally[..alphabet_len], alphabet_len as u8))
@@ -8827,7 +8901,7 @@ fn gen_woadwage_place_moves<
         if stops_walk(env.params.threshold) {
             return;
         }
-        let kwg = env.params.board_snapshot.kwg;
+        let kwg = env.params.board_snapshot.graphs.words();
         let ends = idx >= env.params.rightmost || env.params.board_strip[idx as usize] == 0;
         if ends
             && idx > env.params.anchor
@@ -8964,7 +9038,6 @@ fn gen_woadwage_place_moves<
 mod ordered_join {
     use super::*;
     use crate::fash::MyHasher;
-    use crate::kwg::Node as _;
     use std::hash::{Hash, Hasher};
 
     const LANE_LEN: usize = i8::MAX as usize;
@@ -9135,20 +9208,20 @@ mod ordered_join {
         }
     }
 
-    pub(super) struct Search<'a> {
-        graph: &'a kwg::Kwg<kwg::Node24>,
+    pub(super) struct Search<'a, N: kwg::Node> {
+        graph: &'a kwg::Kwg<N>,
         buffers: &'a mut Buffers,
         keyed: bool,
         tile_scores: [i32; MAX_ALPHABET_LEN],
         vowels: u64,
     }
 
-    impl<'a> Search<'a> {
-        pub(super) fn new<N: kwg::Node, L: kwg::Node>(
+    impl<'a, N: kwg::Node> Search<'a, N> {
+        pub(super) fn new<L: kwg::Node>(
             params: &GenMovesParams<'_, N, L>,
             leaves: &klv::MultiLeaves,
             memory: Option<&endgame::MemoryLimit>,
-            graph: &'a kwg::Kwg<kwg::Node24>,
+            graph: &'a kwg::Kwg<N>,
             buffers: &'a mut Buffers,
         ) -> Option<Self> {
             let config = params.board_snapshot.game_config;
@@ -9269,7 +9342,6 @@ mod ordered_join {
 
         pub(super) fn generate<
             const BAG_TERM: bool,
-            N: kwg::Node,
             L: kwg::Node,
             Callback: FnMut(i8, &[u8], i32, i32) -> i32,
         >(
@@ -9497,7 +9569,7 @@ mod ordered_join {
         danger: &'a [bool],
         alphabet: &'a alphabet::Alphabet,
         alpha: &'a mut [Option<AlphaEntry>],
-        graph: &'a kwg::Kwg<kwg::Node24>,
+        graph: &'a kwg::Kwg<N>,
         keys: Option<Keys<'a>>,
         tile_scores: &'a [i32; MAX_ALPHABET_LEN],
         vowels: u64,
@@ -9646,7 +9718,7 @@ mod ordered_join {
             best_play: &mut [u8],
         ) -> Option<HalfScore> {
             let p = &self.params;
-            let graph = p.board_snapshot.kwg;
+            let graph = p.board_snapshot.graphs.words();
             let mut fit = Fit {
                 graph,
                 board: p.board_strip,
@@ -9684,8 +9756,8 @@ mod ordered_join {
         }
     }
 
-    fn known_alpha(
-        graph: &kwg::Kwg<kwg::Node24>,
+    fn known_alpha<N: kwg::Node>(
+        graph: &kwg::Kwg<N>,
         mut prev: i32,
         natural: &[u8],
         blanks: usize,
@@ -9826,6 +9898,7 @@ mod ordered_join {
     mod tests {
         use super::*;
         use crate::jumbled_woadwage::tests::kad_for;
+        use crate::kwg::Node as _;
         use crate::movegen::tests::{woadwage_toy, woadwage_toy_config};
 
         #[test]
@@ -9867,7 +9940,7 @@ mod ordered_join {
             for board in [&open, &occupied] {
                 for rack in racks {
                     let mut plays = Vec::new();
-                    for (generator, alphagrams) in [
+                    for (generator, kad) in [
                         (&mut reference, None),
                         (&mut joined, Some(&kad)),
                         (&mut bounded, Some(&kad)),
@@ -9875,26 +9948,25 @@ mod ordered_join {
                         let snapshot = BoardSnapshot {
                             board_tiles: board,
                             game_config: &config,
-                            kwg: &dawg,
+                            graphs: KwgForMovegen::new(&config, Some(&dawg), kad).unwrap(),
                             klv: &klv,
                             anagrams: None,
                             rack_lengths: None,
-                            alphagrams,
                         };
-                        generator
-                            .gen_moves_unfiltered(&GenMovesParams {
-                                board_snapshot: &snapshot,
-                                rack,
-                                max_gen: 1,
-                                num_exchanges_by_this_player: 0,
-                                pass_policy: PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: None,
-                            })
-                            .unwrap();
+                        let params = GenMovesParams {
+                            board_snapshot: &snapshot,
+                            rack,
+                            max_gen: 1,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        };
+                        generator.gen_moves_unfiltered(&params).unwrap();
+                        plays.push(std::mem::take(&mut generator.plays));
+                        generator.gen_moves_unfiltered_lean(&params).unwrap();
                         plays.push(std::mem::take(&mut generator.plays));
                     }
-                    assert!(plays[0] == plays[1]);
-                    assert!(plays[0] == plays[2]);
+                    assert!(plays.iter().all(|p| *p == plays[0]));
                 }
             }
         }
@@ -9913,7 +9985,7 @@ struct GenPlaceMovesAtParams<
     S: BoardStore,
 > {
     runs: R,
-    ordered_join: Option<&'a mut ordered_join::Search<'join>>,
+    ordered_join: Option<&'a mut ordered_join::Search<'join, N>>,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
     multi_leaves: &'a klv::MultiLeaves,
@@ -10052,7 +10124,7 @@ fn gen_place_moves_at_lean<
         best_leave_values: &working_buffer.best_leave_values,
     };
     if JOIN {
-        ordered_join.unwrap().generate::<BAG_TERM, _, _, _>(
+        ordered_join.unwrap().generate::<BAG_TERM, _, _>(
             &mut params,
             !placement.down,
             left_bounds,
@@ -11383,7 +11455,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         cols: u128,
     ) -> error::Returns<()> {
         check_exchange_limit(board_snapshot.game_config)?;
-        debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
+        debug_assert_eq!(run_letter_bits.len(), board_snapshot.graphs.words().0.len());
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_raw_all_unsorted_impl(
@@ -11495,7 +11567,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         limit: HeldBytes,
     ) -> error::Returns<bool> {
         check_exchange_limit(board_snapshot.game_config)?;
-        debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
+        debug_assert_eq!(run_letter_bits.len(), board_snapshot.graphs.words().0.len());
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
         let stopped = self.gen_moves_raw_all_unsorted_within(
@@ -11923,10 +11995,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         census.reset(nibbles, dim.rows as usize + dim.cols as usize);
         let mut deltas = std::mem::take(&mut census.deltas);
         let snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: board_snapshot.board_tiles,
             game_config: board_snapshot.game_config,
-            kwg: board_snapshot.kwg,
+            graphs: board_snapshot.graphs,
             anagrams: None,
             rack_lengths: None,
             klv: board_snapshot.klv,
@@ -11986,7 +12057,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         check_exchange_limit(params.board_snapshot.game_config)?;
         adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         self.working_buffer.jumbled.walk = W::WALK;
-        self.gen_moves_filtered_lean_by_side::<false, _, _>(
+        self.gen_moves_filtered_lean_by_side(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -12021,10 +12092,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             return;
         };
         let snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: board_snapshot.board_tiles,
             game_config,
-            kwg: board_snapshot.kwg,
+            graphs: board_snapshot.graphs,
             anagrams: None,
             rack_lengths: None,
             klv: board_snapshot.klv,
@@ -12581,10 +12651,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             Some(empty) => {
                 let board_snapshot = params.board_snapshot;
                 snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: board_snapshot.board_tiles,
                     game_config: board_snapshot.game_config,
-                    kwg: board_snapshot.kwg,
+                    graphs: board_snapshot.graphs,
                     anagrams: board_snapshot.anagrams,
                     rack_lengths: board_snapshot.rack_lengths,
                     klv: empty,
@@ -12602,7 +12671,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             None => params,
         };
         self.working_buffer.is_census = is_census;
-        self.gen_moves_filtered_lean_by_side::<false, _, _>(
+        self.gen_moves_filtered_lean_by_side(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -12720,16 +12789,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             None => Some((place_move_predicate, equity_predicate)),
         };
         if let Some((place_move_predicate, equity_predicate)) = handed_back {
-            if !lean && params.board_snapshot.alphagrams.is_some() {
-                return self.gen_moves_filtered_lean_by_side::<true, _, _>(
-                    params,
-                    place_move_predicate,
-                    adjust_leave_value,
-                    equity_predicate,
-                    other,
-                );
-            }
-            self.gen_moves_filtered_lean_by_side::<false, _, _>(
+            self.gen_moves_filtered_lean_by_side(
                 params,
                 place_move_predicate,
                 adjust_leave_value,
@@ -13002,7 +13062,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) -> error::Returns<()> {
         check_exchange_limit(params.board_snapshot.game_config)?;
         adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
-        self.gen_moves_filtered_lean_by_side::<false, _, _>(
+        self.gen_moves_filtered_lean_by_side(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -13015,7 +13075,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // the lean arm's generation compiled for the board's side: a 15 by 15
     // board, a 21 by 21 one, else any
     #[inline(always)]
-    fn gen_moves_filtered_lean_by_side<'a, const JOIN: bool, N: kwg::Node, L: kwg::Node>(
+    fn gen_moves_filtered_lean_by_side<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlacePredicate<'_>,
@@ -13025,7 +13085,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     ) {
         let dim = params.board_snapshot.game_config.board_layout().dim();
         if dim.rows == 15 && dim.cols == 15 {
-            return self.gen_moves_filtered_impl::<15, JOIN, u32, _, _>(
+            return self.gen_moves_filtered_impl::<15, u32, _, _>(
                 params,
                 place_move_predicate,
                 adjust_leave_value,
@@ -13034,7 +13094,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             );
         }
         if dim.rows == 21 && dim.cols == 21 {
-            return self.gen_moves_filtered_impl::<21, JOIN, u32, _, _>(
+            return self.gen_moves_filtered_impl::<21, u32, _, _>(
                 params,
                 place_move_predicate,
                 adjust_leave_value,
@@ -13047,7 +13107,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         if !ANY_SIDE {
             unreachable!("a board with no copy of the lean arm in this generator");
         }
-        self.gen_moves_filtered_impl::<0, JOIN, G, _, _>(
+        self.gen_moves_filtered_impl::<0, G, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -13058,14 +13118,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
 
     // the best one kept in one slot, more of them in a heap
     #[inline(always)]
-    fn gen_moves_filtered_impl<
-        'a,
-        const D: usize,
-        const JOIN: bool,
-        W: LaneBits,
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
+    fn gen_moves_filtered_impl<'a, const D: usize, W: LaneBits, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlacePredicate<'_>,
@@ -13074,13 +13127,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         other: OtherLeaves<'_, L>,
     ) {
         if params.max_gen == 1 {
-            if JOIN
-                && matches!(
-                    params.board_snapshot.game_config.game_rules(),
-                    game_config::GameRules::Woadwage
-                )
-                && params.rack.contains(&0)
-            {
+            if params.board_snapshot.graphs.split && params.rack.contains(&0) {
                 self.gen_moves_filtered_impl_kept::<KeptOne, D, true, W, N, L>(
                     params,
                     place_move_predicate,
@@ -13207,7 +13254,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         let mut ordered =
             std::mem::replace(&mut working_buffer.ordered, ordered_join::Buffers::new());
         let memory = working_buffer.room.memory;
-        let ordered_join = match params.board_snapshot.alphagrams {
+        let ordered_join = match params.board_snapshot.graphs.kad() {
             Some(graph) if JOIN => ordered_join::Search::new(
                 params,
                 &multi_leaves,
@@ -13410,7 +13457,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         params: &'a GenMovesParams<'a, N, L>,
     ) -> error::Returns<()> {
         check_exchange_limit(params.board_snapshot.game_config)?;
-        self.gen_moves_filtered_lean_by_side::<false, _, _>(
+        self.gen_moves_filtered_lean_by_side(
             params,
             PlacePredicate::AcceptAll,
             klv::AdjustLeave::Identity,
@@ -14338,7 +14385,7 @@ fn walk_woadwage_star_lanes<
     lanes: [Option<(bool, i8, i8)>; 2],
     threshold: i32,
     mut found_place_move: FoundPlaceMove,
-    mut ordered_join: Option<&mut ordered_join::Search<'a>>,
+    mut ordered_join: Option<&mut ordered_join::Search<'a, N>>,
 ) {
     let game_config = board_snapshot.game_config;
     let dim = game_config.board_layout().dim();
@@ -14431,7 +14478,7 @@ fn walk_woadwage_star_lanes<
             ordered_join
                 .as_deref_mut()
                 .unwrap()
-                .generate::<BAG_TERM, _, _, _>(&mut params, !down, &[], Some(down));
+                .generate::<BAG_TERM, _, _>(&mut params, !down, &[], Some(down));
         } else {
             gen_woadwage_place_moves::<true, BAG_TERM, _, _, _>(&mut params, !down, &[]);
         }
@@ -14594,7 +14641,7 @@ fn gen_empty_board_place_moves<
     multi_leaves: &'a klv::MultiLeaves,
     threshold: i32,
     mut found_place_move: FoundPlaceMove,
-    ordered_join: Option<&mut ordered_join::Search<'a>>,
+    ordered_join: Option<&mut ordered_join::Search<'a, N>>,
 ) {
     lean_cross_sets::<D, _, _, _, _, _>(board_snapshot, working_buffer);
     if JOIN {
@@ -14855,7 +14902,7 @@ fn gen_empty_board_place_moves_made<
                 } else {
                     0
                 };
-                env.board_snapshot.kwg.prefetch(next);
+                env.board_snapshot.graphs.words().prefetch(next);
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     let spent = (1u64 << tile) * u64::from(env.rack_tally[tile as usize] == 0);
@@ -14896,13 +14943,13 @@ fn gen_empty_board_place_moves_made<
                     let tile = hits.trailing_zeros() as u8;
                     hits &= hits - 1;
                     let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
-                    let node = env.board_snapshot.kwg.node_in_run(at);
+                    let node = env.board_snapshot.graphs.words().node_in_run(at);
                     debug_assert_eq!(node.tile(), tile);
                     visit!(node, tile);
                 }
             }
             None => loop {
-                let node = env.board_snapshot.kwg.node_in_run(p);
+                let node = env.board_snapshot.graphs.words().node_in_run(p);
                 let tile = node.tile();
                 let bit = 1u64 << tile;
                 if candidates & bit != 0 {
@@ -14965,7 +15012,7 @@ fn gen_empty_board_place_moves_made<
         .max()
         .unwrap_or(0);
     let max_len = (num_max_played as usize).min(longest as usize);
-    let root = board_snapshot.kwg.node_in_run(0).arc_index();
+    let root = board_snapshot.graphs.words().node_in_run(0).arc_index();
     if max_len < 2 || root <= 0 {
         return;
     }
@@ -15010,7 +15057,7 @@ struct KurniaIterParams<
     S: BoardStore,
 > {
     runs: R,
-    ordered_join: Option<ordered_join::Search<'a>>,
+    ordered_join: Option<ordered_join::Search<'a, N>>,
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
     multi_leaves: &'a klv::MultiLeaves,
@@ -17884,7 +17931,7 @@ fn gen_remaining_jumbled_words<
     required.clear();
     endgame::room_in(memory, required, game_config.alphabet().len() as usize)?;
     required.resize(game_config.alphabet().len() as usize, 0);
-    let root = board_snapshot.kwg.node_in_run(0).arc_index();
+    let root = board_snapshot.graphs.words().node_in_run(0).arc_index();
     working_buffer.exchange_buffer.clear();
     endgame::room_in(memory, &mut working_buffer.exchange_buffer, longest)?;
     for (tiles, len) in [
@@ -17913,7 +17960,7 @@ fn gen_remaining_jumbled_words<
                     if run >= 2 && held > 0 && held < run && root != 0 {
                         walk(
                             &mut Env {
-                                kwg: board_snapshot.kwg,
+                                kwg: board_snapshot.graphs.words(),
                                 available: &mut working_buffer.used_letters_tally,
                                 required,
                                 word: &mut working_buffer.exchange_buffer,
@@ -17935,7 +17982,7 @@ fn gen_remaining_jumbled_words<
     lone_takes.resize(longest, !1);
     kept.clear();
     lone_words(
-        board_snapshot.kwg,
+        board_snapshot.graphs.words(),
         &mut working_buffer.used_letters_tally,
         LoneGeometry {
             takes: lone_takes,
@@ -18087,7 +18134,7 @@ fn gen_remaining_woadwage_words<
     required.clear();
     endgame::room_in(memory, required, game_config.alphabet().len() as usize)?;
     required.resize(game_config.alphabet().len() as usize, 0);
-    let root = board_snapshot.kwg.node_in_run(0).arc_index();
+    let root = board_snapshot.graphs.words().node_in_run(0).arc_index();
     if root == 0 {
         return Ok(());
     }
@@ -18095,7 +18142,7 @@ fn gen_remaining_woadwage_words<
     word.clear();
     endgame::room_in(memory, word, longest)?;
     let mut env = Env {
-        kwg: board_snapshot.kwg,
+        kwg: board_snapshot.graphs.words(),
         available: &mut working_buffer.used_letters_tally,
         required,
         word,
@@ -18292,7 +18339,7 @@ fn gen_remaining_words<
                         .take_while(|&&tile| tile != 0)
                         .count();
                 takes[across(line, idx).0] &= letters_between(
-                    board_snapshot.kwg,
+                    board_snapshot.graphs.words(),
                     &tiles[first..idx],
                     &tiles[idx + 1..last],
                 );
@@ -18312,7 +18359,7 @@ fn gen_remaining_words<
             let bits = &mut words[line];
             bits.clear();
             prune_line(&mut PruneLine {
-                kwg: board_snapshot.kwg,
+                kwg: board_snapshot.graphs.words(),
                 tiles,
                 takes: &takes[start..start + len],
                 available,
@@ -18376,7 +18423,7 @@ fn gen_remaining_words<
     }
     kept.clear();
     lone_words(
-        board_snapshot.kwg,
+        board_snapshot.graphs.words(),
         available,
         LoneGeometry {
             takes,
@@ -18597,10 +18644,9 @@ pub(crate) mod tests {
         for (fen, rack, max_gen) in cases {
             let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -18665,10 +18711,9 @@ pub(crate) mod tests {
                     let mut fetched = String::new();
                     for (anagrams, out) in [(None, &mut walked), (Some(&held), &mut fetched)] {
                         let board_snapshot = BoardSnapshot {
-                            alphagrams: None,
                             board_tiles: &board_tiles,
                             game_config: gc,
-                            kwg: &kwg,
+                            graphs: crate::movegen::KwgForMovegen::for_game(gc, &kwg),
                             anagrams,
                             rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                             klv: &klv,
@@ -18796,10 +18841,9 @@ pub(crate) mod tests {
             for fen in boards {
                 let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -18920,10 +18964,9 @@ pub(crate) mod tests {
                 let mut placed = 0;
                 for anagrams in [None, Some(&held)] {
                     let board_snapshot = BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                         anagrams,
                         rack_lengths: None,
                         klv: &klv,
@@ -19100,10 +19143,9 @@ pub(crate) mod tests {
         for anagrams in [None, Some(&held)] {
             let gen_on = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8]| {
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams,
                     rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                     klv: &klv,
@@ -19204,10 +19246,9 @@ pub(crate) mod tests {
                 let rack = parse_test_rack(gc.alphabet(), rack);
                 for anagrams in [None, Some(&held)] {
                     let board_snapshot = BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                         anagrams,
                         rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                         klv: &klv,
@@ -19348,10 +19389,9 @@ pub(crate) mod tests {
                     board[112..114].copy_from_slice(&[1, 20]);
                 }
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board,
                     game_config: &game,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game, &kwg),
                     anagrams: tables.anagrams(),
                     rack_lengths: tables.rack_lengths(),
                     klv: &first,
@@ -19687,10 +19727,9 @@ pub(crate) mod tests {
                     let want = reference_placements(&gc, &board_tiles, &rack, &words);
                     for lean in [false, true] {
                         let board_snapshot = BoardSnapshot {
-                            alphagrams: None,
                             board_tiles: &board_tiles,
                             game_config: &gc,
-                            kwg: &kwg,
+                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                             anagrams: None,
                             rack_lengths: None,
                             klv: &klv,
@@ -19756,10 +19795,9 @@ pub(crate) mod tests {
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -19793,10 +19831,9 @@ pub(crate) mod tests {
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -19876,10 +19913,9 @@ pub(crate) mod tests {
             let mut best = None;
             for (anagrams, lean) in [(None, false), (Some(&held), false), (Some(&held), true)] {
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams,
                     rack_lengths: None,
                     klv: &klv,
@@ -19991,10 +20027,9 @@ pub(crate) mod tests {
             let arms = [(None, false), (Some(&held), false), (Some(&held), true)];
             for (arm, (anagrams, lean)) in arms.into_iter().enumerate() {
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams,
                     rack_lengths: None,
                     klv: &klv,
@@ -20164,10 +20199,9 @@ pub(crate) mod tests {
                 let mut got = vec![(0u64, 0u64); board_tiles.len()];
                 KurniaMoveGenerator::new(&gc).gen_hooks(
                     &BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -20239,10 +20273,9 @@ pub(crate) mod tests {
         let dim = gc.board_layout().dim();
         let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -20304,10 +20337,9 @@ pub(crate) mod tests {
                 board_tiles[7 * 15 + 5 + i] = tile;
             }
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -20384,10 +20416,9 @@ pub(crate) mod tests {
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &[],
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -20696,10 +20727,9 @@ pub(crate) mod tests {
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -20748,10 +20778,9 @@ pub(crate) mod tests {
         let mut made = Vec::new();
         for anagrams in [None, Some(&held)] {
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams,
                 rack_lengths: None,
                 klv: &klv,
@@ -20827,10 +20856,9 @@ pub(crate) mod tests {
         let board_tiles = vec![0u8; 15 * 15];
         let rack = parse_test_rack(gc.alphabet(), "?ANTS??");
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -21071,10 +21099,9 @@ pub(crate) mod tests {
             board_tiles[row * dim.cols as usize + col] = buf[0];
         }
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -21348,19 +21375,17 @@ pub(crate) mod tests {
             .to_vec();
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let seat_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &seat,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
         };
         let empty_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &empty,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -21432,10 +21457,9 @@ pub(crate) mod tests {
                 .unwrap()
                 .to_vec();
             let snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board,
                 game_config: gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -21487,10 +21511,9 @@ pub(crate) mod tests {
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let plays = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8]| {
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -21552,10 +21575,9 @@ pub(crate) mod tests {
         let racks = ["?EINRST", "AEINRST", "CARTONS", "??TANS"];
         let plays = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8], rack: &str| {
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: Some(&held),
                 rack_lengths: None,
                 klv: &klv,
@@ -21633,10 +21655,9 @@ pub(crate) mod tests {
         board_tiles[dim.at_on_board(7, 7)] = 1;
         let plays = |anagrams| {
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams,
                 rack_lengths: None,
                 klv: &klv,
@@ -21713,10 +21734,9 @@ pub(crate) mod tests {
                      tables: bool,
                      rack: &str| {
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: tables.then_some(&held),
                 rack_lengths: (!tables).then_some(&rack_lengths),
                 klv: &klv,
@@ -21787,10 +21807,9 @@ pub(crate) mod tests {
         for anagrams in [None, Some(&held)] {
             let plays = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8]| {
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams,
                     rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                     klv: &klv,
@@ -21999,10 +22018,9 @@ pub(crate) mod tests {
                     board_tiles[0] = 1;
                 }
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -22255,10 +22273,9 @@ pub(crate) mod tests {
                             rack
                         };
                         let board_snapshot = BoardSnapshot {
-                            alphagrams: None,
                             board_tiles: &board_tiles,
                             game_config: &gc,
-                            kwg: &kwg,
+                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                             anagrams: None,
                             rack_lengths: None,
                             klv: &klv,
@@ -22417,10 +22434,9 @@ pub(crate) mod tests {
                     board_tiles[0] = 1;
                 }
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kad,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kad),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -22552,10 +22568,9 @@ pub(crate) mod tests {
                             rack
                         };
                         let board_snapshot = BoardSnapshot {
-                            alphagrams: None,
                             board_tiles: &board_tiles,
                             game_config: &gc,
-                            kwg: &kad,
+                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kad),
                             anagrams: None,
                             rack_lengths: None,
                             klv: &klv,
@@ -22715,15 +22730,15 @@ pub(crate) mod tests {
         for side in [5i8, 7] {
             let boards = woadwage_toy_boards(side, &explicit, &mut seed, 6, 8);
             let gc = woadwage_toy_config(side).jumbled_woadwage();
+            let graphs = KwgForMovegen::for_game(&gc, &kad);
             let mut move_generator = KurniaMoveGenerator::new(&gc);
             for board_tiles in &boards {
                 for _rack in 0..3 {
                     let rack = woadwage_toy_rack(&mut seed, woadwage_toy_most_tiles());
                     let board_snapshot = BoardSnapshot {
-                        alphagrams: None,
                         board_tiles,
                         game_config: &gc,
-                        kwg: &kad,
+                        graphs,
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -22951,10 +22966,9 @@ pub(crate) mod tests {
                     KurniaMoveGenerator::new(&gc)
                         .gen_remaining_words(
                             &BoardSnapshot {
-                                alphagrams: None,
                                 board_tiles: &board_tiles,
                                 game_config: &gc,
-                                kwg: &kwg,
+                                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: &klv,
@@ -23085,10 +23099,9 @@ pub(crate) mod tests {
                 KurniaMoveGenerator::new(&gc)
                     .gen_remaining_words(
                         &BoardSnapshot {
-                            alphagrams: None,
                             board_tiles: &board_tiles,
                             game_config: &gc,
-                            kwg: &kwg,
+                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                             anagrams: None,
                             rack_lengths: None,
                             klv: &klv,
@@ -23157,10 +23170,9 @@ pub(crate) mod tests {
             KurniaMoveGenerator::new(&gc)
                 .gen_remaining_words(
                     &BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -23187,10 +23199,9 @@ pub(crate) mod tests {
                 let mut scorer = play_scorer::PlayScorer::new();
                 for board_tiles in woadwage_toy_boards(side, &explicit, &mut seed, 4, 6) {
                     let board_snapshot = BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -23360,10 +23371,9 @@ pub(crate) mod tests {
                 };
                 let board_tiles = vec![0u8; side as usize * side as usize];
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -23478,10 +23488,9 @@ pub(crate) mod tests {
             );
             let [by_first, by_other] =
                 [(&kwg, &tables), (&other_kwg, &other_tables)].map(|(kwg, tables)| BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, kwg),
                     anagrams: tables.anagrams(),
                     rack_lengths: tables.rack_lengths(),
                     klv: &klv,
@@ -23538,10 +23547,9 @@ pub(crate) mod tests {
             }
             let [by_nibbles_tables, by_layout_tables] =
                 [&nibbles, &layout].map(|tables| BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams: tables.anagrams(),
                     rack_lengths: tables.rack_lengths(),
                     klv: &klv,
@@ -23586,10 +23594,9 @@ pub(crate) mod tests {
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -23634,10 +23641,9 @@ pub(crate) mod tests {
             let mut board_tiles = vec![0u8; 15 * 15];
             board_tiles[gc.board_layout().dim().at_on_board(4, 3)] = on_board;
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -23769,10 +23775,9 @@ pub(crate) mod tests {
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -23873,10 +23878,9 @@ pub(crate) mod tests {
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -23948,10 +23952,9 @@ pub(crate) mod tests {
                 board_tiles[at] = placed[(step - 1) as usize % placed.len()];
             }
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -24045,10 +24048,9 @@ pub(crate) mod tests {
             let board_tiles = vec![0u8; dim.rows as usize * cols];
             let mut generator = KurniaMoveGenerator::new(gc);
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -24212,10 +24214,9 @@ pub(crate) mod tests {
         }
         board[7 * 15 + 7] = 20;
         let snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: tables.anagrams(),
             rack_lengths: tables.rack_lengths(),
             klv: &klv,
@@ -24255,10 +24256,9 @@ pub(crate) mod tests {
         let mut compared = 0;
         for tables in [&nibbles, &layout] {
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: tables.anagrams(),
                 rack_lengths: tables.rack_lengths(),
                 klv: &klv,
@@ -24327,10 +24327,9 @@ pub(crate) mod tests {
                 board_tiles[dim.at_on_board(row, col)] = rack[(step - 1) % rack.len()];
             }
             let snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: nibbles.anagrams(),
                 rack_lengths: nibbles.rack_lengths(),
                 klv: &klv,
@@ -24456,10 +24455,9 @@ pub(crate) mod tests {
             board_tiles[dim.at_on_board(row, col)] = rack[1 + i as usize % (rack.len() - 1)];
         }
         let [by_nibbles, by_layout] = [&nibbles, &layout].map(|tables| BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: tables.anagrams(),
             rack_lengths: tables.rack_lengths(),
             klv: &klv,
@@ -24518,10 +24516,9 @@ pub(crate) mod tests {
                 .is_some_and(|a| a.nibble_side().is_some())
         );
         let by_other = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &other_kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &other_kwg),
             anagrams: other_nibbles.anagrams(),
             rack_lengths: other_nibbles.rack_lengths(),
             klv: &klv,
@@ -24592,10 +24589,9 @@ pub(crate) mod tests {
             for rack in ["???AE", "????A", "?ANTS??", "???"] {
                 let rack = parse_test_rack(gc.alphabet(), rack);
                 let [by_tables, by_walk] = [&with_tables, &lean].map(|tables| BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams: tables.anagrams(),
                     rack_lengths: tables.rack_lengths(),
                     klv: &klv,
@@ -24639,10 +24635,9 @@ pub(crate) mod tests {
             for fen in fens {
                 let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -24688,10 +24683,9 @@ pub(crate) mod tests {
         ] {
             let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
             let board_snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths,
                 klv: &klv,
@@ -24786,19 +24780,17 @@ pub(crate) mod tests {
                     }
                 }
                 let board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                     anagrams,
                     rack_lengths: None,
                     klv: &klv,
                 };
                 let transposed_board_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &transposed_board_tiles,
                     game_config: &transposed_gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&transposed_gc, &kwg),
                     anagrams,
                     rack_lengths: None,
                     klv: &klv,
@@ -24901,10 +24893,9 @@ pub(crate) mod tests {
         board_tiles[gc.board_layout().dim().at_on_board(0, 9)] = rack[0];
         board_tiles[gc.board_layout().dim().at_on_board(1, 9)] = rack[3];
         let board_snapshot = BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -25157,10 +25148,9 @@ pub(crate) mod tests {
             for (ri, rack) in racks.iter().enumerate() {
                 let rack = parse_test_rack(gc.alphabet(), rack);
                 let walked_snapshot = BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &empty,
                     game_config: gc,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(gc, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -25483,10 +25473,9 @@ pub(crate) mod tests {
             let board = fen_parser.parse(fen).unwrap().to_vec();
             let rack = parse_test_rack(gc.alphabet(), rack);
             let snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -25751,10 +25740,9 @@ pub(crate) mod tests {
                 .to_vec();
             let rack = parse_test_rack(gc.alphabet(), "AEST");
             let snapshot = BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board,
                 game_config: &gc,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,

@@ -57,7 +57,7 @@ pub fn bag_size(board_tiles: &[u8], game_config: &game_config::GameConfig) -> i6
 
 pub struct SpellTables<'a, N: kwg::Node, L: kwg::Node> {
     pub game_config: &'a game_config::GameConfig,
-    pub kwg: &'a kwg::Kwg<N>,
+    pub graphs: movegen::KwgForMovegen<'a, N>,
     pub klv: &'a klv::Klv<L>,
     pub lat: &'a census::MultisetLattice,
 }
@@ -143,7 +143,7 @@ pub fn build_sheet_spell_once<
 ) -> error::Returns<u64> {
     let SpellTables {
         game_config,
-        kwg,
+        graphs,
         klv,
         lat,
     } = tables;
@@ -162,10 +162,9 @@ pub fn build_sheet_spell_once<
     let mut n_cand = 0u64;
     let mut failure = None;
     let board_snapshot = &movegen::BoardSnapshot {
-        alphagrams: None,
         board_tiles,
         game_config,
-        kwg,
+        graphs,
         anagrams: None,
         rack_lengths: None,
         klv,
@@ -2168,7 +2167,7 @@ fn kept_leaves_packed_impl<
             board_tiles,
             SpellTables {
                 game_config,
-                kwg: board_snapshot.kwg,
+                graphs: board_snapshot.graphs,
                 klv: board_snapshot.klv,
                 lat,
             },
@@ -2556,7 +2555,7 @@ pub fn reply_to<
         board_tiles,
         SpellTables {
             game_config,
-            kwg: board_snapshot.kwg,
+            graphs: board_snapshot.graphs,
             klv: board_snapshot.klv,
             lat,
         },
@@ -2732,10 +2731,9 @@ mod tests {
             watcher_rack[0] = 26;
         }
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config,
-            kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(game_config, kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -2865,7 +2863,7 @@ mod tests {
                     &board_tiles,
                     SpellTables {
                         game_config,
-                        kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(game_config, kwg),
                         klv: &klv,
                         lat: &lat,
                     },
@@ -2964,10 +2962,9 @@ mod tests {
             }
             let watcher_rack = [if on_board > 0 { 26 } else { 5 }];
             let board_snapshot = movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &game_config,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -3001,10 +2998,9 @@ mod tests {
             &mut tables,
             &mut move_generator,
             &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &[0u8; 15 * 15],
                 game_config: &game_config,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -3107,7 +3103,7 @@ mod tests {
             &board_tiles,
             SpellTables {
                 game_config: &game_config,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                 klv: &klv,
                 lat,
             },
@@ -3175,10 +3171,9 @@ mod tests {
                 &mut InferTables::new(&game_config, &klv).unwrap(),
                 &mut movegen::KurniaMoveGenerator::new(&game_config),
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &game_config,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -3284,10 +3279,9 @@ mod tests {
             &mut InferTables::new(game_config, &klv).unwrap(),
             &mut movegen::KurniaMoveGenerator::new(game_config),
             &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(game_config, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -3378,10 +3372,9 @@ mod tests {
     ) -> Vec<(Vec<u8>, i32)> {
         let (lat, leave) = (&tiny.tables.lat, &tiny.tables.leave);
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles,
             game_config,
-            kwg: &tiny.kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(game_config, &tiny.kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &tiny.klv,
@@ -3754,10 +3747,9 @@ mod tests {
                     &mut InferTables::new(&english, &klv).unwrap(),
                     &mut movegen::KurniaMoveGenerator::new(&english),
                     &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &english,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&english, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -3803,10 +3795,9 @@ mod tests {
                 &mut InferTables::new(&english, &klv).unwrap(),
                 &mut movegen::KurniaMoveGenerator::new(&english),
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &english,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&english, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -3861,10 +3852,9 @@ mod tests {
         board_tiles.copy_within(3..79, 2);
         board_tiles[78] = 0;
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -3879,7 +3869,7 @@ mod tests {
             &board_tiles,
             SpellTables {
                 game_config: &game_config,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                 klv: &klv,
                 lat: &tables.lat,
             },
@@ -4499,10 +4489,9 @@ mod tests {
                 tables,
                 move_generator,
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles,
                     game_config: &game_config,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -4535,10 +4524,9 @@ mod tests {
             }
             let replies = movegen_replies(
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &after,
                     game_config: &game_config,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -4673,7 +4661,7 @@ mod tests {
                         &board_tiles,
                         SpellTables {
                             game_config: &gc,
-                            kwg: &kwg,
+                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                             klv: &klv,
                             lat: &lat,
                         },
@@ -4684,10 +4672,9 @@ mod tests {
                     )
                     .unwrap();
                     let board_snapshot = movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -4866,10 +4853,9 @@ mod tests {
         let (mut placements, mut exchanges) = (0usize, 0usize);
         for (board_tiles, racks) in [(&empty, &opening_racks[..]), (&mid, &mid_racks[..])] {
             let board_snapshot = movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config: &game_config,
-                kwg: &kwg,
+                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -4950,10 +4936,9 @@ mod tests {
             let mut placed = vec![0u8; pool.len()];
             let (exchanged, _) = move_tiles_and_value(
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles,
                     game_config: &game_config,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -4982,10 +4967,9 @@ mod tests {
              move_generator: &mut movegen::KurniaMoveGenerator,
              (board_tiles, watcher, play, lean): (&[u8], &[u8], &movegen::Play, bool)| {
                 let board_snapshot = movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles,
                     game_config: &game_config,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,

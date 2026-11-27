@@ -257,12 +257,12 @@ impl PlayScorer {
         move |word: &[u8]| {
             let mut p = 0;
             for &tile in word {
-                p = board_snapshot.kwg.seek(p, tile);
+                p = board_snapshot.graphs.words().seek(p, tile);
                 if p <= 0 {
                     return false;
                 }
             }
-            board_snapshot.kwg.node_in_run(p).accepts()
+            board_snapshot.graphs.words().node_in_run(p).accepts()
         }
     }
 
@@ -271,7 +271,7 @@ impl PlayScorer {
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
     ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
-        move |word: &[u8]| woadwage::accepts(board_snapshot.kwg, word)
+        move |word: &[u8]| woadwage::accepts(board_snapshot.graphs.words(), word)
     }
 
     #[inline(always)]
@@ -279,7 +279,7 @@ impl PlayScorer {
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
     ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
-        move |word: &[u8]| jumbled_woadwage::accepts(board_snapshot.kwg, word)
+        move |word: &[u8]| jumbled_woadwage::accepts(board_snapshot.graphs.words(), word)
     }
 
     #[inline(always)]
@@ -294,7 +294,7 @@ impl PlayScorer {
             while let Some(&current_tile) = current_min_tile {
                 for &tile in word {
                     if tile == current_tile {
-                        p = board_snapshot.kwg.seek(p, tile);
+                        p = board_snapshot.graphs.words().seek(p, tile);
                         if p <= 0 {
                             return false;
                         }
@@ -302,7 +302,7 @@ impl PlayScorer {
                 }
                 current_min_tile = word.iter().filter(|&&tile| tile > current_tile).min();
             }
-            board_snapshot.kwg.node_in_run(p).accepts()
+            board_snapshot.graphs.words().node_in_run(p).accepts()
         }
     }
 
@@ -760,10 +760,9 @@ mod tests {
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.players[0].rack = vec![1, 20];
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -818,10 +817,9 @@ mod tests {
         board_tiles[2 * 7 + 3] = 4;
         board_tiles[4 * 7 + 3] = 2;
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
-            kwg: &kad,
+            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kad),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -933,10 +931,9 @@ mod tests {
         board_tiles[2 * 7 + 3] = 1;
         board_tiles[4 * 7 + 3] = 2;
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
-            kwg: &kwg,
+            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,

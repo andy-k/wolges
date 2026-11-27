@@ -278,10 +278,9 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
 
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     let board_snapshot = &movegen::BoardSnapshot {
-        alphagrams: None,
         board_tiles: &kibitzer.board_tiles,
         game_config,
-        kwg,
+        graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
         anagrams: arm_tables.anagrams(),
         rack_lengths: arm_tables.rack_lengths(),
         klv,
@@ -429,10 +428,9 @@ mod tests {
                 * game_config.board_layout().dim().cols as usize
         ];
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
-            kwg: &kwg,
+            graphs: wolges::movegen::KwgForMovegen::for_game(&game_config, &kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,

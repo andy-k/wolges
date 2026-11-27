@@ -98,10 +98,9 @@ fn peg_draw_outcomes() {
             player.score = equity::Points::new(score).scaled();
         }
         let snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &before.board_tiles,
             game_config: &gc,
-            kwg: &kwg,
+            graphs: wolges::movegen::KwgForMovegen::for_game(&gc, &kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -143,9 +142,12 @@ fn peg_draw_outcomes() {
                 )
                 .unwrap();
             let pruned = build::graph_for_game(&gc, &words).unwrap();
-            let mut solver =
-                endgame::EndgameSolver::<_, kwg::Node24>::new(&gc, pruned.kwg(), &arm_tables)
-                    .unwrap();
+            let mut solver = endgame::EndgameSolver::<_, kwg::Node24>::new(
+                &gc,
+                wolges::movegen::KwgForMovegen::for_game(&gc, pruned.kwg()),
+                &arm_tables,
+            )
+            .unwrap();
 
             assert_eq!(candidate.margins.len(), draws.len(), "{name}");
             let mut hypotheses = Vec::new();

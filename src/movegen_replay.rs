@@ -107,15 +107,19 @@ impl Engine {
         })
     }
 
+    fn graphs(&self) -> movegen::KwgForMovegen<'_, kwg::Node24> {
+        movegen::KwgForMovegen::for_game(&self.game, &self.kwg)
+    }
+
     fn snapshot<'a>(
         &'a self,
+        graphs: movegen::KwgForMovegen<'a, kwg::Node24>,
         board: &'a [u8],
     ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
         movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: board,
             game_config: &self.game,
-            kwg: &self.kwg,
+            graphs,
             klv: &self.klv,
             anagrams: self.tables.anagrams(),
             rack_lengths: self.tables.rack_lengths(),
@@ -170,6 +174,7 @@ fn replay_using<S: movegen::BoardStore>(
     setup: std::time::Duration,
 ) -> error::Returns<()> {
     let alphabet = engine.game.alphabet();
+    let graphs = engine.graphs();
     let mut parser = display::BoardFenParser::new(alphabet, engine.game.board_layout());
     let mut positions = Vec::new();
     let mut boards = Vec::new();
@@ -227,7 +232,7 @@ fn replay_using<S: movegen::BoardStore>(
         )?;
         prepared.push(Prepared {
             position,
-            snapshot: engine.snapshot(board),
+            snapshot: engine.snapshot(graphs, board),
             rack,
         });
     }
@@ -341,11 +346,12 @@ fn play_game<S: movegen::BoardStore>(
     ) -> error::Returns<()>,
 ) -> error::Returns<u32> {
     let gc = &engine.game;
+    let graphs = engine.graphs();
     state.reset_and_draw_tiles(gc, rng);
     let mut scores = vec![0; gc.num_players() as usize];
     for ply in 0.. {
         let mover = state.current_player();
-        let snapshot = engine.snapshot(&state.board_tiles);
+        let snapshot = engine.snapshot(graphs, &state.board_tiles);
         generate(generator, &snapshot, &mover.rack, mover.num_exchanges, 1)?;
         let chosen = &generator.plays[0];
         on_turn(ply, state, &snapshot, chosen)?;

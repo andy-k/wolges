@@ -37,10 +37,9 @@ fn snapshot<'a>(
     board_tiles: &'a [u8],
 ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
     movegen::BoardSnapshot {
-        alphagrams: None,
         board_tiles,
         game_config: gc,
-        kwg,
+        graphs: wolges::movegen::KwgForMovegen::for_game(gc, kwg),
         anagrams: None,
         rack_lengths: None,
         klv,
@@ -259,6 +258,7 @@ fn main() -> error::Returns<()> {
         "kwg {} klv {} candidates {num_candidates} iterations {iterations} plies {}",
         args[1], args[2], args[5]
     );
+    let graphs = wolges::movegen::KwgForMovegen::for_game(&gc, &kwg);
     for spec in &args[6..] {
         let (seed, turns) = spec.split_once(':').ok_or("seed:turns")?;
         let (seed, turns) = (seed.parse::<u64>()?, turns.parse::<usize>()?);
@@ -346,7 +346,7 @@ fn main() -> error::Returns<()> {
             sim.reseed(iteration_seed(seed, iteration));
             sim.prepare_iteration(Some(move_picker::stratum_at(seed, iteration)))?;
             for (c, candidate) in candidates.iter().enumerate() {
-                let ended = sim.simulate_lean(&gc, &kwg, no_tables, &klv, &candidate.play)?;
+                let ended = sim.simulate_lean(&gc, graphs, no_tables, &klv, &candidate.play)?;
                 let final_spread = sim.final_equity_spread()?;
                 let win = sim.compute_win_prob(ended, final_spread, None)?;
                 let spread = final_spread - sim.initial_score_spread;

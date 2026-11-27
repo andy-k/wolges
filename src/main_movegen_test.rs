@@ -407,6 +407,7 @@ fn run(
         ("lean bare", None, None, false),
     ];
     let mut disagreements = 0usize;
+    let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
         let rack = parse_rack(alphabet, case.rack)?;
@@ -414,10 +415,9 @@ fn run(
         let mut lean = String::new();
         for (arm, table) in [(" lean", None), ("", Some(&anagrams))] {
             let board_snapshot = movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config,
-                kwg,
+                graphs,
                 anagrams: table,
                 rack_lengths: table.is_none().then_some(&rack_lengths),
                 klv,
@@ -483,10 +483,9 @@ fn run(
         let mut first_all = None;
         for &(arm, anagrams, rack_lengths, tables) in &every_arm {
             let board_snapshot = movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config,
-                kwg,
+                graphs,
                 anagrams,
                 rack_lengths,
                 klv,
@@ -598,6 +597,7 @@ fn run(
         let board_tiles = fen_parser.parse(case.fen)?.to_vec();
         cases.push((case, board_tiles, parse_rack(alphabet, case.rack)?));
     }
+    let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
     for &(arm, anagrams, rack_lengths, tables) in &every_arm {
         let mut generator = movegen::KurniaMoveGenerator::new(game_config);
         let mut timed = std::time::Duration::ZERO;
@@ -605,10 +605,9 @@ fn run(
             let warm = pass == 0;
             for (case, board_tiles, rack) in &cases {
                 let board_snapshot = movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles,
                     game_config,
-                    kwg,
+                    graphs,
                     anagrams,
                     rack_lengths,
                     klv,

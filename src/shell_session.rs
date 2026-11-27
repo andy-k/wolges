@@ -929,10 +929,9 @@ impl Session {
                         .ok_or("no move to challenge")?
                         .board_before;
                     let board_snapshot = &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: board_before,
                         game_config: self.game_config,
-                        kwg: self.kwg()?,
+                        graphs: movegen::KwgForMovegen::for_game(self.game_config, self.kwg()?),
                         anagrams: None,
                         rack_lengths: None,
                         klv: self.klv,
@@ -1468,10 +1467,12 @@ impl Session {
                     let best = match &solved.best_move {
                         Some(play) => play
                             .fmt(&movegen::BoardSnapshot {
-                                alphagrams: None,
                                 board_tiles: &state.board_tiles,
                                 game_config: self.game_config,
-                                kwg: self.kwg()?,
+                                graphs: movegen::KwgForMovegen::for_game(
+                                    self.game_config,
+                                    self.kwg()?,
+                                ),
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: self.klv,
@@ -1744,7 +1745,7 @@ impl Session {
                 self.game_config.supports(game_config::Op::Endgame)?;
                 endgame::EndgameSolver::with_generator(
                     self.game_config,
-                    kwg,
+                    wolges::movegen::KwgForMovegen::for_game(self.game_config, kwg),
                     arm_tables,
                     self.run_letters()?,
                     movegen::KurniaMoveGenerator::new(self.game_config),
@@ -2078,10 +2079,9 @@ impl Session {
             _ => return Err("play 8D WORD, play D8 WORD, play exch TILES, or play pass".into()),
         };
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            kwg,
+            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
             anagrams: None,
             rack_lengths: None,
             klv: self.klv,
@@ -2177,6 +2177,7 @@ impl Session {
         }
         if let Some((_, kwg)) = self.kwg {
             let (mut replay, mut rng) = self.dealt(game)?;
+            let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
             for (i, turn) in game.turns.iter().enumerate() {
                 let held = replay.ready_rack(self.game_config, turn)?;
                 let board = &mut replay.state;
@@ -2195,10 +2196,9 @@ impl Session {
                         out,
                         "{}",
                         turn.play.fmt(&movegen::BoardSnapshot {
-                            alphagrams: None,
                             board_tiles: &board.board_tiles,
                             game_config: self.game_config,
-                            kwg,
+                            graphs,
                             anagrams: None,
                             rack_lengths: None,
                             klv: self.klv,
@@ -2312,10 +2312,9 @@ impl Session {
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            kwg,
+            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
@@ -2355,10 +2354,9 @@ impl Session {
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            kwg,
+            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
@@ -2455,10 +2453,9 @@ impl Session {
             None => Vec::new(),
         };
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            kwg,
+            graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: self.klv,
@@ -2592,6 +2589,7 @@ impl Session {
         // move, and whether they are known (an exchange no one saw is not)
         let mut put_back = Vec::new();
         let mut known = true;
+        let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
         for (at, shown) in self.moves_shown.iter().enumerate() {
             if shown.seat != mover {
                 if let movegen::Play::Exchange { tiles } = &shown.play
@@ -2618,10 +2616,9 @@ impl Session {
                 tables,
                 &mut self.infer_generator,
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &shown.board_before,
                     game_config: self.game_config,
-                    kwg,
+                    graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
@@ -2664,10 +2661,9 @@ impl Session {
                 &mut move_filter::GenMoves::Unfiltered,
                 &mut move_generator,
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &self.state.board_tiles,
                     game_config: self.game_config,
-                    kwg,
+                    graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv: self.klv,
@@ -2755,10 +2751,9 @@ impl Session {
         };
         let equity = self.play_scorer.compute_equity(
             &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &self.state.board_tiles,
                 game_config: self.game_config,
-                kwg,
+                graphs: movegen::KwgForMovegen::for_game(self.game_config, kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: self.klv,
@@ -2806,10 +2801,9 @@ impl Session {
     fn sim_show(&self, n: usize) -> error::Returns<()> {
         let sim = self.sim.as_ref().ok_or("no sim: sim first")?;
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
-            kwg: self.kwg()?,
+            graphs: movegen::KwgForMovegen::for_game(self.game_config, self.kwg()?),
             anagrams: None,
             rack_lengths: None,
             klv: self.klv,
@@ -3308,6 +3302,7 @@ impl Session {
         let mut state = state.clone();
         let mut rng = GameRng::seed_from_u64(0);
         let mut text = Vec::new();
+        let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
         for (i, (_, play)) in line.iter().enumerate() {
             let mover = state.turn as usize;
             text.push(format!(
@@ -3316,10 +3311,9 @@ impl Session {
                 mover + 1,
                 self.rack_text(mover, &state.players[mover].rack),
                 play.fmt(&movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &state.board_tiles,
                     game_config: self.game_config,
-                    kwg,
+                    graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
@@ -3407,6 +3401,7 @@ impl Session {
         let alphabet = self.game_config.alphabet();
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut words = play_scorer::PlayScorer::new();
+        let graphs = movegen::KwgForMovegen::for_game(self.game_config, kwg);
         for (number, turn) in (1..).zip(&game.turns[..game.at]) {
             let held = replay.ready_rack(self.game_config, turn)?;
             let (nickname, _) = self.gcg_name(replay.state.turn as usize);
@@ -3415,10 +3410,9 @@ impl Session {
             let mut written = Ok(());
             words.words_all(
                 &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &replay.state.board_tiles,
                     game_config: self.game_config,
-                    kwg,
+                    graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
@@ -3472,10 +3466,9 @@ impl Session {
                     text,
                     "{}",
                     play.fmt(&movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &self.state.board_tiles,
                         game_config: self.game_config,
-                        kwg: self.kwg()?,
+                        graphs: movegen::KwgForMovegen::for_game(self.game_config, self.kwg()?),
                         anagrams: None,
                         rack_lengths: None,
                         klv: self.klv,
@@ -4314,10 +4307,9 @@ mod tests {
             move_generator
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &session.state.board_tiles,
                         game_config: session.game_config,
-                        kwg,
+                        graphs: movegen::KwgForMovegen::for_game(session.game_config, kwg),
                         anagrams: arm_tables.anagrams(),
                         rack_lengths: arm_tables.rack_lengths(),
                         klv: session.klv,
@@ -4834,10 +4826,12 @@ mod tests {
         let mut all = movegen::KurniaMoveGenerator::new(session.game_config);
         all.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &session.state.board_tiles,
                 game_config: session.game_config,
-                kwg: session.kwg().unwrap(),
+                graphs: movegen::KwgForMovegen::for_game(
+                    session.game_config,
+                    session.kwg().unwrap(),
+                ),
                 anagrams: None,
                 rack_lengths: None,
                 klv: session.klv,
@@ -6051,10 +6045,9 @@ mod tests {
                     &mut tables,
                     &mut move_generator,
                     &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &shown.board_before,
                         game_config,
-                        kwg,
+                        graphs: movegen::KwgForMovegen::for_game(game_config, kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv,
@@ -6556,10 +6549,9 @@ mod tests {
         };
         let score = first.play_scorer.compute_score(
             &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &first.state.board_tiles,
                 game_config: first.game_config,
-                kwg: first.kwg().unwrap(),
+                graphs: movegen::KwgForMovegen::for_game(first.game_config, first.kwg().unwrap()),
                 anagrams: None,
                 rack_lengths: None,
                 klv: first.klv,
