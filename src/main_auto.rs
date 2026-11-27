@@ -92,15 +92,14 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
+    let game_config = std::sync::Arc::new(cli.game.make_game_config()?);
+    if cli.harvest.is_some() {
+        game_config.supports(game_config::Op::Endgame)?;
+    }
     let harvest: Option<HarvestWriter> = match cli.harvest {
         Some(path) => Some(Arc::new(Mutex::new(BufWriter::new(File::create(path)?)))),
         None => None,
     };
-
-    let game_config = std::sync::Arc::new(cli.game.make_game_config()?);
-    if game_config.num_players() != 2 {
-        wolges::return_error!("auto plays two seats, so it needs exactly 2 players".to_string());
-    }
     let klv = std::sync::Arc::new(if cli.klv == "-" {
         klv::Klv::<kwg::Node24>::empty()?
     } else {
@@ -185,12 +184,18 @@ fn do_it(
         move_picker_1 = move_picker::MovePicker::Hasty;
     }
 
-    let mut score_stats_0 = stats::Stats::new();
-    let mut score_stats_1 = stats::Stats::new();
+    let mut score_stats = (0..game_config.num_players())
+        .map(|_| stats::Stats::new())
+        .collect::<Vec<_>>();
     let mut spread_stats_0 = stats::Stats::new();
     let mut win_stats_0 = stats::Stats::new();
     let mut loss_draw_win = [0u64; 3];
     let mut games_played = 0u64;
+    let mut seats = String::new();
+    let spread_label = match game_config.num_players() {
+        2 => "p0-p1".to_string(),
+        n => format!("p0-max(p1..p{})", n - 1),
+    };
 
     let mut game_state = game_state::GameState::new(game_config);
     //let mut rng = GameRng::try_from_rng(&mut rand::rngs::SysRng)?;
@@ -689,26 +694,34 @@ fn do_it(
             writeln!(std::io::stdout(), "Really final scores: {display_scores:?}")?;
         }
 
-        let spr = display_scores[0] - display_scores[1];
+        let spr = i32::try_from(game_state::lead_over_best_opponent(
+            0,
+            display_scores.iter().map(|&s| i64::from(s)),
+        ))?;
         let p0dw = spr.signum() + 1; // double win
-        score_stats_0.update(f64::from(display_scores[0]));
-        score_stats_1.update(f64::from(display_scores[1]));
+        for (s, &d) in score_stats.iter_mut().zip(display_scores.iter()) {
+            s.update(f64::from(d));
+        }
         spread_stats_0.update(f64::from(spr));
         win_stats_0.update(f64::from(p0dw) * 50.0);
         games_played = games_played.checked_add(1).ok_or("too many games played")?;
         loss_draw_win[p0dw as usize] += 1;
 
+        seats.clear();
+        for (i, s) in score_stats.iter().enumerate() {
+            std::fmt::Write::write_fmt(
+                &mut seats,
+                format_args!(" p{i}={:.3} (sd={:.3})", s.mean(), s.standard_deviation()),
+            )?;
+        }
         writeln!(
             std::io::stdout(),
-            "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3}) after {:?}",
+            "Stats: {display_scores:?} n={} ({}-{}-{}){seats} {}={:.3} (sd={:.3}) p0w={:.3} (sd={:.3}) after {:?}",
             games_played,
             loss_draw_win[2],
             loss_draw_win[0],
             loss_draw_win[1],
-            score_stats_0.mean(),
-            score_stats_0.standard_deviation(),
-            score_stats_1.mean(),
-            score_stats_1.standard_deviation(),
+            spread_label,
             spread_stats_0.mean(),
             spread_stats_0.standard_deviation(),
             win_stats_0.mean(),
