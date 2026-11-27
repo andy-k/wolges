@@ -489,7 +489,7 @@ impl PlayScorer {
         play: &movegen::Play,
         leave_scale: i32,
         recounted_score: i32,
-    ) -> i32 {
+    ) -> error::Returns<i32> {
         let game_config = board_snapshot.game_config;
 
         self.set_rack_tally(game_config, &game_state.current_player().rack);
@@ -542,8 +542,13 @@ impl PlayScorer {
                 .klv
                 .leave_value_from_tally(&self.rack_tally)
                 .raw();
-            recounted_equity += (i64::from(leave_value) * i64::from(leave_scale)
-                / i64::from(move_filter::LEAVE_SCALE_DENOM)) as i32;
+            let adjusted = i32::try_from(
+                i64::from(leave_value) * i64::from(leave_scale)
+                    / i64::from(move_filter::LEAVE_SCALE_DENOM),
+            )?;
+            recounted_equity = recounted_equity
+                .checked_add(adjusted)
+                .ok_or("score plus adjusted leave is out of range")?;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
                     movegen::Play::Exchange { .. } => {}
@@ -600,7 +605,7 @@ impl PlayScorer {
             }
         }
 
-        recounted_equity
+        Ok(recounted_equity)
     }
 }
 
