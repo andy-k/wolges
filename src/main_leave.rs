@@ -5230,6 +5230,9 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     } = subrack_map
         .remove([][..].into())
         .ok_or("empty-rack entry should not be missing")?;
+    if row_count == 0 {
+        return Err("no rack was sampled".into());
+    }
 
     let smooth_min = 50;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
@@ -12163,6 +12166,24 @@ WCMP_P1_SCORE 402.000000
             count: 0,
         };
         assert_eq!(decompose_contribution(&fv, 3), (0.0, 0));
+    }
+
+    #[test]
+    #[inline]
+    fn leaves_from_no_sampled_rack_are_refused() {
+        let summary = ",0,0\nAEINRST,0,0\n";
+        let generated = generate_leaves::<_, _, false>(
+            game_config::make_english_game_config(),
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(summary.as_bytes()),
+            csv::Writer::from_writer(Vec::new()),
+            true,
+        );
+        assert_eq!(
+            generated.err().map(|e| e.to_string()).as_deref(),
+            Some("no rack was sampled")
+        );
     }
 
     #[test]
