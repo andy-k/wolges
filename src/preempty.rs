@@ -1523,6 +1523,41 @@ mod tests {
     }
 
     #[test]
+    fn exact_windows_find_the_same_out_scores_as_the_walk() {
+        let mut words = WORDS.to_vec();
+        words.push(&[1]);
+        let mut f = Fixture::new(game_config::make_english_game_config(), &words);
+        let tables = crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap();
+        assert!(tables.anagrams().is_some());
+        let pool = [0, 0, 1, 2, 5, 20];
+        let unseen = f.tally(&pool);
+        let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
+        for opening in [true, false] {
+            if !opening {
+                let layout = f.gc.board_layout();
+                let star = layout.dim().across(layout.star_row());
+                f.board[star.at(layout.star_col())] = 1;
+                f.board[star.at(layout.star_col() + 1)] = 20;
+            }
+            let walk = f.snap();
+            let window = movegen::BoardSnapshot {
+                anagrams: tables.anagrams(),
+                ..walk
+            };
+            for kept in 1..=usize::from(f.gc.rack_size()).min(pool.len()) {
+                let draws = Draws::new(f.gc.alphabet(), &unseen, (pool.len() - kept) as u8);
+                for rack in &draws.theirs {
+                    assert_eq!(
+                        best_out(&mut mg, &window, rack),
+                        best_out(&mut mg, &walk, rack),
+                        "opening {opening}, rack {rack:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_simmer_copies_its_preempty_rollout_policy_to_workers() {
         use crate::{anagrams, game_state, move_filter, simmer};
         let f = picker_fixture(&[&[1, 2], &[2, 3], &[3, 1, 2]]);
