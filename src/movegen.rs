@@ -1798,7 +1798,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
         let mut bits = 0u64;
         if p > 0 {
             loop {
-                let node = kwg[p];
+                let node = kwg.node_in_run(p);
                 if !accepting_only || node.accepts() {
                     bits |= 1u64 << node.tile();
                 }
@@ -1880,7 +1880,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             if bits == 0 {
                 bits = 1u64;
                 if p > 0 {
-                    let arc = kwg[p].arc_index();
+                    let arc = kwg.node_in_run(p).arc_index();
                     bits |= sibling_bits(kwg, arc, true);
                 }
                 cached_cross_sets[j as usize - 1].bits = bits;
@@ -1910,8 +1910,8 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             if bits == 0 {
                 bits = 1u64;
                 if p_right > 0 && p_left > 0 {
-                    let arc_right = kwg[p_right].arc_index();
-                    let arc_left = kwg[p_left].arc_index();
+                    let arc_right = kwg.node_in_run(p_right).arc_index();
+                    let arc_left = kwg.node_in_run(p_left).arc_index();
                     if arc_right > 0 && arc_left > 0 {
                         let mut candidates = sibling_bits(kwg, arc_right, false)
                             & sibling_bits(kwg, arc_left, false)
@@ -1930,7 +1930,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                         }
                                     }
                                     if q > 0 {
-                                        bits |= u64::from(kwg[q].accepts()) << tile;
+                                        bits |= u64::from(kwg.node_in_run(q).accepts()) << tile;
                                     }
                                 }
                             }
@@ -1948,7 +1948,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                         }
                                     }
                                     if q > 0 {
-                                        bits |= u64::from(kwg[q].accepts()) << tile;
+                                        bits |= u64::from(kwg.node_in_run(q).accepts()) << tile;
                                     }
                                 }
                             }
@@ -1979,7 +1979,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
         if bits == 0 {
             bits = 1u64;
             if p > 0 {
-                let arc = kwg[p].arc_index();
+                let arc = kwg.node_in_run(p).arc_index();
                 bits |= sibling_bits(kwg, arc, true);
             }
             cached_cross_sets[j as usize].bits = bits;
@@ -2056,7 +2056,8 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 allowed[wp] = !1;
                 cross_scores[wp] = 0;
             } else {
-                allowed[wp] = kwg.compute_alpha_cross_set(used_letters_tally);
+                allowed[wp] =
+                    kwg.compute_alpha_cross_set_of_len(used_letters_tally, alphabet.len());
                 cross_scores[wp] = score;
                 // if j == i, this is the left side of a possible lone island.
                 // otherwise set to !0.
@@ -2187,13 +2188,27 @@ fn gen_jumbled_woadwage_cross_set<'a, N: kwg::Node, L: kwg::Node>(
         }
         let mut bits = 1u64;
         for m in 0..=before.len() {
-            if m == 0 || kwg.accepts_alpha(&tally_of(&before[..m], &[])[..alphabet_len]) {
-                bits |= kwg.compute_alpha_cross_set(&tally_of(&before[m..], after)[..alphabet_len]);
+            if m == 0
+                || kwg.accepts_alpha_of_len(
+                    &tally_of(&before[..m], &[])[..alphabet_len],
+                    alphabet_len as u8,
+                )
+            {
+                bits |= kwg.compute_alpha_cross_set_of_len(
+                    &tally_of(&before[m..], after)[..alphabet_len],
+                    alphabet_len as u8,
+                );
             }
         }
         for m in 0..after.len() {
-            if kwg.accepts_alpha(&tally_of(&after[m..], &[])[..alphabet_len]) {
-                bits |= kwg.compute_alpha_cross_set(&tally_of(before, &after[..m])[..alphabet_len]);
+            if kwg.accepts_alpha_of_len(
+                &tally_of(&after[m..], &[])[..alphabet_len],
+                alphabet_len as u8,
+            ) {
+                bits |= kwg.compute_alpha_cross_set_of_len(
+                    &tally_of(before, &after[..m])[..alphabet_len],
+                    alphabet_len as u8,
+                );
             }
         }
         allowed[wp] = bits;
@@ -4052,12 +4067,12 @@ fn leave_value_of<const BAG_TERM: bool, L: kwg::Node>(
 // it in the run
 trait RunLetters: Copy {
     // whether the run from node p on may hold a tile in candidates
-    fn may_hold(self, p: i32, candidates: u64) -> bool;
+    fn may_hold(self, p: u32, candidates: u64) -> bool;
 
     // the run's tiles from node p on, a bit each, when known; a walk then goes
     // straight to a tile's node, the count of the run's tiles below it past p,
     // which needs each run's tiles ascending (kwg::Kwg::runs_ascend)
-    fn from(self, p: i32) -> Option<u64>;
+    fn from(self, p: u32) -> Option<u64>;
 
     // read one demanded tile in a run, as when passing a tile on the board.
     #[inline(always)]
@@ -4065,7 +4080,7 @@ trait RunLetters: Copy {
         if p <= 0 {
             return -1;
         }
-        if let Some(run) = self.from(p) {
+        if let Some(run) = self.from(p.cast_unsigned()) {
             let bit = 1u64 << tile;
             if run & bit != 0 {
                 return p + (run & (bit - 1)).count_ones() as i32;
@@ -4073,7 +4088,7 @@ trait RunLetters: Copy {
             return -1;
         }
         loop {
-            let node = graph[p];
+            let node = graph.node_in_run(p);
             if node.tile() == tile {
                 return p;
             }
@@ -4088,12 +4103,12 @@ trait RunLetters: Copy {
 // nothing, so every run may
 impl RunLetters for () {
     #[inline(always)]
-    fn may_hold(self, _p: i32, _candidates: u64) -> bool {
+    fn may_hold(self, _p: u32, _candidates: u64) -> bool {
         true
     }
 
     #[inline(always)]
-    fn from(self, _p: i32) -> Option<u64> {
+    fn from(self, _p: u32) -> Option<u64> {
         None
     }
 }
@@ -4101,12 +4116,12 @@ impl RunLetters for () {
 // by node, the tiles from it to the end of its run (kwg::Kwg::compute_letter_bits)
 impl RunLetters for &[u64] {
     #[inline(always)]
-    fn may_hold(self, p: i32, candidates: u64) -> bool {
+    fn may_hold(self, p: u32, candidates: u64) -> bool {
         self[p as usize] & candidates != 0
     }
 
     #[inline(always)]
-    fn from(self, p: i32) -> Option<u64> {
+    fn from(self, p: u32) -> Option<u64> {
         Some(self[p as usize])
     }
 }
@@ -4246,7 +4261,9 @@ fn gen_classic_place_moves_lean<
                 break;
             }
             let graph = env.params.board_snapshot.kwg;
-            p = env.runs.find(graph, graph[p].arc_index(), b & 0x7f);
+            p = env
+                .runs
+                .find(graph, graph.node_in_run(p).arc_index(), b & 0x7f);
             if p <= 0 {
                 return;
             }
@@ -4255,7 +4272,7 @@ fn gen_classic_place_moves_lean<
             }
             idx += 1;
         }
-        let node = env.params.board_snapshot.kwg[p];
+        let node = env.params.board_snapshot.kwg.node_in_run(p);
         if idx > env.params.anchor + 1
             && env.num_played > u8::from(!is_unique)
             && idx - env.idx_left >= 2
@@ -4286,7 +4303,7 @@ fn gen_classic_place_moves_lean<
                 } else {
                     env.rack_bits
                 };
-            let run = env.runs.from(p);
+            let run = env.runs.from(p.cast_unsigned());
             if candidates == 0 || run.is_some_and(|run| run & candidates == 0) {
                 return;
             }
@@ -4392,20 +4409,21 @@ fn gen_classic_place_moves_lean<
                         let tile = hits.trailing_zeros() as u8;
                         hits &= hits - 1;
                         let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
-                        let node = env.params.board_snapshot.kwg[at];
+                        let node = env.params.board_snapshot.kwg.node_in_run(at);
                         debug_assert_eq!(node.tile(), tile);
                         visit!(at, node, tile);
                     }
                 }
                 None => loop {
-                    let node = env.params.board_snapshot.kwg[p];
+                    let node = env.params.board_snapshot.kwg.node_in_run(p);
                     let tile = node.tile();
                     let bit = 1u64 << tile;
                     if candidates & bit != 0 {
                         candidates ^= bit;
                         visit!(p, node, tile);
                         if candidates == 0
-                            || (!node.is_end() && !env.runs.may_hold(p + 1, candidates))
+                            || (!node.is_end()
+                                && !env.runs.may_hold((p + 1).cast_unsigned(), candidates))
                         {
                             break;
                         }
@@ -4458,7 +4476,9 @@ fn gen_classic_place_moves_lean<
                     break;
                 }
                 let graph = env.params.board_snapshot.kwg;
-                p = env.runs.find(graph, graph[p].arc_index(), b & 0x7f);
+                p = env
+                    .runs
+                    .find(graph, graph.node_in_run(p).arc_index(), b & 0x7f);
                 if p <= 0 {
                     return;
                 }
@@ -4468,7 +4488,7 @@ fn gen_classic_place_moves_lean<
                 idx -= 1;
             }
         }
-        let node = env.params.board_snapshot.kwg[p];
+        let node = env.params.board_snapshot.kwg.node_in_run(p);
         if env.num_played > u8::from(!is_unique) && env.params.anchor - idx >= 2 && node.accepts() {
             record::<SPELL_ONCE, LEAVES, BAG_TERM, _, _, _, _>(
                 env,
@@ -4537,7 +4557,7 @@ fn gen_classic_place_moves_lean<
                 } else {
                     env.rack_bits
                 });
-        let run = env.runs.from(p);
+        let run = env.runs.from(p.cast_unsigned());
         if candidates == 0 || run.is_some_and(|run| run & candidates == 0) {
             return;
         }
@@ -4654,7 +4674,7 @@ fn gen_classic_place_moves_lean<
                 let tile = hits.trailing_zeros() as u8;
                 hits &= hits - 1;
                 let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
-                let node = env.params.board_snapshot.kwg[at];
+                let node = env.params.board_snapshot.kwg.node_in_run(at);
                 debug_assert_eq!(node.tile(), tile);
                 visit!(at, node, tile);
             }
@@ -4662,13 +4682,15 @@ fn gen_classic_place_moves_lean<
             return;
         }
         loop {
-            let node = env.params.board_snapshot.kwg[p];
+            let node = env.params.board_snapshot.kwg.node_in_run(p);
             let tile = node.tile();
             let bit = 1u64 << tile;
             if candidates & bit != 0 {
                 candidates ^= bit;
                 visit!(p, node, tile);
-                if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates)) {
+                if candidates == 0
+                    || (!node.is_end() && !env.runs.may_hold((p + 1).cast_unsigned(), candidates))
+                {
                     break;
                 }
             }
@@ -6579,7 +6601,7 @@ fn gen_jumbled_place_moves_walk<
         size: u8,
     ) {
         if letter >= c.alphabet_len {
-            if size != 0 && c.kwg[p].accepts() {
+            if size != 0 && c.kwg.node_in_run(p).accepts() {
                 // the lists grow as the walk fills them, each growth reserved
                 // (kept from walk to walk, so they grow once); refused, the
                 // walk is out of memory
@@ -7899,7 +7921,7 @@ fn gen_jumbled_woadwage_place_moves<
             .woadwage
             .jumbles
             .entry(*tally)
-            .or_insert_with(|| kwg.accepts_alpha(&tally[..alphabet_len]))
+            .or_insert_with(|| kwg.accepts_alpha_of_len(&tally[..alphabet_len], alphabet_len as u8))
     }
 
     impl Splits {
@@ -12247,10 +12269,11 @@ fn kurnia_gen_exchange_moves<
                 working_buffer.num_tiles_in_bag as usize,
             );
         } else {
-            klv::MultiLeaves::gen_exchange_moves_via_klv(
+            klv::MultiLeaves::gen_exchange_moves_via_klv_of_len(
                 board_snapshot.klv,
                 found_exchange_move,
                 &mut working_buffer.rack_tally,
+                board_snapshot.game_config.alphabet().len(),
                 &mut working_buffer.exchange_buffer,
                 working_buffer.num_tiles_in_bag as usize,
             );
@@ -12978,7 +13001,7 @@ fn gen_empty_board_place_moves_made<
         } else {
             env.rack_bits & !1
         };
-        if candidates == 0 || !env.runs.may_hold(p, candidates) {
+        if candidates == 0 || !env.runs.may_hold(p.cast_unsigned(), candidates) {
             return;
         }
         macro_rules! visit {
@@ -13022,7 +13045,7 @@ fn gen_empty_board_place_moves_made<
                 }
             }};
         }
-        match env.runs.from(p) {
+        match env.runs.from(p.cast_unsigned()) {
             // the run's tiles known: each candidate's node is the count of the
             // run's tiles below it past p
             Some(run) => {
@@ -13031,19 +13054,21 @@ fn gen_empty_board_place_moves_made<
                     let tile = hits.trailing_zeros() as u8;
                     hits &= hits - 1;
                     let at = p + (run & ((1u64 << tile) - 1)).count_ones() as i32;
-                    let node = env.board_snapshot.kwg[at];
+                    let node = env.board_snapshot.kwg.node_in_run(at);
                     debug_assert_eq!(node.tile(), tile);
                     visit!(node, tile);
                 }
             }
             None => loop {
-                let node = env.board_snapshot.kwg[p];
+                let node = env.board_snapshot.kwg.node_in_run(p);
                 let tile = node.tile();
                 let bit = 1u64 << tile;
                 if candidates & bit != 0 {
                     candidates ^= bit;
                     visit!(node, tile);
-                    if candidates == 0 || (!node.is_end() && !env.runs.may_hold(p + 1, candidates))
+                    if candidates == 0
+                        || (!node.is_end()
+                            && !env.runs.may_hold((p + 1).cast_unsigned(), candidates))
                     {
                         break;
                     }
@@ -13098,7 +13123,7 @@ fn gen_empty_board_place_moves_made<
         .max()
         .unwrap_or(0);
     let max_len = (num_max_played as usize).min(longest as usize);
-    let root = board_snapshot.kwg[0].arc_index();
+    let root = board_snapshot.kwg.node_in_run(0).arc_index();
     if max_len < 2 || root <= 0 {
         return;
     }
@@ -15395,7 +15420,7 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
             }
             idx += 1;
         }
-        let node = env.line.kwg[p];
+        let node = env.line.kwg.node_in_run(p);
         if idx > env.anchor + 1 && idx - env.idx_left >= 2 && node.accepts() {
             record(env, env.idx_left, idx);
         }
@@ -15406,7 +15431,7 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
                 return;
             }
             loop {
-                let node = env.line.kwg[p];
+                let node = env.line.kwg.node_in_run(p);
                 let tile = node.tile();
                 if let Some(from) = take_from(env.line, idx, tile) {
                     env.line.available[from] -= 1;
@@ -15436,7 +15461,7 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
             }
             idx -= 1;
         }
-        let mut node = env.line.kwg[p];
+        let mut node = env.line.kwg.node_in_run(p);
         if env.num_played > 0 && env.anchor - idx >= 2 && node.accepts() {
             record(env, idx + 1, env.anchor + 1);
         }
@@ -15448,7 +15473,7 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
 
         let mut turnaround_p = p;
         loop {
-            node = env.line.kwg[turnaround_p];
+            node = env.line.kwg.node_in_run(turnaround_p);
             if node.tile() == 0 {
                 // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
                 env.idx_left = idx + 1;
@@ -15466,7 +15491,7 @@ fn prune_line<N: kwg::Node>(line: &mut PruneLine<'_, N>) {
 
         if idx >= 0 {
             loop {
-                let node = env.line.kwg[p];
+                let node = env.line.kwg.node_in_run(p);
                 let tile = node.tile();
                 if let Some(from) = take_from(env.line, idx, tile) {
                     env.line.available[from] -= 1;
@@ -15538,13 +15563,13 @@ fn letters_between<N: kwg::Node>(kwg: &kwg::Kwg<N>, before: &[u8], after: &[u8])
             return 0;
         }
     }
-    let mut q = kwg[p].arc_index();
+    let mut q = kwg.node_in_run(p).arc_index();
     if q <= 0 {
         return 0;
     }
     let mut letters = 0;
     loop {
-        let node = kwg[q];
+        let node = kwg.node_in_run(q);
         let tile = node.tile();
         if tile != 0
             && (before.iter().rev())
@@ -15583,7 +15608,7 @@ fn walk_lone_words<N: kwg::Node>(walk: &mut LoneWalk<'_, N>, mut p: i32, depth: 
     let fits = walk.fits;
     let chunks = walk.chunks;
     loop {
-        let node = walk.kwg[p];
+        let node = walk.kwg.node_in_run(p);
         let tile = node.tile() as usize;
         let from = if walk.available[tile] > 0 { tile } else { 0 };
         if walk.available[from] > 0 {
@@ -15632,7 +15657,7 @@ fn lone_words<N: kwg::Node>(
     buffers: &mut LoneBuffers,
     memory: Option<&endgame::MemoryLimit>,
 ) -> error::Returns<()> {
-    let root = kwg[0].arc_index();
+    let root = kwg.node_in_run(0).arc_index();
     let Some(&(_, longest)) = shapes.first() else {
         return Ok(());
     };
@@ -15945,7 +15970,7 @@ fn gen_remaining_jumbled_words<
             None
         };
         loop {
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             let tile = node.tile() as usize;
             if lowest_owed.is_some_and(|lowest| tile > lowest) {
                 break;
@@ -16008,7 +16033,7 @@ fn gen_remaining_jumbled_words<
     required.clear();
     endgame::room_in(memory, required, game_config.alphabet().len() as usize)?;
     required.resize(game_config.alphabet().len() as usize, 0);
-    let root = board_snapshot.kwg[0].arc_index();
+    let root = board_snapshot.kwg.node_in_run(0).arc_index();
     working_buffer.exchange_buffer.clear();
     endgame::room_in(memory, &mut working_buffer.exchange_buffer, longest)?;
     for (tiles, len) in [
@@ -16109,7 +16134,7 @@ fn gen_remaining_woadwage_words<
             return;
         };
         loop {
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             let tile = node.tile() as usize;
             let from = if square != 0 {
                 if tile == (square & 0x7f) as usize {
@@ -16151,7 +16176,7 @@ fn gen_remaining_woadwage_words<
             None
         };
         loop {
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             let tile = node.tile() as usize;
             if lowest_owed.is_some_and(|lowest| tile > lowest) {
                 break;
@@ -16211,7 +16236,7 @@ fn gen_remaining_woadwage_words<
     required.clear();
     endgame::room_in(memory, required, game_config.alphabet().len() as usize)?;
     required.resize(game_config.alphabet().len() as usize, 0);
-    let root = board_snapshot.kwg[0].arc_index();
+    let root = board_snapshot.kwg.node_in_run(0).arc_index();
     if root == 0 {
         return Ok(());
     }
@@ -18058,7 +18083,7 @@ pub(crate) mod tests {
             if word.iter().all(|&tile| {
                 p = kwg.seek(p, tile);
                 p > 0
-            }) && kwg::Node::accepts(&kwg[p])
+            }) && kwg::Node::accepts(&kwg.node_in_run(p))
             {
                 bits |= 1 << letter;
             }

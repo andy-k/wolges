@@ -262,7 +262,7 @@ impl PlayScorer {
                     return false;
                 }
             }
-            board_snapshot.kwg[p].accepts()
+            board_snapshot.kwg.node_in_run(p).accepts()
         }
     }
 
@@ -302,7 +302,7 @@ impl PlayScorer {
                 }
                 current_min_tile = word.iter().filter(|&&tile| tile > current_tile).min();
             }
-            board_snapshot.kwg[p].accepts()
+            board_snapshot.kwg.node_in_run(p).accepts()
         }
     }
 

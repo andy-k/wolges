@@ -37,7 +37,7 @@ impl Step {
         for &p in &self.second {
             keep(graph.seek(p, tile));
         }
-        if self.first > 0 && graph[self.first].accepts() {
+        if self.first > 0 && graph.node_in_run(self.first).accepts() {
             keep(graph.seek(0, tile));
         }
         if self.first >= 0 {
@@ -48,8 +48,8 @@ impl Step {
 
     #[inline(always)]
     pub fn accepts<N: Node>(&self, graph: &Kwg<N>) -> bool {
-        (self.first > 0 && graph[self.first].accepts())
-            || self.second.iter().any(|&p| graph[p].accepts())
+        (self.first > 0 && graph.node_in_run(self.first).accepts())
+            || self.second.iter().any(|&p| graph.node_in_run(p).accepts())
     }
 }
 
@@ -76,7 +76,7 @@ impl StackedStep {
             let p = graph.seek(stack[i], tile);
             keep(stack, p);
         }
-        if self.first > 0 && graph[self.first].accepts() {
+        if self.first > 0 && graph.node_in_run(self.first).accepts() {
             keep(stack, graph.seek(0, tile));
         }
         let first = if self.first >= 0 {
@@ -92,8 +92,10 @@ impl StackedStep {
     }
     #[inline(always)]
     pub fn accepts<N: Node>(&self, graph: &Kwg<N>, stack: &[i32]) -> bool {
-        (self.first > 0 && graph[self.first].accepts())
-            || stack[self.lo..].iter().any(|&p| graph[p].accepts())
+        (self.first > 0 && graph.node_in_run(self.first).accepts())
+            || stack[self.lo..]
+                .iter()
+                .any(|&p| graph.node_in_run(p).accepts())
     }
 }
 impl Default for StackedStep {
@@ -116,11 +118,11 @@ pub fn accepts<N: Node>(graph: &Kwg<N>, word: &[u8]) -> bool {
                 return false;
             }
         }
-        graph[p].accepts()
+        graph.node_in_run(p).accepts()
     };
     let mut p = 0;
     for (k, &tile) in word.iter().enumerate() {
-        if k > 0 && graph[p].accepts() && from_root(&word[k..]) {
+        if k > 0 && graph.node_in_run(p).accepts() && from_root(&word[k..]) {
             return true;
         }
         p = graph.seek(p, tile);
@@ -128,7 +130,7 @@ pub fn accepts<N: Node>(graph: &Kwg<N>, word: &[u8]) -> bool {
             return false;
         }
     }
-    graph[p].accepts()
+    graph.node_in_run(p).accepts()
 }
 
 struct AnagramFrame {
@@ -173,7 +175,7 @@ pub fn anagrams<N: Node>(graph: &Kwg<N>, rack: &[u8]) -> Vec<Vec<u8>> {
             stack.pop();
             continue;
         }
-        let node = graph[frame.next];
+        let node = graph.node_in_run(frame.next);
         frame.next = if node.is_end() { 0 } else { frame.next + 1 };
         let tile = node.tile();
         let spent = if counts[tile as usize] > 0 { tile } else { 0 };

@@ -1186,7 +1186,7 @@ fn dawg_words<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::Retu
         ..
     } = &mut ledger.scratch;
     g.count_dawg_words_into(marks, counts)?;
-    let words = match g[0].arc_index() {
+    let words = match g.node_in_run(0).arc_index() {
         root if root > 0 => counts[root as usize] as usize,
         _ => 0,
     };
@@ -1207,7 +1207,7 @@ fn refuse_a_loop<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::R
             _ => {}
         }
         state[p as usize] = 1;
-        let node = g[p];
+        let node = g.node_in_run(p);
         if node.arc_index() > 0 {
             visit(g, node.arc_index(), state)?;
         }
@@ -1221,7 +1221,7 @@ fn refuse_a_loop<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::R
         return Ok(None);
     }
     let mut state = vec![0u8; g.0.len()];
-    let root = g[0].arc_index();
+    let root = g.node_in_run(0).arc_index();
     if root > 0 {
         visit(g, root, &mut state)?;
     }
@@ -1246,7 +1246,7 @@ fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(
         f: &mut F,
     ) {
         loop {
-            let node = g[p];
+            let node = g.node_in_run(p);
             w.push(node.tile());
             if node.accepts() {
                 f(w);
@@ -1261,7 +1261,7 @@ fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(
             p += 1;
         }
     }
-    let root = g[0].arc_index();
+    let root = g.node_in_run(0).arc_index();
     if root > 0 && max_len > 0 {
         w.clear();
         walk(g, root, max_len, w, f);
@@ -1591,7 +1591,7 @@ mod tests {
             assert!(ArmTables::build(&kwg, &gc, lean).is_ok());
         }
         // the S that starts the dawg's first run now leads back to that run
-        let dawg_root = kwg[0].arc_index() as usize;
+        let dawg_root = kwg.node_in_run(0).arc_index() as usize;
         let at = dawg_root * 4;
         let mut looping = bytes.to_vec();
         let node = kwg::read_le_u32(&looping, at);

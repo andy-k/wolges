@@ -17,14 +17,16 @@ pub fn accepts<N: Node>(kad: &Kwg<N>, word: &[u8]) -> bool {
     for &tile in word {
         suffix[tile as usize] += 1;
     }
-    if kad.accepts_alpha(&suffix[..len]) {
+    if kad.accepts_alpha_of_len(&suffix[..len], len as u8) {
         return true;
     }
     let mut prefix = [0u8; MAX_LETTERS];
     for &tile in &word[..word.len() - 1] {
         prefix[tile as usize] += 1;
         suffix[tile as usize] -= 1;
-        if kad.accepts_alpha(&prefix[..len]) && kad.accepts_alpha(&suffix[..len]) {
+        if kad.accepts_alpha_of_len(&prefix[..len], len as u8)
+            && kad.accepts_alpha_of_len(&suffix[..len], len as u8)
+        {
             return true;
         }
     }

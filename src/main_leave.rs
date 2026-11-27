@@ -5821,7 +5821,7 @@ fn rack_words<N: kwg::Node>(
         tally[tile as usize] += 1;
     }
     found.clear();
-    let root = kwg[0].arc_index();
+    let root = kwg.0[0].arc_index();
     words_of_rack(kwg, root, tally, key.len(), &mut Vec::new(), found);
     for &tile in key {
         tally[tile as usize] -= 1;
@@ -5842,7 +5842,7 @@ fn words_of_rack<N: kwg::Node>(
         return;
     }
     loop {
-        let node = kwg[p];
+        let node = kwg.0[(p).cast_unsigned() as usize];
         let tile = node.tile() as usize;
         if tally.get(tile).is_some_and(|&n| n > 0) {
             tally[tile] -= 1;
@@ -10294,7 +10294,7 @@ fn lexicon_holds<N: kwg::Node>(kwg: &kwg::Kwg<N>, jumbled: bool, word: &mut [u8]
             return false;
         }
     }
-    kwg[p].accepts()
+    kwg.0[(p).cast_unsigned() as usize].accepts()
 }
 
 #[inline]

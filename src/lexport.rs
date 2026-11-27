@@ -83,7 +83,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
         let orig_p = p;
         env.nodes.push(0);
         loop {
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             let tile = node.tile();
             // Remap later after dedup.
             letter_set_bitset |= u64::from(node.accepts()) << tile;
@@ -111,11 +111,11 @@ pub fn to_macondo<'a, N: kwg::Node>(
             if arc_set_bitset & (1 << tile) != 0 {
                 // Arc exists, so do unguarded linear search for that tile.
                 p = orig_p;
-                while env.kwg[p].tile() != tile {
+                while env.kwg.node_in_run(p).tile() != tile {
                     p += 1;
                 }
                 env.nodes[w as usize] = (u32::from(env.tile_mapping[tile as usize]) << 24)
-                    | (iter(env, env.kwg[p].arc_index())? & 0xffffff);
+                    | (iter(env, env.kwg.node_in_run(p).arc_index())? & 0xffffff);
                 w += 1;
             }
         }
@@ -124,10 +124,10 @@ pub fn to_macondo<'a, N: kwg::Node>(
 
     iter(
         &mut env,
-        kwg[match build_format {
+        kwg.node_in_run(match build_format {
             MacondoFormat::Dawg => 0,
             MacondoFormat::Gaddag => 1,
-        }]
+        })
         .arc_index(),
     )?;
 
@@ -261,7 +261,7 @@ pub fn to_lxd<'a, N: kwg::Node>(
         let orig_p = p;
         loop {
             env.nodes.push(0); // reserve the space first
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             if node.is_end() {
                 break;
             }
@@ -272,7 +272,7 @@ pub fn to_lxd<'a, N: kwg::Node>(
         let mut word_counts = 0;
         p = orig_p;
         loop {
-            let node = env.kwg[p];
+            let node = env.kwg.node_in_run(p);
             word_counts += u32::from(node.accepts());
             let next_p = node.arc_index();
             let mut next_w = 0;
@@ -302,7 +302,7 @@ pub fn to_lxd<'a, N: kwg::Node>(
         Ok(())
     }
 
-    let root_p = kwg[0].arc_index();
+    let root_p = kwg.node_in_run(0).arc_index();
     iter(&mut env, root_p)?;
 
     if word_counts[root_p as usize] == 0 {
