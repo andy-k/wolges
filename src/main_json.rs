@@ -248,6 +248,11 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
 
     let arm_tables =
         std::sync::Arc::new(wolges::anagrams::ArmTables::build(kwg, game_config, lean)?);
+    let vocab = if lean {
+        movegen::Vocab::lean(kwg)
+    } else {
+        movegen::Vocab::new(game_config, kwg)?
+    };
 
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
@@ -280,7 +285,7 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &kibitzer.board_tiles,
         game_config,
-        vocab: &wolges::movegen::Vocab::lean(kwg),
+        vocab: &vocab,
         anagrams: arm_tables.anagrams(),
         rack_lengths: arm_tables.rack_lengths(),
         klv,
