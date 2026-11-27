@@ -152,6 +152,7 @@ fn a_pool_walk_with_no_room_answers_out_of_memory(
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
     let board_snapshot = movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles: &board_tiles,
         game_config: gc,
         kwg: words,
@@ -238,6 +239,7 @@ fn a_generation_with_no_room_to_keep_stops_at_once(
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
     let board_snapshot = movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles: &board_tiles,
         game_config: gc,
         kwg: words,

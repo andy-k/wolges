@@ -3499,6 +3499,7 @@ impl<
             &mut work.movegen,
             work.run_letter_bits.as_deref(),
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &work.board_tiles,
                 game_config: self.game_config,
                 kwg: self.kwg,
@@ -3840,6 +3841,7 @@ impl<
             &mut work_buffer.movegen,
             work_buffer.run_letter_bits.as_deref(),
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &work_buffer.board_tiles,
                 game_config: self.game_config,
                 kwg: self.kwg,
@@ -4080,6 +4082,7 @@ impl<
                     walker,
                     work_buffer.run_letter_bits.as_deref(),
                     &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: board,
                         game_config: self.game_config,
                         kwg: self.kwg,
@@ -4114,6 +4117,7 @@ impl<
                 &mut work_buffer.movegen,
                 work_buffer.run_letter_bits.as_deref(),
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &work_buffer.board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
@@ -4265,6 +4269,7 @@ impl<
                 &mut work_buffer.movegen,
                 work_buffer.run_letter_bits.as_deref(),
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &work_buffer.board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
@@ -6161,6 +6166,7 @@ impl<
                 "",
                 equity,
                 play.fmt(&movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
@@ -6573,6 +6579,7 @@ impl<
         let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: board,
             game_config: search.gc,
             kwg: search.kwg,
@@ -6731,6 +6738,7 @@ impl<
         let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: board,
             game_config: search.gc,
             kwg: search.kwg,
@@ -8321,6 +8329,7 @@ impl<
                     moves
                 } else {
                     let snapshot = movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: board,
                         game_config: gc,
                         kwg,
@@ -10731,6 +10740,7 @@ fn in_bag_moves<
     moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
         mg,
         &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &pos.board,
             game_config: gc,
             kwg,
@@ -10910,6 +10920,7 @@ fn root_moves<
     let (rack, made) = (&pos.racks[mover], pos.exchanges[mover]);
     let cut = mg.gen_moves_raw_all_unsorted_held(
         &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &pos.board,
             game_config: gc,
             kwg,
@@ -11936,6 +11947,7 @@ impl<
                 gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                     self.mg,
                     &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &pos.board,
                         game_config: self.gc,
                         kwg: self.kwg,
@@ -12321,6 +12333,7 @@ impl<
         moves_of::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             self.mg,
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &info.board,
                 game_config: gc,
                 kwg,
@@ -12883,6 +12896,7 @@ mod tests {
         }
         let alphabet = fixed.gc.alphabet();
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: board,
             game_config: fixed.gc,
             kwg: fixed.kwg,
@@ -12980,6 +12994,7 @@ mod tests {
         }
         let alphabet = fixed.gc.alphabet();
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: board,
             game_config: fixed.gc,
             kwg: fixed.kwg,
@@ -13088,6 +13103,7 @@ mod tests {
         }
         let alphabet = fixed.gc.alphabet();
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: board,
             game_config: fixed.gc,
             kwg: fixed.kwg,
@@ -13831,6 +13847,7 @@ mod tests {
             state.players[0].rack.extend_from_slice(&pos.racks[0]);
             state.players[1].rack.extend_from_slice(&pos.racks[1]);
             let snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &state.board_tiles,
                 game_config: &gc,
                 kwg: &kwg,
@@ -14531,6 +14548,7 @@ mod tests {
                     movegen::KurniaMoveGenerator::new(&gc)
                         .gen_remaining_words(
                             &movegen::BoardSnapshot {
+                                alphagrams: None,
                                 board_tiles: board,
                                 game_config: &gc,
                                 kwg: &whole,
@@ -14777,6 +14795,7 @@ mod tests {
         assert!(pass.value.unwrap() < best);
         let root = super::RootMoves::checked(
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &state.board_tiles,
                 game_config: &gc,
                 kwg: &kwg,
@@ -14831,6 +14850,7 @@ mod tests {
         assert!(plays.iter().all(|play| first.contains(play)));
         let root = super::RootMoves::checked(
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &state.board_tiles,
                 game_config: &gc,
                 kwg: &kwg,
@@ -14874,6 +14894,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(plays.len() >= 2);
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &state.board_tiles,
             game_config: &gc,
             kwg: &kwg,
@@ -15627,6 +15648,7 @@ mod tests {
                 movegen::KurniaMoveGenerator::new(&gc)
                     .gen_remaining_words(
                         &movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &board,
                             game_config: &gc,
                             kwg: &whole,
@@ -15768,6 +15790,7 @@ mod tests {
             }
             mg.gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: board,
                     game_config: &gc,
                     kwg: &kwg,
@@ -15840,6 +15863,7 @@ mod tests {
                 movegen::KurniaMoveGenerator::new(&gc)
                     .gen_remaining_words(
                         &movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &board,
                             game_config: &gc,
                             kwg: &kwg,
@@ -15919,6 +15943,7 @@ mod tests {
                     movegen::KurniaMoveGenerator::new(&gc)
                         .gen_remaining_words(
                             &movegen::BoardSnapshot {
+                                alphagrams: None,
                                 board_tiles: &board,
                                 game_config: &gc,
                                 kwg: &kwg,
@@ -15949,6 +15974,7 @@ mod tests {
                             generator
                                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                                     board_snapshot: &movegen::BoardSnapshot {
+                                        alphagrams: None,
                                         board_tiles: &board,
                                         game_config: &gc,
                                         kwg: graph,
@@ -18300,6 +18326,7 @@ mod tests {
                             ..
                         } => {
                             let snapshot = movegen::BoardSnapshot {
+                                alphagrams: None,
                                 board_tiles: &board,
                                 game_config: &gc,
                                 kwg: &kwg,
@@ -19545,6 +19572,7 @@ mod tests {
             let mover = 0usize;
             let opp = 1usize;
             let snap = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: board,
                 game_config: &gc,
                 kwg: &kwg,
@@ -19918,6 +19946,7 @@ mod tests {
         let klv = crate::klv::Klv::<kwg::Node24>::empty().unwrap();
         let roots = super::RootMoves::checked(
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board,
                 game_config: &gc,
                 kwg: &kwg,
@@ -21506,6 +21535,7 @@ mod tests {
         super::moves_of::<false, _, _, _, true, true>(
             r.mg,
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &info.board,
                 game_config: r.gc,
                 kwg: r.kwg,

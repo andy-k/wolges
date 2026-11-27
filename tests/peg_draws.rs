@@ -98,6 +98,7 @@ fn peg_draw_outcomes() {
             player.score = equity::Points::new(score).scaled();
         }
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &before.board_tiles,
             game_config: &gc,
             kwg: &kwg,

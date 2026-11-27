@@ -37,6 +37,7 @@ fn snapshot<'a>(
     board_tiles: &'a [u8],
 ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
     movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles,
         game_config: gc,
         kwg,

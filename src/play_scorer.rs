@@ -760,6 +760,7 @@ mod tests {
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.players[0].rack = vec![1, 20];
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -817,6 +818,7 @@ mod tests {
         board_tiles[2 * 7 + 3] = 4;
         board_tiles[4 * 7 + 3] = 2;
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kad,
@@ -931,6 +933,7 @@ mod tests {
         board_tiles[2 * 7 + 3] = 1;
         board_tiles[4 * 7 + 3] = 2;
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,

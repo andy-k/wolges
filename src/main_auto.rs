@@ -225,6 +225,7 @@ fn do_it(
         //game_state.bag.shuffle(&mut rng);
         display::print_game_state(game_config, &game_state, Some(&timers))?;
         let board_snapshot = &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
@@ -385,6 +386,7 @@ fn do_it(
             };
 
             let board_snapshot = &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &game_state.board_tiles,
                 game_config,
                 kwg,

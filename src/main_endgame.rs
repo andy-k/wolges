@@ -249,6 +249,7 @@ impl Question {
             }
             if let Some(play) = move_to_play {
                 let board_snapshot = &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config,
                     kwg: &empty_kwg,
@@ -470,6 +471,7 @@ fn run_batch<N: kwg::Node>(
         vec_of_words.clear();
         move_generator.gen_remaining_words(
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -1666,6 +1668,7 @@ fn solve_position<N: kwg::Node>(
     let mut vec_of_words = Vec::<bites::Bites>::new();
     move_generator.gen_remaining_words(
         &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config,
             kwg,

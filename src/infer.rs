@@ -162,6 +162,7 @@ pub fn build_sheet_spell_once<
     let mut n_cand = 0u64;
     let mut failure = None;
     let board_snapshot = &movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles,
         game_config,
         kwg,
@@ -2731,6 +2732,7 @@ mod tests {
             watcher_rack[0] = 26;
         }
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config,
             kwg,
@@ -2962,6 +2964,7 @@ mod tests {
             }
             let watcher_rack = [if on_board > 0 { 26 } else { 5 }];
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -2998,6 +3001,7 @@ mod tests {
             &mut tables,
             &mut move_generator,
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &[0u8; 15 * 15],
                 game_config: &game_config,
                 kwg: &kwg,
@@ -3171,6 +3175,7 @@ mod tests {
                 &mut InferTables::new(&game_config, &klv).unwrap(),
                 &mut movegen::KurniaMoveGenerator::new(&game_config),
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -3279,6 +3284,7 @@ mod tests {
             &mut InferTables::new(game_config, &klv).unwrap(),
             &mut movegen::KurniaMoveGenerator::new(game_config),
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles,
                 game_config,
                 kwg: &kwg,
@@ -3372,6 +3378,7 @@ mod tests {
     ) -> Vec<(Vec<u8>, i32)> {
         let (lat, leave) = (&tiny.tables.lat, &tiny.tables.leave);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles,
             game_config,
             kwg: &tiny.kwg,
@@ -3747,6 +3754,7 @@ mod tests {
                     &mut InferTables::new(&english, &klv).unwrap(),
                     &mut movegen::KurniaMoveGenerator::new(&english),
                     &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &english,
                         kwg: &kwg,
@@ -3795,6 +3803,7 @@ mod tests {
                 &mut InferTables::new(&english, &klv).unwrap(),
                 &mut movegen::KurniaMoveGenerator::new(&english),
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &board_tiles,
                     game_config: &english,
                     kwg: &kwg,
@@ -3852,6 +3861,7 @@ mod tests {
         board_tiles.copy_within(3..79, 2);
         board_tiles[78] = 0;
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -4489,6 +4499,7 @@ mod tests {
                 tables,
                 move_generator,
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -4524,6 +4535,7 @@ mod tests {
             }
             let replies = movegen_replies(
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &after,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -4672,6 +4684,7 @@ mod tests {
                     )
                     .unwrap();
                     let board_snapshot = movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &board_tiles,
                         game_config: &gc,
                         kwg: &kwg,
@@ -4853,6 +4866,7 @@ mod tests {
         let (mut placements, mut exchanges) = (0usize, 0usize);
         for (board_tiles, racks) in [(&empty, &opening_racks[..]), (&mid, &mid_racks[..])] {
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -4936,6 +4950,7 @@ mod tests {
             let mut placed = vec![0u8; pool.len()];
             let (exchanged, _) = move_tiles_and_value(
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -4967,6 +4982,7 @@ mod tests {
              move_generator: &mut movegen::KurniaMoveGenerator,
              (board_tiles, watcher, play, lean): (&[u8], &[u8], &movegen::Play, bool)| {
                 let board_snapshot = movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
