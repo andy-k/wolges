@@ -5,7 +5,7 @@ use super::{equity, error, game_config, movegen};
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
 #[serde(tag = "action")]
 pub enum JsonPlay {
     #[serde(rename = "exchange")]
@@ -66,7 +66,6 @@ fn signed_tile(x: u8) -> i8 {
 
 // a play as JsonPlay writes it, read where it is held, so that writing it
 // copies no tiles: its word and score as movegen::Play holds them
-#[derive(Clone, Copy)]
 pub enum JsonPlayRef<'a> {
     Exchange {
         tiles: &'a [u8],
@@ -208,7 +207,7 @@ impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
 }
 
 // a valued play as JsonPlayWithEquity writes it, read where it is held
-#[derive(serde::Serialize, Clone, Copy)]
+#[derive(serde::Serialize)]
 pub struct JsonPlayRefWithEquity<'a> {
     #[serde(serialize_with = "equity_as_printed")]
     pub equity: f64,

@@ -1183,7 +1183,7 @@ struct FootprintScratch<'a> {
 }
 
 // a set of the other side's moves by their index, as bits
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct PlaySet(Vec<u64>);
 
 impl PlaySet {

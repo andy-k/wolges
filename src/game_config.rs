@@ -29,7 +29,7 @@ pub struct StaticGameConfig {
     pub exchange_tile_limit: i16, // >= 1
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
     Generation,
     Inference,

@@ -87,7 +87,7 @@ pub type DefaultRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 // a ply a rollout played after its candidate: the play's score, in millipoints,
 // and how many tiles it placed (none for an exchange or a pass)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct PlyPlayed {
     pub score: i32,
     pub tiles: u8,
