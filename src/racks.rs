@@ -42,8 +42,8 @@ impl RackTable {
 
     // the full racks the bag can deal
     #[inline(always)]
-    fn num_racks(&self) -> usize {
-        self.ways[self.rack_size as usize] as usize
+    fn num_racks(&self) -> error::Returns<usize> {
+        Ok(usize::try_from(self.ways[self.rack_size as usize])?)
     }
 
     // a rack's rank among the full racks, ordered by their counts of each tile
@@ -233,7 +233,7 @@ impl RackTable {
             data: Box::new([]),
             data_start: 0,
         };
-        let num_racks = table.num_racks();
+        let num_racks = table.num_racks()?;
         let threads = threads.max(1).min(num_racks.max(1));
         let subrack_ways = Self::ways_of::<true>(&table.counts, rack_size);
         let num_bytes = usize::try_from(subrack_ways[rack_size as usize] * SUBRACK_BYTES as u64)
@@ -379,7 +379,7 @@ impl RackTable {
             data: Box::new([]),
             data_start: 0,
         };
-        let num_racks = table.num_racks();
+        let num_racks = table.num_racks()?;
         let ends_len = num_racks
             .checked_mul(8)
             .filter(|&len| len <= bytes.len())
@@ -460,7 +460,7 @@ mod tests {
                             continue;
                         }
                         let rank = table.rank(&rack).unwrap();
-                        assert!(rank < table.num_racks());
+                        assert!(rank < table.num_racks().unwrap());
                         let mut back = [9u8; 6];
                         back[5] = 0;
                         table.unrank(rank as u64, &mut back);
@@ -470,7 +470,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen, table.num_racks());
+        assert_eq!(seen, table.num_racks().unwrap());
         assert_eq!(table.rank(&[0, 3, 1, 0, 0, 0]), None);
         assert_eq!(table.rank(&[0, 3, 0, 0, 0, 1]), None);
     }
@@ -515,7 +515,7 @@ mod tests {
         let mut read = klv::MultiLeaves::new();
         let mut order = Vec::new();
         let mut keys = Vec::new();
-        for rank in (0..table.num_racks()).step_by(97) {
+        for rank in (0..table.num_racks().unwrap()).step_by(97) {
             table.unrank(rank as u64, &mut rack);
             assert_eq!(table.rank(&rack), Some(rank));
             let (setup_leaves, given) = table.get(&rack).unwrap();
