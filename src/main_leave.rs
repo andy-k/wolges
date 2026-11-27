@@ -8777,6 +8777,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                 leave: &leave,
                 ln_binom: &ln_binom,
             };
+            let dyn_ref = dyn_ref.clone();
             thread_handles.push(s.spawn(move || -> error::Returns<FitMoves> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
@@ -11415,7 +11416,7 @@ impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
                 self.step(state, rng, play, &mut turns, 0)?
             } else {
                 let [first, second] =
-                    generator.best_for_two(&params, self.leaves.ordered(seat), paired)?;
+                    generator.best_for_two(&params, self.leaves.clone().ordered(seat), paired)?;
                 if first != second {
                     mirrored.clone_from(state);
                     let mut mirrored_rng = rng.copy_state();
@@ -11641,7 +11642,7 @@ fn compare_seats<
             game_config: &game_config,
             vocab: &vocab,
             arm_tables: &arm_tables,
-            leaves,
+            leaves: leaves.clone(),
             same_leaves: leaves.same_values(),
         }
     });
@@ -11660,6 +11661,7 @@ fn compare_seats<
             let positional = &positional;
             #[cfg(not(target_family = "wasm"))]
             let preempty = &preempty;
+            let dyn_refs = dyn_refs.clone();
             thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
                 let mut generator = CompareMoveGenerator::<LEAN>::new(&game_config);
                 let mut paired = movegen::PairedHasty::default();
@@ -11671,7 +11673,7 @@ fn compare_seats<
                     arm_tables,
                     &arc_klv0,
                     SeatParams {
-                        dynamic_leaves: dyn_refs.map(|refs| refs[0]),
+                        dynamic_leaves: dyn_refs.as_ref().map(|refs| refs[0].clone()),
                         turn_time: turn_times[0],
                         simmer_params: move_picker::SimmerParams {
                             num_sim_iters: p0_iters,
@@ -11692,7 +11694,7 @@ fn compare_seats<
                     arm_tables,
                     &arc_klv1,
                     SeatParams {
-                        dynamic_leaves: dyn_refs.map(|refs| refs[1]),
+                        dynamic_leaves: dyn_refs.as_ref().map(|refs| refs[1].clone()),
                         turn_time: turn_times[1],
                         simmer_params: move_picker::SimmerParams {
                             num_sim_iters: p1_iters,

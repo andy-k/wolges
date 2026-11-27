@@ -100,7 +100,7 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         } else {
             max_gen
         },
-        params.dynamic_leaves,
+        params.dynamic_leaves.clone(),
     )?;
     if let Some((term, buffers)) = positional {
         let board_snapshot = params.board_snapshot;
@@ -134,15 +134,15 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         &movegen::GenMovesParams {
             max_gen: quota,
             pass_policy,
-            dynamic_leaves: params
-                .dynamic_leaves
-                .map(|dynamic_leaves| klv::DynamicLeavesRef {
+            dynamic_leaves: params.dynamic_leaves.as_ref().map(|dynamic_leaves| {
+                klv::DynamicLeavesRef {
                     lat: dynamic_leaves.lat,
                     add: dynamic_leaves.add,
                     full_v: dynamic_leaves.full_v,
                     min_keep: dynamic_leaves.min_keep,
                     take_kept: true,
-                }),
+                }
+            }),
             ..*params
         },
     );
@@ -3042,9 +3042,9 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
         {
             carried.clear();
             let dynamic = match self {
-                MovePicker::Dynamic(leaves) => Some(*leaves),
-                MovePicker::Simmer(simmer) => simmer.dynamic_root,
-                MovePicker::Positional(positional) => positional.dynamic_leaves,
+                MovePicker::Dynamic(leaves) => Some(leaves.clone()),
+                MovePicker::Simmer(simmer) => simmer.dynamic_root.clone(),
+                MovePicker::Positional(positional) => positional.dynamic_leaves.clone(),
                 _ => None,
             };
             filtered_movegen.gen_moves(
@@ -3147,7 +3147,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     rack,
                     game_state.current_player().num_exchanges,
                     1,
-                    Some(*dynamic_leaves),
+                    Some(dynamic_leaves.clone()),
                 )?;
             }
             MovePicker::Simmer(simmer) => {
@@ -3163,7 +3163,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         max_gen: SIMMER_FIELD.max_gen,
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                        dynamic_leaves: simmer.dynamic_root,
+                        dynamic_leaves: simmer.dynamic_root.clone(),
                     },
                     SIMMER_FIELD.nonplacing_quota,
                     &mut scratch,
@@ -3295,7 +3295,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     rack,
                     game_state.current_player().num_exchanges,
                     usize::MAX,
-                    *dynamic_leaves,
+                    dynamic_leaves.clone(),
                 )?;
                 term.add_to(
                     game_config,

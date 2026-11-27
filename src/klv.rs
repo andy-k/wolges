@@ -4,7 +4,7 @@ use super::{bites, census, equity, error, kwg, racks};
 
 const MAX_LETTERS: usize = 64;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct DynamicLeavesRef<'a> {
     pub lat: &'a census::MultisetLattice,
     pub add: &'a census::AddTable,
@@ -46,7 +46,7 @@ pub struct DynamicKept {
     after: Vec<i32>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum AdjustLeave {
     Identity,
     Scaled { scale: i32, denom: i32 },
@@ -96,7 +96,7 @@ pub struct Klv<L: kwg::Node> {
 }
 
 // tables with matching graphs can share an index walk across different values.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct LeavePair<'a, L: kwg::Node> {
     tables: [&'a Klv<L>; 2],
     same_graph: bool,
@@ -119,7 +119,7 @@ impl<'a, L: kwg::Node> LeavePair<'a, L> {
     }
 
     #[inline(always)]
-    pub fn table(self, seat: usize) -> &'a Klv<L> {
+    pub fn table(&self, seat: usize) -> &'a Klv<L> {
         self.tables[seat]
     }
 
@@ -141,7 +141,7 @@ impl<'a, L: kwg::Node> LeavePair<'a, L> {
     }
 
     #[inline(always)]
-    pub(crate) fn same_graph(self) -> bool {
+    pub(crate) fn same_graph(&self) -> bool {
         self.same_graph
     }
 }
