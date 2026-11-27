@@ -1470,7 +1470,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                                     &self.rack_tally,
                                     board_snapshot.klv,
                                     true,
-                                    adjust_leave_value,
+                                    adjust_leave_value.clone(),
                                     dense_most,
                                     bag_terms.clone(),
                                 );
@@ -1478,7 +1478,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                                     &self.rack_tally,
                                     tables.table(1),
                                     true,
-                                    adjust_leave_value,
+                                    adjust_leave_value.clone(),
                                     dense_most,
                                     bag_terms,
                                 );
@@ -1492,7 +1492,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                                 &self.rack_tally,
                                 board_snapshot.klv,
                                 true,
-                                adjust_leave_value,
+                                adjust_leave_value.clone(),
                                 dense_most,
                                 bag_terms,
                             );
@@ -11844,7 +11844,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
-            params.dynamic_leaves,
+            params.dynamic_leaves.clone(),
             working_buffer.multi_leaves.dense_most(),
             None,
         );
@@ -12794,10 +12794,12 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 .gen_moves_tables::<15, u16, ByNibble, _, _>(
                     params,
                     place_move_predicate,
-                    adjust_leave_value,
+                    adjust_leave_value.clone(),
                     equity_predicate,
                     steer,
-                    other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
+                    other
+                        .as_mut()
+                        .map(|(tables, pair)| (tables.clone(), &mut **pair)),
                 ),
             Some(_)
                 if {
@@ -12808,10 +12810,12 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 self.gen_moves_tables::<15, u16, ByLayout, _, _>(
                     params,
                     place_move_predicate,
-                    adjust_leave_value,
+                    adjust_leave_value.clone(),
                     equity_predicate,
                     steer,
-                    other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
+                    other
+                        .as_mut()
+                        .map(|(tables, pair)| (tables.clone(), &mut **pair)),
                 )
             }
             Some(_)
@@ -12823,19 +12827,23 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 self.gen_moves_tables::<21, u32, ByLayout, _, _>(
                     params,
                     place_move_predicate,
-                    adjust_leave_value,
+                    adjust_leave_value.clone(),
                     equity_predicate,
                     steer,
-                    other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
+                    other
+                        .as_mut()
+                        .map(|(tables, pair)| (tables.clone(), &mut **pair)),
                 )
             }
             Some(_) => self.gen_moves_tables::<0, u128, ByLayout, _, _>(
                 params,
                 place_move_predicate,
-                adjust_leave_value,
+                adjust_leave_value.clone(),
                 equity_predicate,
                 steer,
-                other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
+                other
+                    .as_mut()
+                    .map(|(tables, pair)| (tables.clone(), &mut **pair)),
             ),
             None => Some((place_move_predicate, equity_predicate)),
         };
@@ -12955,9 +12963,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
-            params.dynamic_leaves,
+            params.dynamic_leaves.clone(),
             working_buffer.multi_leaves.dense_most(),
-            other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
+            other
+                .as_mut()
+                .map(|(tables, pair)| (tables.clone(), &mut **pair)),
         );
         let classic = if T::NIBBLES {
             working_buffer.anagrams_fit_config && !working_buffer.subracks.is_empty()
@@ -13240,9 +13250,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             params.board_snapshot,
             params.rack,
             adjust_leave_value,
-            params.dynamic_leaves,
+            params.dynamic_leaves.clone(),
             dense_most,
-            other.as_mut().map(|(tables, pair)| (*tables, &mut **pair)),
+            other
+                .as_mut()
+                .map(|(tables, pair)| (tables.clone(), &mut **pair)),
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         if other.is_none()
@@ -13546,6 +13558,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 let params = GenMovesParams {
                     board_snapshot: &snapshot,
                     pass_policy: params.pass_policy.clone(),
+                    dynamic_leaves: params.dynamic_leaves.clone(),
                     ..*params
                 };
                 self.gen_moves_with_leaves(
@@ -19475,6 +19488,7 @@ pub(crate) mod tests {
                     let params = GenMovesParams {
                         board_snapshot: &snapshot,
                         pass_policy: params.pass_policy.clone(),
+                        dynamic_leaves: params.dynamic_leaves.clone(),
                         ..params
                     };
                     if lean {
