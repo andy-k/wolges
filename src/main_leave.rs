@@ -1559,9 +1559,9 @@ fn run(
             board_openness(game_config, kwg, klv, &a.boards, threads, a.quiet)
         }
         Task::OpennessMoves(a) => {
-            if a.window.is_nan() || a.window < 0.0 || a.candidates < 2 {
+            if a.window.is_nan() || a.window < 0.0 || a.candidates < 1 {
                 wolges::return_error!(
-                    "the window is a number of points not below 0, and candidates 2 or more"
+                    "the window is a number of points not below 0, and candidates 1 or more"
                         .to_string()
                 );
             }
@@ -9425,7 +9425,13 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     positions.sort_unstable_by_key(|&(at, ..)| at);
     let n = positions.len();
     if n == 0 {
-        wolges::return_error!("no move with two candidates in its window".to_string());
+        writeln!(
+            std::io::stdout(),
+            "0 positions with 2 to {num_candidates} candidates within {} points of the best, in {:?}",
+            f64::from(window) / f64::from(equity::SCALE),
+            t0.elapsed(),
+        )?;
+        return Ok(());
     }
     let points = f64::from(equity::SCALE);
     let num_cands: usize = positions.iter().map(|&(_, start, end)| end - start).sum();
@@ -12800,6 +12806,52 @@ WCMP_P1_SCORE 402.000000
             known > 100 && unknown > 0,
             "{known} known, {unknown} unknown"
         );
+    }
+
+    #[test]
+    fn openness_moves_takes_one_candidate() {
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let game_config = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            rack_size: 5,
+            ..english
+        });
+        let mut words = ["AE", "AT", "EAT", "TEA", "ATE", "TA", "TE"]
+            .iter()
+            .map(|word| word.bytes().map(|c| c - b'A' + 1).collect::<Vec<u8>>()[..].into())
+            .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let dir = format!(
+            "{}/target/openness_moves-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let kwg_path = format!("{dir}/words.kwg");
+        std::fs::write(&kwg_path, &kwg_bytes).unwrap();
+        run(
+            Task::OpennessMoves(OpennessMoves {
+                kwg: kwg_path.clone(),
+                klv: "-".to_string(),
+                games: 1,
+                seed: Some(1),
+                window: 0.0,
+                candidates: 1,
+                quiet: true,
+            }),
+            game_config,
+            1,
+            false,
+        )
+        .unwrap();
+        std::fs::remove_file(&kwg_path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
