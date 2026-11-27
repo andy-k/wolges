@@ -4635,6 +4635,26 @@ impl<
         Ok(valued)
     }
 
+    // the moves player_idx's root searches in the position to solve (those of
+    // with_root_moves, where given), the pass last where it is one of them;
+    // none when the memory limit cut their generation
+    pub fn root_plays(&mut self, player_idx: u8) -> Option<Vec<movegen::Play>> {
+        self.reset_position();
+        self.generate_root(player_idx, false);
+        if self.work_buffer.movegen_cut {
+            return None;
+        }
+        let mut plays = (self.work_buffer.lists[0].iter())
+            .map(|candidate| candidate.play.clone())
+            .collect::<Vec<_>>();
+        if self.allows_pass(true) {
+            plays.push(movegen::Play::Exchange {
+                tiles: [][..].into(),
+            });
+        }
+        Some(plays)
+    }
+
     // the value of player_idx's move play from the position to solve, as
     // value_first_moves takes it, and whether it is exact
     #[inline]
@@ -13705,6 +13725,55 @@ mod tests {
         assert_eq!(selected[0].value, pass.value);
         assert!(full.give_table(restricted.take_table()).is_ok());
         assert_eq!(full.solve(0).unwrap(), best);
+    }
+
+    #[test]
+    fn root_plays_are_the_first_moves() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut state = crate::game_state::GameState::new(&gc);
+        state.bag.set_from_iter([]);
+        state.players[0].rack.extend([1, 2]); // AB
+        state.players[1].rack.push(8); // H
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        solver.init(
+            &state.board_tiles,
+            [&state.players[0].rack, &state.players[1].rack],
+        );
+        let first = (solver.value_first_moves(0, &super::Limits::NONE).unwrap())
+            .into_iter()
+            .map(|first| first.play)
+            .collect::<Vec<_>>();
+        let plays = solver.root_plays(0).unwrap();
+        assert!(
+            matches!(plays.last(), Some(movegen::Play::Exchange { tiles }) if tiles.is_empty())
+        );
+        assert!(plays.len() >= 2 && plays.len() == first.len());
+        assert!(plays.iter().all(|play| first.contains(play)));
+        let root = super::RootMoves::checked(
+            &movegen::BoardSnapshot {
+                board_tiles: &state.board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            },
+            &state,
+            vec![plays[0].clone()],
+        )
+        .unwrap();
+        let mut restricted =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        restricted.init(
+            &state.board_tiles,
+            [&state.players[0].rack, &state.players[1].rack],
+        );
+        let mut restricted = restricted.with_root_moves(Some(&root));
+        assert!(restricted.root_plays(0).unwrap() == plays[..1]);
     }
 
     #[test]
