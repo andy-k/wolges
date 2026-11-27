@@ -32,7 +32,7 @@ pub struct GameArgs {
     jumbled: bool,
     #[arg(
         long,
-        help = "woadwage rules: a word, or two words of the lexicon joined"
+        help = "woadwage rules: a word, or two words of the lexicon joined; jumbled with --jumbled"
     )]
     woadwage: bool,
     #[arg(long, help = "the number of players, instead of the preset's")]

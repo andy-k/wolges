@@ -8,6 +8,8 @@ pub enum GameRules {
     Classic,
     Jumbled,
     Woadwage, // a word, or two words of the lexicon joined (woadwage.rs)
+    // never given where one-word rules keep woadwage out
+    JumbledWoadwage, // a jumbled word, or two jumbled words joined
 }
 
 #[derive(Clone)]
@@ -169,6 +171,16 @@ impl GameConfig {
         match self {
             GameConfig::Static(x) => GameConfig::Static(StaticGameConfig {
                 game_rules: GameRules::Woadwage,
+                ..x.clone()
+            }),
+        }
+    }
+
+    #[inline]
+    pub fn jumbled_woadwage(&self) -> Self {
+        match self {
+            GameConfig::Static(x) => GameConfig::Static(StaticGameConfig {
+                game_rules: GameRules::JumbledWoadwage,
                 ..x.clone()
             }),
         }
@@ -343,6 +355,11 @@ pub fn make_jumbled_english_game_config() -> GameConfig {
 #[inline]
 pub fn make_woadwage_english_game_config() -> GameConfig {
     make_english_game_config().woadwage()
+}
+
+#[inline]
+pub fn make_jumbled_woadwage_english_game_config() -> GameConfig {
+    make_english_game_config().jumbled_woadwage()
 }
 
 #[cfg(test)]
@@ -662,6 +679,10 @@ pub const GAME_CONFIGS: &[(&str, MakeGameConfig)] = &[
     ("german", make_german_game_config),
     ("hong-kong-english", make_hong_kong_english_game_config),
     ("italian", make_italian_game_config),
+    (
+        "jumbled-woadwage-english",
+        make_jumbled_woadwage_english_game_config,
+    ),
     ("norwegian", make_norwegian_game_config),
     ("polish", make_polish_game_config),
     ("slovene", make_slovene_game_config),
@@ -790,7 +811,7 @@ impl Options<'_> {
         let rack_size = self.rack_size.unwrap_or(preset.rack_size);
         let game_config = GameConfig::Static(StaticGameConfig {
             game_rules: match (self.jumbled, self.woadwage) {
-                (true, true) => return_error!("jumbled woadwage is not built".into()),
+                (true, true) => GameRules::JumbledWoadwage,
                 (true, false) => GameRules::Jumbled,
                 (false, true) => GameRules::Woadwage,
                 (false, false) => preset.game_rules,
@@ -834,7 +855,7 @@ impl GameConfig {
     // none), such as 7:50, zeros-to-end N and passes-to-end N (the turns in a
     // row that end a game, 0 for never), zeros-can-end-empty-board yes|no,
     // challenges-are-passes yes|no, exchanges-are-zeros yes|no, exchanges
-    // N|unlimited (each player's) and exchange-limit N (the fewest tiles the
+    // N|unlimited (each player's), and exchange-limit N (the fewest tiles the
     // bag holds for an exchange). A line starting with # is a comment and a
     // blank line is ignored. A FILE is what read_file returns for it.
     #[inline]
@@ -863,7 +884,10 @@ impl GameConfig {
                 "classic" => GameRules::Classic,
                 "jumbled" => GameRules::Jumbled,
                 "woadwage" => GameRules::Woadwage,
-                rules => return_error!(format!("{rules:?} is not classic, jumbled, or woadwage")),
+                "jumbled-woadwage" => GameRules::JumbledWoadwage,
+                rules => return_error!(format!(
+                    "{rules:?} is not classic, jumbled, woadwage, or jumbled-woadwage"
+                )),
             },
             alphabet,
             board_layout,
@@ -1214,6 +1238,7 @@ mod tests {
             match gc.game_rules() {
                 GameRules::Classic => "classic",
                 GameRules::Jumbled => "jumbled",
+                GameRules::JumbledWoadwage => "jumbled-woadwage",
                 GameRules::Woadwage => "woadwage",
             },
             gc.rack_size(),
@@ -1244,8 +1269,12 @@ mod tests {
         let same_rules = match (a.game_rules(), b.game_rules()) {
             (GameRules::Classic, GameRules::Classic)
             | (GameRules::Jumbled, GameRules::Jumbled)
-            | (GameRules::Woadwage, GameRules::Woadwage) => true,
-            (GameRules::Classic, _) | (GameRules::Jumbled, _) | (GameRules::Woadwage, _) => false,
+            | (GameRules::Woadwage, GameRules::Woadwage)
+            | (GameRules::JumbledWoadwage, GameRules::JumbledWoadwage) => true,
+            (GameRules::Classic, _)
+            | (GameRules::Jumbled, _)
+            | (GameRules::Woadwage, _)
+            | (GameRules::JumbledWoadwage, _) => false,
         };
         same_rules
             && alphabet.len() == other_alphabet.len()
@@ -1312,7 +1341,9 @@ mod tests {
                 "standard"
             };
             let gc = make();
-            let tiles = name.strip_prefix("woadwage-").unwrap_or(name);
+            let tiles = (name.strip_prefix("jumbled-woadwage-"))
+                .or_else(|| name.strip_prefix("woadwage-"))
+                .unwrap_or(name);
             let text = preset_text_of(tiles, board, &gc);
             let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
             assert!(same_game_config(&read, &gc), "{name}");
@@ -1338,7 +1369,7 @@ mod tests {
             let gc = make();
             match gc.game_rules() {
                 GameRules::Classic => {}
-                GameRules::Jumbled | GameRules::Woadwage => continue,
+                GameRules::Jumbled | GameRules::JumbledWoadwage | GameRules::Woadwage => continue,
             }
             classic += 1;
             let board = if name.starts_with("super-") {
@@ -1387,17 +1418,25 @@ mod tests {
         };
         let woadwage = options(false, true).make_game_config(&no_files).unwrap();
         assert!(same_game_config(&woadwage, &read));
-        assert_eq!(
-            options(true, true)
-                .make_game_config(&no_files)
-                .err()
-                .unwrap()
-                .to_string(),
-            "jumbled woadwage is not built"
-        );
         let text =
             preset_text_of("english", "standard", &gc).replace("rules classic", "rules both");
         assert!(GameConfig::new_static_from_text(&text, &no_files).is_err());
+        let text = preset_text_of("english", "standard", &gc)
+            .replace("rules classic", "rules jumbled-woadwage");
+        let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
+        assert!(matches!(read.game_rules(), GameRules::JumbledWoadwage));
+        assert!(same_game_config(&gc.jumbled_woadwage(), &read));
+        assert!(same_game_config(
+            &make_jumbled_woadwage_english_game_config(),
+            &read
+        ));
+        assert!(!same_game_config(&gc, &read));
+        assert!(!same_game_config(&gc.jumbled(), &read));
+        assert!(!same_game_config(&gc.woadwage(), &read));
+        let text = preset_text_of("english", "standard", &read);
+        assert!(text.contains("\nrules jumbled-woadwage\n"));
+        let both = options(true, true).make_game_config(&no_files).unwrap();
+        assert!(same_game_config(&both, &read));
     }
 
     #[test]

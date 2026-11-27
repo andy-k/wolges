@@ -1534,7 +1534,7 @@ impl Builder {
                     machine_words,
                     memory,
                 )?,
-            game_config::GameRules::Jumbled => {
+            game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
                 // lent to the build, then put back for the next
                 let mut alphagrams = std::mem::take(&mut self.alphagrams);
                 let built = fill_packed_alphagrams(machine_words, &mut alphagrams, memory)

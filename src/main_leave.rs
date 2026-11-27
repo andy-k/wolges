@@ -5306,7 +5306,7 @@ impl Losses {
         Self {
             jumbled: match game_config.game_rules() {
                 game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
-                game_config::GameRules::Jumbled => true,
+                game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => true,
             },
             seeker: movegen::KurniaMoveGenerator::new(game_config),
             checker: move_filter::LimitedVocabChecker::new(),
@@ -5739,7 +5739,9 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 ) -> error::Returns<()> {
     match game_config.game_rules() {
         game_config::GameRules::Classic => {}
-        game_config::GameRules::Jumbled | game_config::GameRules::Woadwage => {
+        game_config::GameRules::Jumbled
+        | game_config::GameRules::JumbledWoadwage
+        | game_config::GameRules::Woadwage => {
             return Err("study plays classic games".into());
         }
     }
@@ -10240,7 +10242,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
 
     let jumbled = match game_config.game_rules() {
         game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
-        game_config::GameRules::Jumbled => true,
+        game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => true,
     };
     let mut num_words = 0usize;
     let mut not_words = Vec::<String>::new();
