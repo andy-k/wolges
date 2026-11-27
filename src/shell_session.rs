@@ -2666,8 +2666,7 @@ impl Session {
 
     // make a move a candidate: a new one is rolled out from the next iteration,
     // and one that is out (dropped, or retired by the sim) comes back with what
-    // it had; one already in is refused, ending the sim if it was started for
-    // this
+    // it had; one already in stays as it is
     fn sim_add(&mut self, play: movegen::Play) -> error::Returns<()> {
         let kwg = self.kwg()?;
         let score = match &play {
@@ -2689,17 +2688,11 @@ impl Session {
             move_filter::LEAVE_SCALE_DENOM,
             score.raw(),
         )?;
-        let begun = self.sim.is_none();
         let sim = self.sim_mut()?;
         match sim.move_generator.plays.iter().position(|v| v.play == play) {
             Some(index) => {
                 let stream = sim.stream_of[index];
-                if !sim.simmer.readmit_with_history(stream) {
-                    if begun {
-                        self.end_sim();
-                    }
-                    return Err("already a candidate".into());
-                }
+                sim.simmer.readmit_with_history(stream);
             }
             None => {
                 sim.move_generator.plays.push(movegen::ValuedMove {
@@ -4755,7 +4748,7 @@ mod tests {
         // added back with what it had; a move outside the field joins as a new
         // candidate
         run(&mut session, &format!("sim add {other_text}")).unwrap();
-        assert!(run(&mut session, &format!("sim add {other_text}")).is_err());
+        run(&mut session, &format!("sim add {other_text}")).unwrap();
         let mut all = movegen::KurniaMoveGenerator::new(session.game_config);
         all.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
@@ -4797,16 +4790,15 @@ mod tests {
         run(&mut session, "play 8G AT").unwrap();
         assert!(session.sim.is_none());
         assert!(run(&mut session, "sim drop 8G AT").is_err());
-        // with no sim, adding a move the field already holds is refused, and
-        // leaves no sim
+        // with no sim, adding a move the field already holds starts the sim
         run(&mut session, "sim 1").unwrap();
         let sim = session.sim.as_ref().unwrap();
         let first = session
             .play_text(&sim.move_generator.plays[0].play)
             .unwrap();
         run(&mut session, "sim stop").unwrap();
-        assert!(run(&mut session, &format!("sim add {first}")).is_err());
-        assert!(session.sim.is_none());
+        run(&mut session, &format!("sim add {first}")).unwrap();
+        assert!(session.sim.is_some());
     }
 
     #[test]
