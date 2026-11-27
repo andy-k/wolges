@@ -381,15 +381,64 @@ enum PegModelArg {
 // the solver's table reserved from the start, as --reserve-table-mb asks: held
 // to half the memory limit, as a growing table holds its old buckets beside the
 // new ones; none at 0
-fn reserve_table(
-    egs: &mut endgame::EndgameSolver<'_, kwg::Node24, kwg::Node24>,
-    solving: &Solving,
-) {
+type AnySolver<'a, const TWO_SEATS: bool> =
+    endgame::EndgameSolver<'a, kwg::Node24, kwg::Node24, false, u128, true, true, TWO_SEATS>;
+
+fn reserve_table<const TWO_SEATS: bool>(egs: &mut AnySolver<'_, TWO_SEATS>, solving: &Solving) {
     let bytes = (solving.limits.memory).map_or(solving.reserve_table_bytes, |limit| {
         solving.reserve_table_bytes.min(limit.bytes / 2)
     });
     if bytes != 0 {
         egs.reserve_table(bytes);
+    }
+}
+
+struct Line<'l> {
+    game_config: &'l game_config::GameConfig,
+    kwg: &'l kwg::Kwg<kwg::Node24>,
+    arm_tables: &'l anagrams::ArmTables,
+    run_letters: kwg::RunLetters<'l>,
+    board_tiles: &'l [u8],
+    racks: &'l [Vec<u8>],
+    scoreless: [u16; 2],
+    player: u8,
+    line_index: usize,
+}
+
+fn solve_line<const TWO_SEATS: bool>(
+    line: Line<'_>,
+    solving: &Solving,
+) -> error::Returns<endgame::Solved> {
+    let line_index = line.line_index;
+    let mut egs = AnySolver::<TWO_SEATS>::with_generator(
+        line.game_config,
+        line.kwg,
+        line.arm_tables,
+        line.run_letters,
+        movegen::KurniaMoveGenerator::new(line.game_config),
+    )?;
+    egs.init_seats_after_scoreless_turns(
+        line.board_tiles,
+        line.racks.iter().map(|rack| &rack[..]),
+        line.scoreless[0],
+        line.scoreless[1],
+    );
+    reserve_table(&mut egs, solving);
+    let solve = |egs: &mut AnySolver<'_, TWO_SEATS>| {
+        egs.solve_within_on_threads(line.player, &solving.limits, solving.threads)
+    };
+    if solving.quiet {
+        solve(&mut egs)
+    } else {
+        let watch = endgame_watch::ticking(move |progress, elapsed| {
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "{line_index}: {}",
+                progress.after(elapsed)
+            )?;
+            Ok(())
+        });
+        egs.listening(watch, solve)
     }
 }
 
@@ -408,8 +457,8 @@ fn run_batch<N: kwg::Node>(
     let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-    let mut rack0 = Vec::new();
-    let mut rack1 = Vec::new();
+    let seats = usize::from(game_config.num_players());
+    let mut racks = vec![Vec::new(); seats];
     // each line's prune: its words, the builder of its graph, and the graph,
     // kept from line to line (the graph is refilled before it is read)
     let mut vec_of_words = Vec::<bites::Bites>::new();
@@ -422,31 +471,33 @@ fn run_batch<N: kwg::Node>(
         let fen_str = fields
             .next()
             .ok_or_else(|| error::new(format!("line {line_index}: missing board fen")))?;
-        let rack0_str = fields
-            .next()
-            .ok_or_else(|| error::new(format!("line {line_index}: missing player 1 rack")))?;
-        let rack1_str = fields
-            .next()
-            .ok_or_else(|| error::new(format!("line {line_index}: missing player 2 rack")))?;
+        for (seat, rack) in racks.iter_mut().enumerate() {
+            let rack_str = fields.next().ok_or_else(|| {
+                error::new(format!(
+                    "line {line_index}: missing player {} rack",
+                    seat + 1
+                ))
+            })?;
+            racks_alphabet_reader
+                .set_word(rack_str, rack)
+                .map_err(|e| {
+                    error::new(format!("line {line_index}: bad rack {rack_str:?}: {e}"))
+                })?;
+        }
         let player_str = fields
             .next()
             .ok_or_else(|| error::new(format!("line {line_index}: missing player to move")))?;
         let board_tiles = fen_parser.parse(fen_str)?.to_vec();
-        racks_alphabet_reader
-            .set_word(rack0_str, &mut rack0)
-            .map_err(|e| error::new(format!("line {line_index}: bad rack {rack0_str:?}: {e}")))?;
-        racks_alphabet_reader
-            .set_word(rack1_str, &mut rack1)
-            .map_err(|e| error::new(format!("line {line_index}: bad rack {rack1_str:?}: {e}")))?;
         let player = player_str.parse::<u8>().map_err(|e| {
             error::new(format!("line {line_index}: bad player {player_str:?}: {e}"))
         })?;
-        if player > 1 {
+        if usize::from(player) >= seats {
             wolges::return_error!(format!(
-                "line {line_index}: bad player {player_str:?}: the player to move is 0 or 1"
+                "line {line_index}: bad player {player_str:?}: the player to move is 0 to {}",
+                seats - 1
             ));
         }
-        if rack0.is_empty() || rack1.is_empty() {
+        if racks.iter().any(|rack| rack.is_empty()) {
             wolges::return_error!(format!(
                 "line {line_index}: a rack is empty, so the game is over"
             ));
@@ -462,7 +513,7 @@ fn run_batch<N: kwg::Node>(
             }
         }
         let mut off_board = game_config.tiles_off_board(&board_tiles)?;
-        for rack in [&rack0, &rack1] {
+        for rack in &racks {
             game_config
                 .take_rack(&mut off_board, rack)
                 .map_err(|e| error::new(format!("line {line_index}: {e}")))?;
@@ -485,30 +536,21 @@ fn run_batch<N: kwg::Node>(
         let smaller_kwg = smaller_graph.kwg();
         let arm_tables = solver_tables(smaller_kwg, &game_config, solving.lean)?;
 
-        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::with_generator(
-            &game_config,
-            smaller_kwg,
-            &arm_tables,
-            smaller_graph.run_letters(),
-            movegen::KurniaMoveGenerator::new(&game_config),
-        )?;
-        egs.init_after_scoreless_turns(&board_tiles, [&rack0, &rack1], scoreless[0], scoreless[1]);
-        reserve_table(&mut egs, solving);
-        let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| {
-            egs.solve_within_on_threads(player, &solving.limits, solving.threads)
+        let line = Line {
+            game_config: &game_config,
+            kwg: smaller_kwg,
+            arm_tables: &arm_tables,
+            run_letters: smaller_graph.run_letters(),
+            board_tiles: &board_tiles,
+            racks: &racks,
+            scoreless,
+            player,
+            line_index,
         };
-        let solved = if solving.quiet {
-            solve(&mut egs)
+        let solved = if seats == 2 {
+            solve_line::<true>(line, solving)
         } else {
-            let watch = endgame_watch::ticking(move |progress, elapsed| {
-                writeln!(
-                    boxed_stdout_or_stderr(),
-                    "{line_index}: {}",
-                    progress.after(elapsed)
-                )?;
-                Ok(())
-            });
-            egs.listening(watch, solve)
+            solve_line::<false>(line, solving)
         }?;
         let elapsed = t0.elapsed();
         if solved.exact {
@@ -572,7 +614,7 @@ struct Cli {
         value_name = "FILE",
         requires = "kwg_file",
         conflicts_with_all = ["fen", "rack"],
-        help = "solve each line of FILE (board fen, both racks, player to move, tab-separated, \
+        help = "solve each line of FILE (board fen, each player's rack, player to move, tab-separated, \
                 then the passes and the scoreless turns before it if not --passes and --zeros) \
                 and write to --out its index, its value, the time it took, and the depth it \
                 reached when a limit cut it short"
@@ -1644,6 +1686,9 @@ fn solve_position<N: kwg::Node>(
         }
     }
 
+    if game_config.num_players() != 2 {
+        wolges::return_error!("the racks of the other players are not given".into());
+    }
     // this allocates
     let oppo_rack = (0u8..)
         .zip(available_tally.iter())
