@@ -537,7 +537,7 @@ struct LatePrune {
 
 // the opponent's last move, the board before it, and what the watcher knew of
 // their rack before it, from which a sim infers what they kept
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct LastMove<'a> {
     pub board_before: &'a [u8],
     pub play: &'a movegen::Play,
@@ -4399,7 +4399,7 @@ mod tests {
         // the leaves are the inference's own, as the shell asks for them
         let mut simmer =
             Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
-        let leaves = simmer.kept_leaves(&rack, last).unwrap();
+        let leaves = simmer.kept_leaves(&rack, last.clone()).unwrap();
         assert!(!leaves.is_empty());
         let shell_leaves = infer::kept_leaves(
             &mut infer::InferTables::new(&game_config, &klv).unwrap(),
@@ -4426,7 +4426,7 @@ mod tests {
         let mut fitted_simmer =
             Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
         fitted_simmer.set_infer_fuzz(fuzz);
-        let fitted = fitted_simmer.kept_leaves(&rack, last).unwrap();
+        let fitted = fitted_simmer.kept_leaves(&rack, last.clone()).unwrap();
         let mut mixed_tables = infer::InferTables::new(&game_config, &klv).unwrap();
         mixed_tables.set_prior_mix(fuzz.1);
         let shell_fitted = infer::kept_leaves(
