@@ -400,6 +400,8 @@ fn run(
     let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
     let detected = wolges::anagrams::ArmTables::build(kwg, game_config, false)?;
+    let vocab = movegen::Vocab::new(game_config, kwg)?;
+    let lean_vocab = movegen::Vocab::lean(kwg);
     let every_arm = [
         ("detected", detected.anagrams(), None, true),
         ("layout", Some(&anagrams), None, true),
@@ -407,7 +409,6 @@ fn run(
         ("lean bare", None, None, false),
     ];
     let mut disagreements = 0usize;
-    let graphs = &wolges::movegen::Vocab::lean(kwg);
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
         let rack = parse_rack(alphabet, case.rack)?;
@@ -417,7 +418,7 @@ fn run(
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
                 game_config,
-                vocab: graphs,
+                vocab: if table.is_some() { &vocab } else { &lean_vocab },
                 anagrams: table,
                 rack_lengths: table.is_none().then_some(&rack_lengths),
                 klv,
@@ -485,7 +486,7 @@ fn run(
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
                 game_config,
-                vocab: graphs,
+                vocab: if tables { &vocab } else { &lean_vocab },
                 anagrams,
                 rack_lengths,
                 klv,
@@ -597,7 +598,6 @@ fn run(
         let board_tiles = fen_parser.parse(case.fen)?.to_vec();
         cases.push((case, board_tiles, parse_rack(alphabet, case.rack)?));
     }
-    let graphs = &wolges::movegen::Vocab::lean(kwg);
     for &(arm, anagrams, rack_lengths, tables) in &every_arm {
         let mut generator = movegen::KurniaMoveGenerator::new(game_config);
         let mut timed = std::time::Duration::ZERO;
@@ -607,7 +607,7 @@ fn run(
                 let board_snapshot = movegen::BoardSnapshot {
                     board_tiles,
                     game_config,
-                    vocab: graphs,
+                    vocab: if tables { &vocab } else { &lean_vocab },
                     anagrams,
                     rack_lengths,
                     klv,
