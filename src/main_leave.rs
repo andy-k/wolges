@@ -1295,8 +1295,14 @@ fn run(
                     ),
                 }
             };
-            let p0_window = window(a.p0_window, ever_deft(a.p0_picker, a.p0_endgame))?;
-            let p1_window = window(a.p1_window, ever_deft(a.p1_picker, a.p1_endgame))?;
+            let p0_window = window(
+                a.p0_window,
+                ever_deft(a.p0_picker.clone(), a.p0_endgame.clone()),
+            )?;
+            let p1_window = window(
+                a.p1_window,
+                ever_deft(a.p1_picker.clone(), a.p1_endgame.clone()),
+            )?;
             let positional = |path: Option<String>| -> error::Returns<_> {
                 match path {
                     None => Ok(None),
@@ -1343,36 +1349,38 @@ fn run(
             {
                 wolges::return_error!("the pre-empty pick requires a native build".to_string());
             }
-            let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
-                && hasty_throughout(a.p1_picker, a.p1_endgame)
+            let hasty_only = hasty_throughout(a.p0_picker.clone(), a.p0_endgame.clone())
+                && hasty_throughout(a.p1_picker.clone(), a.p1_endgame.clone())
                 && positional.iter().all(Option::is_none)
                 && preempty
                     .iter()
                     .all(|mode| matches!(mode, move_picker::PreemptyMode::Off));
-            let turn_times = [(a.p0_picker, a.p0_time_ms), (a.p1_picker, a.p1_time_ms)].map(
-                |(picker, time)| -> error::Returns<_> {
-                    if time.is_some()
-                        && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot)
-                    {
-                        wolges::return_error!(
-                            "a decision time budget requires a simmer picker".to_string()
-                        );
-                    }
-                    Ok(time.map(|ms| std::time::Duration::from_millis(ms.get())))
-                },
-            );
+            let turn_times = [
+                (a.p0_picker.clone(), a.p0_time_ms),
+                (a.p1_picker.clone(), a.p1_time_ms),
+            ]
+            .map(|(picker, time)| -> error::Returns<_> {
+                if time.is_some()
+                    && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot)
+                {
+                    wolges::return_error!(
+                        "a decision time budget requires a simmer picker".to_string()
+                    );
+                }
+                Ok(time.map(|ms| std::time::Duration::from_millis(ms.get())))
+            });
             let [p0_time, p1_time] = turn_times;
             for (picker, by_bag) in [
-                (a.p0_picker, a.p0_fuzz_by_bag),
-                (a.p1_picker, a.p1_fuzz_by_bag),
+                (a.p0_picker.clone(), a.p0_fuzz_by_bag),
+                (a.p1_picker.clone(), a.p1_fuzz_by_bag),
             ] {
                 if by_bag && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot) {
                     wolges::return_error!("fuzz by bag requires a simmer picker".to_string());
                 }
             }
             for (picker, pool) in [
-                (a.p0_picker, a.p0_rollout_pool),
-                (a.p1_picker, a.p1_rollout_pool),
+                (a.p0_picker.clone(), a.p0_rollout_pool),
+                (a.p1_picker.clone(), a.p1_rollout_pool),
             ] {
                 if pool && !matches!(picker, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot) {
                     wolges::return_error!("a rollout pool requires a simmer picker".to_string());
@@ -7449,7 +7457,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     Ok(())
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, clap::ValueEnum)]
 enum SeatPicker {
     Hasty,
     Dynamic,
@@ -7459,7 +7467,7 @@ enum SeatPicker {
 }
 
 // how a seat picks its moves once the bag is empty, when not as its own picker
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, clap::ValueEnum)]
 enum EndPicker {
     Hasty,
     Deft,
@@ -8750,7 +8758,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
     writeln!(
         std::io::stdout(),
         "infer-fit: the mover {}{}, the watcher hasty; {num_games} games{}",
-        picker_name(mover),
+        picker_name(mover.clone()),
         if matches!(mover, SeatPicker::Simmer | SeatPicker::SimmerDynamicRoot) {
             format!(" ({num_sim_iters} rollouts a move)")
         } else {
@@ -8778,6 +8786,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                 ln_binom: &ln_binom,
             };
             let dyn_ref = dyn_ref.clone();
+            let mover = mover.clone();
             thread_handles.push(s.spawn(move || -> error::Returns<FitMoves> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
@@ -9114,7 +9123,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
 // one board's exact openness, over every full rack its unseen pool can deal,
 // each by its chance to be dealt: the best score it can make, the best equity,
 // and the chance it holds a play of all its tiles
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BoardOpenness {
     pool: u32,
     best_score: f64,
@@ -11228,7 +11237,7 @@ fn seat_picker<'a, N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         positional,
     }: SeatParams<'a>,
 ) -> move_picker::MovePicker<'a, N, L> {
-    match (picker, positional) {
+    match (picker.clone(), positional) {
         (SeatPicker::Hasty, None) => move_picker::MovePicker::Hasty,
         (SeatPicker::Hasty, Some(term)) => {
             move_picker::MovePicker::Positional(Box::new(move_picker::Positional::new(None, term)))
@@ -11518,7 +11527,7 @@ fn compare_seats<
     let winpct_p0 = winpct_p0.as_ref();
     let winpct_p1 = winpct_p1.as_ref();
     let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, [Vec<i32>; 2])> =
-        if [p0_picker, p1_picker]
+        if [p0_picker.clone(), p1_picker.clone()]
             .iter()
             .any(|picker| matches!(picker, SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot))
             || rollout_pool.contains(&true)
@@ -11533,8 +11542,8 @@ fn compare_seats<
                 SeatPicker::Hasty | SeatPicker::Simmer | SeatPicker::Deft => Ok(Vec::new()),
             };
             let full_v = [
-                full_v_of(p0_picker, rollout_pool[0], &arc_klv0)?,
-                full_v_of(p1_picker, rollout_pool[1], &arc_klv1)?,
+                full_v_of(p0_picker.clone(), rollout_pool[0], &arc_klv0)?,
+                full_v_of(p1_picker.clone(), rollout_pool[1], &arc_klv1)?,
             ];
             let add = census::AddTable::new_with_threads(&lat, num_threads);
             Some((lat, add, full_v))
@@ -11591,21 +11600,21 @@ fn compare_seats<
         "compare: {}p0 {}; p1 {}",
         if LEAN { "the lean arm; " } else { "" },
         seat_line(
-            p0_picker,
+            p0_picker.clone(),
             p0_plies,
             p0_iters,
             p0_win_pct.as_deref(),
             p0_window,
-            p0_endgame,
+            p0_endgame.clone(),
             positional[0].as_ref().map(|(path, _)| path.as_str()),
         ),
         seat_line(
-            p1_picker,
+            p1_picker.clone(),
             p1_plies,
             p1_iters,
             p1_win_pct.as_deref(),
             p1_window,
-            p1_endgame,
+            p1_endgame.clone(),
             positional[1].as_ref().map(|(path, _)| path.as_str()),
         ),
     )?;
@@ -11662,6 +11671,8 @@ fn compare_seats<
             #[cfg(not(target_family = "wasm"))]
             let preempty = &preempty;
             let dyn_refs = dyn_refs.clone();
+            let (p0_picker, p1_picker) = (p0_picker.clone(), p1_picker.clone());
+            let (p0_endgame, p1_endgame) = (p0_endgame.clone(), p1_endgame.clone());
             thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
                 let mut generator = CompareMoveGenerator::<LEAN>::new(&game_config);
                 let mut paired = movegen::PairedHasty::default();
@@ -13078,16 +13089,16 @@ WCMP_P1_SCORE 402.000000
         let (hasty, deft) = (Some(EndPicker::Hasty), Some(EndPicker::Deft));
         for (picker, endgame, ever, throughout) in [
             (SeatPicker::Hasty, None, false, true),
-            (SeatPicker::Hasty, hasty, false, true),
-            (SeatPicker::Hasty, deft, true, false),
+            (SeatPicker::Hasty, hasty.clone(), false, true),
+            (SeatPicker::Hasty, deft.clone(), true, false),
             (SeatPicker::Deft, None, true, false),
-            (SeatPicker::Deft, hasty, true, false),
+            (SeatPicker::Deft, hasty.clone(), true, false),
             (SeatPicker::Simmer, None, false, false),
             (SeatPicker::Simmer, deft, true, false),
             (SeatPicker::Dynamic, hasty, false, false),
         ] {
-            let name = picker_name(picker);
-            assert_eq!(ever_deft(picker, endgame), ever, "{name}");
+            let name = picker_name(picker.clone());
+            assert_eq!(ever_deft(picker.clone(), endgame.clone()), ever, "{name}");
             assert_eq!(hasty_throughout(picker, endgame), throughout, "{name}");
         }
     }
