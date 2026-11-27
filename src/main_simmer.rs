@@ -306,6 +306,11 @@ fn simulate(
     )?);
     let arm_tables =
         std::sync::Arc::new(anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?);
+    let vocab = if lean {
+        movegen::Vocab::lean(&smaller_kwg)
+    } else {
+        movegen::Vocab::new(game_config, &smaller_kwg)?
+    };
 
     move_generator.reset_for_another_kwg();
 
@@ -314,7 +319,7 @@ fn simulate(
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
         game_config,
-        vocab: &wolges::movegen::Vocab::lean(&smaller_kwg),
+        vocab: &vocab,
         anagrams: arm_tables.anagrams(),
         rack_lengths: arm_tables.rack_lengths(),
         klv,
