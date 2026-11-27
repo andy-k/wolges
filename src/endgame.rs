@@ -785,7 +785,7 @@ fn add_placement(
     placed: usize,
     rack_len: usize,
     out_bonus: i32,
-) {
+) -> error::Returns<()> {
     if let movegen::Play::Place {
         down,
         lane,
@@ -800,7 +800,8 @@ fn add_placement(
         } else {
             score.raw()
         };
-        ordered.push(order_key(valuation, *down, *lane, *idx, list.len()));
+        let found = u32::try_from(list.len())?;
+        ordered.push(order_key(valuation, *down, *lane, *idx, found));
         list.push(Candidate {
             play: play.clone(),
             uses,
@@ -810,6 +811,7 @@ fn add_placement(
             placed: placed as u8,
         });
     }
+    Ok(())
 }
 
 // a ply's moves on the lanes only the move two plies up changed, found by the
@@ -1603,13 +1605,13 @@ impl RackSlots {
 // a move's sort key: valuation (best first), then direction, lane, and first
 // square as movegen::cmp_play has them, then the move's place in the list
 #[inline(always)]
-fn order_key(valuation: i32, down: bool, lane: i8, idx: i8, found: usize) -> u128 {
+fn order_key(valuation: i32, down: bool, lane: i8, idx: i8, found: u32) -> u128 {
     let by_valuation = !(valuation.cast_unsigned() ^ (1 << (i32::BITS - 1)));
     (u128::from(by_valuation) << u64::BITS)
         | (u128::from(down) << (u32::BITS + 2 * u8::BITS))
         | (u128::from(lane.cast_unsigned()) << (u32::BITS + u8::BITS))
         | (u128::from(idx.cast_unsigned()) << u32::BITS)
-        | u128::from(found as u32)
+        | u128::from(found)
 }
 
 #[inline(always)]
@@ -3294,7 +3296,7 @@ impl<
         ply: usize,
         player_idx: u8,
         need: equity::Equity,
-    ) -> equity::Equity {
+    ) -> error::Returns<equity::Equity> {
         let (rows, cols) = self.work_buffer.zones[ply];
         let work_buffer = &mut self.work_buffer;
         let left = work_buffer.racks[player_idx as usize][0];
@@ -3308,13 +3310,13 @@ impl<
         let list = &work_buffer.lists[ply];
         let (of, singles) = &mut work_buffer.singles[ply];
         if *of != work_buffer.serials[ply] {
-            *of = work_buffer.serials[ply];
             singles.clear();
-            singles.extend(
-                (list.iter().enumerate())
-                    .filter(|(_, candidate)| candidate.placed == 1)
-                    .map(|(at, _)| at as u32),
-            );
+            for (index, candidate) in list.iter().enumerate() {
+                if candidate.placed == 1 {
+                    singles.push(u32::try_from(index)?);
+                }
+            }
+            *of = work_buffer.serials[ply];
             // highest score first, so the read stops at the first it takes
             singles.sort_unstable_by_key(|&at| {
                 std::cmp::Reverse(match &list[at as usize].play {
@@ -3342,7 +3344,7 @@ impl<
             }
         }
         if equity::Equity::new(best) > need {
-            return equity::Equity::new(best);
+            return Ok(equity::Equity::new(best));
         }
         let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
         gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
@@ -3369,7 +3371,7 @@ impl<
                 best = best.max(score.raw() + out_bonus);
             }
         }
-        equity::Equity::new(best)
+        Ok(equity::Equity::new(best))
     }
 
     // the rows and columns whose moves a move can change, on the position
@@ -3583,10 +3585,9 @@ impl<
 
     // a root's requested placements. Two plies down makes its own list since
     // the requested placements cannot supply all the unchanged lanes
-    fn generate_root(&mut self, player_idx: u8, keeps: bool) {
+    fn generate_root(&mut self, player_idx: u8, keeps: bool) -> error::Returns<()> {
         let Some(root) = self.root_moves else {
-            self.generate(0, player_idx, keeps);
-            return;
+            return self.generate(0, player_idx, keeps);
         };
         let work = &mut self.work_buffer;
         work.begin_list(0);
@@ -3598,17 +3599,18 @@ impl<
         let places = root.plays.len() - usize::from(root.pass);
         if list.try_reserve(places).is_err() || order.try_reserve(places).is_err() {
             work.movegen_cut = true;
-            return;
+            return Ok(());
         }
         let rack_len = work.racks[player_idx as usize].len();
         let bonus = 2 * work.rack_scores[player_idx as usize ^ 1];
         for play in &root.plays {
             if let movegen::Play::Place { word, .. } = play {
                 let placed = word.iter().filter(|&&tile| tile != 0).count();
-                add_placement(list, order, play, 0, placed, rack_len, bonus);
+                add_placement(list, order, play, 0, placed, rack_len, bonus)?;
             }
         }
         work.movegen_cut = work.memory_passed();
+        Ok(())
     }
 
     // generate player_idx's moves that place tiles (a pass is searched on its
@@ -3620,7 +3622,7 @@ impl<
     // those an earlier reply to the same list found are copied from it. With
     // keeps, the moves record rack places for reuse two plies down
     #[inline]
-    fn generate(&mut self, ply: usize, player_idx: u8, keeps: bool) {
+    fn generate(&mut self, ply: usize, player_idx: u8, keeps: bool) -> error::Returns<()> {
         let work_buffer = &mut self.work_buffer;
         work_buffer.begin_list(ply);
         let leaving = work_buffer.table.leaving();
@@ -3759,7 +3761,7 @@ impl<
                             movegen::KurniaMoveGenerator::new_within(self.game_config, memory)
                         else {
                             work_buffer.movegen_cut = true;
-                            return;
+                            return Ok(());
                         };
                         walker.with_dense_most(dense_most)
                     }
@@ -3782,7 +3784,7 @@ impl<
                     limit,
                 );
                 if work_buffer.movegen_cut {
-                    return;
+                    return Ok(());
                 }
                 if let Some(t1) = t1 {
                     work_buffer.dur_movegen += t1.elapsed();
@@ -3816,7 +3818,7 @@ impl<
                 limit,
             );
             if work_buffer.movegen_cut {
-                return;
+                return Ok(());
             }
             if let Some(t1) = t1 {
                 work_buffer.dur_movegen += t1.elapsed();
@@ -3832,7 +3834,7 @@ impl<
         list.clear();
         ordered.clear();
         let mut push = |play: &movegen::Play, uses: u32, placed: usize| {
-            add_placement(list, ordered, play, uses, placed, rack.len(), out_bonus);
+            add_placement(list, ordered, play, uses, placed, rack.len(), out_bonus)
         };
         // the lanes walked that only the move two plies up changed are kept for
         // the later replies to the same list
@@ -3903,7 +3905,7 @@ impl<
                             };
                             let uses =
                                 (slots.as_ref()).map_or(0, |slots| slots.places(word, false));
-                            push(play, uses, *placed as usize);
+                            push(play, uses, *placed as usize)?;
                             if keep {
                                 siblings.moves.push((play.clone(), *placed));
                             }
@@ -3929,12 +3931,12 @@ impl<
                                 uses.count_ones() as usize,
                                 word.iter().filter(|&&t| t != 0).count()
                             );
-                            push(&valued.play, uses, uses.count_ones() as usize);
+                            push(&valued.play, uses, uses.count_ones() as usize)?;
                             uses.count_ones() as u8
                         }
                         None => {
                             let placed = word.iter().filter(|&&t| t != 0).count();
-                            push(&valued.play, 0, placed);
+                            push(&valued.play, 0, placed)?;
                             placed as u8
                         }
                     };
@@ -3967,7 +3969,7 @@ impl<
                 limit,
             );
             if work_buffer.movegen_cut {
-                return;
+                return Ok(());
             }
             let mut walked = (work_buffer.movegen.plays.iter())
                 .filter_map(|valued| as_tuple(&valued.play))
@@ -3992,7 +3994,7 @@ impl<
                     && (if *down { copy_cols } else { copy_rows }) >> lane & 1 != 0
                 {
                     let uses = (slots.as_ref()).map_or(0, |slots| slots.places(word, false));
-                    push(play, uses, *placed as usize);
+                    push(play, uses, *placed as usize)?;
                 }
             }
         }
@@ -4008,10 +4010,11 @@ impl<
                 };
                 if (if *down { cols } else { rows }) >> lane & 1 == 0 && kept.uses & spent == 0 {
                     let uses = (slots.as_ref()).map_or(0, |slots| slots.places(word, false));
-                    push(&kept.play, uses, kept.uses.count_ones() as usize);
+                    push(&kept.play, uses, kept.uses.count_ones() as usize)?;
                 }
             }
         }
+        Ok(())
     }
 
     // the longest line from the position to solve, player_idx to move: a move
@@ -4452,7 +4455,7 @@ impl<
         if (limits.time.is_some() || limits.states.is_some())
             && let Some(index) = self.ask_margin(player_idx, margin, &share(1, 4))?
         {
-            winner = self.root_play(player_idx, index);
+            winner = self.root_play(player_idx, index)?;
         }
         let solved = self.run_id_loop(
             player_idx,
@@ -4462,7 +4465,7 @@ impl<
             false,
         )?;
         let mut line = Vec::new();
-        self.collect_pv(player_idx, &mut line);
+        self.collect_pv(player_idx, &mut line)?;
         let answer = line.into_iter().next().map(|(_, play)| play);
         let Some(winner) = winner.filter(|_| !solved.exact) else {
             return Ok(answer);
@@ -4515,14 +4518,14 @@ impl<
     // the move of player_idx at the root with this index (its place in the
     // whole order), a pass for PASS_PLAY
     #[inline]
-    fn root_play(&mut self, player_idx: u8, index: u16) -> Option<movegen::Play> {
+    fn root_play(&mut self, player_idx: u8, index: u16) -> error::Returns<Option<movegen::Play>> {
         if index == PASS_PLAY {
-            return Some(movegen::Play::Exchange {
+            return Ok(Some(movegen::Play::Exchange {
                 tiles: [][..].into(),
-            });
+            }));
         }
         self.reset_position();
-        self.generate_root(player_idx, false);
+        self.generate_root(player_idx, false)?;
         let work_buffer = &mut self.work_buffer;
         order(
             &mut work_buffer.lists[0],
@@ -4530,10 +4533,10 @@ impl<
             0,
             NO_PLAY,
         );
-        self.work_buffer.lists[0]
+        Ok(self.work_buffer.lists[0]
             .iter()
             .find(|candidate| candidate.index == index)
-            .map(|candidate| candidate.play.clone())
+            .map(|candidate| candidate.play.clone()))
     }
 
     // whether player_idx's move play from the position to solve is worth more
@@ -4551,7 +4554,7 @@ impl<
         self.reset_position();
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
-        self.generate_root(player_idx, false);
+        self.generate_root(player_idx, false)?;
         if self.work_buffer.movegen_cut {
             return Ok(false);
         }
@@ -4623,7 +4626,7 @@ impl<
     ) -> error::Returns<Vec<FirstMove>> {
         self.start_clock(limits);
         self.reset_position();
-        self.generate_root(player_idx, false);
+        self.generate_root(player_idx, false)?;
         if self.work_buffer.movegen_cut {
             return Ok(Vec::new());
         }
@@ -4678,11 +4681,11 @@ impl<
     // the moves player_idx's root searches in the position to solve (those of
     // with_root_moves, where given), the pass last where it is one of them;
     // none when the memory limit cut their generation
-    pub fn root_plays(&mut self, player_idx: u8) -> Option<Vec<movegen::Play>> {
+    pub fn root_plays(&mut self, player_idx: u8) -> error::Returns<Option<Vec<movegen::Play>>> {
         self.reset_position();
-        self.generate_root(player_idx, false);
+        self.generate_root(player_idx, false)?;
         if self.work_buffer.movegen_cut {
-            return None;
+            return Ok(None);
         }
         let mut plays = (self.work_buffer.lists[0].iter())
             .map(|candidate| candidate.play.clone())
@@ -4692,7 +4695,7 @@ impl<
                 tiles: [][..].into(),
             });
         }
-        Some(plays)
+        Ok(Some(plays))
     }
 
     // the value of player_idx's move play from the position to solve, as
@@ -4802,7 +4805,7 @@ impl<
                     continue;
                 }
             }
-            match self.advance_top() {
+            match self.advance_top()? {
                 Advance::Enter(node) => enter = Some((node, None)),
                 Advance::Done(searched) => value = Some(searched),
             }
@@ -4887,9 +4890,9 @@ impl<
         // reuse. Sort lazily: with a table move, all of them, that one first;
         // else the first only, and the rest once it has not cut off
         if root {
-            self.generate_root(player_idx, depth >= 3);
+            self.generate_root(player_idx, depth >= 3)?;
         } else {
-            self.generate(ply, player_idx, depth >= 3);
+            self.generate(ply, player_idx, depth >= 3)?;
         }
         if self.work_buffer.movegen_cut {
             let work_buffer = &mut self.work_buffer;
@@ -4919,7 +4922,7 @@ impl<
 
     // the top frame's next step: the next move or the pass to search below it,
     // or, its moves and its pass done, its value stored and its frame popped
-    fn advance_top(&mut self) -> Advance {
+    fn advance_top(&mut self) -> error::Returns<Advance> {
         let t = self.work_buffer.frames.len() - 1;
         let frame = &self.work_buffer.frames[t];
         let Enter {
@@ -4957,7 +4960,7 @@ impl<
                     && work_buffer.state_limit.is_none()
                     && work_buffer.verdicts.is_empty()
                 {
-                    self.split_verdicts(t, player_idx, depth);
+                    self.split_verdicts(t, player_idx, depth)?;
                 }
                 let work_buffer = &mut self.work_buffer;
                 let found = ordered_play_index(work_buffer.orders[ply][i]);
@@ -5036,7 +5039,13 @@ impl<
                     && depth >= 2
                     && self.work_buffer.racks[player_idx as usize].len() == 1
                 {
-                    score + self.one_tile_bound(ply, player_idx, alpha - score)
+                    match self.one_tile_bound(ply, player_idx, alpha - score) {
+                        Ok(bound) => score + bound,
+                        Err(error) => {
+                            self.unplace(player_idx, &play);
+                            return Err(error);
+                        }
+                    }
                 } else {
                     equity::Equity::INFINITY
                 };
@@ -5064,7 +5073,7 @@ impl<
                     play,
                     scout,
                 };
-                return Advance::Enter(Enter {
+                return Ok(Advance::Enter(Enter {
                     ply: ply + 1,
                     player_idx: player_idx ^ 1,
                     depth: depth - 1,
@@ -5078,7 +5087,7 @@ impl<
                         passes: 0,
                         zeros: 0,
                     },
-                });
+                }));
             }
 
             // the pass, unless a move placing tiles has already reached beta: it
@@ -5100,26 +5109,26 @@ impl<
                     self.work_buffer.spent[ply] = 0;
                     let forced = self.work_buffer.lists[ply].is_empty();
                     self.work_buffer.frames[t].child = Child::Pass;
-                    return Advance::Enter(Enter {
+                    return Ok(Advance::Enter(Enter {
                         ply: ply + 1,
                         player_idx: player_idx ^ 1,
                         depth: if forced { depth } else { depth - 1 },
                         alpha: -beta,
                         beta: -alpha,
                         scoreless: Scoreless::Answering,
-                    });
+                    }));
                 }
             }
         }
 
         let frame = self.work_buffer.frames.pop().unwrap();
         self.finish(&frame);
-        Advance::Done(frame.best)
+        Ok(Advance::Done(frame.best))
     }
 
     // a move failing low at the first alpha never beats a later alpha, so its
     // bound stands in for its search
-    fn split_verdicts(&mut self, frame: usize, player_idx: u8, depth: i8) {
+    fn split_verdicts(&mut self, frame: usize, player_idx: u8, depth: i8) -> error::Returns<()> {
         let work_buffer = &self.work_buffer;
         let Enter { alpha, ply, .. } = work_buffer.frames[frame].node;
         let orders = &work_buffer.orders[ply];
@@ -5131,7 +5140,7 @@ impl<
             .collect::<Vec<_>>();
         let threads = work_buffer.threads.min(moves.len());
         if threads < 2 {
-            return;
+            return Ok(());
         }
         let limits = Limits {
             time: None,
@@ -5161,7 +5170,7 @@ impl<
             let fresh = (Some(like), limits.memory);
             let Ok(mut own) = Self::of_helper(gc, kwg, arm_tables, run_letters, helper, fresh)
             else {
-                return (lane, found, table, None);
+                return Ok((lane, found, table, None));
             };
             if let Some(table) = table {
                 let _ = own.give_table(table);
@@ -5173,7 +5182,7 @@ impl<
             own.scoreless = scoreless;
             own.begin_search(limits);
             own.reset_position();
-            own.generate(0, player_idx, false);
+            own.generate(0, player_idx, false)?;
             for (i, play, score) in moves.iter().skip(lane).step_by(threads) {
                 own.place(player_idx, play);
                 let child_beta = *score - alpha;
@@ -5189,8 +5198,10 @@ impl<
                     },
                 );
                 own.unplace(player_idx, play);
-                let Ok(searched) = searched else {
-                    break;
+                let searched = match searched {
+                    Ok(searched) => searched,
+                    Err(e) if e.is::<LimitStopped>() => break,
+                    Err(e) => return Err(e),
                 };
                 let value = *score - searched.value;
                 if value <= alpha {
@@ -5198,7 +5209,7 @@ impl<
                 }
             }
             let table = own.take_table();
-            (lane, found, Some(table), Some(own.into_helper()))
+            Ok((lane, found, Some(table), Some(own.into_helper())))
         };
         let helped = std::thread::scope(|s| {
             let handles = (kept.into_iter().zip(helpers).enumerate())
@@ -5212,13 +5223,15 @@ impl<
         work_buffer
             .verdicts
             .resize(work_buffer.orders[ply].len(), None);
-        for (_, found, table, helper) in helped {
+        for result in helped {
+            let (_, found, table, helper) = result?;
             for (i, value, complete) in found {
                 work_buffer.verdicts[i] = Some((value, complete));
             }
             work_buffer.helper_tables.push(table);
             self.helpers.push(helper);
         }
+        Ok(())
     }
 
     // a node one ply from the depth with moves to search, searched in one go,
@@ -5452,20 +5465,28 @@ impl<
     // answers with. The line read last is read again while the position, the
     // mover, the deepest finished pass, and that move stay
     #[inline]
-    pub fn collect_pv(&mut self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
+    pub fn collect_pv(
+        &mut self,
+        player_idx: u8,
+        out: &mut Vec<(equity::Equity, movegen::Play)>,
+    ) -> error::Returns<()> {
         let stopped = self.take_paused_depth();
         let search = stopped.is_none();
         let of = self.line_of(player_idx);
         let start = self.work_buffer.answer;
-        if !(self.work_buffer.line.as_ref()).is_some_and(|line| {
+        let found = if (self.work_buffer.line.as_ref()).is_some_and(|line| {
             line.of == of && start.is_none_or(|start| line.start == Some(start))
         }) {
-            self.keep_line(of, player_idx, search);
-        }
+            Ok(())
+        } else {
+            self.keep_line(of, player_idx, search)
+        };
+        self.restore_paused_depth(stopped);
+        found?;
         if let Some(line) = &self.work_buffer.line {
             out.clone_from(&line.plies);
         }
-        self.restore_paused_depth(stopped);
+        Ok(())
     }
 
     // what a line of player_idx to move is read for: the key of the position to
@@ -5480,10 +5501,14 @@ impl<
     // the line read for of and kept, searching where the table cannot answer
     // only if search
     #[inline]
-    fn keep_line(&mut self, of: (u64, u8, i8), player_idx: u8, search: bool) {
+    fn keep_line(&mut self, of: (u64, u8, i8), player_idx: u8, search: bool) -> error::Returns<()> {
         let mut plies = (self.work_buffer.line.take()).map_or_else(Vec::new, |line| line.plies);
-        let start = self.collect_pv_of(player_idx, &mut plies, search);
+        let check_limits = std::mem::replace(&mut self.work_buffer.check_limits, false);
+        let found = self.collect_pv_of(player_idx, &mut plies, search);
+        self.work_buffer.check_limits = check_limits;
+        let start = found?;
         self.work_buffer.line = Some(Box::new(Line { of, start, plies }));
+        Ok(())
     }
 
     // the line, and the move and value it starts with
@@ -5493,10 +5518,9 @@ impl<
         player_idx: u8,
         out: &mut Vec<(equity::Equity, movegen::Play)>,
         search: bool,
-    ) -> Option<(u16, equity::Equity)> {
+    ) -> error::Returns<Option<(u16, equity::Equity)>> {
         out.clear();
         let mut start = None;
-        let check_limits = std::mem::replace(&mut self.work_buffer.check_limits, false);
         self.reset_position();
         let mut player_idx = player_idx;
         let mut scoreless = self.entering();
@@ -5527,18 +5551,17 @@ impl<
                         }
                         self.work_buffer.verdicts.clear();
                         self.work_buffer.at_root = restricted;
-                        if self
-                            .negamax_eval(
-                                0,
-                                player_idx,
-                                depth,
-                                equity::Equity::NEG_INFINITY,
-                                equity::Equity::INFINITY,
-                                scoreless,
-                            )
-                            .is_err()
-                        {
-                            break;
+                        match self.negamax_eval(
+                            0,
+                            player_idx,
+                            depth,
+                            equity::Equity::NEG_INFINITY,
+                            equity::Equity::INFINITY,
+                            scoreless,
+                        ) {
+                            Ok(_) => {}
+                            Err(e) if e.is::<LimitStopped>() => break,
+                            Err(e) => return Err(e),
                         }
                         match self.work_buffer.table.probe(key).filter(fits) {
                             Some(entry) => entry,
@@ -5566,9 +5589,9 @@ impl<
                     break;
                 }
                 if restricted {
-                    self.generate_root(player_idx, false);
+                    self.generate_root(player_idx, false)?;
                 } else {
-                    self.generate(0, player_idx, false);
+                    self.generate(0, player_idx, false)?;
                 }
                 if self.work_buffer.lists[0].is_empty() {
                     cost = 0;
@@ -5577,9 +5600,9 @@ impl<
             } else {
                 // the move the table keeps, generated again
                 if restricted {
-                    self.generate_root(player_idx, false);
+                    self.generate_root(player_idx, false)?;
                 } else {
-                    self.generate(0, player_idx, false);
+                    self.generate(0, player_idx, false)?;
                 }
                 let work_buffer = &mut self.work_buffer;
                 order(
@@ -5610,14 +5633,13 @@ impl<
             player_idx ^= 1;
             depth -= cost;
         }
-        self.work_buffer.check_limits = check_limits;
-        start
+        Ok(start)
     }
 
     #[inline]
-    pub fn print_best_line(&mut self, player_idx: u8) -> std::io::Result<()> {
+    pub fn print_best_line(&mut self, player_idx: u8) -> error::Returns<()> {
         let mut line = Vec::new();
-        self.collect_pv(player_idx, &mut line);
+        self.collect_pv(player_idx, &mut line)?;
         let mut board_tiles = self.board_tiles.clone();
         let mut racks = self.racks.clone();
         let mut leftovers = [None, None];
@@ -12934,7 +12956,7 @@ mod tests {
         solver.init(&[0; 225], [&[1, 1, 2, 8, 12, 20, 20], &[5, 6]]);
         assert!(solver.reserve_table(32 << 10));
         solver.reset_position();
-        solver.generate_root(0, false);
+        solver.generate_root(0, false).unwrap();
         let node = super::Enter {
             ply: 0,
             player_idx: 0,
@@ -12956,7 +12978,7 @@ mod tests {
         };
         work.memory_limit = Some(limit);
         // depth zero below each helper move leaves its initial table size.
-        solver.split_verdicts(0, 0, node.depth);
+        solver.split_verdicts(0, 0, node.depth).unwrap();
         assert_eq!(solver.work_buffer.helper_tables.len(), 4);
         let bytes = solver
             .work_buffer
@@ -12993,7 +13015,7 @@ mod tests {
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
             choices.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
             choices.reset_position();
-            choices.generate_root(0, false);
+            choices.generate_root(0, false).unwrap();
             let place = choices.work_buffer.lists[0]
                 .iter()
                 .find(|candidate| !candidate.plays_out)
@@ -13261,9 +13283,9 @@ mod tests {
                     .unwrap();
                     resumed += solver.work_buffer.resumed;
                     let mut line = Vec::new();
-                    solver.collect_pv(mover, &mut line);
+                    solver.collect_pv(mover, &mut line).unwrap();
                     let mut again = Vec::new();
-                    solver.collect_pv(mover, &mut again);
+                    solver.collect_pv(mover, &mut again).unwrap();
                     assert!(again == line, "[{name}] mover {mover}");
                     table = Some(solver.take_table());
                     finished = Some((solved.depth, solved.value.unwrap()));
@@ -13592,7 +13614,7 @@ mod tests {
                 egs.init(&board, racks);
                 let value = egs.solve(mover).unwrap();
                 let mut line = Vec::new();
-                egs.collect_pv(mover, &mut line);
+                egs.collect_pv(mover, &mut line).unwrap();
                 skipped += egs.work_buffer.out_skips;
                 checks += u64::from(egs.work_buffer.out_checks);
                 let want = reference(&mut fixed, &board, &pos.racks, mover as usize, 0, 0, false);
@@ -13642,7 +13664,7 @@ mod tests {
                     egs.init(board, [&racks[0][..], &racks[1][..]]);
                     assert_eq!(egs.solve(mover).unwrap(), super::to_equity(want), "{what}");
                     let mut line = Vec::new();
-                    egs.collect_pv(mover, &mut line);
+                    egs.collect_pv(mover, &mut line).unwrap();
                     lines += line.len();
                     assert_a_best_line(&mut fixed, board, &racks, mover, &line, &what);
                     let mut lean = EndgameSolver::<kwg::Node24, kwg::Node24, true>::new(
@@ -13770,7 +13792,7 @@ mod tests {
                 whole.init(&pos.board, racks);
                 let want = whole.solve(mover).unwrap();
                 let mut want_line = Vec::new();
-                whole.collect_pv(mover, &mut want_line);
+                whole.collect_pv(mover, &mut want_line).unwrap();
                 let mut table = None;
                 let mut finished = None;
                 for step in 0.. {
@@ -13794,7 +13816,7 @@ mod tests {
                     resumed += solver.work_buffer.resumed;
                     skipped += solver.work_buffer.out_skips;
                     let mut line = Vec::new();
-                    solver.collect_pv(mover, &mut line);
+                    solver.collect_pv(mover, &mut line).unwrap();
                     table = Some(solver.take_table());
                     finished = Some((solved.depth, solved.value.unwrap()));
                     stepped += 1;
@@ -13943,7 +13965,7 @@ mod tests {
         assert!(restricted.give_table(full.take_table()).is_ok());
         assert_eq!(restricted.solve(0).unwrap(), pass.value.unwrap());
         let mut line = Vec::new();
-        restricted.collect_pv(0, &mut line);
+        restricted.collect_pv(0, &mut line).unwrap();
         assert!(line.first().is_some_and(|(_, play)| play == &pass.play));
         let selected = restricted
             .value_first_moves(0, &super::Limits::NONE)
@@ -13974,7 +13996,7 @@ mod tests {
             .into_iter()
             .map(|first| first.play)
             .collect::<Vec<_>>();
-        let plays = solver.root_plays(0).unwrap();
+        let plays = solver.root_plays(0).unwrap().unwrap();
         assert!(
             matches!(plays.last(), Some(movegen::Play::Exchange { tiles }) if tiles.is_empty())
         );
@@ -14000,7 +14022,7 @@ mod tests {
             [&state.players[0].rack, &state.players[1].rack],
         );
         let mut restricted = restricted.with_root_moves(Some(&root));
-        assert!(restricted.root_plays(0).unwrap() == plays[..1]);
+        assert!(restricted.root_plays(0).unwrap().unwrap() == plays[..1]);
     }
 
     #[test]
@@ -14063,7 +14085,7 @@ mod tests {
             for mover in 0..2u8 {
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.reset_position();
-                egs.generate(0, mover, false);
+                egs.generate(0, mover, false).unwrap();
                 let mut keys = egs.work_buffer.orders[0].clone();
                 super::order_first(&mut egs.work_buffer.lists[0], &mut keys);
                 let Some(&key) = keys.first() else {
@@ -14110,7 +14132,7 @@ mod tests {
             for mover in 0..2u8 {
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.reset_position();
-                egs.generate(0, mover, false);
+                egs.generate(0, mover, false).unwrap();
                 order_ply(&mut egs, 0, super::NO_PLAY);
                 let list = std::mem::take(&mut egs.work_buffer.lists[0]);
                 let ordered = std::mem::take(&mut egs.work_buffer.orders[0]);
@@ -14160,7 +14182,13 @@ mod tests {
                             else {
                                 unreachable!("a candidate places tiles");
                             };
-                            super::order_key(candidate.valuation.raw(), down, lane, idx, found)
+                            super::order_key(
+                                candidate.valuation.raw(),
+                                down,
+                                lane,
+                                idx,
+                                u32::try_from(found).unwrap(),
+                            )
                         })
                         .collect::<Vec<_>>();
                     super::order(&mut again, &mut keys, 0, super::NO_PLAY);
@@ -14174,7 +14202,7 @@ mod tests {
                 }
                 if moves.len() >= 2 {
                     let table_play = (moves.len() / 2) as u16;
-                    egs.generate(0, mover, false);
+                    egs.generate(0, mover, false).unwrap();
                     order_ply(&mut egs, 0, table_play);
                     let again = &egs.work_buffer.lists[0];
                     let first = egs.work_buffer.orders[0]
@@ -14235,7 +14263,7 @@ mod tests {
                         let mut passes = 0;
                         for ply in 0..DEPTH {
                             let depth = DEPTH - ply;
-                            egs.generate(ply, player, depth >= 3);
+                            egs.generate(ply, player, depth >= 3).unwrap();
                             order_ply(&mut egs, ply, super::NO_PLAY);
                             if ply >= 2 && egs.work_buffer.keeps[ply - 2] {
                                 afresh.init(
@@ -14243,7 +14271,7 @@ mod tests {
                                     [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
                                 );
                                 afresh.reset_position();
-                                afresh.generate(0, player, false);
+                                afresh.generate(0, player, false).unwrap();
                                 order_ply(&mut afresh, 0, super::NO_PLAY);
                                 assert!(
                                     in_order(&egs, ply) == in_order(&afresh, 0),
@@ -14359,7 +14387,7 @@ mod tests {
                     for mover in 0..2u8 {
                         egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                         egs.reset_position();
-                        egs.generate(0, mover, true);
+                        egs.generate(0, mover, true).unwrap();
                         let moves = egs.work_buffer.lists[0].len();
                         for i in 0..=moves {
                             let first =
@@ -14370,7 +14398,7 @@ mod tests {
                             if let Some(play) = &first {
                                 egs.place(mover, play);
                             }
-                            egs.generate(1, mover ^ 1, true);
+                            egs.generate(1, mover ^ 1, true).unwrap();
                             let replies = egs.work_buffer.lists[1].len();
                             // a lane only the move changed is walked by the
                             // first reply that leaves it alone, then copied by
@@ -14394,14 +14422,14 @@ mod tests {
                                     as usize;
                                 walked_rows |= only_rows;
                                 walked_cols |= only_cols;
-                                egs.generate(2, mover, false);
+                                egs.generate(2, mover, false).unwrap();
                                 order_ply(&mut egs, 2, super::NO_PLAY);
                                 afresh.init(
                                     &egs.work_buffer.board_tiles,
                                     [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
                                 );
                                 afresh.reset_position();
-                                afresh.generate(0, mover, false);
+                                afresh.generate(0, mover, false).unwrap();
                                 order_ply(&mut afresh, 0, super::NO_PLAY);
                                 assert!(
                                     in_order(&egs, 2) == in_order(&afresh, 0),
@@ -14480,7 +14508,7 @@ mod tests {
                 for mover in 0..2u8 {
                     egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                     egs.reset_position();
-                    egs.generate(0, mover, false);
+                    egs.generate(0, mover, false).unwrap();
                     let rack_len = egs.work_buffer.racks[mover as usize].len();
                     for i in 0..egs.work_buffer.lists[0].len() {
                         let play = egs.work_buffer.lists[0][i].play.clone();
@@ -14492,13 +14520,15 @@ mod tests {
                         }
                         egs.work_buffer.zones[0] = egs.zone_lanes(&play);
                         egs.place(mover, &play);
-                        let bound = egs.one_tile_bound(0, mover, equity::Equity::INFINITY);
+                        let bound = egs
+                            .one_tile_bound(0, mover, equity::Equity::INFINITY)
+                            .unwrap();
                         afresh.init(
                             &egs.work_buffer.board_tiles,
                             [&egs.work_buffer.racks[0][..], &egs.work_buffer.racks[1][..]],
                         );
                         afresh.reset_position();
-                        afresh.generate(0, mover, false);
+                        afresh.generate(0, mover, false).unwrap();
                         let mut whole = afresh.both_pass_value(mover);
                         for candidate in &afresh.work_buffer.lists[0] {
                             assert!(candidate.plays_out, "[{name}] a single plays out");
@@ -14508,7 +14538,9 @@ mod tests {
                             bound, whole,
                             "[{name}] lean={lean} the bound after move {i}"
                         );
-                        let unreached = egs.one_tile_bound(0, mover, equity::Equity::NEG_INFINITY);
+                        let unreached = egs
+                            .one_tile_bound(0, mover, equity::Equity::NEG_INFINITY)
+                            .unwrap();
                         zoned += usize::from(unreached < whole);
                         checked += 1;
                         egs.unplace(mover, &play);
@@ -15438,7 +15470,7 @@ mod tests {
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.reset_position();
                 let before = egs.work_buffer.key;
-                egs.generate(0, mover, false);
+                egs.generate(0, mover, false).unwrap();
                 let list = std::mem::take(&mut egs.work_buffer.lists[0]);
                 for candidate in &list {
                     let movegen::Play::Place {
@@ -15521,7 +15553,7 @@ mod tests {
                 egs.init(&board, [&racks[0][..], &racks[1][..]]);
                 egs.reset_position();
                 let before = egs.work_buffer.key;
-                egs.generate(0, mover, false);
+                egs.generate(0, mover, false).unwrap();
                 let list = std::mem::take(&mut egs.work_buffer.lists[0]);
                 for candidate in &list {
                     let movegen::Play::Place {
@@ -17220,7 +17252,7 @@ mod tests {
                     EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 let v = egs.solve(0).unwrap();
-                egs.collect_pv(0, &mut pv);
+                egs.collect_pv(0, &mut pv).unwrap();
 
                 let a = gc.alphabet();
                 let mut board = pos.board.clone();
@@ -17308,7 +17340,7 @@ mod tests {
                     EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 let v = egs.solve(0).unwrap();
-                egs.collect_pv(0, &mut pv);
+                egs.collect_pv(0, &mut pv).unwrap();
 
                 let a = gc.alphabet();
                 let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t).raw()).sum();
@@ -17475,7 +17507,7 @@ mod tests {
         egs.init_after_scoreless_turns(&empty_board(), racks, passes, zeros);
         let value = egs.solve(player_idx).unwrap();
         let mut pv = Vec::new();
-        egs.collect_pv(player_idx, &mut pv);
+        egs.collect_pv(player_idx, &mut pv).unwrap();
         let line = pv
             .into_iter()
             .map(|(_, play)| match play {
@@ -17555,7 +17587,7 @@ mod tests {
         // the principal variation goes past the pass to the play out
         let mut line = Vec::new();
         fresh.work_buffer.finished = 2;
-        fresh.collect_pv(0, &mut line);
+        fresh.collect_pv(0, &mut line).unwrap();
         assert_eq!(line.len(), 3, "the line: a B, the pass, the other B");
     }
 
@@ -17756,7 +17788,7 @@ mod tests {
         let at_two = |pos: &Position, mover: u8, play: &movegen::Play| {
             let mut egs = fresh(pos);
             egs.reset_position();
-            egs.generate(0, mover, false);
+            egs.generate(0, mover, false).unwrap();
             let candidate = egs.work_buffer.lists[0]
                 .iter()
                 .find(|candidate| candidate.play == *play)
@@ -17827,7 +17859,7 @@ mod tests {
                 let first = egs.solve_within(mover, &states(h1)).unwrap();
                 assert_eq!(egs.searched(), nodes, "[{name}] no node past the pass");
                 let mut line = Vec::new();
-                egs.collect_pv(mover, &mut line);
+                egs.collect_pv(mover, &mut line).unwrap();
                 let Some((_, best)) = line.first().cloned() else {
                     continue;
                 };
@@ -17857,7 +17889,7 @@ mod tests {
                     if solved.exact || solved.depth != 1 {
                         continue;
                     }
-                    egs.collect_pv(mover, &mut line);
+                    egs.collect_pv(mover, &mut line).unwrap();
                     let (value, play) = line.first().cloned().unwrap();
                     assert_eq!(
                         Some(value),
@@ -17982,7 +18014,7 @@ mod tests {
                 egs.work_buffer.root_best = super::NO_PLAY;
                 let first = {
                     egs.reset_position();
-                    egs.generate(0, mover, false);
+                    egs.generate(0, mover, false).unwrap();
                     order_ply(&mut egs, 0, super::NO_PLAY);
                     let candidate = egs.work_buffer.lists[0]
                         .iter()
@@ -18069,7 +18101,7 @@ mod tests {
         play: &movegen::Play,
     ) -> equity::Equity {
         egs.reset_position();
-        egs.generate(0, mover, false);
+        egs.generate(0, mover, false).unwrap();
         let (valuation, after) = match play {
             movegen::Play::Exchange { .. } => (equity::Equity::ZERO, super::Scoreless::Answering),
             movegen::Play::Place { .. } => {
@@ -18121,7 +18153,7 @@ mod tests {
                     EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.reset_position();
-                egs.generate(0, mover, false);
+                egs.generate(0, mover, false).unwrap();
                 let mut plays = egs.work_buffer.lists[0]
                     .iter()
                     .map(|candidate| candidate.play.clone())
@@ -18210,7 +18242,7 @@ mod tests {
                         "[{name}] with no limit, a win found exactly where one exists"
                     );
                     if let Some(index) = won {
-                        let play = asking.root_play(mover, index).unwrap();
+                        let play = asking.root_play(mover, index).unwrap().unwrap();
                         assert!(
                             move_value(&mut fresh(&pos), mover, &play) > margin,
                             "[{name}] the question's move wins"
@@ -18240,7 +18272,7 @@ mod tests {
                         let mut alone = fresh(&pos);
                         alone.solve_within(mover, &states(cap)).unwrap();
                         let mut line = Vec::new();
-                        alone.collect_pv(mover, &mut line);
+                        alone.collect_pv(mover, &mut line).unwrap();
                         kept +=
                             usize::from(move_value(&mut fresh(&pos), mover, &line[0].1) <= margin);
                     }

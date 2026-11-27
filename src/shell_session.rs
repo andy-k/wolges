@@ -3174,7 +3174,7 @@ impl Session {
         state: &game_state::GameState,
     ) -> error::Returns<Vec<String>> {
         let mut line = Vec::new();
-        solver.collect_pv(state.turn, &mut line);
+        solver.collect_pv(state.turn, &mut line)?;
         let kwg = self.kwg()?;
         let mut state = state.clone();
         let mut rng = GameRng::seed_from_u64(0);
@@ -5590,7 +5590,7 @@ mod tests {
         assert!(solved.exact);
         // nothing can be played, so the side to move passes
         let mut line = Vec::new();
-        solver.collect_pv(0, &mut line);
+        solver.collect_pv(0, &mut line).unwrap();
         assert!(matches!(&line[0].1, movegen::Play::Exchange { tiles } if tiles.is_empty()));
         // the line as the moves list shows it, its players numbered as the
         // shell numbers them
