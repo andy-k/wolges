@@ -1531,22 +1531,18 @@ fn solver_tables(
     }
 }
 
+#[inline]
+fn lexicon_kwg_path(lexicon: &str) -> String {
+    format!("lexbin/{lexicon}.kwg")
+}
+
 #[inline(always)]
 fn solve_question(question: &Question, score_diff: i32, solving: &Solving) -> error::Returns<()> {
     // of course this should be cached
-    let (kwg, game_config) = match question.lexicon.as_str() {
-        "CSW24" => (
-            kwg::kbwg_from_bytes_alloc(std::fs::read("lexbin/CSW24.kwg")?, false)?,
-            game_config::make_english_game_config(),
-        ),
-        "NWL23" => (
-            kwg::kbwg_from_bytes_alloc(std::fs::read("lexbin/NWL23.kwg")?, false)?,
-            game_config::make_english_game_config(),
-        ),
-        _ => {
-            wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
-        }
-    };
+    let kwg_path = lexicon_kwg_path(&question.lexicon);
+    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&kwg_path)?, false)?;
+    let game_config = game_config::make_english_game_config();
+    refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
 
     solve_position(&game_config, &kwg, question, score_diff, solving)
 }
@@ -2054,6 +2050,37 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    #[inline]
+    fn any_lexicon_names_its_kwg() {
+        assert_eq!(lexicon_kwg_path("ECWL"), "lexbin/ECWL.kwg");
+    }
+
+    #[test]
+    #[inline]
+    fn a_question_of_any_lexicon_reads_its_kwg() {
+        let question = Question {
+            lexicon: "no-such-lexicon".to_string(),
+            rack: Vec::new(),
+            board_tiles: Vec::new(),
+        };
+        let solving = Solving {
+            lean: false,
+            limits: endgame::Limits::NONE,
+            reserve_table_bytes: 0,
+            threads: 1,
+            quiet: true,
+            scoreless: [0, 0],
+            peg_model: endgame::PegModel::RandomDraws,
+            peg_estimates: false,
+            peg_exact_pass: false,
+            peg_cuts: None,
+        };
+        let error = solve_question(&question, 0, &solving).unwrap_err();
+        let read = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(read.kind(), std::io::ErrorKind::NotFound);
+    }
 
     #[test]
     #[inline]
