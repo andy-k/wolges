@@ -13,9 +13,7 @@
 //   reply-cv <kwg> <klv2> <candidates> <iterations> <plies|max> <seed:turns>...
 use rand::prelude::*;
 use std::time::Instant;
-use wolges::{
-    anagrams, error, game_config, game_state, infer, klv, kwg, move_picker, movegen, simmer,
-};
+use wolges::{error, game_config, game_state, infer, klv, kwg, move_picker, movegen, simmer};
 
 type Kwg = kwg::Kwg<kwg::Node24>;
 type Klv = klv::Klv<kwg::Node24>;
@@ -36,14 +34,7 @@ fn snapshot<'a>(
     klv: &'a Klv,
     board_tiles: &'a [u8],
 ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
-    movegen::BoardSnapshot {
-        board_tiles,
-        game_config: gc,
-        vocab,
-        anagrams: None,
-        rack_lengths: None,
-        klv,
-    }
+    movegen::BoardSnapshot::new(board_tiles, gc, vocab, klv)
 }
 
 // a candidate's records, one a rollout with a reply: its objective, its spread
@@ -251,7 +242,6 @@ fn main() -> error::Returns<()> {
     gc.supports(game_config::Op::Inference)?;
     let mut tables = infer::InferTables::new(&gc, &klv)?;
     let mut mg = movegen::KurniaMoveGenerator::new(&gc);
-    let no_tables = &anagrams::ArmTables::None;
     // one simmer for every position, prepared for each
     let mut sim = simmer::Simmer::new(&gc)?;
     let mut kept = Kept::new(&gc);
@@ -259,7 +249,7 @@ fn main() -> error::Returns<()> {
         "kwg {} klv {} candidates {num_candidates} iterations {iterations} plies {}",
         args[1], args[2], args[5]
     );
-    let graphs = &movegen::Vocab::lean(&kwg);
+    let graphs = &movegen::Vocab::bare(&kwg);
     for spec in &args[6..] {
         let (seed, turns) = spec.split_once(':').ok_or("seed:turns")?;
         let (seed, turns) = (seed.parse::<u64>()?, turns.parse::<usize>()?);
@@ -347,7 +337,7 @@ fn main() -> error::Returns<()> {
             sim.reseed(iteration_seed(seed, iteration));
             sim.prepare_iteration(Some(move_picker::stratum_at(seed, iteration)))?;
             for (c, candidate) in candidates.iter().enumerate() {
-                let ended = sim.simulate_lean(&gc, graphs, no_tables, &klv, &candidate.play)?;
+                let ended = sim.simulate_lean(&gc, graphs, &klv, &candidate.play)?;
                 let final_spread = sim.final_equity_spread()?;
                 let win = sim.compute_win_prob(ended, final_spread, None)?;
                 let spread = final_spread - sim.initial_score_spread;

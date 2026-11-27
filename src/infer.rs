@@ -161,14 +161,8 @@ pub fn build_sheet_spell_once<
     }
     let mut n_cand = 0u64;
     let mut failure = None;
-    let board_snapshot = &movegen::BoardSnapshot {
-        board_tiles,
-        game_config,
-        vocab: graphs,
-        anagrams: None,
-        rack_lengths: None,
-        klv,
-    };
+    let vocab_view = graphs.with_tables(None);
+    let board_snapshot = &movegen::BoardSnapshot::new(board_tiles, game_config, &vocab_view, klv);
     // jumbled, a multiset's arrangements on a span differ only in score and in
     // the opening's adjustment, which the walk weighs too, so each span offers
     // each multiset (and blank designation) once, at its best
@@ -2140,7 +2134,7 @@ fn kept_leaves_packed_impl<
             )
         }
     };
-    let generate_upto = if board_snapshot.anagrams.is_some() {
+    let generate_upto = if board_snapshot.vocab.anagrams().is_some() {
         GENERATE_EACH_RACK_UPTO
     } else {
         GENERATE_EACH_RACK_UPTO_LEAN
@@ -2732,14 +2726,9 @@ mod tests {
             }
             watcher_rack[0] = 26;
         }
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config,
-            vocab: &crate::movegen::Vocab::lean(kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, game_config, &vocab_view, &klv);
         let mut tables = InferTables::new(game_config, &klv).unwrap();
         tables.set_prior_mix(mix);
         let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -2867,7 +2856,7 @@ mod tests {
                     &board_tiles,
                     SpellTables {
                         game_config,
-                        graphs: &crate::movegen::Vocab::lean(kwg),
+                        graphs: &crate::movegen::Vocab::bare(kwg),
                         klv: &klv,
                         lat: &lat,
                     },
@@ -2965,14 +2954,9 @@ mod tests {
                 }
             }
             let watcher_rack = [if on_board > 0 { 26 } else { 5 }];
-            let board_snapshot = movegen::BoardSnapshot {
-                board_tiles: &board_tiles,
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            };
+            let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+            let board_snapshot =
+                movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
             let mut leaves = PackedLeaves::new();
             for weigh_passes in [false, true] {
                 kept_leaves_packed_into(
@@ -3001,14 +2985,12 @@ mod tests {
         let plain = kept_leaves(
             &mut tables,
             &mut move_generator,
-            &movegen::BoardSnapshot {
-                board_tiles: &[0u8; 15 * 15],
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            },
+            &movegen::BoardSnapshot::new(
+                &[0u8; 15 * 15],
+                &game_config,
+                &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                &klv,
+            ),
             &[5],
             &pass,
             FUZZ,
@@ -3107,7 +3089,7 @@ mod tests {
             &board_tiles,
             SpellTables {
                 game_config: &game_config,
-                graphs: &crate::movegen::Vocab::lean(&kwg),
+                graphs: &crate::movegen::Vocab::bare(&kwg),
                 klv: &klv,
                 lat,
             },
@@ -3174,14 +3156,12 @@ mod tests {
             kept_leaves(
                 &mut InferTables::new(&game_config, &klv).unwrap(),
                 &mut movegen::KurniaMoveGenerator::new(&game_config),
-                &movegen::BoardSnapshot {
-                    board_tiles: &board_tiles,
-                    game_config: &game_config,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                &movegen::BoardSnapshot::new(
+                    &board_tiles,
+                    &game_config,
+                    &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                    &klv,
+                ),
                 &[26],
                 &exchange,
                 FUZZ,
@@ -3282,14 +3262,12 @@ mod tests {
         kept_leaves_carried_into(
             &mut InferTables::new(game_config, &klv).unwrap(),
             &mut movegen::KurniaMoveGenerator::new(game_config),
-            &movegen::BoardSnapshot {
+            &movegen::BoardSnapshot::new(
                 board_tiles,
                 game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            },
+                &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                &klv,
+            ),
             watcher_rack,
             (play, held),
             InferOptions {
@@ -3375,14 +3353,9 @@ mod tests {
         play: &movegen::Play,
     ) -> Vec<(Vec<u8>, i32)> {
         let (lat, leave) = (&tiny.tables.lat, &tiny.tables.leave);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles,
-            game_config,
-            vocab: &crate::movegen::Vocab::lean(&tiny.kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &tiny.klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&tiny.kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(board_tiles, game_config, &vocab_view, &tiny.klv);
         let rack_tiles = tiles_of(rack);
         tiny.move_generator
             .gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -3750,14 +3723,12 @@ mod tests {
                 kept_leaves_carried_into(
                     &mut InferTables::new(&english, &klv).unwrap(),
                     &mut movegen::KurniaMoveGenerator::new(&english),
-                    &movegen::BoardSnapshot {
-                        board_tiles: &board_tiles,
-                        game_config: &english,
-                        vocab: &crate::movegen::Vocab::lean(&kwg),
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: &klv,
-                    },
+                    &movegen::BoardSnapshot::new(
+                        &board_tiles,
+                        &english,
+                        &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                        &klv,
+                    ),
                     &[26],
                     (&play, held),
                     InferOptions {
@@ -3798,14 +3769,12 @@ mod tests {
             kept_leaves_carried_into(
                 &mut InferTables::new(&english, &klv).unwrap(),
                 &mut movegen::KurniaMoveGenerator::new(&english),
-                &movegen::BoardSnapshot {
-                    board_tiles: &board_tiles,
-                    game_config: &english,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                &movegen::BoardSnapshot::new(
+                    &board_tiles,
+                    &english,
+                    &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                    &klv,
+                ),
                 &[26],
                 (&exchange_of(3), Held::Any),
                 InferOptions {
@@ -3855,14 +3824,9 @@ mod tests {
         board_tiles[7 * 15 + 7] = board_tiles[2];
         board_tiles.copy_within(3..79, 2);
         board_tiles[78] = 0;
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let mut pool = game_config.tiles_off_board(&board_tiles).unwrap();
         game_config.take_rack(&mut pool, &[26]).unwrap();
         let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
@@ -3873,7 +3837,7 @@ mod tests {
             &board_tiles,
             SpellTables {
                 game_config: &game_config,
-                graphs: &crate::movegen::Vocab::lean(&kwg),
+                graphs: &crate::movegen::Vocab::bare(&kwg),
                 klv: &klv,
                 lat: &tables.lat,
             },
@@ -4492,14 +4456,12 @@ mod tests {
             reply_to(
                 tables,
                 move_generator,
-                &movegen::BoardSnapshot {
+                &movegen::BoardSnapshot::new(
                     board_tiles,
-                    game_config: &game_config,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                    &game_config,
+                    &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                    &klv,
+                ),
                 &mover,
                 kept,
                 play,
@@ -4527,14 +4489,12 @@ mod tests {
                 after[12 * 15] = 1;
             }
             let replies = movegen_replies(
-                &movegen::BoardSnapshot {
-                    board_tiles: &after,
-                    game_config: &game_config,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                &movegen::BoardSnapshot::new(
+                    &after,
+                    &game_config,
+                    &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                    &klv,
+                ),
                 pool,
             );
             let want = reply_by_deals(pool, &replies);
@@ -4665,7 +4625,7 @@ mod tests {
                         &board_tiles,
                         SpellTables {
                             game_config: &gc,
-                            graphs: &crate::movegen::Vocab::lean(&kwg),
+                            graphs: &crate::movegen::Vocab::bare(&kwg),
                             klv: &klv,
                             lat: &lat,
                         },
@@ -4675,14 +4635,9 @@ mod tests {
                         &mut sheet,
                     )
                     .unwrap();
-                    let board_snapshot = movegen::BoardSnapshot {
-                        board_tiles: &board_tiles,
-                        game_config: &gc,
-                        vocab: &crate::movegen::Vocab::lean(&kwg),
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: &klv,
-                    };
+                    let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+                    let board_snapshot =
+                        movegen::BoardSnapshot::new(&board_tiles, &gc, &vocab_view, &klv);
                     let phase = BoardPhase::of_board(&board_tiles, &gc);
                     let mut tally = vec![0u8; 27];
                     let mut each = |tally: &[u8]| {
@@ -4858,14 +4813,9 @@ mod tests {
         ];
         let (mut placements, mut exchanges) = (0usize, 0usize);
         for (board_tiles, racks) in [(&empty, &opening_racks[..]), (&mid, &mid_racks[..])] {
-            let board_snapshot = movegen::BoardSnapshot {
-                board_tiles,
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            };
+            let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+            let board_snapshot =
+                movegen::BoardSnapshot::new(board_tiles, &game_config, &vocab_view, &klv);
             for rack in racks {
                 let rack_tally = tally_of(num_letters, rack);
                 for lean in [false, true] {
@@ -4941,14 +4891,12 @@ mod tests {
             game_config.take_rack(&mut pool, watcher).unwrap();
             let mut placed = vec![0u8; pool.len()];
             let (exchanged, _) = move_tiles_and_value(
-                &movegen::BoardSnapshot {
+                &movegen::BoardSnapshot::new(
                     board_tiles,
-                    game_config: &game_config,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                    &game_config,
+                    &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                    &klv,
+                ),
                 play,
                 &mut placed,
             )
@@ -4972,14 +4920,9 @@ mod tests {
             |tables: &mut InferTables,
              move_generator: &mut movegen::KurniaMoveGenerator,
              (board_tiles, watcher, play, lean): (&[u8], &[u8], &movegen::Play, bool)| {
-                let board_snapshot = movegen::BoardSnapshot {
-                    board_tiles,
-                    game_config: &game_config,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                };
+                let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+                let board_snapshot =
+                    movegen::BoardSnapshot::new(board_tiles, &game_config, &vocab_view, &klv);
                 let options = InferOptions {
                     fuzz: FUZZ,
                     threads: 1,

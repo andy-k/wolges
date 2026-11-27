@@ -44,7 +44,7 @@ fn peg_draw_outcomes() {
     let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(bytes, false).unwrap());
     let gc = game_config::make_english_game_config();
     let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
-    let arm_tables = anagrams::ArmTables::None;
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::None);
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
 
     for case in cases {
@@ -83,14 +83,8 @@ fn peg_draw_outcomes() {
         {
             player.score = equity::Points::new(score).scaled();
         }
-        let snapshot = movegen::BoardSnapshot {
-            board_tiles: &before.board_tiles,
-            game_config: &gc,
-            vocab: &wolges::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = wolges::movegen::Vocab::bare(&kwg).with_tables(None);
+        let snapshot = movegen::BoardSnapshot::new(&before.board_tiles, &gc, &vocab_view, &klv);
         let mut generator = movegen::KurniaMoveGenerator::new(&gc);
         generator
             .gen_moves_raw_all_unsorted(
@@ -121,17 +115,19 @@ fn peg_draw_outcomes() {
             let mut words = Vec::new();
             movegen::KurniaMoveGenerator::new(&gc)
                 .gen_remaining_words(
-                    &movegen::BoardSnapshot {
-                        board_tiles: &after.board_tiles,
-                        ..snapshot
-                    },
+                    &movegen::BoardSnapshot::new(
+                        &after.board_tiles,
+                        snapshot.game_config,
+                        snapshot.vocab,
+                        snapshot.klv,
+                    ),
                     |word| words.push(word.into()),
                 )
                 .unwrap();
             let pruned = build::graph_for_game(&gc, &words).unwrap();
-            let vocab = wolges::movegen::Vocab::lean(pruned.kwg());
-            let mut solver =
-                endgame::EndgameSolver::<_, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+            let vocab = wolges::movegen::Vocab::bare(pruned.kwg())
+                .with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+            let mut solver = endgame::EndgameSolver::<_, kwg::Node24>::new(&gc, &vocab).unwrap();
 
             assert_eq!(margins.len(), draws.len(), "{name}");
             let mut hypotheses = Vec::new();

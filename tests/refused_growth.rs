@@ -155,14 +155,13 @@ const NO_MEMORY_LIMIT: endgame::Limits = endgame::Limits {
 fn an_endgame_solve_refused_its_largest_growth_answers_as_before() {
     let gc = game_config::make_english_game_config();
     let kwg = std::sync::Arc::new(test_kwg(&gc, build::BuildContent::Gaddawg, &ENDGAME_WORDS));
-    let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &gc, false).unwrap());
     let board = endgame_board(&gc);
     let racks = ["AAHST", "ABHLT"].map(|rack| parse_test_rack(gc.alphabet(), rack));
     let solve = || {
-        let vocab = wolges::movegen::Vocab::lean(&kwg);
-        let mut egs =
-            endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
-                .unwrap();
+        let vocab = wolges::movegen::Vocab::bare(&kwg)
+            .with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab).unwrap();
         egs.init(&board, [&racks[0], &racks[1]]);
         let solved = egs.solve_within(0, &NO_MEMORY_LIMIT).unwrap();
         (solved.value, solved.exact, solved.out_of_memory)
@@ -178,7 +177,7 @@ fn an_endgame_solve_refused_its_largest_growth_answers_as_before() {
 fn a_bag_search_refused_its_largest_growth_answers_as_before() {
     let gc = game_config::make_english_game_config();
     let kwg = std::sync::Arc::new(test_kwg(&gc, build::BuildContent::Gaddawg, &ENDGAME_WORDS));
-    let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+    let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &gc, false).unwrap());
     let board = endgame_board(&gc);
     let rack = parse_test_rack(gc.alphabet(), "AAH");
     let mut unseen = vec![0u8; gc.alphabet().len() as usize];
@@ -186,10 +185,10 @@ fn a_bag_search_refused_its_largest_growth_answers_as_before() {
         unseen[tile as usize] += 1;
     }
     let solve = || {
-        let vocab = wolges::movegen::Vocab::lean(&kwg);
+        let vocab = wolges::movegen::Vocab::bare(&kwg);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let mut egs =
-            endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
-                .unwrap();
+            endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &tabled).unwrap();
         let result = egs
             .solve_peg(
                 endgame::PegBagPosition {
@@ -247,14 +246,8 @@ fn a_jumbled_generation_refused_its_largest_growth_says_so() {
     let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-    let board_snapshot = movegen::BoardSnapshot {
-        board_tiles: &board_tiles,
-        game_config: &gc,
-        vocab: &wolges::movegen::Vocab::lean(&kwg),
-        anagrams: None,
-        rack_lengths: None,
-        klv: &klv,
-    };
+    let vocab_view = wolges::movegen::Vocab::bare(&kwg).with_tables(None);
+    let board_snapshot = movegen::BoardSnapshot::new(&board_tiles, &gc, &vocab_view, &klv);
     let pool = parse_test_rack(gc.alphabet(), "AACCEENNRRSSTT??");
     let plays = || {
         let mut generator = movegen::KurniaMoveGenerator::new(&gc);

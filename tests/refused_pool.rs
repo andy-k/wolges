@@ -158,14 +158,8 @@ fn a_pool_walk_with_no_room_answers_out_of_memory(
     let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-    let board_snapshot = movegen::BoardSnapshot {
-        board_tiles: &board_tiles,
-        game_config: gc,
-        vocab: &wolges::movegen::Vocab::lean(words),
-        anagrams: None,
-        rack_lengths: None,
-        klv: &klv,
-    };
+    let vocab_view = wolges::movegen::Vocab::bare(words).with_tables(None);
+    let board_snapshot = movegen::BoardSnapshot::new(&board_tiles, gc, &vocab_view, &klv);
     let pool = tiles(gc.alphabet(), "AACSTT?");
     let mut generator = movegen::KurniaMoveGenerator::new(gc);
     let mut count = 0usize;
@@ -244,14 +238,8 @@ fn a_generation_with_no_room_to_keep_stops_at_once(
     let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-    let board_snapshot = movegen::BoardSnapshot {
-        board_tiles: &board_tiles,
-        game_config: gc,
-        vocab: &wolges::movegen::Vocab::lean(words),
-        anagrams: None,
-        rack_lengths: None,
-        klv: &klv,
-    };
+    let vocab_view = wolges::movegen::Vocab::bare(words).with_tables(None);
+    let board_snapshot = movegen::BoardSnapshot::new(&board_tiles, gc, &vocab_view, &klv);
     let rack = tiles(gc.alphabet(), "AACSTT?");
     let mut generator = movegen::KurniaMoveGenerator::new(gc);
     let all = offered_every_way(&mut generator, &board_snapshot, &rack);

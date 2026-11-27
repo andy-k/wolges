@@ -2,8 +2,8 @@
 
 use std::io::Write;
 use wolges::{
-    alphabet, anagrams, bites, build, display, equity, error, fash, game_config, game_state, klv,
-    kwg, move_picker, movegen,
+    alphabet, bites, build, display, equity, error, fash, game_config, game_state, klv, kwg,
+    move_picker, movegen,
 };
 
 // its counting allocator and --max-memory; its endgame watching goes unused
@@ -271,14 +271,12 @@ fn simulate(
     // these always allocate for now.
     let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
     move_generator.gen_remaining_words(
-        &movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
+        &movegen::BoardSnapshot::new(
+            &game_state.board_tiles,
             game_config,
-            vocab: &wolges::movegen::Vocab::lean(kwg),
-            anagrams: None,
-            rack_lengths: None,
+            &wolges::movegen::Vocab::bare(kwg),
             klv,
-        },
+        ),
         |word: &[u8]| {
             set_of_words.insert(word.into());
         },
@@ -304,26 +302,22 @@ fn simulate(
     let smaller_kwg = std::sync::Arc::new(kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
         &smaller_kwg_bytes,
     )?);
-    let arm_tables =
-        std::sync::Arc::new(anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?);
-    let vocab = if lean {
-        movegen::Vocab::lean(&smaller_kwg)
-    } else {
-        movegen::Vocab::new(game_config, &smaller_kwg)?
-    };
+    let vocab = movegen::Vocab::new(
+        game_config,
+        &smaller_kwg,
+        if lean {
+            movegen::Tables::RackLengths
+        } else {
+            movegen::Tables::Anagrams
+        },
+    )?;
 
     move_generator.reset_for_another_kwg();
 
     // ok, let's sim...
 
-    let board_snapshot = &movegen::BoardSnapshot {
-        board_tiles: &game_state.board_tiles,
-        game_config,
-        vocab: &vocab,
-        anagrams: arm_tables.anagrams(),
-        rack_lengths: arm_tables.rack_lengths(),
-        klv,
-    };
+    let board_snapshot =
+        &movegen::BoardSnapshot::new(&game_state.board_tiles, game_config, &vocab, klv);
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
         rack: &game_state.current_player().rack,
@@ -337,7 +331,6 @@ fn simulate(
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         game_config,
         &vocab,
-        &arm_tables,
         klv,
         move_picker::SimmerParams {
             num_sim_iters: sim_iters,

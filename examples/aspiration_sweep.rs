@@ -10,7 +10,6 @@ use std::{
     process::ExitCode,
 };
 use wolges::{
-    anagrams::ArmTables,
     endgame::{EndgameSolver, Limits},
     equity::Equity,
     error,
@@ -52,7 +51,7 @@ fn autoplay(
     let mut game = GameState::new(gc);
     let klv = Klv::<Node24>::empty()?;
     let mut generator = KurniaMoveGenerator::new(gc);
-    let vocab = wolges::movegen::Vocab::new(gc, kwg)?;
+    let vocab = wolges::movegen::Vocab::new(gc, kwg, wolges::movegen::Tables::None)?;
     let mut scores = vec![0; usize::from(gc.num_players())];
     for game_idx in 0..games {
         game.reset_and_draw_tiles_double_ended(gc, &mut rng);
@@ -73,14 +72,7 @@ fn autoplay(
                 writeln!(out)?;
             }
             generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &BoardSnapshot {
-                    board_tiles: &game.board_tiles,
-                    game_config: gc,
-                    vocab: &vocab,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                board_snapshot: &BoardSnapshot::new(&game.board_tiles, gc, &vocab, &klv),
                 rack: &game.current_player().rack,
                 max_gen: 1,
                 num_exchanges_by_this_player: game.current_player().num_exchanges,
@@ -134,22 +126,15 @@ struct Measured {
 struct Search<'a> {
     gc: &'a GameConfig,
     vocab: wolges::movegen::Vocab<'a, Node24>,
-    tables: ArmTables,
     run_letters: RunLetters<'a>,
 }
 
 impl<'a> Search<'a> {
     fn new(gc: &'a GameConfig, kwg: &'a std::sync::Arc<Kwg<Node24>>) -> error::Returns<Self> {
-        let tables = ArmTables::build(kwg, gc, false)?;
-        let run_letters = match tables.rack_lengths() {
-            Some(racks) => racks.run_letters().of(kwg)?,
-            None => kwg.run_letters(),
-        };
         Ok(Self {
             gc,
-            vocab: wolges::movegen::Vocab::new(gc, kwg)?,
-            tables,
-            run_letters,
+            vocab: wolges::movegen::Vocab::new(gc, kwg, wolges::movegen::Tables::Anagrams)?,
+            run_letters: kwg.run_letters(),
         })
     }
 
@@ -157,7 +142,6 @@ impl<'a> Search<'a> {
         let mut solver = EndgameSolver::<Node24, Node24>::with_generator(
             self.gc,
             &self.vocab,
-            &self.tables,
             self.run_letters.clone(),
             KurniaMoveGenerator::new(self.gc),
         )?;
