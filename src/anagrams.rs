@@ -395,7 +395,8 @@ type Table<V> = std::collections::HashMap<KeyBytes, V, std::hash::BuildHasherDef
 
 impl Anagrams {
     // one-word rules only: its table holds the graph's words, though a
-    // woadwage game's caller may build it; ArmTables builds none for one
+    // woadwage or jumbled woadwage game's caller may build it; ArmTables
+    // builds none for either
     #[inline(always)]
     pub fn build_for_config<N: kwg::Node>(
         g: &kwg::Kwg<N>,
@@ -856,7 +857,8 @@ pub struct RackLengths {
 
 impl RackLengths {
     // one-word rules only: its table holds the graph's words, though a
-    // woadwage game's caller may build it; ArmTables builds none for one
+    // woadwage or jumbled woadwage game's caller may build it; ArmTables
+    // builds none for either
     #[inline(always)]
     pub fn build_for_config<N: kwg::Node>(
         g: &kwg::Kwg<N>,
