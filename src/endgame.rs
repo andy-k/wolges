@@ -7468,12 +7468,22 @@ impl<
                         &[]
                     };
                     let found = &mut state.split_found;
+                    let above = (*cuts && !state.reached.is_empty()).then(|| {
+                        let best = peg_bag_best(&state.reached, &state.valued);
+                        let value = state.valued[best].as_ref().unwrap();
+                        let kept = state.best_splits_of == Some(best);
+                        AboveBest {
+                            best: (value.win, value.marg, best),
+                            i,
+                            splits: if kept { &state.best_splits[..] } else { &[] },
+                        }
+                    });
                     match value_root_move(
                         &mut search,
                         splits,
                         &at,
                         play,
-                        (score_diff, beat),
+                        (score_diff, beat, above),
                         order,
                         found,
                     ) {
@@ -7492,10 +7502,20 @@ impl<
                                     }
                                 }
                             }
+                            let cut = value.cut;
                             state.pass_exact &= value.exact;
                             state.valued[i] = Some(value);
                             state.reached.push(i);
                             state.next += 1;
+                            if !cut && peg_bag_best(&state.reached, &state.valued) == i {
+                                state.best_splits_of = None;
+                                state.best_splits.clear();
+                                let room = limits.room(&mut state.best_splits, splits.len());
+                                if room.is_ok() && state.split_found.len() == splits.len() {
+                                    state.best_splits.extend_from_slice(&state.split_found);
+                                    state.best_splits_of = Some(i);
+                                }
+                            }
                         }
                         Err(_) if limits.stopped.get() => {
                             stopped = true;
@@ -7530,6 +7550,7 @@ impl<
             }
             std::mem::swap(&mut state.answered, &mut state.valued);
             state.valued.clear();
+            state.best_splits_of = None;
             state.valued.resize_with(state.answered.len(), || None);
             state.rank_answer();
             if done {
@@ -9529,6 +9550,12 @@ pub enum PegBagStanding {
     Paused,
 }
 
+struct AboveBest<'b> {
+    best: (f64, f64, usize),
+    i: usize,
+    splits: &'b [(f64, f64)],
+}
+
 // a move's value with tiles in the bag over the splits, and its chance to win,
 // each from the mover's lead before it
 fn value_root_move<
@@ -9543,10 +9570,49 @@ fn value_root_move<
     splits: &[(Vec<u8>, Vec<u8>, u64)],
     at: &impl Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()>,
     play: &movegen::Play,
-    (score_diff, beat): (f64, Option<u64>),
+    (score_diff, beat, above): (f64, Option<u64>, Option<AboveBest<'_>>),
     order: &[usize],
     found: &mut Vec<(f64, f64)>,
 ) -> error::Returns<PegBagValue> {
+    let depth = search.limits.depth.get();
+    if let (Some(above), PegModel::InfoSets, COMPLETE) = (&above, search.model, depth)
+        && splits.len() > 1
+        && let Some(value) =
+            value_root_splits_above(search, splits, at, play, score_diff, above, found)?
+    {
+        return Ok(value);
+    }
+    if let (Some(AboveBest { best, i, .. }), [split], PegModel::InfoSets, COMPLETE) =
+        (above, splits, search.model, depth)
+    {
+        let bag_len = split.1.iter().map(|&count| count as usize).sum();
+        let from = (empties_bag(play, bag_len))
+            .then(|| least_margin_above(score_diff, score_diff, best, i))
+            .flatten();
+        if let Some(from) = from {
+            found.clear();
+            search.limits.room(found, 1)?;
+            let valued = value_root_split_from(search, split, at, play, score_diff, from)?;
+            found.extend(valued);
+            let Some((value, chance)) = valued else {
+                let most = from - 1.0;
+                return Ok(PegBagValue {
+                    win: beats(score_diff + most, 0.0),
+                    marg: most + score_diff,
+                    expected_margin: checked_expected_margin(most + score_diff)?,
+                    exact: search.exact,
+                    cut: true,
+                });
+            };
+            let ways = split.2;
+            return peg_bag_value(
+                ways as f64 * chance,
+                ways as f64 * value,
+                ways,
+                search.exact,
+            );
+        }
+    }
     let (mut win, mut marg, mut total, mut won) = (0.0, 0.0, 0u64, 0u64);
     let all = splits.iter().map(|split| split.2).sum::<u64>().max(1);
     found.clear();
@@ -9616,6 +9682,99 @@ fn value_root_split<
     let found = value_root_draws(search, &mut pos, play, score_diff, draws);
     search.arena.root = pos;
     found
+}
+
+fn value_root_splits_above<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
+    splits: &[(Vec<u8>, Vec<u8>, u64)],
+    at: &impl Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()>,
+    play: &movegen::Play,
+    score_diff: f64,
+    above: &AboveBest<'_>,
+    found: &mut Vec<(f64, f64)>,
+) -> error::Returns<Option<PegBagValue>> {
+    let bag_len = (splits.first()).map_or(0, |(_, bag, _)| {
+        bag.iter().map(|&count| count as usize).sum()
+    });
+    let best = above.splits;
+    if best.len() != splits.len()
+        || !empties_bag(play, bag_len)
+        || best
+            .iter()
+            .any(|&(value, chance)| chance != beats(value, 0.0))
+    {
+        return Ok(None);
+    }
+    let below = above.best.2 < above.i;
+    let from = |value: f64| least_margin_past(value, score_diff, below);
+    let mut high = false;
+    for (split, &(value, _)) in splits.iter().zip(best) {
+        if value_root_split_from(search, split, at, play, score_diff, from(value))?.is_some() {
+            high = true;
+            break;
+        }
+    }
+    let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
+    if !high {
+        for (split, &(value, _)) in splits.iter().zip(best) {
+            let most = from(value) - 1.0 + score_diff;
+            win += split.2 as f64 * beats(most, 0.0);
+            marg += split.2 as f64 * most;
+            total += split.2;
+        }
+        return Ok(Some(PegBagValue {
+            cut: true,
+            ..peg_bag_value(win, marg, total, search.exact)?
+        }));
+    }
+    found.clear();
+    search.limits.room(found, splits.len())?;
+    for split in splits {
+        let (value, chance) = value_root_split(search, split, at, play, score_diff, None)?;
+        found.push((value, chance));
+        win += split.2 as f64 * chance;
+        marg += split.2 as f64 * value;
+        total += split.2;
+    }
+    Ok(Some(peg_bag_value(win, marg, total, search.exact)?))
+}
+
+fn least_margin_past(value: f64, offset: f64, below: bool) -> f64 {
+    let past = |m: f64| m + offset > value || (!below && m + offset == value);
+    let near = (value - offset).floor();
+    if past(near) { near } else { near + 1.0 }
+}
+
+fn value_root_split_from<
+    const LEAN: bool,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+>(
+    search: &mut BagSearch<'_, '_, N, L, LEAN, G, JUMPS, ANY_SIDE>,
+    (opp_rack, bag, _): &(Vec<u8>, Vec<u8>, u64),
+    at: &impl Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Returns<()>,
+    play: &movegen::Play,
+    score_diff: f64,
+    from: f64,
+) -> error::Returns<Option<(f64, f64)>> {
+    let mut pos = std::mem::take(&mut search.arena.root);
+    at(search.limits, opp_rack, bag, &mut pos)?;
+    let mut info = std::mem::take(&mut search.arena.root_info);
+    info.of(search.limits, &pos, score_diff as i32)?;
+    search.arena.root = pos;
+    let found = search.info_split_from(&info, play, opp_rack, bag, from);
+    search.arena.root_info = info;
+    Ok(found?.map(|(win, margin)| (margin + score_diff, win)))
 }
 
 // value_root_split's value under RandomDraws at pos, with its chance to win,
@@ -9755,6 +9914,8 @@ struct PegBagState {
     stale: Vec<bool>,  // each answer value kept from an older pass
     split_order: Vec<usize>,
     split_found: Vec<(f64, f64)>,
+    best_splits: Vec<(f64, f64)>,
+    best_splits_of: Option<usize>,
     others: (u64, u64),
     lost: Vec<std::sync::atomic::AtomicU64>,
     won: Vec<std::sync::atomic::AtomicU64>,
@@ -9799,6 +9960,7 @@ impl PegBagState {
             }
         }
         if now != PegBagStanding::Running {
+            self.best_splits_of = None;
             self.reached.retain(|&other| other != i);
             for values in [&mut self.valued, &mut self.answered] {
                 for value in values.iter_mut() {
@@ -9832,6 +9994,7 @@ impl PegBagState {
         if self.answered.len() == self.moves.len() {
             self.valued.clone_from(&self.answered);
         }
+        self.best_splits_of = None;
         self.reached.clear();
         for i in 0..self.moves.len() {
             if self.live(i) && self.valued[i].is_some() && !self.stale[i] {
@@ -20301,6 +20464,92 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_bag_search_over_one_split_answers_the_same_with_cuts() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut cut = 0;
+        for (unseen, bag_size, rack) in [
+            (&[1u8, 2, 8][..], 0, &[1u8, 20, 8][..]),
+            (&[1, 1, 20], 0, &[2, 1, 8]),
+            (&[1, 1, 1], 1, &[2, 8, 20]),
+        ] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in unseen {
+                unseen_tally[tile as usize] += 1;
+            }
+            for lead in [e(0), e(-3000), e(5000)] {
+                let mut position = bag_position(&board, rack, &unseen_tally, bag_size, lead);
+                position.model = super::PegModel::InfoSets;
+                let uncut = uncut_peg(&mut egs, position.clone()).unwrap().unwrap();
+                let progress =
+                    super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
+                let mut progress = progress.with_cuts().unwrap();
+                let result = (egs.resume_peg(&mut progress, &super::Limits::NONE, 1))
+                    .unwrap()
+                    .unwrap();
+                assert!(result.exact);
+                cut += result.moves.iter().filter(|row| row.cut).count();
+                assert!(result.best_move == uncut.best_move);
+                assert_eq!(result.win_pct, uncut.win_pct);
+                assert_eq!(result.expected_margin, uncut.expected_margin);
+            }
+        }
+        assert!(cut > 0);
+    }
+
+    #[test]
+    fn a_bag_search_over_many_splits_answers_the_same_with_cuts() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut cut = 0;
+        for (unseen, rack) in [
+            (&[1u8, 2, 8][..], &[1u8, 20, 8][..]),
+            (&[1, 1, 20, 8], &[2, 1, 8]),
+            (&[2, 8, 20, 20], &[1, 8]),
+        ] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in unseen {
+                unseen_tally[tile as usize] += 1;
+            }
+            for lead in [e(0), e(-3000), e(5000)] {
+                let mut position = bag_position(&board, rack, &unseen_tally, 1, lead);
+                position.model = super::PegModel::InfoSets;
+                let uncut = uncut_peg(&mut egs, position.clone()).unwrap().unwrap();
+                let progress =
+                    super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
+                let mut progress = progress.with_cuts().unwrap();
+                let result = (egs.resume_peg(&mut progress, &super::Limits::NONE, 1))
+                    .unwrap()
+                    .unwrap();
+                assert!(result.exact);
+                cut += result.moves.iter().filter(|row| row.cut).count();
+                assert!(result.best_move == uncut.best_move);
+                assert_eq!(result.win_pct, uncut.win_pct);
+                assert_eq!(result.expected_margin, uncut.expected_margin);
+                for row in result.moves.iter().filter(|row| !row.cut) {
+                    let same = uncut.moves.iter().find(|other| other.play == row.play);
+                    let same = same.unwrap();
+                    assert_eq!(row.win_pct, same.win_pct);
+                    assert_eq!(row.expected_margin, same.expected_margin);
+                }
+            }
+        }
+        assert!(cut > 0);
     }
 
     #[test]
