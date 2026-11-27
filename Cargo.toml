@@ -116,7 +116,7 @@ crate-type = ["lib"]
 test = true
 
 [[example]]
-name = "woogles_peg"
-path = "tests/woogles_peg.rs"
+name = "peg_draws"
+path = "tests/peg_draws.rs"
 crate-type = ["lib"]
 test = true
