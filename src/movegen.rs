@@ -6529,6 +6529,8 @@ fn gen_jumbled_place_moves_walk<
         span_word_multiplier: i32,
         square_weights: [i32; JUMBLED_BOUND_SQUARES], // by place in the span
         span_leave: i32,
+        bound_weights: [i32; JUMBLED_BOUND_TILES], // fill_span's bound: empty squares' weights
+        bound_scores: [i32; JUMBLED_BOUND_TILES],  // and letters' scores, a step's first entries
     }
     struct Accumulator {
         main_score: i32,
@@ -7154,13 +7156,11 @@ fn gen_jumbled_place_moves_walk<
         if env.square_bounded && env.params.threshold != i32::MIN {
             // the squares still empty, their weights highest first, and the
             // letters still to place, their scores highest first
-            let mut weights = [0i32; JUMBLED_BOUND_TILES];
-            let mut scores = [0i32; JUMBLED_BOUND_TILES];
             let mut n = 0;
             let mut perpendicular = 0i32;
             for i in idx..env.idx_right {
                 if env.params.board_strip[i as usize] == 0 {
-                    weights[n] = env.square_weights[(i - env.idx_left) as usize];
+                    env.bound_weights[n] = env.square_weights[(i - env.idx_left) as usize];
                     perpendicular += env.params.perpendicular_scores_strip[i as usize];
                     n += 1;
                 }
@@ -7172,7 +7172,7 @@ fn gen_jumbled_place_moves_walk<
                 bits &= bits - 1;
                 let real = env.unplaced[tile as usize].min(env.params.rack_tally[tile as usize]);
                 for k in 0..env.unplaced[tile as usize] {
-                    scores[m] = if k < real {
+                    env.bound_scores[m] = if k < real {
                         env.alphabet.scaled_score(tile).raw()
                     } else {
                         env.alphabet.scaled_score(0).raw()
@@ -7181,9 +7181,10 @@ fn gen_jumbled_place_moves_walk<
                 }
             }
             debug_assert_eq!(m, n);
-            weights[..n].sort_unstable_by(|a, b| b.cmp(a));
-            scores[..m].sort_unstable_by(|a, b| b.cmp(a));
-            let bound = scores[..m].iter().zip(&weights[..n]).fold(
+            let (weights, scores) = (&mut env.bound_weights[..n], &mut env.bound_scores[..m]);
+            weights.sort_unstable_by(|a, b| b.cmp(a));
+            scores.sort_unstable_by(|a, b| b.cmp(a));
+            let bound = scores.iter().zip(&*weights).fold(
                 acc.main_score * env.span_word_multiplier
                     + acc.perpendicular_cumulative_score
                     + perpendicular
@@ -7280,6 +7281,8 @@ fn gen_jumbled_place_moves_walk<
         span_word_multiplier: 1,
         square_weights: [0i32; JUMBLED_BOUND_SQUARES],
         span_leave: 0,
+        bound_weights: [0i32; JUMBLED_BOUND_TILES],
+        bound_scores: [0i32; JUMBLED_BOUND_TILES],
     };
     let opening_penalty = |i: i8| {
         let board_layout = env.params.board_snapshot.game_config.board_layout();
