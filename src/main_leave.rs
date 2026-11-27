@@ -5107,6 +5107,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
 #[inline]
 fn decompose_contribution(fv: &Cumulate, w: u64) -> (f64, u64) {
+    if fv.count == 0 {
+        return (0.0, 0);
+    }
     (fv.equity / fv.count as f64 * w as f64, w)
 }
 
@@ -12150,6 +12153,16 @@ WCMP_P1_SCORE 402.000000
         let (eq, cnt) = decompose_contribution(&fv, 3);
         assert!((eq - 15.0).abs() < 1e-9); // (10/2) * 3
         assert_eq!(cnt, 3); // w only
+    }
+
+    #[test]
+    #[inline]
+    fn a_rack_never_sampled_adds_nothing_to_its_subracks() {
+        let fv = Cumulate {
+            equity: 0.0,
+            count: 0,
+        };
+        assert_eq!(decompose_contribution(&fv, 3), (0.0, 0));
     }
 
     #[test]
