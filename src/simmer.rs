@@ -88,7 +88,7 @@ pub type DefaultRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 // a ply a rollout played after its candidate: the play's score, in millipoints,
 // and how many tiles it placed (none for an exchange or a pass)
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct PlyPlayed {
     pub score: i32,
     pub tiles: u8,
@@ -3190,7 +3190,7 @@ mod tests {
                         candidate,
                     )
                     .unwrap();
-                let reply = simmer.plies_played()[0];
+                let reply = simmer.plies_played()[0].clone();
                 assert_eq!(
                     simmer.reply_equity().map(|equity| equity.raw()),
                     Some(reply.score),
