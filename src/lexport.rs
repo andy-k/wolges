@@ -70,13 +70,13 @@ pub fn to_macondo<'a, N: kwg::Node>(
         letter_sets: &mut letter_sets,
     };
 
-    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) -> u32 {
+    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) -> error::Returns<u32> {
         let mut w = env.node_indexes[p as usize];
         // The first node is at index 0, but the structure is acyclic.
         if w != 0 {
-            return w;
+            return Ok(w);
         }
-        w = env.nodes.len() as u32;
+        w = u32::try_from(env.nodes.len())?;
         env.node_indexes[p as usize] = w;
         let mut letter_set_bitset = 0u64;
         let mut arc_set_bitset = 0u64;
@@ -97,7 +97,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
             p += 1;
         }
         letter_set_bitset &= !1; // disregard the 00 bit
-        let mut letter_set_index = env.letter_sets.len() as u32;
+        let mut letter_set_index = u32::try_from(env.letter_sets.len())?;
         letter_set_index = *env
             .letter_sets
             .entry(letter_set_bitset)
@@ -105,7 +105,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
         let orig_w = w;
         w += 1;
         env.nodes[orig_w as usize] =
-            ((env.nodes.len() as u32 - w) << 24) | (letter_set_index & 0xffffff);
+            ((u32::try_from(env.nodes.len())? - w) << 24) | (letter_set_index & 0xffffff);
         // Iteration must follow remapped order.
         for &(tile, _) in env.unicode_sorted_tiles {
             if arc_set_bitset & (1 << tile) != 0 {
@@ -115,11 +115,11 @@ pub fn to_macondo<'a, N: kwg::Node>(
                     p += 1;
                 }
                 env.nodes[w as usize] = (u32::from(env.tile_mapping[tile as usize]) << 24)
-                    | (iter(env, env.kwg[p].arc_index()) & 0xffffff);
+                    | (iter(env, env.kwg[p].arc_index())? & 0xffffff);
                 w += 1;
             }
         }
-        orig_w
+        Ok(orig_w)
     }
 
     iter(
@@ -129,7 +129,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
             MacondoFormat::Gaddag => 1,
         }]
         .arc_index(),
-    );
+    )?;
 
     let mut bin = vec![
         0u8;
@@ -163,7 +163,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
     }
     w += alphabet_len_excluding_blank as usize * 4;
 
-    bin[w..w + 4].copy_from_slice(&(letter_sets.len() as u32).to_be_bytes());
+    bin[w..w + 4].copy_from_slice(&u32::try_from(letter_sets.len())?.to_be_bytes());
     w += 4;
     for (&letter_set_bitset, &letter_set_index) in &letter_sets {
         let z = w + (letter_set_index as usize) * 8;
@@ -176,7 +176,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
     }
     w += letter_sets.len() * 8;
 
-    bin[w..w + 4].copy_from_slice(&(nodes.len() as u32).to_be_bytes());
+    bin[w..w + 4].copy_from_slice(&u32::try_from(nodes.len())?.to_be_bytes());
     w += 4;
     for node in nodes {
         bin[w..w + 4].copy_from_slice(&node.to_be_bytes());
@@ -255,7 +255,7 @@ pub fn to_lxd<'a, N: kwg::Node>(
         if w != 0 {
             return Ok(());
         }
-        w = env.nodes.len() as u32;
+        w = u32::try_from(env.nodes.len())?;
         env.node_indexes[p as usize] = w;
 
         let orig_p = p;
@@ -314,7 +314,7 @@ pub fn to_lxd<'a, N: kwg::Node>(
     let mut w = 0;
     bin[w..w + 4].copy_from_slice(&0x40u32.to_le_bytes());
     w += 4;
-    bin[w..w + 4].copy_from_slice(&(nodes.len() as u32).to_le_bytes());
+    bin[w..w + 4].copy_from_slice(&u32::try_from(nodes.len())?.to_le_bytes());
     w += 4;
     bin[w..w + title_str_windows.len()].copy_from_slice(&title_str_windows);
     w += 32;
