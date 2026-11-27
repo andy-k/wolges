@@ -903,7 +903,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
             bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
             jumbled: self.jumbled.clone(),
-            woadwage: WoadwageScratch::default(),
+            woadwage: WoadwageScratch::new(),
             ordered: ordered_join::Buffers::new(),
             pool: PoolScratch::default(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
@@ -1162,7 +1162,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
             jumbled: JumbledMultisets::new(),
-            woadwage: WoadwageScratch::default(),
+            woadwage: WoadwageScratch::new(),
             ordered: ordered_join::Buffers::new(),
             pool: PoolScratch::default(),
             used_tile_scores_shadowl: ShadowScores::new(),
@@ -6178,7 +6178,6 @@ struct JumbledMultisets {
     budget: u64,      // blank choices a part walk has left
     designation: u32, // the current multiset's next blank choice
     stopped: Option<(u64, u32)>, // where a part walk stopped
-    subset_scratch: SubsetScratch,
 }
 
 pub struct PoolLists(JumbledMultisets);
@@ -6190,7 +6189,6 @@ pub struct PoolWindow {
 
 type JumbledWoadwageFound = (i8, i8, bites::Bites, i32, i32, bites::Bites);
 
-#[derive(Default)]
 struct WoadwageScratch {
     stack: Vec<i32>,
     letters: Vec<u8>,    // the span's letters, board tiles' among them
@@ -6198,6 +6196,22 @@ struct WoadwageScratch {
     jumbles: crate::fash::MyHashMap<[u8; crate::census::MAX_LETTERS], bool>, // asked: counts, answer
     found: Vec<JumbledWoadwageFound>,
     placed: Vec<u8>,
+    subsets: SubsetScratch,
+}
+
+impl WoadwageScratch {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            stack: Vec::new(),
+            letters: Vec::new(),
+            prefixes: Vec::new(),
+            jumbles: crate::fash::MyHashMap::default(),
+            found: Vec::new(),
+            placed: Vec::new(),
+            subsets: SubsetScratch::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -6469,7 +6483,6 @@ impl JumbledMultisets {
             budget: u64::MAX,
             designation: 0,
             stopped: None,
-            subset_scratch: SubsetScratch::default(),
         }
     }
 
@@ -7847,7 +7860,6 @@ fn gen_jumbled_woadwage_place_moves<
         once_per_score: bool,
         left_bounds: &'a [i32], // by left edge, the best span bound at it, then at or before it
     }
-    #[derive(Clone)]
     struct Accumulator {
         main_score: i32,
         perpendicular_cumulative_score: i32,
@@ -7938,7 +7950,7 @@ fn gen_jumbled_woadwage_place_moves<
         acc: &Accumulator,
         idx: i8,
         is_unique: bool,
-        splits: Splits,
+        splits: &Splits,
     ) {
         if stops_walk(env.params.threshold) {
             return;
@@ -7963,7 +7975,7 @@ fn gen_jumbled_woadwage_place_moves<
                 ..*acc
             };
             let next = splits.grown(env, idx);
-            extend::<LEAVES, BAG_TERM, _, _, _>(env, &acc, idx + 1, is_unique, next);
+            extend::<LEAVES, BAG_TERM, _, _, _>(env, &acc, idx + 1, is_unique, &next);
             Splits::shrunk(env, b & 0x7f);
             return;
         }
@@ -8011,7 +8023,7 @@ fn gen_jumbled_woadwage_place_moves<
                 };
                 env.params.rack_tally[spent as usize] -= 1;
                 env.params.word_strip_buffer[idx as usize] = written;
-                extend::<LEAVES, BAG_TERM, _, _, _>(env, &acc, idx + 1, is_unique, next);
+                extend::<LEAVES, BAG_TERM, _, _, _>(env, &acc, idx + 1, is_unique, &next);
                 env.params.rack_tally[spent as usize] += 1;
             }
             Splits::shrunk(env, tile);
@@ -8020,7 +8032,6 @@ fn gen_jumbled_woadwage_place_moves<
         env.num_played -= 1;
     }
 
-    #[derive(Clone, Copy)]
     struct Splits {
         whole: bool,
     }
@@ -8050,7 +8061,7 @@ fn gen_jumbled_woadwage_place_moves<
 
         #[inline(always)]
         fn grown<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
-            self,
+            &self,
             env: &mut Env<'_, CallbackType, N, L>,
             idx: i8,
         ) -> Self {
@@ -8065,7 +8076,7 @@ fn gen_jumbled_woadwage_place_moves<
 
         #[inline(always)]
         fn accepts<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
-            self,
+            &self,
             env: &mut Env<'_, CallbackType, N, L>,
             idx: i8,
         ) -> bool {
@@ -8153,7 +8164,7 @@ fn gen_jumbled_woadwage_place_moves<
                 &start,
                 idx_l,
                 single_tile_plays,
-                Splits { whole: false },
+                &Splits { whole: false },
             );
             if stops_walk(env.params.threshold) {
                 return;
@@ -8183,7 +8194,6 @@ fn gen_jumbled_woadwage_place_moves<
     env.params.woadwage.found = found;
 }
 
-#[derive(Clone, Default)]
 struct SubsetScratch {
     naturals: Vec<(u8, u8)>,
     faces: Vec<u8>,
@@ -8201,6 +8211,30 @@ struct SubsetScratch {
     jumbles: crate::fash::MyHashMap<[u8; MAX_ALPHABET_LEN], bool>,
     bound: Vec<i32>,
     scores: Vec<i32>,
+}
+
+impl SubsetScratch {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            naturals: Vec::new(),
+            faces: Vec::new(),
+            kinds: Vec::new(),
+            strides: Vec::new(),
+            sizes: Vec::new(),
+            holes: Vec::new(),
+            weights: Vec::new(),
+            worth: Vec::new(),
+            left: Vec::new(),
+            right: Vec::new(),
+            old_left: Vec::new(),
+            holes_left: Vec::new(),
+            subs: Vec::new(),
+            jumbles: crate::fash::MyHashMap::default(),
+            bound: Vec::new(),
+            scores: Vec::new(),
+        }
+    }
 }
 
 struct SubsetSpan {
@@ -8223,7 +8257,7 @@ fn gen_jumbled_woadwage_subsets<
     opening: Option<bool>,
     left_bounds: &'a [i32],
 ) {
-    let mut s = std::mem::take(&mut params.jumbled.subset_scratch);
+    let mut s = std::mem::replace(&mut params.woadwage.subsets, SubsetScratch::new());
     s.jumbles.clear();
     s.naturals.clear();
     let alphabet = params.board_snapshot.game_config.alphabet();
@@ -8268,7 +8302,7 @@ fn gen_jumbled_woadwage_subsets<
         }
         idx_l -= 1;
     }
-    params.jumbled.subset_scratch = s;
+    params.woadwage.subsets = s;
 }
 
 fn subset_spans_from<
@@ -8825,7 +8859,6 @@ fn gen_woadwage_place_moves<
         idx_left: i8,
         left_bounds: &'a [i32], // by left edge, the best span bound at it, then at or before it
     }
-    #[derive(Clone)]
     struct Accumulator {
         main_score: i32,
         perpendicular_cumulative_score: i32,
@@ -9101,7 +9134,6 @@ mod ordered_join {
         }
     }
 
-    #[derive(Clone, Copy)]
     struct Keys<'a> {
         shift: &'a [u8],
         width: &'a [u8],
@@ -9109,12 +9141,12 @@ mod ordered_join {
 
     impl Keys<'_> {
         #[inline(always)]
-        fn place_value(self, tile: u8) -> u128 {
+        fn place_value(&self, tile: u8) -> u128 {
             1u128 << self.shift[usize::from(tile)]
         }
 
         #[inline(always)]
-        fn count_in(self, key: u128, tile: u8) -> u8 {
+        fn count_in(&self, key: u128, tile: u8) -> u8 {
             let width = self.width[usize::from(tile)];
             ((key >> self.shift[usize::from(tile)]) & ((1u128 << width) - 1)) as u8
         }
@@ -9185,7 +9217,7 @@ mod ordered_join {
             while from < self.rack.len() {
                 let tile = self.rack[from];
                 tiles.push(tile);
-                let value = match self.keys {
+                let value = match &self.keys {
                     Some(keys) if tile != 0 => keys.place_value(tile),
                     _ => 0,
                 };
@@ -9323,7 +9355,7 @@ mod ordered_join {
             if !room(memory, &mut b.alpha, slots) {
                 return None;
             }
-            b.alpha.resize(slots, None);
+            b.alpha.extend((0..slots).map(|_| None));
             b.spans.clear();
             b.possible_right.clear();
             if !room(memory, &mut b.spans, lane_len * (lane_len + 1) / 2)
@@ -9372,7 +9404,7 @@ mod ordered_join {
             let mut prefix_holes = [0usize; LANE_LEN + 1];
             for (idx, &tile) in params.board_strip.iter().enumerate() {
                 prefix_keys[idx + 1] = prefix_keys[idx]
-                    + match keys {
+                    + match &keys {
                         Some(keys) if tile != 0 => keys.place_value(tile & 0x7f),
                         _ => 0,
                     };
@@ -9467,7 +9499,7 @@ mod ordered_join {
                     alphabet,
                     alpha,
                     graph: self.graph,
-                    keys,
+                    keys: keys.as_ref(),
                     tile_scores: &self.tile_scores,
                     vowels: self.vowels,
                 };
@@ -9541,7 +9573,6 @@ mod ordered_join {
         &out[..len]
     }
 
-    #[derive(Clone)]
     struct AlphaEntry {
         key: (u128, usize),
         fits: bool,
@@ -9570,7 +9601,7 @@ mod ordered_join {
         alphabet: &'a alphabet::Alphabet,
         alpha: &'a mut [Option<AlphaEntry>],
         graph: &'a kwg::Kwg<N>,
-        keys: Option<Keys<'a>>,
+        keys: Option<&'a Keys<'a>>,
         tile_scores: &'a [i32; MAX_ALPHABET_LEN],
         vowels: u64,
     }
@@ -9747,7 +9778,7 @@ mod ordered_join {
             fit.walk(
                 0,
                 range.start,
-                HalfScore {
+                &HalfScore {
                     score: 0,
                     penalty: 0,
                 },
@@ -9796,14 +9827,13 @@ mod ordered_join {
         false
     }
 
-    #[derive(Clone, Copy)]
     struct HalfScore {
         score: i32,
         penalty: i32,
     }
 
     impl HalfScore {
-        fn equity(self) -> i32 {
+        fn equity(&self) -> i32 {
             self.score + self.penalty
         }
     }
@@ -9826,18 +9856,21 @@ mod ordered_join {
     }
 
     impl<N: kwg::Node> Fit<'_, N> {
-        fn walk(&mut self, prev: i32, idx: usize, result: HalfScore) {
+        fn walk(&mut self, prev: i32, idx: usize, result: &HalfScore) {
             if idx == self.end {
                 let range = self.start..self.end;
                 if prev > 0
                     && self.graph.node_in_run(prev).accepts()
-                    && self.best.is_none_or(|best| {
+                    && self.best.as_ref().is_none_or(|best| {
                         result.equity() > best.equity()
                             || result.equity() == best.equity()
                                 && self.plays[range.clone()] < self.best_play[range.clone()]
                     })
                 {
-                    self.best = Some(result);
+                    self.best = Some(HalfScore {
+                        score: result.score,
+                        penalty: result.penalty,
+                    });
                     self.best_play[range.clone()].copy_from_slice(&self.plays[range]);
                 }
                 return;
@@ -9880,7 +9913,7 @@ mod ordered_join {
                         self.walk(
                             next,
                             idx + 1,
-                            HalfScore {
+                            &HalfScore {
                                 score: result.score + value,
                                 penalty: result.penalty - penalty,
                             },
@@ -22517,8 +22550,7 @@ pub(crate) mod tests {
         assert!(taken > 0, "{taken}");
     }
 
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-    struct PlayWithEquity(bool, i8, i8, Vec<u8>, i32, i32);
+    type PlayWithEquity = (bool, i8, i8, Vec<u8>, i32, i32);
 
     #[inline]
     fn plays_with_equity<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>(
@@ -22534,7 +22566,7 @@ pub(crate) mod tests {
                     idx,
                     word,
                     score,
-                } => Some(PlayWithEquity(
+                } => Some((
                     *down,
                     *lane,
                     *idx,
@@ -22647,7 +22679,7 @@ pub(crate) mod tests {
                         let every = plays_with_equity(&move_generator);
                         let mut want_once = every
                             .iter()
-                            .map(|PlayWithEquity(down, lane, idx, word, score, equity)| {
+                            .map(|(down, lane, idx, word, score, equity)| {
                                 let mut placed = word
                                     .iter()
                                     .copied()
@@ -22665,7 +22697,7 @@ pub(crate) mod tests {
                         let mut want_once = want_once
                             .into_iter()
                             .map(|((down, lane, idx, _, _, score, equity), word)| {
-                                PlayWithEquity(down, lane, idx, word, score, equity)
+                                (down, lane, idx, word, score, equity)
                             })
                             .collect::<Vec<_>>();
                         want_once.sort_unstable();
