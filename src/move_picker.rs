@@ -806,7 +806,7 @@ impl<
     }
 
     pub fn with_positional(mut self, term: PositionalTerm) -> Self {
-        self.simmer.set_positional(Some(term.clone()));
+        self.simmer.set_positional(Some(term.copied()));
         self.positional = Some(term);
         self
     }
@@ -2054,12 +2054,18 @@ pub(crate) type TermBuffers<'b> = (&'b mut Vec<u8>, &'b mut Vec<u8>);
 // in millipoints
 pub type SquareValue = ((i8, i8, u8), i32);
 
-#[derive(Clone, Debug, PartialEq)]
 pub struct PositionalTerm {
     values: Box<[SquareValue]>, // by (word, letter, reach)
 }
 
 impl PositionalTerm {
+    #[inline(always)]
+    pub fn copied(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+        }
+    }
+
     pub fn new(mut values: Vec<SquareValue>) -> error::Returns<Self> {
         values.sort_unstable_by_key(|&(key, _)| key);
         if let Some(pair) = values.windows(2).find(|pair| pair[0].0 == pair[1].0) {
@@ -5622,26 +5628,30 @@ mod tests {
             PositionalTerm::parse("# by square\n3 1 7 -2\n\n2 1 1 -1.5 # the star\n1 2 5 0.0004\n")
                 .unwrap();
         let want = vec![((1, 2, 5), 0), ((2, 1, 1), -1500), ((3, 1, 7), -2000)];
-        assert_eq!(term, PositionalTerm::new(want).unwrap());
+        assert_eq!(term.values, PositionalTerm::new(want).unwrap().values);
         for empty in ["", "# none\n"] {
             assert_eq!(
-                PositionalTerm::parse(empty).unwrap(),
-                PositionalTerm::new(Vec::new()).unwrap()
+                PositionalTerm::parse(empty).unwrap().values,
+                PositionalTerm::new(Vec::new()).unwrap().values
             );
         }
         assert_eq!(
-            PositionalTerm::parse("1 1 1 2\n0 0 1 2\n3 1 0 2\n2 1 1 -1\n").unwrap(),
-            PositionalTerm::new(vec![((2, 1, 1), -1000)]).unwrap()
+            PositionalTerm::parse("1 1 1 2\n0 0 1 2\n3 1 0 2\n2 1 1 -1\n")
+                .unwrap()
+                .values,
+            PositionalTerm::new(vec![((2, 1, 1), -1000)])
+                .unwrap()
+                .values
         );
         assert_eq!(
-            PositionalTerm::parse("1 1 1 2\n").unwrap(),
-            PositionalTerm::new(Vec::new()).unwrap()
+            PositionalTerm::parse("1 1 1 2\n").unwrap().values,
+            PositionalTerm::new(Vec::new()).unwrap().values
         );
         for ending in ["\r\n", "\r"] {
             let read = PositionalTerm::parse(
                 &"3 1 7 -2\n2 1 1 -1.5\n1 2 5 0.0004\n".replace('\n', ending),
             );
-            assert_eq!(read.unwrap(), term, "{ending:?}");
+            assert_eq!(read.unwrap().values, term.values, "{ending:?}");
         }
         for refused in [
             "3 1 1\n",
@@ -5761,7 +5771,7 @@ mod tests {
                 for window in [0, DEFAULT_DEFT_WINDOW] {
                     assert_eq!(
                         picks_of(
-                            Deft::new(window, Some(zero.clone())),
+                            Deft::new(window, Some(zero.copied())),
                             &board_snapshot,
                             game_state
                         ),
@@ -5821,7 +5831,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let most = sums.iter().map(|&(sum, _)| sum).max().unwrap();
             let picked = picks_of(
-                Deft::new(0, Some(term.clone())),
+                Deft::new(0, Some(term.copied())),
                 &board_snapshot,
                 game_state,
             );
@@ -6018,7 +6028,7 @@ mod tests {
         for game_state in &positions {
             assert_eq!(
                 picks_by(
-                    MovePicker::Positional(Box::new(Positional::new(None, zero.clone()))),
+                    MovePicker::Positional(Box::new(Positional::new(None, zero.copied()))),
                     &board_snapshot,
                     game_state
                 ),
@@ -6077,7 +6087,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let most = sums.iter().map(|&(sum, _)| sum).max().unwrap();
             let picked = picks_by(
-                MovePicker::Positional(Box::new(Positional::new(None, term.clone()))),
+                MovePicker::Positional(Box::new(Positional::new(None, term.copied()))),
                 &board_snapshot,
                 game_state,
             );

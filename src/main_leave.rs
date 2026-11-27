@@ -11602,7 +11602,7 @@ fn compare_seats<
                             memory: None,
                         },
                         deft_window: p0_window,
-                        positional: positional[0].as_ref().map(|(_, term)| term.clone()),
+                        positional: positional[0].as_ref().map(|(_, term)| term.copied()),
                     },
                 );
                 let mut driver_p1 = seat_picker(
@@ -11623,7 +11623,7 @@ fn compare_seats<
                             memory: None,
                         },
                         deft_window: p1_window,
-                        positional: positional[1].as_ref().map(|(_, term)| term.clone()),
+                        positional: positional[1].as_ref().map(|(_, term)| term.copied()),
                     },
                 );
                 let mut end_p0 = p0_endgame.map(|endgame| end_picker(endgame, p0_window));

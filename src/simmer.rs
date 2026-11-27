@@ -437,7 +437,7 @@ impl<
         self.rng = R::seed_from_u64(0);
         #[cfg(not(target_family = "wasm"))]
         self.set_preempty(other.preempty.as_ref());
-        self.positional.clone_from(&other.positional);
+        self.positional = other.positional.as_ref().map(PositionalTerm::copied);
         self.prepare_sharing(
             game_config,
             &other.initial_game_state,
