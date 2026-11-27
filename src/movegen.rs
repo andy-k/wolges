@@ -2,7 +2,7 @@
 
 use super::{
     alphabet, alphagram, anagrams, bites, display, endgame, equity, error, game_config, klv, kwg,
-    matrix, play_scorer,
+    matrix, play_scorer, woadwage,
 };
 use alphagram::KeyPlaces as _;
 use endgame::Grow as _;
@@ -767,6 +767,7 @@ struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool, S: BoardStore> {
     anchor_left_bounds: Vec<i32>,   // per lean placement, two blocks by left edge
     bounds_at: usize,               // the popped lean placement's block, or usize::MAX
     used_letters_tally: Vec<u8>,
+    woadwage: WoadwageScratch,
     jumbled: JumbledMultisets,                  // jumbled mode only
     pool: PoolScratch,                          // the pool walks'
     used_tile_scores_shadowl: ShadowScores,     // for shadow_play_left, premultiplied by SCALE
@@ -871,6 +872,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
             bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
             jumbled: self.jumbled.clone(),
+            woadwage: WoadwageScratch::default(),
             pool: PoolScratch::default(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
@@ -1128,6 +1130,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
             bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
             jumbled: JumbledMultisets::new(),
+            woadwage: WoadwageScratch::default(),
             pool: PoolScratch::default(),
             used_tile_scores_shadowl: ShadowScores::new(),
             used_tile_scores_shadowr: ShadowScores::new(),
@@ -2072,6 +2075,7 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
     used_letters_tally: &'a mut [u8],
+    woadwage_stack: &'a mut Vec<i32>,
 ) {
     if B::NIBBLES {
         return gen_classic_cross_set(
@@ -2085,17 +2089,15 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
         );
     }
     match board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
-            gen_classic_cross_set(
-                board_snapshot,
-                board_strip,
-                allowed,
-                cross_scores,
-                output_strider,
-                cross_set_buffer,
-                cached_cross_sets,
-            )
-        }
+        game_config::GameRules::Classic => gen_classic_cross_set(
+            board_snapshot,
+            board_strip,
+            allowed,
+            cross_scores,
+            output_strider,
+            cross_set_buffer,
+            cached_cross_sets,
+        ),
         game_config::GameRules::Jumbled => gen_jumbled_cross_set(
             board_snapshot,
             board_strip,
@@ -2104,6 +2106,80 @@ fn gen_cross_set<'a, B: Keys, N: kwg::Node, L: kwg::Node>(
             output_strider,
             used_letters_tally,
         ),
+        game_config::GameRules::Woadwage => gen_woadwage_cross_set(
+            board_snapshot,
+            board_strip,
+            allowed,
+            cross_scores,
+            output_strider,
+            woadwage_stack,
+        ),
+    }
+}
+
+#[inline]
+fn gen_woadwage_cross_set<'a, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    board_strip: &'a [u8],
+    allowed: &'a mut [u64],
+    cross_scores: &'a mut [i32],
+    output_strider: matrix::Strider,
+    stack: &'a mut Vec<i32>,
+) {
+    let len = output_strider.len() as usize;
+    let step = output_strider.step() as usize;
+    let mut wp = output_strider.base() as usize;
+    let kwg = board_snapshot.kwg;
+    let alphabet = board_snapshot.game_config.alphabet();
+    for i in 0..len {
+        let b = board_strip[i];
+        if b != 0 {
+            allowed[wp] = unhooked_letters(b);
+            cross_scores[wp] = 0;
+            wp += step;
+            continue;
+        }
+        let mut j = i;
+        while j > 0 && board_strip[j - 1] != 0 {
+            j -= 1;
+        }
+        let mut k = i + 1;
+        while k < len && board_strip[k] != 0 {
+            k += 1;
+        }
+        if j == i && k == i + 1 {
+            allowed[wp] = unhooked_letters(0);
+            cross_scores[wp] = 0;
+            wp += step;
+            continue;
+        }
+        let mut score = 0i32;
+        stack.clear();
+        let mut prefix = Some(woadwage::StackedStep::new());
+        for &t in &board_strip[j..i] {
+            score += alphabet.scaled_score(t).raw();
+            prefix = prefix.and_then(|state| state.step(kwg, stack, t & 0x7f));
+        }
+        for &t in &board_strip[i + 1..k] {
+            score += alphabet.scaled_score(t).raw();
+        }
+        let mut bits = 1u64;
+        if let Some(prefix) = prefix {
+            let mark = stack.len();
+            for letter in 1..alphabet.len() {
+                let mut state = prefix.step(kwg, stack, letter);
+                for &t in &board_strip[i + 1..k] {
+                    state = state.and_then(|state| state.step(kwg, stack, t & 0x7f));
+                }
+                if state.is_some_and(|state| state.accepts(kwg, stack)) {
+                    bits |= 1u64 << letter;
+                }
+                stack.truncate(mark);
+            }
+        }
+        allowed[wp] = bits;
+        cross_scores[wp] = score;
+        wp += step;
     }
 }
 
@@ -5874,6 +5950,11 @@ pub struct PoolLists(JumbledMultisets);
 pub struct PoolWindow {
     pub lanes: (u128, u128),
     pub window: std::ops::Range<u64>,
+}
+
+#[derive(Default)]
+struct WoadwageScratch {
+    stack: Vec<i32>,
 }
 
 #[derive(Clone, Default)]
@@ -10894,6 +10975,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                &mut working_buffer.woadwage.stack,
             );
         }
         for row in 0..dim.rows {
@@ -10912,6 +10994,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                &mut working_buffer.woadwage.stack,
             );
         }
         // a square no cross word reaches has bit 0 clear, and gives 0
@@ -11434,6 +11517,7 @@ fn lean_cross_sets<
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                &mut working_buffer.woadwage.stack,
             );
         }
     }
@@ -11459,6 +11543,7 @@ fn lean_cross_sets<
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                &mut working_buffer.woadwage.stack,
             );
         }
     }
@@ -13480,6 +13565,7 @@ fn kurnia_gen_place_moves_iter<
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                &mut working_buffer.woadwage.stack,
             );
         }
     }
@@ -13505,6 +13591,7 @@ fn kurnia_gen_place_moves_iter<
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                &mut working_buffer.woadwage.stack,
             );
         }
     }
@@ -18026,6 +18113,190 @@ mod tests {
             star_row,
             star_col,
         ))
+    }
+
+    // the woadwage toy: tiles 1 to 4 of the english alphabet
+    const WOADWAGE_TOY_WORDS: [&[u8]; 5] = [&[1], &[1, 1], &[1, 2], &[2, 3], &[3, 2, 1]];
+
+    #[inline]
+    pub(crate) fn woadwage_toy_letters() -> u8 {
+        WOADWAGE_TOY_WORDS
+            .iter()
+            .flat_map(|word| word.iter())
+            .copied()
+            .max()
+            .unwrap()
+    }
+
+    #[inline]
+    fn woadwage_toy() -> (kwg::Kwg<kwg::Node24>, std::collections::BTreeSet<Vec<u8>>) {
+        let words = WOADWAGE_TOY_WORDS
+            .iter()
+            .map(|&word| bites::Bites::from(word))
+            .collect::<Vec<_>>();
+        let kwg = kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap()
+            .to_vec(),
+            false,
+        )
+        .unwrap();
+        let explicit = WOADWAGE_TOY_WORDS
+            .iter()
+            .map(|&word| word.to_vec())
+            .chain(
+                WOADWAGE_TOY_WORDS
+                    .iter()
+                    .flat_map(|&a| WOADWAGE_TOY_WORDS.iter().map(move |&b| [a, b].concat())),
+            )
+            .collect();
+        (kwg, explicit)
+    }
+
+    #[inline]
+    fn woadwage_toy_config(side: i8) -> game_config::GameConfig {
+        let mut premiums = Vec::new();
+        for row in 0..side {
+            for col in 0..side {
+                let (word_multiplier, tile_multiplier) = match (row * 3 + col * 5) % 7 {
+                    0 => (2, 1),
+                    1 => (1, 3),
+                    2 => (1, 2),
+                    _ => (1, 1),
+                };
+                premiums.push(board_layout::Premium {
+                    word_multiplier,
+                    tile_multiplier,
+                });
+            }
+        }
+        game_config::make_board_test_game_config(board_layout::make_test_board_layout(
+            premiums.into_boxed_slice(),
+            matrix::Dim {
+                rows: side,
+                cols: side,
+            },
+            side / 2,
+            side / 2,
+        ))
+        .woadwage()
+    }
+
+    #[inline]
+    fn woadwage_rng(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    #[test]
+    #[inline]
+    fn a_woadwage_cross_set_takes_each_letter_its_cross_word_accepts() {
+        let (kwg, explicit) = woadwage_toy();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 175u64;
+        let mut squares = 0usize;
+        for side in [5i8, 7] {
+            let gc = woadwage_toy_config(side);
+            let dim = gc.board_layout().dim();
+            let n = side as usize;
+            let alphabet_len = gc.alphabet().len();
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            for _ in 0..40 {
+                let mut board_tiles = vec![0u8; n * n];
+                for tile in board_tiles.iter_mut() {
+                    if woadwage_rng(&mut seed).is_multiple_of(3) {
+                        let letter =
+                            1 + (woadwage_rng(&mut seed) % woadwage_toy_letters() as u64) as u8;
+                        *tile = letter
+                            | if woadwage_rng(&mut seed).is_multiple_of(5) {
+                                0x80
+                            } else {
+                                0
+                            };
+                    }
+                }
+                if board_tiles.iter().all(|&tile| tile == 0) {
+                    board_tiles[0] = 1;
+                }
+                let board_snapshot = BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                place_plays(&mut move_generator, &board_snapshot, &[1, 2], false);
+                let wb = &move_generator.working_buffer;
+                for row in 0..side {
+                    for col in 0..side {
+                        let at = dim.at_row_col(row, col);
+                        if board_tiles[at] != 0 {
+                            continue;
+                        }
+                        let run = |down: bool, step: i8| {
+                            let mut tiles = Vec::new();
+                            let (mut r, mut c) = (row, col);
+                            loop {
+                                if down {
+                                    r += step;
+                                } else {
+                                    c += step;
+                                }
+                                if !(0..side).contains(&r) || !(0..side).contains(&c) {
+                                    break;
+                                }
+                                let tile = board_tiles[dim.at_row_col(r, c)];
+                                if tile == 0 {
+                                    break;
+                                }
+                                tiles.push(tile & 0x7f);
+                            }
+                            if step < 0 {
+                                tiles.reverse();
+                            }
+                            tiles
+                        };
+                        for (down_word, got) in [
+                            (true, wb.allowed_for_across_plays[at]),
+                            (
+                                false,
+                                wb.allowed_for_down_plays[(col as usize) * n + row as usize],
+                            ),
+                        ] {
+                            let (before, after) = (run(down_word, -1), run(down_word, 1));
+                            let want = if before.is_empty() && after.is_empty() {
+                                !1
+                            } else {
+                                let mut bits = 1u64;
+                                for letter in 1..alphabet_len {
+                                    let word = [&before[..], &[letter], &after[..]].concat();
+                                    assert_eq!(
+                                        woadwage::accepts(&kwg, &word),
+                                        explicit.contains(&word),
+                                        "{word:?}"
+                                    );
+                                    if woadwage::accepts(&kwg, &word) {
+                                        bits |= 1 << letter;
+                                    }
+                                }
+                                bits
+                            };
+                            assert_eq!(got, want, "{side} {row} {col} {down_word}");
+                            squares += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(squares > 0, "{squares}");
     }
 
     #[inline]
