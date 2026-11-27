@@ -2628,6 +2628,7 @@ impl<
             infer::InferOptions {
                 fuzz: self.infer_fuzz.0,
                 threads,
+                weigh_passes: false,
             },
             (std::sync::Arc::make_mut(&mut self.inferred), carried),
         )
@@ -4379,6 +4380,7 @@ mod tests {
                         infer::InferOptions {
                             fuzz: infer::FUZZ,
                             threads: 1,
+                            weigh_passes: false,
                         },
                         (&mut leaves, Some(carried)),
                     )

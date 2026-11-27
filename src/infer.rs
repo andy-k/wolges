@@ -1750,9 +1750,9 @@ fn carry_exchange(
 // of that size it holds, each weighed by what it gives up against the rack's
 // best (by the lean arm, the one the table values most). Empty when there is
 // nothing to weigh: the bag is empty before the move, or its own draw empties
-// it (the mover then holds every unseen tile, whatever they kept), or no rack
-// from the pool could have made the move. The racks are weighed on this many
-// threads.
+// it (the mover then holds every unseen tile, whatever they kept), a pass
+// (unless InferOptions' weigh_passes), or no rack from the pool could have made
+// the move. The racks are weighed on this many threads.
 #[inline]
 pub fn kept_leaves<
     N: kwg::Node,
@@ -1833,7 +1833,11 @@ fn kept_leaves_impl<
         board_snapshot,
         watcher_rack,
         (play, Held::Any),
-        InferOptions { fuzz, threads },
+        InferOptions {
+            fuzz,
+            threads,
+            weigh_passes: false,
+        },
         (&mut leaves, None),
     )?;
     Ok((0..leaves.len())
@@ -1865,7 +1869,11 @@ pub fn kept_leaves_packed<
         board_snapshot,
         watcher_rack,
         (play, Held::Any),
-        InferOptions { fuzz, threads },
+        InferOptions {
+            fuzz,
+            threads,
+            weigh_passes: false,
+        },
         (&mut leaves, None),
     )?;
     Ok(leaves)
@@ -1874,6 +1882,7 @@ pub fn kept_leaves_packed<
 pub struct InferOptions {
     pub fuzz: f64,
     pub threads: usize,
+    pub weigh_passes: bool, // a pass weighs racks too, not only plain deals
 }
 
 // the same, into leaves, whose memory is kept: an inference allocates nothing
@@ -1949,8 +1958,7 @@ pub fn kept_leaves_packed_lean<
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     play: &movegen::Play,
-    fuzz: f64,
-    threads: usize,
+    options: InferOptions,
 ) -> error::Returns<PackedLeaves> {
     let mut leaves = PackedLeaves::new();
     kept_leaves_packed_impl::<true, _, _, _, JUMPS, ANY_SIDE>(
@@ -1959,7 +1967,7 @@ pub fn kept_leaves_packed_lean<
         board_snapshot,
         watcher_rack,
         (play, Held::Any),
-        InferOptions { fuzz, threads },
+        options,
         (&mut leaves, None),
     )?;
     Ok(leaves)
@@ -1979,7 +1987,11 @@ fn kept_leaves_packed_impl<
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     watcher_rack: &[u8],
     (play, held): (&movegen::Play, Held<'_>),
-    InferOptions { fuzz, threads }: InferOptions,
+    InferOptions {
+        fuzz,
+        threads,
+        weigh_passes,
+    }: InferOptions,
     (leaves, mut carried): (&mut PackedLeaves, Option<&mut Carried>),
 ) -> error::Returns<()> {
     leaves.clear();
@@ -2033,6 +2045,9 @@ fn kept_leaves_packed_impl<
     }
     let can_exchange = bag >= game_config.exchange_tile_limit() as usize;
     if exchanged.is_some() && !can_exchange {
+        return Ok(());
+    }
+    if exchanged.is_none() && !weigh_passes && placed.iter().all(|&c| c == 0) {
         return Ok(());
     }
     let tiles = match exchanged {
@@ -2684,16 +2699,24 @@ mod tests {
         let mut tables = InferTables::new(game_config, &klv).unwrap();
         tables.set_prior_mix(mix);
         let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-        kept_leaves(
+        let mut leaves = PackedLeaves::new();
+        kept_leaves_packed_into(
             &mut tables,
             &mut move_generator,
             &board_snapshot,
             &watcher_rack,
             play,
-            fuzz,
-            2,
+            InferOptions {
+                fuzz,
+                threads: 2,
+                weigh_passes: true,
+            },
+            &mut leaves,
         )
-        .unwrap()
+        .unwrap();
+        (0..leaves.len())
+            .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i)))
+            .collect()
     }
 
     // a prior mix gives each leave that share of its weight by the chance to be
@@ -2867,6 +2890,85 @@ mod tests {
         for (leave, _) in leaves {
             assert_eq!(leave.len(), 7);
         }
+    }
+
+    // by default a pass infers nothing at any bag size, so its rack is dealt by
+    // plain draw chances; weigh_passes weighs each rack it could have kept
+    #[test]
+    #[inline]
+    fn a_pass_infers_nothing_unless_passes_are_weighed() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let mut tables = InferTables::new(&game_config, &klv).unwrap();
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        for on_board in [0, 79, 91] {
+            let alphabet = game_config.alphabet();
+            let mut board_tiles = vec![0u8; 15 * 15];
+            let mut square = 0;
+            for tile in 0..alphabet.len() {
+                for _ in 0..alphabet.freq(tile) {
+                    if square < on_board {
+                        board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+                        square += 1;
+                    }
+                }
+            }
+            let watcher_rack = [if on_board > 0 { 26 } else { 5 }];
+            let board_snapshot = movegen::BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            let mut leaves = PackedLeaves::new();
+            for weigh_passes in [false, true] {
+                kept_leaves_packed_into(
+                    &mut tables,
+                    &mut move_generator,
+                    &board_snapshot,
+                    &watcher_rack,
+                    &pass,
+                    InferOptions {
+                        fuzz: FUZZ,
+                        threads: 2,
+                        weigh_passes,
+                    },
+                    &mut leaves,
+                )
+                .unwrap();
+                assert_eq!(
+                    leaves.is_empty(),
+                    !weigh_passes,
+                    "{on_board} {weigh_passes}"
+                );
+            }
+            assert!((0..leaves.len()).all(|i| leaves.leave(i).len() == 7));
+        }
+        let weighed = leaves_after(79, &pass, FUZZ);
+        let plain = kept_leaves(
+            &mut tables,
+            &mut move_generator,
+            &movegen::BoardSnapshot {
+                board_tiles: &[0u8; 15 * 15],
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            },
+            &[5],
+            &pass,
+            FUZZ,
+            2,
+        )
+        .unwrap();
+        assert!(!weighed.is_empty() && plain.is_empty());
     }
 
     #[test]
@@ -3143,6 +3245,7 @@ mod tests {
             InferOptions {
                 fuzz: FUZZ,
                 threads: 1,
+                weigh_passes: true,
             },
             (&mut leaves, Some(&mut carried)),
         )
@@ -3609,6 +3712,7 @@ mod tests {
                     InferOptions {
                         fuzz: FUZZ,
                         threads: 2,
+                        weigh_passes: true,
                     },
                     (&mut leaves, None),
                 )
@@ -3656,6 +3760,7 @@ mod tests {
                 InferOptions {
                     fuzz: FUZZ,
                     threads,
+                    weigh_passes: true,
                 },
                 (&mut leaves, Some(&mut carried)),
             )
