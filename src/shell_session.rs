@@ -276,6 +276,35 @@ struct Sim {
 // borrows them, can be kept between commands
 // an endgame solver the shell keeps for a lexicon, made at its first use
 type ShellSolver = endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>;
+type AnySolver<const TWO_SEATS: bool> =
+    endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24, false, u128, true, true, TWO_SEATS>;
+
+type KeptBy<T> = fash::MyHashMap<String, T>;
+
+trait KeptSolvers: Sized {
+    fn kept<'k>(
+        two: &'k mut KeptBy<AnySolver<true>>,
+        any: &'k mut KeptBy<AnySolver<false>>,
+    ) -> &'k mut KeptBy<Self>;
+}
+
+impl KeptSolvers for AnySolver<true> {
+    fn kept<'k>(
+        two: &'k mut KeptBy<AnySolver<true>>,
+        _: &'k mut KeptBy<AnySolver<false>>,
+    ) -> &'k mut KeptBy<Self> {
+        two
+    }
+}
+
+impl KeptSolvers for AnySolver<false> {
+    fn kept<'k>(
+        _: &'k mut KeptBy<AnySolver<true>>,
+        any: &'k mut KeptBy<AnySolver<false>>,
+    ) -> &'k mut KeptBy<Self> {
+        any
+    }
+}
 
 // an ended sim's driver, kept for the next sim of the tables it borrows, which
 // it names by address: the rules, the lexicon, its anagram tables, and the
@@ -343,6 +372,7 @@ pub struct Session {
     arm_tables_built:
         fash::MyHashMap<(String, usize), &'static std::sync::Arc<anagrams::ArmTables>>,
     endgame_solvers: fash::MyHashMap<String, ShellSolver>, // by lexicon path
+    seats_endgame_solvers: fash::MyHashMap<String, AnySolver<false>>,
     rules_made: fash::MyHashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
     infer_tables: Option<([usize; 2], infer::InferTables)>, // for the rules' and klv's addresses, built at its first use
     game: Option<Game>,
@@ -561,6 +591,7 @@ impl Session {
             klvs_read: [("-".to_string(), none)].into_iter().collect(),
             arm_tables_built: Default::default(),
             endgame_solvers: Default::default(),
+            seats_endgame_solvers: Default::default(),
             rules_made: Default::default(),
             infer_tables: None,
             game: None,
@@ -1419,7 +1450,7 @@ impl Session {
                 }
                 let state = self.endgame_state();
                 if !state.bag.is_empty() {
-                    let mut solver = self.take_solver()?;
+                    let mut solver = self.take_solver::<true>()?;
                     let solved = solve_pre_endgame(
                         &mut solver,
                         self.game_config,
@@ -1457,21 +1488,17 @@ impl Session {
                     )?;
                     return Ok(());
                 }
-                let mut solver = self.take_endgame_solver(&state)?;
-                let solved = solve_endgame(
-                    &mut solver,
-                    &state,
-                    &endgame::Limits {
-                        time: Some(std::time::Duration::from_secs_f64(seconds)),
-                        states: None,
-                        memory: self.memory,
-                        clock: None,
-                    },
-                    self.quiet,
-                )
-                .and_then(|solved| Ok((solved, self.endgame_line(&mut solver, &state)?)));
-                self.keep_endgame_solver(solver)?;
-                let (solved, line) = solved?;
+                let limits = endgame::Limits {
+                    time: Some(std::time::Duration::from_secs_f64(seconds)),
+                    states: None,
+                    memory: self.memory,
+                    clock: None,
+                };
+                let (solved, line) = if state.players.len() == 2 {
+                    self.solve_and_line::<true>(&state, &limits)
+                } else {
+                    self.solve_and_line::<false>(&state, &limits)
+                }?;
                 writeln!(
                     std::io::stdout(),
                     "the side to move gains {} on the spread from here, {}",
@@ -1623,6 +1650,7 @@ impl Session {
     ) -> error::Returns<()> {
         if !std::ptr::eq(game_config, self.game_config) {
             self.endgame_solvers.clear();
+            self.seats_endgame_solvers.clear();
         }
         self.game_config = game_config;
         self.readers = Readers::new(game_config);
@@ -1676,30 +1704,38 @@ impl Session {
     // at its first use, when the rules are checked for an endgame, taken out
     // to solve the side to move's endgame from this state, once the bag is
     // empty and both racks are known; keep_endgame_solver gives it back
-    fn take_endgame_solver(
+    fn take_endgame_solver<const TWO_SEATS: bool>(
         &mut self,
         state: &game_state::GameState,
-    ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
+    ) -> error::Returns<AnySolver<TWO_SEATS>>
+    where
+        AnySolver<TWO_SEATS>: KeptSolvers,
+    {
         if !state.bag.is_empty() {
             return Err("the bag is not empty, and an endgame needs it to be".into());
         }
-        let mut solver = self.take_solver()?;
-        solver.init_after_scoreless_turns(
+        let mut solver = self.take_solver::<TWO_SEATS>()?;
+        solver.init_seats_after_scoreless_turns(
             &state.board_tiles,
-            [&state.players[0].rack, &state.players[1].rack],
+            state.players.iter().map(|player| &player.rack[..]),
             state.pass_turns,
             state.zero_turns,
         );
         Ok(solver)
     }
 
-    fn take_solver(
-        &mut self,
-    ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
+    fn take_solver<const TWO_SEATS: bool>(&mut self) -> error::Returns<AnySolver<TWO_SEATS>>
+    where
+        AnySolver<TWO_SEATS>: KeptSolvers,
+    {
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
         let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
-        let solver = match self.endgame_solvers.remove(path) {
+        let kept = AnySolver::<TWO_SEATS>::kept(
+            &mut self.endgame_solvers,
+            &mut self.seats_endgame_solvers,
+        );
+        let solver = match kept.remove(path) {
             Some(mut solver) => {
                 solver.renew_for_another_solve(0);
                 solver
@@ -1719,13 +1755,49 @@ impl Session {
     }
 
     // a solver take_endgame_solver took out, kept for the lexicon's next
-    fn keep_endgame_solver(
+    fn keep_endgame_solver<const TWO_SEATS: bool>(
         &mut self,
-        solver: endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
-    ) -> error::Returns<()> {
+        solver: AnySolver<TWO_SEATS>,
+    ) -> error::Returns<()>
+    where
+        AnySolver<TWO_SEATS>: KeptSolvers,
+    {
         let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
-        self.endgame_solvers.insert(path.clone(), solver);
+        AnySolver::<TWO_SEATS>::kept(&mut self.endgame_solvers, &mut self.seats_endgame_solvers)
+            .insert(path.clone(), solver);
         Ok(())
+    }
+
+    fn solve_and_line<const TWO_SEATS: bool>(
+        &mut self,
+        state: &game_state::GameState,
+        limits: &endgame::Limits,
+    ) -> error::Returns<(endgame::Solved, Vec<String>)>
+    where
+        AnySolver<TWO_SEATS>: KeptSolvers,
+    {
+        let mut solver = self.take_endgame_solver::<TWO_SEATS>(state)?;
+        let solved = solve_endgame(&mut solver, state, limits, self.quiet)
+            .and_then(|solved| Ok((solved, self.endgame_line(&mut solver, state)?)));
+        self.keep_endgame_solver(solver)?;
+        solved
+    }
+
+    fn best_move_to_win<const TWO_SEATS: bool>(
+        &mut self,
+        state: &game_state::GameState,
+        lead: equity::Equity,
+        limits: &endgame::Limits,
+    ) -> error::Returns<Option<movegen::Play>>
+    where
+        AnySolver<TWO_SEATS>: KeptSolvers,
+    {
+        let mut solver = self.take_endgame_solver::<TWO_SEATS>(state)?;
+        let play = listened(&mut solver, self.quiet, |solver| {
+            solver.best_move_to_win(state.turn, lead, limits)
+        });
+        self.keep_endgame_solver(solver)?;
+        play
     }
 
     fn arm_tables(&mut self) -> error::Returns<&'static std::sync::Arc<anagrams::ArmTables>> {
@@ -2358,20 +2430,24 @@ impl Session {
             let endgame_state = self.endgame_state();
             if endgame_state.bag.is_empty() {
                 let mover = endgame_state.turn as usize;
-                let lead =
-                    endgame_state.players[mover].score - endgame_state.players[mover ^ 1].score;
-                let mut solver = self.take_endgame_solver(&endgame_state)?;
+                let score = endgame_state.players[mover].score;
+                let lead = (endgame_state.players.iter().enumerate())
+                    .filter(|&(seat, _)| seat != mover)
+                    .map(|(_, player)| player.score)
+                    .max()
+                    .map_or(score, |most| score - most);
                 let limits = endgame::Limits {
                     time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
                     states: None,
                     memory: self.memory,
                     clock: None,
                 };
-                let play = listened(&mut solver, self.quiet, |solver| {
-                    solver.best_move_to_win(endgame_state.turn, lead, &limits)
-                });
-                self.keep_endgame_solver(solver)?;
-                return Ok(play?.ok_or("the solve found no move")?);
+                let play = if endgame_state.players.len() == 2 {
+                    self.best_move_to_win::<true>(&endgame_state, lead, &limits)
+                } else {
+                    self.best_move_to_win::<false>(&endgame_state, lead, &limits)
+                }?;
+                return Ok(play.ok_or("the solve found no move")?);
             }
         }
         let leaves = match sim_ms {
@@ -3221,9 +3297,9 @@ impl Session {
     // a solve's best line from the position it solved, one line a move as the
     // moves list shows them: the move's number from here, its player, their
     // rack as show prints it, and the move with its score
-    fn endgame_line(
+    fn endgame_line<const TWO_SEATS: bool>(
         &self,
-        solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
+        solver: &mut AnySolver<TWO_SEATS>,
         state: &game_state::GameState,
     ) -> error::Returns<Vec<String>> {
         let mut line = Vec::new();
@@ -3445,10 +3521,10 @@ fn vowels_consonants_blanks(alphabet: &alphabet::Alphabet, tiles: &[u8]) -> (usi
     (vowels, tiles.len() - vowels - blanks, blanks)
 }
 
-fn listened<T>(
-    solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
+fn listened<T, const TWO_SEATS: bool>(
+    solver: &mut AnySolver<TWO_SEATS>,
     quiet: bool,
-    f: impl FnOnce(&mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>) -> T,
+    f: impl FnOnce(&mut AnySolver<TWO_SEATS>) -> T,
 ) -> T {
     if quiet {
         return f(solver);
@@ -3463,8 +3539,8 @@ fn listened<T>(
 // solve the side to move's endgame, on a solver take_endgame_solver gave for
 // this state, within the limits: returns what it found, and the solver's best
 // line can be read
-fn solve_endgame(
-    solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
+fn solve_endgame<const TWO_SEATS: bool>(
+    solver: &mut AnySolver<TWO_SEATS>,
     state: &game_state::GameState,
     limits: &endgame::Limits,
     quiet: bool,
@@ -5722,7 +5798,7 @@ mod tests {
             state.players[1].rack = opponent.to_vec();
             session.state = state;
             run(&mut session, "endgame 5").unwrap();
-            let mut solver = session.take_solver().unwrap();
+            let mut solver = session.take_solver::<true>().unwrap();
             let solved =
                 solve_pre_endgame(&mut solver, game_config, &session.state, &limits, true).unwrap();
             assert!(solved.exact);
@@ -5763,7 +5839,7 @@ mod tests {
         run(&mut session, "endgame 0").unwrap();
         run(&mut session, "endgame 5").unwrap();
         let state = session.state.clone();
-        let mut solver = session.take_endgame_solver(&state).unwrap();
+        let mut solver = session.take_endgame_solver::<true>(&state).unwrap();
         let solved = solve_endgame(
             &mut solver,
             &state,
