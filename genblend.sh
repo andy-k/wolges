@@ -27,6 +27,8 @@ options:
   --completion-weights  weight the census by draws after setting aside the
                     leave.
   --per-board-centering  center leaves on their own board in the census.
+                    A folder's tables keep the census options they were made
+                    with (census.estimator); other options need a fresh one.
   --weight W        how much of the self-play table to take in the blend: 0 is
                     the census alone, 1 self-play alone. Default 0.5.
   --census-blend W  play no self-play: run the census twice, as given
@@ -239,6 +241,18 @@ if [ "$completion_weights" = true ]; then
 fi
 if [ "$per_board_centering" = true ]; then
   census_options+=(--per-board-centering)
+fi
+estimator="completion-weights=$completion_weights per-board-centering=$per_board_centering"
+if [ -e census.estimator ]; then
+  if [ "$(cat census.estimator)" != "$estimator" ]; then
+    echo "census.estimator says $(cat census.estimator), not $estimator: use a fresh output folder" >&2
+    exit 1
+  fi
+elif [ "${#census_options[@]}" -gt 0 ] && { [ -e census.klv2 ] || [ -e census-weighted.klv2 ] || compgen -G 'leaves[0-9]*.klv2' >/dev/null; }; then
+  echo "the tables here may be from other census options: use a fresh output folder" >&2
+  exit 1
+else
+  printf '%s\n' "$estimator" >census.estimator
 fi
 
 # the census stamps its output with the run; copy it to a fixed name
