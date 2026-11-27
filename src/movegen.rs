@@ -912,7 +912,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> Clone for WorkingBuffer<G
             rack_tally_shadowr: self.rack_tally_shadowr,
             is_census: self.is_census,
             anagrams_fit_config: self.anagrams_fit_config,
-            room: self.room.clone(),
+            room: self.room.copied(),
         }
     }
 
@@ -10941,7 +10941,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     #[inline(always)]
     pub(crate) fn new_in(game_config: &game_config::GameConfig) -> Self {
         Self {
-            working_buffer: WorkingBuffer::new(game_config, endgame::Room::default()),
+            working_buffer: WorkingBuffer::new(game_config, endgame::Room::of(None)),
             plays: Vec::new(),
             empty_klvs: klv::EmptyKlvs::default(),
         }

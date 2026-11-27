@@ -372,7 +372,7 @@ impl<
             census_taken: None,
             spare_census: None,
             census_tiles: (Vec::new(), Vec::new()),
-            room: endgame::Room::default(),
+            room: endgame::Room::of(None),
 
             rng,
         }
