@@ -202,3 +202,70 @@ fn a_classic_pool_walk_with_no_room_answers_out_of_memory() {
     let gc = game_config::make_english_game_config();
     a_pool_walk_with_no_room_answers_out_of_memory(&gc, &test_kwg(WORDS));
 }
+
+fn offered_every_way(
+    generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
+    rack: &[u8],
+) -> (usize, usize, bool) {
+    let mut offered = 0usize;
+    generator.gen_moves_filtered_lean(
+        &movegen::GenMovesParams {
+            board_snapshot,
+            rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        },
+        movegen::PlacePredicate::Dyn(&mut |_, _, _, _, _| {
+            offered += 1;
+            true
+        }),
+        klv::AdjustLeave::Identity,
+        movegen::EquityPredicate::AcceptAll,
+    );
+    (offered, generator.plays.len(), generator.out_of_memory())
+}
+
+fn a_generation_with_no_room_to_keep_stops_at_once(
+    gc: &game_config::GameConfig,
+    words: &kwg::Kwg<kwg::Node24>,
+) {
+    let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+    let dim = gc.board_layout().dim();
+    let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+    let board_snapshot = movegen::BoardSnapshot {
+        board_tiles: &board_tiles,
+        game_config: gc,
+        kwg: words,
+        anagrams: None,
+        rack_lengths: None,
+        klv: &klv,
+    };
+    let rack = tiles(gc.alphabet(), "AACSTT?");
+    let mut generator = movegen::KurniaMoveGenerator::new(gc);
+    let all = offered_every_way(&mut generator, &board_snapshot, &rack);
+    assert!(all.0 > 1 && all.1 > 0 && !all.2, "{all:?}");
+    generator.plays = Vec::new();
+    assert_eq!(
+        refusing(|| offered_every_way(&mut generator, &board_snapshot, &rack)),
+        (1, 0, true)
+    );
+    assert_eq!(
+        offered_every_way(&mut generator, &board_snapshot, &rack),
+        all
+    );
+}
+
+#[test]
+fn a_jumbled_generation_with_no_room_to_keep_stops_at_once() {
+    let gc = game_config::make_jumbled_english_game_config();
+    a_generation_with_no_room_to_keep_stops_at_once(&gc, &test_kad(&gc, WORDS));
+}
+
+#[test]
+fn a_classic_generation_with_no_room_to_keep_stops_at_once() {
+    let gc = game_config::make_english_game_config();
+    a_generation_with_no_room_to_keep_stops_at_once(&gc, &test_kwg(WORDS));
+}
