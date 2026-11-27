@@ -5866,22 +5866,21 @@ mod jumbled_walk {
 
 #[derive(Clone, Copy)]
 pub struct HeldBytes {
-    pub held: fn() -> usize,
-    pub bytes: usize,
+    pub memory: endgame::MemoryLimit,
     pub kept: usize,
 }
 
 trait RawStop {
     const STOPS: bool;
-    fn passed(&self, plays: usize, grown_bytes: usize) -> bool;
+    fn reserve(&self, plays: usize, grown_bytes: usize) -> Option<endgame::Reserved>;
 }
 
 impl RawStop for () {
     const STOPS: bool = false;
 
     #[inline(always)]
-    fn passed(&self, _plays: usize, _grown_bytes: usize) -> bool {
-        false
+    fn reserve(&self, _plays: usize, _grown_bytes: usize) -> Option<endgame::Reserved> {
+        Some(endgame::Reserved::NONE)
     }
 }
 
@@ -5889,10 +5888,11 @@ impl RawStop for HeldBytes {
     const STOPS: bool = true;
 
     #[inline(always)]
-    fn passed(&self, plays: usize, grown_bytes: usize) -> bool {
-        let held = (self.held)();
-        held != 0
-            && held.saturating_add(plays.saturating_mul(grown_bytes + 2 * self.kept)) >= self.bytes
+    fn reserve(&self, plays: usize, grown_bytes: usize) -> Option<endgame::Reserved> {
+        if (self.memory.held)() == 0 {
+            return Some(endgame::Reserved::NONE);
+        }
+        (self.memory).reserve(plays.saturating_mul(grown_bytes + 2 * self.kept))
     }
 }
 
@@ -8861,10 +8861,25 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
 
         let grown_bytes = working_buffer.grown_bytes;
         let mut stopped = false;
-        // whether the list, full, would grow past the limit: it is cut there
+        let mut held = endgame::Reserved::NONE;
         #[inline(always)]
-        fn cut<T: RawStop>(stop: &T, moves: &[ValuedMove], room: usize, grown: usize) -> bool {
-            moves.len() == room && stop.passed(room.max(1), grown)
+        fn cut<T: RawStop>(
+            stop: &T,
+            moves: &Vec<ValuedMove>,
+            grown: usize,
+            held: &mut endgame::Reserved,
+        ) -> bool {
+            if moves.len() != moves.capacity() {
+                return false;
+            }
+            *held = endgame::Reserved::NONE;
+            match stop.reserve(moves.capacity().max(1), grown) {
+                Some(taken) => {
+                    *held = taken;
+                    false
+                }
+                None => true,
+            }
         }
         let found_place_move = |down: bool,
                                 lane: i8,
@@ -8872,7 +8887,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                                 word: &[u8],
                                 score: equity::Equity,
                                 _leave_value: equity::Equity| {
-            if T::STOPS && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes)) {
+            if T::STOPS && (stopped || cut(&stop, &vec_moves, grown_bytes, &mut held)) {
                 stopped = true;
                 return equity::Equity::INFINITY;
             }
@@ -8949,9 +8964,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             &multi_leaves,
             num_exchanges_by_this_player,
             |exchanged_tiles: &[u8], _leave_value: equity::Equity| {
-                if T::STOPS
-                    && (stopped || cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes))
-                {
+                if T::STOPS && (stopped || cut(&stop, &vec_moves, grown_bytes, &mut held)) {
                     stopped = true;
                     return;
                 }
@@ -8966,7 +8979,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         if T::STOPS
             && !stopped
             && (pass_policy.emits_unconditionally() || vec_moves.is_empty())
-            && cut(&stop, &vec_moves, vec_moves.capacity(), grown_bytes)
+            && cut(&stop, &vec_moves, grown_bytes, &mut held)
         {
             stopped = true;
         }
@@ -17376,7 +17389,11 @@ mod tests {
             assert!(!every.is_empty());
             let mut refusals = Vec::new();
             for bytes in [1, 64, 256, 1024, 4096, 16384, usize::MAX] {
-                let memory = endgame::MemoryLimit { bytes, held };
+                let memory = endgame::MemoryLimit {
+                    bytes,
+                    held,
+                    reserved: None,
+                };
                 let mut words = Vec::new();
                 let pruned =
                     move_generator.gen_remaining_words_within(&snapshot, Some(&memory), |word| {

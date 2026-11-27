@@ -2543,12 +2543,20 @@ impl<
                     },
                     memory,
                     |word: &[u8]| {
-                        refused = refused
-                            || endgame::room_in(memory, words, 1).is_err()
-                            || (word.len() >= std::mem::size_of::<bites::Bites>()
-                                && memory.is_some_and(|memory| !memory.has_room(word.len())));
-                        if !refused {
-                            words.push(word.into());
+                        if refused {
+                            return;
+                        }
+                        let tiles = if word.len() >= std::mem::size_of::<bites::Bites>() {
+                            word.len()
+                        } else {
+                            0
+                        };
+                        let copy = (endgame::room_in(memory, words, 1).is_ok())
+                            .then(|| endgame::reserve_in(memory, tiles))
+                            .flatten();
+                        match copy {
+                            Some(_copy) => words.push(word.into()),
+                            None => refused = true,
                         }
                     },
                 );
@@ -3588,7 +3596,13 @@ mod tests {
             let decided = simmer.begin_decision(&move_generator, &game_state, 32, &[]);
             (simmer, decided.is_ok())
         };
-        let limit = |bytes| Some(endgame::MemoryLimit { bytes, held: || 0 });
+        let limit = |bytes| {
+            Some(endgame::MemoryLimit {
+                bytes,
+                held: || 0,
+                reserved: None,
+            })
+        };
         let (free, _) = decide(None);
         let (roomy, roomy_ok) = decide(limit(usize::MAX));
         let (tight, tight_ok) = decide(limit(64));

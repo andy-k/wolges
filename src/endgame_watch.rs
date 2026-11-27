@@ -86,6 +86,10 @@ fn held_bytes() -> usize {
     HELD.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// the room the solve's growths under way have reserved, beside the bytes held,
+// which its threads share
+static RESERVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 // the --max-memory default, in gigabytes
 pub const DEFAULT_MAX_MEMORY_GB: f64 = 60.0;
 
@@ -97,6 +101,7 @@ pub fn memory_limit(gb: f64) -> error::Returns<Option<endgame::MemoryLimit>> {
         Ok(Some(endgame::MemoryLimit {
             bytes: (gb * 1e9).round() as usize,
             held: held_bytes,
+            reserved: Some(&RESERVED),
         }))
     } else {
         wolges::return_error!("--max-memory is gigabytes, 0 or more".to_string());
