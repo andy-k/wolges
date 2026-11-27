@@ -98,8 +98,12 @@ pub fn memory_limit(gb: f64) -> error::Returns<Option<endgame::MemoryLimit>> {
     if gb == 0.0 {
         Ok(None)
     } else if gb.is_finite() && gb > 0.0 {
+        let bytes = (gb * 1e9).round();
+        if !(0.0..2.0_f64.powi(usize::BITS as i32)).contains(&bytes) {
+            wolges::return_error!(format!("--max-memory is too large: {gb} GB"));
+        }
         Ok(Some(endgame::MemoryLimit {
-            bytes: (gb * 1e9).round() as usize,
+            bytes: bytes as usize,
             held: held_bytes,
             reserved: Some(&RESERVED),
         }))
@@ -127,7 +131,7 @@ pub fn ticking(
             if !nodes.is_multiple_of(CLOCK_CADENCE) {
                 return Ok(());
             }
-            let periods = t0.elapsed().as_millis() as u64 / 10000;
+            let periods = u64::try_from(t0.elapsed().as_millis() / 10000)?;
             if periods == tick_periods {
                 return Ok(());
             }
