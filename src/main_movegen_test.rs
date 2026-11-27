@@ -428,7 +428,7 @@ fn run(
                 rack: &rack,
                 max_gen: case.max_gen,
                 num_exchanges_by_this_player: case.num_exchanges_by_this_player,
-                pass_policy: case.pass_policy,
+                pass_policy: case.pass_policy.clone(),
                 dynamic_leaves: None,
             };
 
@@ -521,7 +521,7 @@ fn run(
                     rack: &rack,
                     max_gen,
                     num_exchanges_by_this_player: case.num_exchanges_by_this_player,
-                    pass_policy: case.pass_policy,
+                    pass_policy: case.pass_policy.clone(),
                     dynamic_leaves: None,
                 };
                 if tables {
@@ -542,14 +542,14 @@ fn run(
                         &board_snapshot,
                         &rack,
                         case.num_exchanges_by_this_player,
-                        case.pass_policy,
+                        case.pass_policy.clone(),
                     )?;
                 } else {
                     move_generator.gen_moves_raw_all_unsorted_lean(
                         &board_snapshot,
                         &rack,
                         case.num_exchanges_by_this_player,
-                        case.pass_policy,
+                        case.pass_policy.clone(),
                     )?;
                 }
                 let raw = digest(&move_generator, 0)?;
@@ -617,7 +617,7 @@ fn run(
                     rack,
                     max_gen: case.max_gen,
                     num_exchanges_by_this_player: case.num_exchanges_by_this_player,
-                    pass_policy: case.pass_policy,
+                    pass_policy: case.pass_policy.clone(),
                     dynamic_leaves: None,
                 };
                 let t0 = std::time::Instant::now();

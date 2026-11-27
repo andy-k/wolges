@@ -132,7 +132,7 @@ impl PlacePredicate<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PossiblePlacement {
     num_played: u8,
     down: bool,
@@ -472,7 +472,7 @@ impl ShadowScores {
 
 // a square a walk took: its multiplier under the walk's word multiplier in the
 // high half, the square in the low byte
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Taken(u64);
 
 impl Taken {
@@ -482,12 +482,12 @@ impl Taken {
     }
 
     #[inline(always)]
-    fn multiplier(self) -> i32 {
+    fn multiplier(&self) -> i32 {
         ((self.0 >> u32::BITS) as u32).cast_signed()
     }
 
     #[inline(always)]
-    fn idx(self) -> usize {
+    fn idx(&self) -> usize {
         (self.0 & u64::from(u8::MAX)) as usize
     }
 }
@@ -1429,7 +1429,9 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     }
                 })
             });
-            let saved_bounds = saved_shape.filter(|_| bag_terms.clone().all(|term| term == 0));
+            let saved_bounds = saved_shape
+                .clone()
+                .filter(|_| bag_terms.clone().all(|term| term == 0));
             if let (Some((leaves, order)), Some(shape)) = (setup, saved_bounds) {
                 self.multi_leaves.init_from_saved_leaves::<false>(
                     &self.rack_tally,
@@ -1736,7 +1738,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         let mid = W::BITS == u32::BITS;
         let mut empty32 = 0u32;
         let mut multiplied32 = 0u32;
-        out[0] = sum;
+        out[0] = sum.clone();
         for j in 0..len {
             let b = board_strip[j];
             if b != 0 {
@@ -1759,7 +1761,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     multiplied |= u128::from(word_multipliers[j] != 1) << j;
                 }
             }
-            out[j + 1] = sum;
+            out[j + 1] = sum.clone();
         }
         if narrow {
             empty = u128::from(empty16);
@@ -4873,7 +4875,7 @@ fn gen_classic_place_moves_lean<
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Subrack {
     key: u128,
     part: u128, // its key's part (anagrams::key_part)
@@ -4991,7 +4993,7 @@ impl SpanMemo {
 // a lane's running sums for gen_classic_place_moves's spans, an entry before
 // each square and one after the last: what add_square adds over the squares
 // before it, so a span's are two entries' difference
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SpanPrefix {
     key: u128,
     face: i32,
@@ -5199,7 +5201,7 @@ fn walk_subracks<P: alphagram::KeyPlaces>(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RackShape<'a> {
     by_played: &'a [u32],
     leave_indices: &'a [u8],
@@ -5207,7 +5209,7 @@ struct RackShape<'a> {
 
 const RACK_SHAPE_MAX: usize = crate::racks::MAX_RACK_SIZE as usize;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RackShapeEntry {
     by_played: [u32; RACK_SHAPE_MAX + 2],
     leave_start: usize,
@@ -5237,9 +5239,11 @@ struct RackShapes {
 
 static RACK_SHAPES: RackShapes = {
     let mut shapes = RackShapes {
-        entries: [RackShapeEntry {
-            by_played: [0; RACK_SHAPE_MAX + 2],
-            leave_start: 0,
+        entries: [const {
+            RackShapeEntry {
+                by_played: [0; RACK_SHAPE_MAX + 2],
+                leave_start: 0,
+            }
         }; 1 << RACK_SHAPE_MAX],
         leave_indices: [0; rack_shape_leave_count()],
     };
@@ -5331,10 +5335,14 @@ fn build_subracks<P: alphagram::KeyPlaces>(
     walk_subracks(multi_leaves, places, rack_tally, first_places, spare);
     subracks.clear();
     match given {
-        Some(given) => subracks.extend(given.iter().map(|&at| spare[at as usize])),
+        Some(given) => subracks.extend(given.iter().map(|&at| spare[at as usize].clone())),
         None => {
             sort_subracks(spare, order);
-            subracks.extend(order.iter().map(|&k| spare[(k & 0xffffff) as usize]));
+            subracks.extend(
+                order
+                    .iter()
+                    .map(|&k| spare[(k & 0xffffff) as usize].clone()),
+            );
         }
     }
     by_played.clear();
@@ -5476,7 +5484,7 @@ fn gen_classic_place_moves<
         debug_assert_eq!(places.count_ones() as usize, multipliers.len());
         let scores = env.params.descending_scores;
         let mut bound = env.fixed;
-        for &taken in multipliers {
+        for taken in multipliers {
             bound += taken.multiplier() * scores[places.trailing_zeros() as usize];
             places &= places - 1;
         }
@@ -5722,8 +5730,8 @@ fn gen_classic_place_moves<
     // fills them; its word multiplier, the product over the squares that keep
     // one; and blank_ok, which only a subrack with a blank reads, found only
     // for a rack with a blank
-    let lo = env.params.span_prefix[leftmost as usize];
-    let hi = env.params.span_prefix[rightmost as usize];
+    let lo = &env.params.span_prefix[leftmost as usize];
+    let hi = &env.params.span_prefix[rightmost as usize];
     let (word_multiplier, blank_ok) = if W::BITS == u16::BITS {
         span_sets_u16(env.params, leftmost, rightmost, letters)
     } else if W::BITS == u32::BITS {
@@ -5894,7 +5902,7 @@ fn gen_classic_place_moves<
         si: usize,
         kept: Option<(u32, usize)>,
     ) -> bool {
-        let subrack = env.params.subracks[si];
+        let subrack = &env.params.subracks[si];
         env.bound = env.params.score_bound.saturating_add(subrack.leave_value);
         if env.bound < env.params.threshold {
             return false;
@@ -6278,7 +6286,7 @@ mod jumbled_walk {
     pub trait Sealed {}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct HeldBytes {
     pub memory: endgame::MemoryLimit,
     pub kept: usize,
@@ -10616,7 +10624,7 @@ impl Play {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum PassPolicy {
     OnlyWhenForced,
     AsACandidate,
@@ -10624,7 +10632,7 @@ pub enum PassPolicy {
 
 impl PassPolicy {
     #[inline(always)]
-    fn emits_unconditionally(self) -> bool {
+    fn emits_unconditionally(&self) -> bool {
         match self {
             PassPolicy::OnlyWhenForced => false,
             PassPolicy::AsACandidate => true,
@@ -12706,7 +12714,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                     rack: params.rack,
                     max_gen: params.max_gen,
                     num_exchanges_by_this_player: params.num_exchanges_by_this_player,
-                    pass_policy: params.pass_policy,
+                    pass_policy: params.pass_policy.clone(),
                     dynamic_leaves: None,
                 };
                 &without_leaves
@@ -13537,6 +13545,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 let snapshot = BoardSnapshot { klv, ..*board };
                 let params = GenMovesParams {
                     board_snapshot: &snapshot,
+                    pass_policy: params.pass_policy.clone(),
                     ..*params
                 };
                 self.gen_moves_with_leaves(
@@ -14290,7 +14299,7 @@ fn hotspot_penalty(game_config: &game_config::GameConfig, down: bool, idx: i8, w
         * -equity::OPENING_HOTSPOT_PENALTY
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StarLane<'a> {
     down: bool,
     lane: i8,
@@ -14820,7 +14829,7 @@ fn gen_empty_board_place_moves_made<
             for (to, &tile) in spelled.iter_mut().zip(&env.word[..len]) {
                 *to = tile & 0x7f;
             }
-            for lane in env.lanes.into_iter().flatten() {
+            for lane in env.lanes.iter().flatten() {
                 let first = (lane.star as isize + 1 - len as isize).max(0);
                 let last = (lane.star as isize).min(lane.len as isize - len as isize);
                 for start in first..=last {
@@ -14879,7 +14888,7 @@ fn gen_empty_board_place_moves_made<
         let game_config = env.board_snapshot.game_config;
         let bonus = i32::from(game_config.num_played_bonus(len as u8)) * equity::SCALE;
         let squares = (1u128 << len) - 1;
-        for lane in env.lanes.into_iter().flatten() {
+        for lane in env.lanes.iter().flatten() {
             let first = (lane.star as isize + 1 - len as isize).max(0);
             let last = (lane.star as isize).min(lane.len as isize - len as isize);
             for start in first..=last {
@@ -15319,7 +15328,7 @@ fn kurnia_gen_place_moves_iter_lean<
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
             if can_accept(equity::Equity::new(equity)) {
-                let placement = working_buffer.found_placements[idx as usize];
+                let placement = working_buffer.found_placements[idx as usize].clone();
                 working_buffer.bounds_at = idx as usize * 2 * bounds_stride;
                 gen_place_moves_at_lean::<D, JOIN, _, _, _, _, _, _, _>(GenPlaceMovesAtParams {
                     runs,
@@ -16253,7 +16262,7 @@ struct RcsGeometry<'a> {
 // a walk's state from its anchor: the board tiles' scores, the cross words',
 // the word multiplier, the empty squares taken (a bit each) and how many, and
 // whether a board tile is in it
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RcsWalk {
     board_score: i32,
     cross_score: i32,
@@ -16295,8 +16304,8 @@ impl RcsLists {
     #[inline(always)]
     fn new() -> Self {
         Self {
-            left: [Taken::default(); u64::BITS as usize],
-            right: [Taken::default(); u64::BITS as usize],
+            left: std::array::from_fn(|_| Taken::default()),
+            right: std::array::from_fn(|_| Taken::default()),
             hooks: 0,
         }
     }
@@ -16356,7 +16365,7 @@ impl RcsGeometry<'_> {
         let multiplier = multiplier_of(idx as usize);
         let mut j = n - 1;
         while j > 0 && list[j - 1].multiplier() < multiplier {
-            list[j] = list[j - 1];
+            list[j] = list[j - 1].clone();
             j -= 1;
         }
         list[j] = Taken::new(multiplier, idx as u8);
@@ -16389,9 +16398,9 @@ impl RcsGeometry<'_> {
         rightmost: i8,
     ) {
         let n = walk.num_played as usize;
-        lists.right[..RCS_COPIED].copy_from_slice(&lists.left[..RCS_COPIED]);
+        lists.right[..RCS_COPIED].clone_from_slice(&lists.left[..RCS_COPIED]);
         if n > RCS_COPIED {
-            lists.right[RCS_COPIED..n].copy_from_slice(&lists.left[RCS_COPIED..n]);
+            lists.right[RCS_COPIED..n].clone_from_slice(&lists.left[RCS_COPIED..n]);
         }
         let mut idx = anchor + 1;
         loop {
@@ -16442,7 +16451,7 @@ impl RcsGeometry<'_> {
                 break;
             }
             if idx < anchor {
-                self.right(lists, walk, is_unique, anchor, idx + 1, rightmost);
+                self.right(lists, walk.clone(), is_unique, anchor, idx + 1, rightmost);
             }
             let word_multiplier = walk.word_multiplier;
             if idx < leftmost || !self.take(&mut walk, &mut is_unique, idx) {
@@ -16870,7 +16879,7 @@ fn rcs_lane_placements(
         let mut best_scores = 0i32;
         let mut capped = 0i32;
         let mut least = 0i32;
-        for (&score, &taken) in descending_scores.iter().zip(multipliers) {
+        for (&score, taken) in descending_scores.iter().zip(multipliers) {
             best_scores += score;
             capped += caps[taken.idx() % caps.len()];
             let next_least = best_scores.min(capped);
@@ -17245,7 +17254,7 @@ fn kurnia_gen_place_moves_iter<
                     continue;
                 }
                 {
-                    let placement = working_buffer.found_placements[idx as usize];
+                    let placement = working_buffer.found_placements[idx as usize].clone();
                     gen_place_moves_at::<D, W, T, _, _, _, _, _, _>(GenPlaceMovesAtParams {
                         ordered_join: None,
                         runs: (),
@@ -19465,6 +19474,7 @@ pub(crate) mod tests {
                     };
                     let params = GenMovesParams {
                         board_snapshot: &snapshot,
+                        pass_policy: params.pass_policy.clone(),
                         ..params
                     };
                     if lean {
@@ -19974,7 +19984,7 @@ pub(crate) mod tests {
                             rack,
                             max_gen,
                             num_exchanges_by_this_player: 0,
-                            pass_policy,
+                            pass_policy: pass_policy.clone(),
                             dynamic_leaves: None,
                         };
                         if lean {

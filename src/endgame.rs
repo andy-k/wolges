@@ -4357,7 +4357,7 @@ impl<
                     &lane_pool.deal.pool,
                     new_rows,
                     new_cols,
-                    limit,
+                    limit.clone(),
                 )?;
                 if work_buffer.movegen_cut {
                     return Ok(());
@@ -4391,7 +4391,7 @@ impl<
                 seat_of::<TWO_SEATS, _>(&work_buffer.racks, &work_buffer.seat_racks, player_idx),
                 rack_walk_rows,
                 rack_walk_cols,
-                limit,
+                limit.clone(),
             )?;
             if work_buffer.movegen_cut {
                 return Ok(());
