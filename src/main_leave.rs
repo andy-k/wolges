@@ -8084,7 +8084,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             unseen_tally: &unseen_tally,
             num_blanks_eff,
             rack_size,
-            phase,
+            phase: phase.clone(),
         },
         &mut movegen_rack,
         &mut blank_deltas,
