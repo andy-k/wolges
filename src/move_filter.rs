@@ -224,7 +224,7 @@ impl GenMoves<'_> {
         num_exchanges_by_this_player: i16,
         max_gen: usize,
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
-    ) {
+    ) -> crate::error::Returns<()> {
         self.gen_moves_with(
             move_generator,
             board_snapshot,
@@ -232,7 +232,7 @@ impl GenMoves<'_> {
             num_exchanges_by_this_player,
             max_gen,
             dynamic_leaves,
-        );
+        )
     }
 
     pub(crate) fn gen_moves_with<
@@ -249,7 +249,7 @@ impl GenMoves<'_> {
         num_exchanges_by_this_player: i16,
         max_gen: usize,
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
-    ) {
+    ) -> crate::error::Returns<()> {
         match self {
             Self::Unfiltered => {
                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -259,12 +259,12 @@ impl GenMoves<'_> {
                     num_exchanges_by_this_player,
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves,
-                });
+                })?;
             }
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
                 let mut limited_vocab_checker = std::mem::take(&mut tilt.limited_vocab_checker);
-                move_generator.gen_moves_filtered(
+                let result = move_generator.gen_moves_filtered(
                     &movegen::GenMovesParams {
                         board_snapshot,
                         rack,
@@ -296,8 +296,10 @@ impl GenMoves<'_> {
                     movegen::EquityPredicate::AcceptAll,
                 );
                 tilt.limited_vocab_checker = limited_vocab_checker;
+                result?;
             }
         }
+        Ok(())
     }
 
     #[inline(always)]
@@ -309,7 +311,7 @@ impl GenMoves<'_> {
         num_exchanges_by_this_player: i16,
         max_gen: usize,
         pass_policy: movegen::PassPolicy,
-    ) {
+    ) -> crate::error::Returns<()> {
         self.gen_nonplacing_moves_with(
             move_generator,
             &movegen::GenMovesParams {
@@ -320,7 +322,7 @@ impl GenMoves<'_> {
                 pass_policy,
                 dynamic_leaves: None,
             },
-        );
+        )
     }
 
     #[inline(always)]
@@ -328,16 +330,14 @@ impl GenMoves<'_> {
         &mut self,
         move_generator: &mut movegen::KurniaMoveGenerator,
         params: &movegen::GenMovesParams<'_, N, L>,
-    ) {
+    ) -> crate::error::Returns<()> {
         match self {
-            Self::Unfiltered => {
-                move_generator.gen_moves_filtered(
-                    params,
-                    movegen::PlacePredicate::RejectAll,
-                    klv::AdjustLeave::Identity,
-                    movegen::EquityPredicate::AcceptAll,
-                );
-            }
+            Self::Unfiltered => move_generator.gen_moves_filtered(
+                params,
+                movegen::PlacePredicate::RejectAll,
+                klv::AdjustLeave::Identity,
+                movegen::EquityPredicate::AcceptAll,
+            ),
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
                 move_generator.gen_moves_filtered(
@@ -348,7 +348,7 @@ impl GenMoves<'_> {
                         denom: LEAVE_SCALE_DENOM,
                     },
                     movegen::EquityPredicate::AcceptAll,
-                );
+                )
             }
         }
     }

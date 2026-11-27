@@ -1455,7 +1455,7 @@ fn run(
                 num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
-            });
+            })?;
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
@@ -1653,7 +1653,7 @@ fn run(
                 num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
-            });
+            })?;
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
@@ -2375,7 +2375,7 @@ fn generate_autoplay_logs<
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
-                            });
+                            })?;
                             let play = &move_generator.plays[0];
 
                             pool_one(
@@ -2417,7 +2417,7 @@ fn generate_autoplay_logs<
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             pass_policy: movegen::PassPolicy::OnlyWhenForced,
                             dynamic_leaves: None,
-                        });
+                        })?;
 
                         let plays = &move_generator.plays;
                         let play = &plays[0];
@@ -2936,14 +2936,16 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 for i in start..(start + block).min(forced_len) {
                                     let rack =
                                         &forced_racks[(i % forced_racks.len() as u64) as usize];
-                                    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                        board_snapshot: &board_snapshot,
-                                        rack,
-                                        max_gen: 1,
-                                        num_exchanges_by_this_player: 0,
-                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                        dynamic_leaves: None,
-                                    });
+                                    move_generator.gen_moves_unfiltered(
+                                        &movegen::GenMovesParams {
+                                            board_snapshot: &board_snapshot,
+                                            rack,
+                                            max_gen: 1,
+                                            num_exchanges_by_this_player: 0,
+                                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                            dynamic_leaves: None,
+                                        },
+                                    )?;
                                     let millipoints =
                                         i64::from(move_generator.plays[0].equity.raw());
                                     pool_one(&mut thread_map, rack, millipoints);
@@ -3001,9 +3003,13 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     let move_generator = &mut move_generator;
                                     let thread_map = &mut thread_map;
                                     let completed_samples = &completed_samples;
+                                    let mut failure = None;
                                     generate_exchanges(&mut ExchangeEnv {
                                         found_exchange_move: |rack_bytes: &[u8]| {
-                                            move_generator.gen_moves_unfiltered(
+                                            if failure.is_some() {
+                                                return;
+                                            }
+                                            if let Err(e) = move_generator.gen_moves_unfiltered(
                                                 &movegen::GenMovesParams {
                                                     board_snapshot: &board_snapshot,
                                                     rack: rack_bytes,
@@ -3013,7 +3019,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                         movegen::PassPolicy::OnlyWhenForced,
                                                     dynamic_leaves: None,
                                                 },
-                                            );
+                                            ) {
+                                                failure = Some(e);
+                                                return;
+                                            }
                                             let millipoints =
                                                 i64::from(move_generator.plays[0].equity.raw());
                                             pool_one(thread_map, rack_bytes, millipoints);
@@ -3025,6 +3034,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         max_len: rack_size,
                                         exchange_buffer: &mut exchange_buffer,
                                     });
+                                    if let Some(e) = failure {
+                                        return Err(e);
+                                    }
                                 }
                             }
 
@@ -3049,7 +3061,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
-                            });
+                            })?;
 
                             let play = &move_generator.plays[0];
                             game_state.play(&game_config, &mut rng, &play.play)?;
@@ -4669,7 +4681,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
-                            });
+                            })?;
                             let ended = match game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
                                 .and_then(|()| {
@@ -5486,7 +5498,7 @@ impl Losses {
     fn add_moves<N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &movegen::GenMovesParams<'_, N, L>,
-    ) {
+    ) -> error::Returns<()> {
         let Self {
             seeker,
             checker,
@@ -5559,7 +5571,7 @@ impl Losses {
                             ),
                             klv::AdjustLeave::Identity,
                             movegen::EquityPredicate::AcceptAll,
-                        );
+                        )?;
                         let best = seeker.plays[0].equity;
                         solved.push((at, best));
                         best
@@ -5572,6 +5584,7 @@ impl Losses {
                 *move_loss.entry(word.clone()).or_default() += credit;
             }
         }
+        Ok(())
     }
 
     // run a turn's move generation, its params keeping one play, returning the
@@ -5771,7 +5784,7 @@ impl Losses {
             movegen::PlacePredicate::AcceptAll,
             klv::AdjustLeave::Identity,
             movegen::EquityPredicate::Dyn(&mut shown),
-        );
+        )?;
         for target in targets.iter() {
             let lost = i64::from(top.raw()) - i64::from(target.best.raw());
             let losses = if target.by_rack {
@@ -6049,9 +6062,9 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     ),
                                     klv::AdjustLeave::Identity,
                                     movegen::EquityPredicate::AcceptAll,
-                                );
+                                )?;
                                 } else {
-                                    move_generator.gen_moves_unfiltered(&params);
+                                    move_generator.gen_moves_unfiltered(&params)?;
                                 }
                                 game_state.play(
                                     game_config,
@@ -6264,7 +6277,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
                             // the move losses, by the words each tied top play
                             // formed
-                            losses.add_moves(&params);
+                            losses.add_moves(&params)?;
 
                             game_state.play(&game_config, &mut rng, &play)?;
 
@@ -6919,7 +6932,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         let play = &move_generator.plays[0].play;
         game_state.play(game_config, rng, play)?;
         match game_state.check_game_ended(game_config, final_scores)? {
@@ -7325,7 +7338,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         let play = move_generator.plays[0].play.clone();
         game_state.play(&game_config, rng, &play)?;
         let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -7348,7 +7361,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                      move_generator: &mut movegen::KurniaMoveGenerator,
                      scratch: &mut Vec<movegen::ValuedMove>,
                      label: &str|
-     -> std::io::Result<usize> {
+     -> error::Returns<usize> {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
@@ -7366,7 +7379,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             num_exchanges_by_this_player: num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         let rank = move_generator
             .plays
             .iter()
@@ -7383,7 +7396,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                 nonplacing_quota: 0,
             },
             scratch,
-        );
+        )?;
         let without = count_nonplacing_plays(&move_generator.plays);
         move_picker::gen_simmer_candidates(
             &mut filtered_movegen,
@@ -7393,7 +7406,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             num_exchanges,
             move_picker::SIMMER_FIELD,
             scratch,
-        );
+        )?;
         let with = count_nonplacing_plays(&move_generator.plays);
         writeln!(
             std::io::stdout(),
@@ -7431,7 +7444,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
 
     let exchange_tile_limit = game_config.exchange_tile_limit();
     let mut extra_turns = 0u32;
-    while move_generator.num_tiles_in_bag() >= exchange_tile_limit {
+    while move_generator.num_tiles_in_bag() >= i32::from(exchange_tile_limit) {
         if !play_one_greedy_turn(&mut game_state, &mut rng, &mut move_generator)? {
             return Err("the game ended before the bag ran down".into());
         }
@@ -7515,7 +7528,7 @@ fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
-    });
+    })?;
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
         &kwg,
@@ -7620,7 +7633,7 @@ fn sim_decide<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
             nonplacing_quota: move_picker::SIMMER_FIELD.nonplacing_quota,
         },
         scratch,
-    );
+    )?;
     driver.reseed(seed);
     driver.begin_decision(move_generator, game_state, iters, &[])?;
     Ok(move_generator.plays[driver.best_so_far()].play.clone())
@@ -7678,7 +7691,7 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         ranked.clear();
         ranked.extend((move_generator.plays.iter()).map(|valued_move| valued_move.play.clone()));
         let static_best = ranked[0].clone();
@@ -7935,7 +7948,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             num_exchanges_by_this_player: 0,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         shown.clear();
         let movegen_best = match move_generator.plays.first() {
             None => {
@@ -8591,9 +8604,9 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                                 dynamic_leaves: None,
                             };
                             if lean {
-                                move_generator.gen_moves_unfiltered_lean(&gen_params);
+                                move_generator.gen_moves_unfiltered_lean(&gen_params)?;
                             } else {
-                                move_generator.gen_moves_unfiltered(&gen_params);
+                                move_generator.gen_moves_unfiltered(&gen_params)?;
                             }
                         } else {
                             if let move_picker::MovePicker::Simmer(simmer_driver) = &mut driver {
@@ -9290,7 +9303,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             pass_policy: movegen::PassPolicy::OnlyWhenForced,
                             dynamic_leaves: None,
-                        });
+                        })?;
                         let best = move_generator.plays[0].equity.raw();
                         let within = move_generator
                             .plays
@@ -9674,7 +9687,7 @@ fn play_out_hasty<N: kwg::Node, L: kwg::Node>(
         let play = generator.best(&compare_hasty_params(
             &board_snapshot,
             state.current_player(),
-        ));
+        ))?;
         state.play(game_config, rng, play)?;
     }
     Ok(())
@@ -9925,7 +9938,7 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 num_exchanges_by_this_player: player.num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
-                            });
+                            })?;
                             if candidates.plays.len() >= 2 {
                                 let at = (&game_state, &rng);
                                 positional_rows(columns, tables, at, &candidates.plays, &mut work)?;
@@ -9940,7 +9953,7 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             }
                         }
                         let params = compare_hasty_params(&board_snapshot, player);
-                        let best = work.hasty.best(&params);
+                        let best = work.hasty.best(&params)?;
                         let play = match &mut play {
                             Some(play) => {
                                 play.clone_from(best);
@@ -10312,7 +10325,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
         num_exchanges_by_this_player: 0,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves,
-    });
+    })?;
     for play in &move_generator.plays {
         writeln!(
             boxed_stdout_or_stderr(),
@@ -10686,7 +10699,7 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
             let play = generator.best(&compare_hasty_params(
                 &board_snapshot,
                 game_state.current_player(),
-            ));
+            ))?;
             game_state.play(&game_config, &mut rng, play)?;
             ply += 1;
             if stride > 0 && ply.is_multiple_of(stride) {
@@ -10994,21 +11007,21 @@ impl<const LEAN: bool> CompareMoveGenerator<LEAN> {
     fn best<N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &movegen::GenMovesParams<'_, N, L>,
-    ) -> &movegen::Play {
+    ) -> error::Returns<&movegen::Play> {
         let plays = if LEAN {
-            self.general.gen_moves_unfiltered_lean(params);
+            self.general.gen_moves_unfiltered_lean(params)?;
             &self.general.plays
         } else if let Some(g) = &mut self.inline_15 {
-            g.gen_moves_unfiltered(params);
+            g.gen_moves_unfiltered(params)?;
             &g.plays
         } else if let Some(g) = &mut self.inline_21 {
-            g.gen_moves_unfiltered(params);
+            g.gen_moves_unfiltered(params)?;
             &g.plays
         } else {
-            self.general.gen_moves_unfiltered(params);
+            self.general.gen_moves_unfiltered(params)?;
             &self.general.plays
         };
-        &plays[0].play
+        Ok(&plays[0].play)
     }
 
     #[inline]
@@ -11017,7 +11030,7 @@ impl<const LEAN: bool> CompareMoveGenerator<LEAN> {
         params: &movegen::GenMovesParams<'_, N, L>,
         tables: klv::LeavePair<'_, L>,
         pair: &mut movegen::PairedHasty,
-    ) -> [movegen::Play; 2] {
+    ) -> error::Returns<[movegen::Play; 2]> {
         if let Some(g) = &mut self.inline_15 {
             g.gen_best_moves_for_two_leaves(params, tables, pair, false)
         } else if let Some(g) = &mut self.inline_21 {
@@ -11092,7 +11105,7 @@ impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
         loop {
             let board = self.board(state, state.turn as usize ^ swapped);
             let params = compare_hasty_params(&board, state.current_player());
-            let play = generator.best(&params);
+            let play = generator.best(&params)?;
             if let Some(result) = self.step(state, rng, play, &mut turns, swapped)? {
                 return Ok(result);
             }
@@ -11115,11 +11128,11 @@ impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
             // while both seats pick the same play, the board, racks, and RNG
             // stay in step. The leave tables also agree once the bag empties.
             let result = if self.same_leaves || state.bag.is_empty() {
-                let play = generator.best(&params);
+                let play = generator.best(&params)?;
                 self.step(state, rng, play, &mut turns, 0)?
             } else {
                 let [first, second] =
-                    generator.best_for_two(&params, self.leaves.ordered(seat), paired);
+                    generator.best_for_two(&params, self.leaves.ordered(seat), paired)?;
                 if first != second {
                     mirrored.clone_from(state);
                     let mut mirrored_rng = rng.copy_state();
@@ -11538,7 +11551,7 @@ fn compare_seats<
                                         &board_snapshot,
                                         game_state.current_player(),
                                     );
-                                    generator.best(&params)
+                                    generator.best(&params)?
                                 } else {
                                     let last =
                                         last_play.as_ref().map(|play| move_picker::LastMove {
@@ -12685,27 +12698,29 @@ WCMP_P1_SCORE 402.000000
                         sorted.sort_unstable();
                         keys.iter().any(|key| key[..] == sorted[..])
                     };
-                    seeker.gen_moves_filtered(
-                        &params,
-                        movegen::PlacePredicate::Dyn(
-                            &mut |down: bool,
-                                  lane: i8,
-                                  idx: i8,
-                                  word: &[u8],
-                                  _score: equity::Equity| {
-                                checker.words_placed_are_ok(
-                                    board_snapshot,
-                                    down,
-                                    lane,
-                                    idx,
-                                    word,
-                                    |word: &[u8]| !shuns(word),
-                                )
-                            },
-                        ),
-                        klv::AdjustLeave::Identity,
-                        movegen::EquityPredicate::AcceptAll,
-                    );
+                    seeker
+                        .gen_moves_filtered(
+                            &params,
+                            movegen::PlacePredicate::Dyn(
+                                &mut |down: bool,
+                                      lane: i8,
+                                      idx: i8,
+                                      word: &[u8],
+                                      _score: equity::Equity| {
+                                    checker.words_placed_are_ok(
+                                        board_snapshot,
+                                        down,
+                                        lane,
+                                        idx,
+                                        word,
+                                        |word: &[u8]| !shuns(word),
+                                    )
+                                },
+                            ),
+                            klv::AdjustLeave::Identity,
+                            movegen::EquityPredicate::AcceptAll,
+                        )
+                        .unwrap();
                     assert_eq!(seeker.plays[0].equity, best, "game {game}");
                 }
                 game_state.play(&game_config, &mut rng, &play).unwrap();

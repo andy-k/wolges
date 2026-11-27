@@ -268,7 +268,7 @@ fn do_it(
             num_exchanges_by_this_player: 0,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         let plays1 = move_generator.plays.clone();
         move_generator.reset_for_another_kwg();
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -283,7 +283,7 @@ fn do_it(
             num_exchanges_by_this_player: 0,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         let plays2 = move_generator.plays.clone();
         move_generator.reset_for_another_kwg();
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -293,7 +293,7 @@ fn do_it(
             num_exchanges_by_this_player: 0,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         let plays3 = move_generator.plays.clone();
         if plays1 != plays3 {
             return Err("movegen was confused".into());
@@ -401,7 +401,7 @@ fn do_it(
                     num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
-                });
+                })?;
 
                 let plays2;
                 let plays = if match &board_snapshot.game_config.game_rules() {
@@ -451,7 +451,7 @@ fn do_it(
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
-                    });
+                    })?;
                     plays2 = move_generator.plays.clone();
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -461,7 +461,7 @@ fn do_it(
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
-                    });
+                    })?;
                     if plays1 != move_generator.plays {
                         return Err("movegen was confused".into());
                     }
@@ -508,7 +508,7 @@ fn do_it(
                         denom: move_filter::LEAVE_SCALE_DENOM,
                     },
                     movegen::EquityPredicate::AcceptAll,
-                );
+                )?;
                 let plays = &mut move_generator.plays;
                 writeln!(std::io::stdout(), "{} moves found...", plays.len())?;
                 let mut issues = 0;

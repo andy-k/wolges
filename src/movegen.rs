@@ -10,10 +10,21 @@ use endgame::Grow as _;
 pub const MAX_ALPHABET_LEN: usize = 64;
 
 #[inline(always)]
-pub fn bag_count_from_board(game_config: &game_config::GameConfig, num_tiles_on_board: u16) -> i16 {
-    game_config.alphabet().num_tiles() as i16
-        - (num_tiles_on_board as i16
-            + i16::from(game_config.num_players()) * i16::from(game_config.rack_size()))
+pub fn bag_count_from_board(
+    game_config: &game_config::GameConfig,
+    num_tiles_on_board: u16,
+) -> error::Returns<i16> {
+    Ok(i16::try_from(bag_count_wide(
+        game_config,
+        num_tiles_on_board,
+    ))?)
+}
+
+#[inline(always)]
+fn bag_count_wide(game_config: &game_config::GameConfig, num_tiles_on_board: u16) -> i32 {
+    i32::from(game_config.alphabet().num_tiles())
+        - i32::from(num_tiles_on_board)
+        - i32::from(game_config.num_players()) * i32::from(game_config.rack_size())
 }
 
 #[inline(always)]
@@ -22,9 +33,23 @@ pub fn live_pool_into(
     alphabet: &alphabet::Alphabet,
     board_tiles: &[u8],
     rack_tally: &[u8],
+) -> error::Returns<()> {
+    if out.len() > usize::from(alphabet.len()) {
+        crate::return_error!("live pool exceeds the alphabet".to_string());
+    }
+    fill_live_pool(out, alphabet, board_tiles, rack_tally);
+    Ok(())
+}
+
+#[inline(always)]
+fn fill_live_pool(
+    out: &mut [u8],
+    alphabet: &alphabet::Alphabet,
+    board_tiles: &[u8],
+    rack_tally: &[u8],
 ) {
-    for (t, slot) in out.iter_mut().enumerate() {
-        *slot = alphabet.freq(t as u8);
+    for (t, slot) in (0..alphabet.len()).zip(out.iter_mut()) {
+        *slot = alphabet.freq(t);
     }
     for &tile in board_tiles.iter() {
         if tile != 0 {
@@ -556,7 +581,12 @@ impl BagTerm {
     // the term for a play leaving bag_after tiles in the bag
     #[inline(always)]
     pub fn at(&self, bag_after: i16) -> i32 {
-        usize::try_from(i32::from(bag_after) - i32::from(self.lowest))
+        self.at_wide(i32::from(bag_after))
+    }
+
+    #[inline(always)]
+    fn at_wide(&self, bag_after: i32) -> i32 {
+        usize::try_from(bag_after - i32::from(self.lowest))
             .ok()
             .and_then(|i| self.values.get(i).copied())
             .unwrap_or(0)
@@ -724,7 +754,7 @@ struct WorkingBuffer<G: LaneBits, const BAG_TERM: bool, S: BoardStore> {
     board_tile_score: i32, // the board's tiles' face values, as init last found them
     prev_tile_count: u16,  // num_tiles_on_board for prev_board_tiles (with no 0xff)
     prev_tile_score: i32,  // board_tile_score for prev_board_tiles (with no 0xff)
-    num_tiles_in_bag: i16, // negative when players also have less than full racks
+    num_tiles_in_bag: i32, // negative when players also have less than full racks
     play_out_bonus: i32,
     bag_term: Option<BagTerm>, // the caller's, if any
     num_tiles_on_rack: u8,
@@ -1296,8 +1326,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         // kept for the table walk until it looks, whichever arm generates now
         self.rcs_pending_rows |= dirty_rows;
         self.rcs_pending_cols |= dirty_cols;
-        self.num_tiles_in_bag =
-            bag_count_from_board(board_snapshot.game_config, self.num_tiles_on_board);
+        self.num_tiles_in_bag = bag_count_wide(board_snapshot.game_config, self.num_tiles_on_board);
         let play_out_bonus = if self.num_tiles_in_bag <= 0 {
             2 * ((0u8..)
                 .zip(self.rack_tally.iter().take(alphabet.len() as usize))
@@ -1355,7 +1384,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                 self.multi_leaves
                     .init_digits(&self.rack_tally, dense_most, std::iter::empty());
             } else {
-                self.multi_leaves.init(
+                self.multi_leaves.init_validated(
                     &self.rack_tally,
                     board_snapshot.klv,
                     false,
@@ -1381,7 +1410,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
         } else {
             // the bag is not empty here
             let bag = self.num_tiles_in_bag;
-            let on_rack = i16::from(self.num_tiles_on_rack);
+            let on_rack = i32::from(self.num_tiles_on_rack);
             let bag_terms = (if BAG_TERM {
                 self.bag_term.as_ref()
             } else {
@@ -1393,7 +1422,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     if num_played == 0 {
                         0
                     } else {
-                        bag_term.at(bag - num_played)
+                        bag_term.at_wide(bag - num_played)
                     }
                 })
             });
@@ -1432,7 +1461,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                                     dense_most,
                                 );
                             } else {
-                                self.multi_leaves.init(
+                                self.multi_leaves.init_validated(
                                     &self.rack_tally,
                                     board_snapshot.klv,
                                     true,
@@ -1440,7 +1469,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                                     dense_most,
                                     bag_terms.clone(),
                                 );
-                                pair.alternate.init(
+                                pair.alternate.init_validated(
                                     &self.rack_tally,
                                     tables.table(1),
                                     true,
@@ -1454,7 +1483,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                                 pair.values[1].extend_from_slice(pair.alternate.leave_values());
                             }
                         } else {
-                            self.multi_leaves.init(
+                            self.multi_leaves.init_validated(
                                 &self.rack_tally,
                                 board_snapshot.klv,
                                 true,
@@ -1469,7 +1498,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     if let Some(dyn_ref) = dynamic_leaves {
                         let n = dyn_ref.lat.num_letters();
                         let mut live_pool = [0u8; MAX_ALPHABET_LEN];
-                        live_pool_into(
+                        fill_live_pool(
                             &mut live_pool[..n],
                             alphabet,
                             board_snapshot.board_tiles,
@@ -1490,7 +1519,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
                     self.multi_leaves
                         .extract_raw_best_leave_values(&mut self.best_leave_values);
                 } else {
-                    klv::MultiLeaves::extract_best_leave_values_from_klv(
+                    klv::MultiLeaves::extract_best_validated(
                         &mut self.rack_tally,
                         board_snapshot.klv,
                         self.num_tiles_on_rack,
@@ -3980,7 +4009,7 @@ struct GenPlaceMovesParams<
     rightmost: i8,
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
-    num_tiles_in_bag: i16,
+    num_tiles_in_bag: i32,
     play_out_bonus: i32,
     jumbled: &'a mut JumbledMultisets, // jumbled mode only
     woadwage: &'a mut WoadwageScratch,
@@ -4036,7 +4065,7 @@ fn leave_value_of<const BAG_TERM: bool, L: kwg::Node>(
     klv: &klv::Klv<L>,
     rack_tally: &[u8],
     leave_idx: u32,
-    num_tiles_in_bag: i16,
+    num_tiles_in_bag: i32,
     play_out_bonus: i32,
     alphabet: &alphabet::Alphabet,
 ) -> i32 {
@@ -4795,8 +4824,8 @@ struct SpanMemoSlot {
     key: u128,
     turn: u32,
     len: u8,
-    from: u32,
-    upto: u32,
+    from: usize,
+    upto: usize,
     cut_bound: i32, // i32::MAX when the visits were not cut
 }
 
@@ -4840,7 +4869,7 @@ impl SpanMemo {
 
     // key's part is part (anagrams::key_part)
     #[inline(always)]
-    fn find(&self, key: u128, part: u128, len: u8, bound: i32) -> Result<(u32, u32), usize> {
+    fn find(&self, key: u128, part: u128, len: u8, bound: i32) -> Result<(usize, usize), usize> {
         let mask = self.slots.len() - 1;
         let mut at = (anagrams::part_hash(part) ^ u64::from(len)) as usize & mask;
         loop {
@@ -4861,14 +4890,13 @@ impl SpanMemo {
     }
 
     #[inline(always)]
-    fn keep(&mut self, at: usize, key: u128, len: u8, from: u32, cut_bound: i32) {
-        debug_assert!(self.visits.len() <= u32::MAX as usize);
+    fn keep(&mut self, at: usize, key: u128, len: u8, from: usize, cut_bound: i32) {
         self.slots[at] = SpanMemoSlot {
             key,
             turn: self.turn,
             len,
             from,
-            upto: self.visits.len() as u32,
+            upto: self.visits.len(),
             cut_bound,
         };
     }
@@ -5707,7 +5735,7 @@ fn gen_classic_place_moves<
         env.params.score_bound,
     ) {
         Ok((from, upto)) => {
-            for i in from as usize..upto as usize {
+            for i in from..upto {
                 let (si, at) = env.params.span_memo.visits[i];
                 if !visit::<_, _, _, _>(&mut env, &e, len, si as usize, Some((at, i))) {
                     break;
@@ -5717,7 +5745,7 @@ fn gen_classic_place_moves<
         Err(at) => {
             let from = env.params.subracks_by_played[e.num_played as usize] as usize;
             let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
-            let kept_from = env.params.span_memo.visits.len() as u32;
+            let kept_from = env.params.span_memo.visits.len();
             let width = u64::BITS as usize;
             let mut base = from;
             let mut cut_at = i32::MAX;
@@ -6054,11 +6082,11 @@ fn gen_classic_place_moves<
 #[derive(Clone)]
 struct JumbledMultisets {
     multisets: Vec<u8>,
-    by_size: Vec<u32>,
-    size_ends: Vec<u32>,
+    by_size: Vec<usize>,
+    size_ends: Vec<usize>,
     found: Vec<u8>,    // the sizes of the multisets a set's walk found
     found_from: usize, // where in multisets the first of them is
-    kept: Vec<([u8; MAX_ALPHABET_LEN], u32)>,
+    kept: Vec<([u8; MAX_ALPHABET_LEN], usize)>,
     current: Vec<u8>,
     walk: u8,
     splits: JumbledSplits,
@@ -6215,10 +6243,10 @@ struct JumbledSplits {
     real_class: Vec<u8>,
     blank_class: Vec<u8>,
     stride: usize,
-    members: Vec<(i32, i32, i32, u32)>,
+    members: Vec<(i32, i32, i32, usize)>,
     member_data: Vec<u8>,
-    order: Vec<u32>,
-    group: Vec<u32>,
+    order: Vec<usize>,
+    group: Vec<usize>,
     blanks: Vec<u8>,
     value_left: Vec<u8>,
     class_left: Vec<u8>,
@@ -6231,7 +6259,7 @@ struct JumbledSplits {
     letter_values: Vec<i32>, // each letter's scaled score, as letters
     by_value: Vec<u8>,       // letters' places, their scores highest first
     blank_value: i32,
-    starts: Vec<u32>,
+    starts: Vec<usize>,
     out_of_memory: bool,
 }
 
@@ -6434,24 +6462,33 @@ impl JumbledMultisets {
     #[inline(always)]
     fn find(&mut self, forced: &[u8; MAX_ALPHABET_LEN], max_size: usize) -> (usize, bool) {
         if let Some(&(_, start)) = self.kept.iter().find(|(letters, _)| letters == forced) {
-            return (start as usize, true);
+            return (start, true);
         }
-        let start = self.kept.len() * (max_size + 1);
+        let Some(end) = self
+            .kept
+            .len()
+            .checked_add(1)
+            .and_then(|sets| sets.checked_mul(max_size + 1))
+        else {
+            self.splits.out_of_memory = true;
+            return (0, true);
+        };
+        let start = end - (max_size + 1);
         if self.kept.try_reserve(1).is_err()
             || self
                 .size_ends
-                .try_reserve((start + max_size + 1).saturating_sub(self.size_ends.len()))
+                .try_reserve(end.saturating_sub(self.size_ends.len()))
                 .is_err()
         {
             self.splits.out_of_memory = true;
             return (0, true);
         }
         self.size_ends.truncate(start);
-        let end = self.size_ends.last().map_or(0, |&end| end as usize);
+        let end = self.size_ends.last().map_or(0, |&end| end);
         self.by_size.truncate(end);
         self.found.clear();
         self.found_from = self.multisets.len();
-        self.kept.push((*forced, start as u32));
+        self.kept.push((*forced, start));
         self.current.clear();
         (start, false)
     }
@@ -6471,29 +6508,27 @@ impl JumbledMultisets {
         for &size in &self.found {
             ends[size as usize] += 1;
         }
-        let mut at = from as u32;
+        let mut at = from;
         for end in ends.iter_mut() {
             let count = *end;
             *end = at;
             at += count;
         }
         self.by_size.resize(from + self.found.len(), 0);
-        let mut offset = self.found_from as u32;
+        let mut offset = self.found_from;
         for &size in &self.found {
             let end = &mut ends[size as usize];
-            self.by_size[*end as usize] = offset;
+            self.by_size[*end] = offset;
             *end += 1;
-            offset += u32::from(size);
+            offset += usize::from(size);
         }
     }
 
     // where list i lies in by_size
     #[inline(always)]
     fn list(&self, i: usize) -> std::ops::Range<usize> {
-        let start = i
-            .checked_sub(1)
-            .map_or(0, |before| self.size_ends[before] as usize);
-        start..self.size_ends[i] as usize
+        let start = i.checked_sub(1).map_or(0, |before| self.size_ends[before]);
+        start..self.size_ends[i]
     }
 }
 
@@ -6764,18 +6799,18 @@ fn gen_jumbled_place_moves_walk<
             env.params.jumbled.splits = s;
             return;
         }
-        s.order.extend(0..s.members.len() as u32);
+        s.order.extend(0..s.members.len());
         let members = &s.members;
         let member_data = &s.member_data;
-        let blanks_of = |m: &(i32, i32, i32, u32)| {
+        let blanks_of = |m: &(i32, i32, i32, usize)| {
             if by_tiles {
-                &member_data[m.3 as usize..m.3 as usize + num_letters]
+                &member_data[m.3..m.3 + num_letters]
             } else {
                 &[]
             }
         };
         s.order.sort_unstable_by(|&a, &b| {
-            let (a, b) = (&members[a as usize], &members[b as usize]);
+            let (a, b) = (&members[a], &members[b]);
             (b.1, b.0)
                 .cmp(&(a.1, a.0))
                 .then_with(|| blanks_of(a).cmp(blanks_of(b)))
@@ -6788,21 +6823,21 @@ fn gen_jumbled_place_moves_walk<
         s.reals_used.resize(num_letters, 0);
         let mut first = 0;
         while first < s.order.len() {
-            let head = s.members[s.order[first] as usize];
+            let head = s.members[s.order[first]];
             let (score, equity, leave_value, _) = head;
             let mut last = first + 1;
             while last < s.order.len() && {
-                let m = &s.members[s.order[last] as usize];
+                let m = &s.members[s.order[last]];
                 (m.0, m.1) == (score, equity)
                     && (!by_tiles
-                        || s.member_data[m.3 as usize..m.3 as usize + num_letters]
-                            == s.member_data[head.3 as usize..head.3 as usize + num_letters])
+                        || s.member_data[m.3..m.3 + num_letters]
+                            == s.member_data[head.3..head.3 + num_letters])
             } {
                 last += 1;
             }
             s.group.clear();
             for i in first..last {
-                s.group.push(s.members[s.order[i] as usize].3);
+                s.group.push(s.members[s.order[i]].3);
             }
             first = last;
             if !env.params.is_census && score + leave_value < env.params.threshold {
@@ -6849,30 +6884,30 @@ fn gen_jumbled_place_moves_walk<
         s.blanks_used.resize(num_letters, 0);
         s.reals_used.clear();
         s.reals_used.resize(num_letters, 0);
-        s.starts.push(s.members.len() as u32);
+        s.starts.push(s.members.len());
         for d in 1..s.starts.len() {
             let (from, to) = (s.starts[d - 1], s.starts[d]);
             s.order.clear();
             s.order.extend(from..to);
             let members = &s.members;
             s.order.sort_unstable_by(|&a, &b| {
-                let (a, b) = (&members[a as usize], &members[b as usize]);
+                let (a, b) = (&members[a], &members[b]);
                 (b.1, b.0).cmp(&(a.1, a.0))
             });
             let mut first = 0;
             while first < s.order.len() {
-                let head = s.members[s.order[first] as usize];
+                let head = s.members[s.order[first]];
                 let (score, equity, leave_value, _) = head;
                 let mut last = first + 1;
                 while last < s.order.len() && {
-                    let m = &s.members[s.order[last] as usize];
+                    let m = &s.members[s.order[last]];
                     (m.0, m.1) == (score, equity)
                 } {
                     last += 1;
                 }
                 s.group.clear();
                 for i in first..last {
-                    s.group.push(s.members[s.order[i] as usize].3);
+                    s.group.push(s.members[s.order[i]].3);
                 }
                 first = last;
                 if !env.params.is_census && score + leave_value < env.params.threshold {
@@ -6972,7 +7007,7 @@ fn gen_jumbled_place_moves_walk<
             if !s.reserve_members() {
                 return;
             }
-            s.starts.push(s.members.len() as u32);
+            s.starts.push(s.members.len());
             share_classes(s, 0, fixed, 0, leave_value);
             return;
         }
@@ -7004,7 +7039,7 @@ fn gen_jumbled_place_moves_walk<
         let num_values = s.values.len();
         if cell == s.matrix.len() {
             debug_assert!(s.members.len() < s.members.capacity());
-            let offset = s.member_data.len() as u32;
+            let offset = s.member_data.len();
             s.member_data.extend_from_slice(&s.blanks);
             s.member_data.extend_from_slice(&s.matrix);
             s.members
@@ -7074,7 +7109,7 @@ fn gen_jumbled_place_moves_walk<
         let placed = s.placed[cell] + 1;
         let to = s.group.len();
         for i in from..to {
-            let offset = s.group[i] as usize;
+            let offset = s.group[i];
             let blanks = s.member_data[offset + j];
             let most = if blank {
                 blanks
@@ -7083,7 +7118,7 @@ fn gen_jumbled_place_moves_walk<
             };
             if used <= most && placed <= s.member_data[offset + num_letters + cell] {
                 debug_assert!(s.group.len() < s.group.capacity());
-                s.group.push(offset as u32);
+                s.group.push(offset);
             }
         }
         if s.group.len() == to {
@@ -7496,7 +7531,7 @@ fn gen_jumbled_place_moves_walk<
                                 || env.params.board_strip[through as usize] != 0
                         });
                     for which in env.params.jumbled.list(list) {
-                        let at = env.params.jumbled.by_size[which] as usize;
+                        let at = env.params.jumbled.by_size[which];
                         if WALK == JUMBLED_BEST_PER_RACK_TILES {
                             let seen = env.params.jumbled.seen;
                             env.params.jumbled.seen += 1;
@@ -9287,7 +9322,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     }
 
     #[inline(always)]
-    pub fn num_tiles_in_bag(&self) -> i16 {
+    pub fn num_tiles_in_bag(&self) -> i32 {
         self.working_buffer.num_tiles_in_bag
     }
 
@@ -9664,7 +9699,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         pass_policy: PassPolicy,
         rows: u128,
         cols: u128,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(board_snapshot.game_config)?;
         self.gen_moves_raw_lanes_unsorted_impl(
             board_snapshot,
             rack,
@@ -9672,7 +9708,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             pass_policy,
             rows,
             cols,
-        )
+        );
+        Ok(())
     }
 
     // as gen_moves_raw_lanes_unsorted, by the lean arm alone, so that a build
@@ -9686,7 +9723,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         pass_policy: PassPolicy,
         rows: u128,
         cols: u128,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(board_snapshot.game_config)?;
         self.gen_moves_raw_lanes_unsorted_impl(
             board_snapshot,
             rack,
@@ -9694,7 +9732,26 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             pass_policy,
             rows,
             cols,
-        )
+        );
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn gen_raw_placements_in_lanes<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        rows: u128,
+        cols: u128,
+    ) {
+        self.gen_moves_raw_lanes_unsorted_impl(
+            board_snapshot,
+            rack,
+            i16::MAX,
+            PassPolicy::OnlyWhenForced,
+            rows,
+            cols,
+        );
     }
 
     #[inline(always)]
@@ -9733,7 +9790,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         rack: &'a [u8],
         rows: u128,
         cols: u128,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(board_snapshot.game_config)?;
         debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
@@ -9746,6 +9804,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
+        Ok(())
     }
 
     // skip equity computation and sorting
@@ -9756,14 +9815,16 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         rack: &'a [u8],
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(board_snapshot.game_config)?;
         self.gen_moves_raw_all_unsorted_impl(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
             (),
-        )
+        );
+        Ok(())
     }
 
     #[inline(always)]
@@ -9773,14 +9834,16 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         rack: &'a [u8],
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(board_snapshot.game_config)?;
         self.gen_moves_raw_all_unsorted_impl(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
             (),
-        )
+        );
+        Ok(())
     }
 
     // gen_moves_raw_all_unsorted under a limit: true, the list cut short,
@@ -9793,15 +9856,16 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         num_exchanges_by_this_player: i16,
         pass_policy: PassPolicy,
         limit: HeldBytes,
-    ) -> bool {
-        self.gen_moves_raw_all_unsorted_within(
+    ) -> error::Returns<bool> {
+        check_exchange_limit(board_snapshot.game_config)?;
+        Ok(self.gen_moves_raw_all_unsorted_within(
             board_snapshot,
             rack,
             num_exchanges_by_this_player,
             pass_policy,
             (),
             limit,
-        )
+        ))
     }
 
     #[inline(always)]
@@ -9812,7 +9876,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         rows: u128,
         cols: u128,
         limit: HeldBytes,
-    ) -> bool {
+    ) -> error::Returns<bool> {
+        check_exchange_limit(board_snapshot.game_config)?;
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
         let stopped = self.gen_moves_raw_all_unsorted_within(
@@ -9825,7 +9890,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
-        stopped
+        Ok(stopped)
     }
 
     #[inline(always)]
@@ -9837,7 +9902,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         rows: u128,
         cols: u128,
         limit: HeldBytes,
-    ) -> bool {
+    ) -> error::Returns<bool> {
+        check_exchange_limit(board_snapshot.game_config)?;
         debug_assert_eq!(run_letter_bits.len(), board_snapshot.kwg.0.len());
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
@@ -9851,7 +9917,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
-        stopped
+        Ok(stopped)
     }
 
     #[inline]
@@ -10008,7 +10074,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
         breathe: impl FnMut() -> BreatheFuture,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
+        adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         if params.max_gen == 1 {
             self.gen_moves_filtered_async_lean_kept::<KeptOne, _, _, _>(
                 params,
@@ -10028,6 +10096,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             )
             .await
         }
+        Ok(())
     }
 
     #[inline(always)]
@@ -10193,13 +10262,15 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
-    ) {
+    ) -> error::Returns<()> {
+        adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         self.gen_census_sheet_impl(
             params,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
-        )
+        );
+        Ok(())
     }
 
     // as gen_census_sheet, itself the lean arm's: kept beside the other lean
@@ -10211,13 +10282,15 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
-    ) {
+    ) -> error::Returns<()> {
+        adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         self.gen_census_sheet_impl(
             params,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
-        )
+        );
+        Ok(())
     }
 
     // the census of a board over the tiles of pool (no blank among them), by
@@ -10315,15 +10388,19 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
+        adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         self.working_buffer.jumbled.walk = W::WALK;
-        self.gen_moves_filtered_lean(
+        self.gen_moves_filtered_lean_by_side(
             params,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
+            None,
         );
         self.working_buffer.jumbled.walk = JUMBLED_EVERY_ARRANGEMENT;
+        Ok(())
     }
 
     // every play of at most a rack's tiles placeable from the tiles of pool
@@ -10947,7 +11024,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
+        adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         self.gen_moves_filtered_steered(
             params,
             place_move_predicate,
@@ -10955,6 +11034,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             equity_predicate,
             None,
         );
+        Ok(())
     }
 
     // as gen_moves_filtered, the tables' generation steered when steer is some
@@ -11308,14 +11388,17 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate<'_>,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
+        adjust_leave_value.check_for_klv(params.board_snapshot.klv)?;
         self.gen_moves_filtered_lean_by_side(
             params,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
             None,
-        )
+        );
+        Ok(())
     }
 
     // the lean arm's generation compiled for the board's side: a 15 by 15
@@ -11552,12 +11635,13 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         params: &'a GenMovesParams<'a, N, L>,
         rows: u128,
         cols: u128,
-    ) {
+    ) -> error::Returns<()> {
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
-        self.gen_moves_unfiltered(params);
+        let generated = self.gen_moves_unfiltered(params);
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
+        generated
     }
 
     // as gen_moves_unfiltered_lanes, steered by a census of the board (Steer)
@@ -11568,7 +11652,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         rows: u128,
         cols: u128,
         steer: &Steer<'_>,
-    ) {
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
         self.gen_moves_filtered_steered(
@@ -11580,6 +11665,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         );
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
+        Ok(())
     }
 
     // as gen_moves_unfiltered_lanes, by the lean arm
@@ -11589,38 +11675,45 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         params: &'a GenMovesParams<'a, N, L>,
         rows: u128,
         cols: u128,
-    ) {
+    ) -> error::Returns<()> {
         self.working_buffer.lane_rows = G::of_u128(rows);
         self.working_buffer.lane_cols = G::of_u128(cols);
-        self.gen_moves_unfiltered_lean(params);
+        let generated = self.gen_moves_unfiltered_lean(params);
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
+        generated
     }
 
     #[inline(always)]
     pub fn gen_moves_unfiltered<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-    ) {
-        self.gen_moves_filtered(
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
+        self.gen_moves_filtered_steered(
             params,
             PlacePredicate::AcceptAll,
             klv::AdjustLeave::Identity,
             EquityPredicate::AcceptAll,
+            None,
         );
+        Ok(())
     }
 
     #[inline(always)]
     pub fn gen_moves_unfiltered_lean<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-    ) {
-        self.gen_moves_filtered_lean(
+    ) -> error::Returns<()> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
+        self.gen_moves_filtered_lean_by_side(
             params,
             PlacePredicate::AcceptAll,
             klv::AdjustLeave::Identity,
             EquityPredicate::AcceptAll,
+            None,
         );
+        Ok(())
     }
 
     // generate both tables' best plays on one board and rack with top-one
@@ -11631,7 +11724,8 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         tables: klv::LeavePair<'_, L>,
         pair: &mut PairedHasty,
         lean: bool,
-    ) -> [Play; 2] {
+    ) -> error::Returns<[Play; 2]> {
+        check_exchange_limit(params.board_snapshot.game_config)?;
         assert!(params.max_gen == 1 && params.dynamic_leaves.is_none());
         let board = params.board_snapshot;
         assert!(std::ptr::eq(board.klv, tables.table(0)));
@@ -11664,7 +11758,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
                 );
                 *out = self.plays.pop().map(|valued| valued.play);
             }
-            return best.map(Option::unwrap);
+            return Ok(best.map(Option::unwrap));
         }
 
         pair.values[0].clear();
@@ -11680,7 +11774,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
             lean,
             Some((tables, pair)),
         );
-        std::mem::take(&mut pair.best).map(|best| best.unwrap().play)
+        Ok(std::mem::take(&mut pair.best).map(|best| best.unwrap().play))
     }
 
     // each word the board can still take, whatever the racks and the bag hold:
@@ -12159,7 +12253,7 @@ fn sure_floor<N: kwg::Node, L: kwg::Node, G: LaneBits, const BAG_TERM: bool, S: 
     let game_config = params.board_snapshot.game_config;
     let mut sure = std::mem::take(&mut working_buffer.sure_plays);
     sure.clear();
-    if working_buffer.num_tiles_in_bag >= game_config.exchange_tile_limit()
+    if working_buffer.num_tiles_in_bag >= i32::from(game_config.exchange_tile_limit())
         && params.num_exchanges_by_this_player < game_config.exchanges_allowed_per_player()
     {
         let most = (working_buffer.best_leave_values.len() - 1)
@@ -12224,6 +12318,19 @@ fn best_exchange_equity<const BAG_TERM: bool>(
     )
 }
 
+#[inline(always)]
+fn check_exchange_limit(game_config: &game_config::GameConfig) -> error::Returns<()> {
+    usize::try_from(game_config.exchange_tile_limit())
+        .map(|_| ())
+        .map_err(|_| {
+            format!(
+                "negative exchange limit {}",
+                game_config.exchange_tile_limit()
+            )
+            .into()
+        })
+}
+
 #[inline]
 fn kurnia_gen_exchange_moves<
     'a,
@@ -12240,9 +12347,11 @@ fn kurnia_gen_exchange_moves<
     num_exchanges_by_this_player: i16,
     found_exchange_move: FoundExchangeMove,
 ) {
-    if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit()
+    if working_buffer.num_tiles_in_bag
+        >= i32::from(board_snapshot.game_config.exchange_tile_limit())
         && num_exchanges_by_this_player < board_snapshot.game_config.exchanges_allowed_per_player()
     {
+        let remaining = working_buffer.num_tiles_in_bag.max(0).cast_unsigned() as usize;
         if multi_leaves.is_dense() {
             // the table's leaves have the bag term, which an exchange takes back
             if BAG_TERM {
@@ -12258,7 +12367,7 @@ fn kurnia_gen_exchange_moves<
                     },
                     &mut working_buffer.rack_tally,
                     &mut working_buffer.exchange_buffer,
-                    working_buffer.num_tiles_in_bag as usize,
+                    remaining,
                 );
                 return;
             }
@@ -12266,7 +12375,7 @@ fn kurnia_gen_exchange_moves<
                 found_exchange_move,
                 &mut working_buffer.rack_tally,
                 &mut working_buffer.exchange_buffer,
-                working_buffer.num_tiles_in_bag as usize,
+                remaining,
             );
         } else {
             klv::MultiLeaves::gen_exchange_moves_via_klv_of_len(
@@ -12275,7 +12384,7 @@ fn kurnia_gen_exchange_moves<
                 &mut working_buffer.rack_tally,
                 board_snapshot.game_config.alphabet().len(),
                 &mut working_buffer.exchange_buffer,
-                working_buffer.num_tiles_in_bag as usize,
+                remaining,
             );
         }
     }
@@ -12846,7 +12955,7 @@ fn gen_empty_board_place_moves_made<
         rack_bits: u64,
         letter_bits: u64,
         max_len: usize,
-        num_tiles_in_bag: i16,
+        num_tiles_in_bag: i32,
         play_out_bonus: i32,
         lanes: [Option<StarLane<'a>>; 2],
         word: [u8; 128],         // its tiles, a blank's with 0x80
@@ -16576,14 +16685,16 @@ pub(crate) mod tests {
                     bits |= 1 << tile;
                     tile += usize::from(gaps & (1 << pos) != 0);
                 }
-                leaves.init(
-                    &rack,
-                    &klv,
-                    false,
-                    klv::AdjustLeave::Identity,
-                    leaves.dense_most(),
-                    std::iter::empty(),
-                );
+                leaves
+                    .init(
+                        &rack,
+                        &klv,
+                        false,
+                        klv::AdjustLeave::Identity,
+                        leaves.dense_most(),
+                        std::iter::empty(),
+                    )
+                    .unwrap();
                 walk_subracks(
                     &leaves,
                     alphagram::Nibble,
@@ -16752,14 +16863,16 @@ pub(crate) mod tests {
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: &parse_test_rack(gc.alphabet(), rack),
-                max_gen: *max_gen,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &parse_test_rack(gc.alphabet(), rack),
+                    max_gen: *max_gen,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             out.push_str(&format!("== {fen} {rack} {max_gen}\n"));
             for p in &move_generator.plays {
                 out.push_str(&format!(
@@ -16817,14 +16930,16 @@ pub(crate) mod tests {
                             klv: &klv,
                         };
                         let mut move_generator = KurniaMoveGenerator::new(gc);
-                        move_generator.gen_moves_unfiltered(&GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &rack,
-                            max_gen,
-                            num_exchanges_by_this_player: 0,
-                            pass_policy: PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: None,
-                        });
+                        move_generator
+                            .gen_moves_unfiltered(&GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &rack,
+                                max_gen,
+                                num_exchanges_by_this_player: 0,
+                                pass_policy: PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            })
+                            .unwrap();
                         for p in &move_generator.plays {
                             out.push_str(&format!(
                                 "{} {}\n",
@@ -16953,22 +17068,26 @@ pub(crate) mod tests {
                             .map(|p| format!("{}\n", p.play.fmt(&board_snapshot).unwrap()))
                             .collect::<String>()
                     };
-                    move_generator.gen_moves_raw_lanes_unsorted(
-                        &board_snapshot,
-                        &rack,
-                        0,
-                        PassPolicy::AsACandidate,
-                        !0,
-                        !0,
-                    );
+                    move_generator
+                        .gen_moves_raw_lanes_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            0,
+                            PassPolicy::AsACandidate,
+                            !0,
+                            !0,
+                        )
+                        .unwrap();
                     let walked = plays(&move_generator);
-                    move_generator.gen_moves_raw_lanes_unsorted_by_runs(
-                        &run_letter_bits,
-                        &board_snapshot,
-                        &rack,
-                        !0,
-                        !0,
-                    );
+                    move_generator
+                        .gen_moves_raw_lanes_unsorted_by_runs(
+                            &run_letter_bits,
+                            &board_snapshot,
+                            &rack,
+                            !0,
+                            !0,
+                        )
+                        .unwrap();
                     let stopped = plays(&move_generator);
                     assert_eq!(walked, stopped, "{fen}");
                     assert!(!walked.is_empty(), "{fen} generated nothing at all");
@@ -17088,54 +17207,66 @@ pub(crate) mod tests {
                                 anagrams.is_some()
                             );
                             let mut walker = KurniaMoveGenerator::new(&gc);
-                            walker.gen_moves_raw_lanes_unsorted(
-                                &board_snapshot,
-                                &beside,
-                                0,
-                                PassPolicy::AsACandidate,
-                                rows,
-                                cols,
-                            );
-                            let walked = places(&walker);
-                            placed += walked.len();
-                            walker.gen_moves_unfiltered_lanes(
-                                &params(&board_snapshot, &beside, usize::MAX),
-                                rows,
-                                cols,
-                            );
-                            assert_eq!(places(&walker), walked, "{at}");
-                            walker.gen_moves_unfiltered_lanes_lean(
-                                &params(&board_snapshot, &beside, usize::MAX),
-                                rows,
-                                cols,
-                            );
-                            assert_eq!(places(&walker), walked, "{at}");
-                            let mut fresh = KurniaMoveGenerator::new(&gc);
-                            for move_generator in [&mut fresh, &mut walker] {
-                                move_generator.gen_moves_raw_lanes_unsorted_by_runs(
-                                    &run_letter_bits,
+                            walker
+                                .gen_moves_raw_lanes_unsorted(
                                     &board_snapshot,
-                                    &lone,
-                                    rows,
-                                    cols,
-                                );
-                                assert_eq!(places(move_generator), walked, "{at}");
-                                move_generator.gen_moves_raw_lanes_unsorted(
-                                    &board_snapshot,
-                                    &lone,
+                                    &beside,
                                     0,
                                     PassPolicy::AsACandidate,
                                     rows,
                                     cols,
-                                );
+                                )
+                                .unwrap();
+                            let walked = places(&walker);
+                            placed += walked.len();
+                            walker
+                                .gen_moves_unfiltered_lanes(
+                                    &params(&board_snapshot, &beside, usize::MAX),
+                                    rows,
+                                    cols,
+                                )
+                                .unwrap();
+                            assert_eq!(places(&walker), walked, "{at}");
+                            walker
+                                .gen_moves_unfiltered_lanes_lean(
+                                    &params(&board_snapshot, &beside, usize::MAX),
+                                    rows,
+                                    cols,
+                                )
+                                .unwrap();
+                            assert_eq!(places(&walker), walked, "{at}");
+                            let mut fresh = KurniaMoveGenerator::new(&gc);
+                            for move_generator in [&mut fresh, &mut walker] {
+                                move_generator
+                                    .gen_moves_raw_lanes_unsorted_by_runs(
+                                        &run_letter_bits,
+                                        &board_snapshot,
+                                        &lone,
+                                        rows,
+                                        cols,
+                                    )
+                                    .unwrap();
+                                assert_eq!(places(move_generator), walked, "{at}");
+                                move_generator
+                                    .gen_moves_raw_lanes_unsorted(
+                                        &board_snapshot,
+                                        &lone,
+                                        0,
+                                        PassPolicy::AsACandidate,
+                                        rows,
+                                        cols,
+                                    )
+                                    .unwrap();
                                 assert_eq!(places(move_generator), walked, "{at}");
                                 for lean in [false, true] {
                                     let generate = |g: &mut KurniaMoveGenerator, max_gen: usize| {
                                         let params = params(&board_snapshot, &lone, max_gen);
                                         if lean {
-                                            g.gen_moves_unfiltered_lanes_lean(&params, rows, cols);
+                                            g.gen_moves_unfiltered_lanes_lean(&params, rows, cols)
+                                                .unwrap();
                                         } else {
-                                            g.gen_moves_unfiltered_lanes(&params, rows, cols);
+                                            g.gen_moves_unfiltered_lanes(&params, rows, cols)
+                                                .unwrap();
                                         }
                                         g.plays
                                             .iter()
@@ -17169,7 +17300,14 @@ pub(crate) mod tests {
                                             let mut cx = std::task::Context::from_waker(
                                                 std::task::Waker::noop(),
                                             );
-                                            while fut.as_mut().poll(&mut cx).is_pending() {}
+                                            loop {
+                                                if let std::task::Poll::Ready(result) =
+                                                    fut.as_mut().poll(&mut cx)
+                                                {
+                                                    result.unwrap();
+                                                    break;
+                                                }
+                                            }
                                         }
                                         assert!(
                                             move_generator
@@ -17223,14 +17361,16 @@ pub(crate) mod tests {
                     rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                     klv: &klv,
                 };
-                move_generator.gen_moves_unfiltered(&GenMovesParams {
-                    board_snapshot: &board_snapshot,
-                    rack: &rack,
-                    max_gen: 100_000,
-                    num_exchanges_by_this_player: 0,
-                    pass_policy: PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
-                });
+                move_generator
+                    .gen_moves_unfiltered(&GenMovesParams {
+                        board_snapshot: &board_snapshot,
+                        rack: &rack,
+                        max_gen: 100_000,
+                        num_exchanges_by_this_player: 0,
+                        pass_policy: PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    })
+                    .unwrap();
                 let mut lines = move_generator
                     .plays
                     .iter()
@@ -17340,22 +17480,26 @@ pub(crate) mod tests {
                     };
                     let mut move_generator = KurniaMoveGenerator::new(&gc);
                     let gen_raw = |move_generator: &mut KurniaMoveGenerator| {
-                        move_generator.gen_moves_raw_all_unsorted(
-                            &board_snapshot,
-                            &rack,
-                            i16::MAX,
-                            PassPolicy::OnlyWhenForced,
-                        )
+                        move_generator
+                            .gen_moves_raw_all_unsorted(
+                                &board_snapshot,
+                                &rack,
+                                i16::MAX,
+                                PassPolicy::OnlyWhenForced,
+                            )
+                            .unwrap()
                     };
                     let gen_unfiltered = |move_generator: &mut KurniaMoveGenerator| {
-                        move_generator.gen_moves_unfiltered(&GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &rack,
-                            max_gen: 100_000,
-                            num_exchanges_by_this_player: 0,
-                            pass_policy: PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: None,
-                        })
+                        move_generator
+                            .gen_moves_unfiltered(&GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &rack,
+                                max_gen: 100_000,
+                                num_exchanges_by_this_player: 0,
+                                pass_policy: PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            })
+                            .unwrap()
                     };
                     gen_raw(&mut move_generator);
                     let raw = move_generator.plays.clone();
@@ -17363,14 +17507,16 @@ pub(crate) mod tests {
                     gen_unfiltered(&mut move_generator);
                     let unfiltered = move_generator.plays.clone();
                     for (rows, cols) in masks {
-                        move_generator.gen_moves_raw_lanes_unsorted(
-                            &board_snapshot,
-                            &rack,
-                            i16::MAX,
-                            PassPolicy::OnlyWhenForced,
-                            rows,
-                            cols,
-                        );
+                        move_generator
+                            .gen_moves_raw_lanes_unsorted(
+                                &board_snapshot,
+                                &rack,
+                                i16::MAX,
+                                PassPolicy::OnlyWhenForced,
+                                rows,
+                                cols,
+                            )
+                            .unwrap();
                         assert_eq!(
                             on(&move_generator.plays, !0, !0),
                             on(&raw, rows, cols),
@@ -17469,12 +17615,14 @@ pub(crate) mod tests {
                     pass_policy: PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 };
-                let actual = shared.gen_best_moves_for_two_leaves(
-                    &params,
-                    klv::LeavePair::new([&first, &second]),
-                    &mut paired,
-                    lean,
-                );
+                let actual = shared
+                    .gen_best_moves_for_two_leaves(
+                        &params,
+                        klv::LeavePair::new([&first, &second]),
+                        &mut paired,
+                        lean,
+                    )
+                    .unwrap();
                 for (actual, klv) in actual.iter().zip([&first, &second]) {
                     let snapshot = BoardSnapshot {
                         klv,
@@ -17485,9 +17633,9 @@ pub(crate) mod tests {
                         ..params
                     };
                     if lean {
-                        separate.gen_moves_unfiltered_lean(&params);
+                        separate.gen_moves_unfiltered_lean(&params).unwrap();
                     } else {
-                        separate.gen_moves_unfiltered(&params);
+                        separate.gen_moves_unfiltered(&params).unwrap();
                     }
                     let expected = &separate.plays[0].play;
                     assert!(
@@ -17807,9 +17955,9 @@ pub(crate) mod tests {
                             dynamic_leaves: None,
                         };
                         if lean {
-                            move_generator.gen_moves_unfiltered_lean(&params);
+                            move_generator.gen_moves_unfiltered_lean(&params).unwrap();
                         } else {
-                            move_generator.gen_moves_unfiltered(&params);
+                            move_generator.gen_moves_unfiltered(&params).unwrap();
                         }
                         let dim = gc.board_layout().dim();
                         let got = move_generator
@@ -17866,14 +18014,16 @@ pub(crate) mod tests {
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
-        move_generator.gen_moves_unfiltered(&GenMovesParams {
-            board_snapshot: &board_snapshot,
-            rack: &parse_test_rack(gc.alphabet(), rack),
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(gc.alphabet(), rack),
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         let mut out = move_generator
             .plays
             .iter()
@@ -17900,14 +18050,16 @@ pub(crate) mod tests {
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
-        move_generator.gen_moves_unfiltered(&GenMovesParams {
-            board_snapshot: &board_snapshot,
-            rack: &parse_test_rack(gc.alphabet(), rack),
-            max_gen,
-            num_exchanges_by_this_player: 0,
-            pass_policy: PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(gc.alphabet(), rack),
+                max_gen,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         move_generator
             .plays
             .iter()
@@ -17990,9 +18142,9 @@ pub(crate) mod tests {
                             dynamic_leaves: None,
                         };
                         if lean {
-                            move_generator.gen_moves_unfiltered_lean(&params);
+                            move_generator.gen_moves_unfiltered_lean(&params).unwrap();
                         } else {
-                            move_generator.gen_moves_unfiltered(&params);
+                            move_generator.gen_moves_unfiltered(&params).unwrap();
                         }
                         move_generator
                             .plays
@@ -18225,14 +18377,16 @@ pub(crate) mod tests {
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
-        move_generator.gen_moves_unfiltered(&GenMovesParams {
-            board_snapshot: &board_snapshot,
-            rack,
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         let mut out = move_generator
             .plays
             .iter()
@@ -18290,14 +18444,16 @@ pub(crate) mod tests {
             reader.set_word("AERSTLN", &mut word_buf).unwrap();
             let mut rack = word_buf.clone();
             rack.sort_unstable();
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: &rack,
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &rack,
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             move_generator
                 .plays
                 .iter()
@@ -18635,7 +18791,7 @@ pub(crate) mod tests {
         rack_tally[natural_a as usize] = 2;
 
         let mut pool = [0u8; MAX_ALPHABET_LEN];
-        live_pool_into(&mut pool[..n], alphabet, &board_tiles, &rack_tally);
+        live_pool_into(&mut pool[..n], alphabet, &board_tiles, &rack_tally).unwrap();
 
         assert_eq!(
             pool[natural_a as usize],
@@ -18654,7 +18810,9 @@ pub(crate) mod tests {
 
         let mut greedy_rack = vec![0u8; n];
         greedy_rack[natural_a as usize] = alphabet.freq(natural_a) + 5;
-        live_pool_into(&mut pool[..n], alphabet, &[], &greedy_rack);
+        live_pool_into(&mut pool[..n], alphabet, &[], &greedy_rack).unwrap();
+        assert!(live_pool_into(&mut vec![0; n + 1], alphabet, &[], &[]).is_err());
+        assert!(bag_count_from_board(&gc, u16::MAX).is_err());
         assert_eq!(pool[natural_a as usize], 0);
     }
     #[inline]
@@ -18674,14 +18832,16 @@ pub(crate) mod tests {
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
         move_generator.working_buffer.is_census = is_census;
-        move_generator.gen_moves_unfiltered(&GenMovesParams {
-            board_snapshot: &board_snapshot,
-            rack: &parse_test_rack(gc.alphabet(), rack),
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(gc.alphabet(), rack),
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         let mut out = move_generator
             .plays
             .iter()
@@ -18736,14 +18896,16 @@ pub(crate) mod tests {
             let mut move_generator = KurniaMoveGenerator::new(&gc);
             let mut sorted = Vec::new();
             for max_gen in [1usize, 5, usize::MAX] {
-                move_generator.gen_moves_unfiltered(&GenMovesParams {
-                    board_snapshot: &board_snapshot,
-                    rack: &rack,
-                    max_gen,
-                    num_exchanges_by_this_player: 0,
-                    pass_policy: PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
-                });
+                move_generator
+                    .gen_moves_unfiltered(&GenMovesParams {
+                        board_snapshot: &board_snapshot,
+                        rack: &rack,
+                        max_gen,
+                        num_exchanges_by_this_player: 0,
+                        pass_policy: PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    })
+                    .unwrap();
                 sorted.push(plays(&move_generator));
             }
             let params = GenMovesParams {
@@ -18763,15 +18925,17 @@ pub(crate) mod tests {
                     || std::future::ready(()),
                 ));
                 let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-                while fut.as_mut().poll(&mut cx).is_pending() {}
+                loop {
+                    if let std::task::Poll::Ready(result) = fut.as_mut().poll(&mut cx) {
+                        result.unwrap();
+                        break;
+                    }
+                }
             }
             sorted.push(plays(&move_generator));
-            move_generator.gen_moves_raw_all_unsorted(
-                &board_snapshot,
-                &rack,
-                0,
-                PassPolicy::OnlyWhenForced,
-            );
+            move_generator
+                .gen_moves_raw_all_unsorted(&board_snapshot, &rack, 0, PassPolicy::OnlyWhenForced)
+                .unwrap();
             made.push((sorted, plays(&move_generator)));
         }
         assert_eq!(made[0], made[1]);
@@ -18806,19 +18970,23 @@ pub(crate) mod tests {
                 dynamic_leaves: None,
             };
             if once {
-                move_generator.gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
-                    &params,
-                    PlacePredicate::AcceptAll,
-                    klv::AdjustLeave::Identity,
-                    EquityPredicate::AcceptAll,
-                );
+                move_generator
+                    .gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
+                        &params,
+                        PlacePredicate::AcceptAll,
+                        klv::AdjustLeave::Identity,
+                        EquityPredicate::AcceptAll,
+                    )
+                    .unwrap();
             } else {
-                move_generator.gen_moves_filtered_lean_walked::<EveryArrangement, _, _>(
-                    &params,
-                    PlacePredicate::AcceptAll,
-                    klv::AdjustLeave::Identity,
-                    EquityPredicate::AcceptAll,
-                );
+                move_generator
+                    .gen_moves_filtered_lean_walked::<EveryArrangement, _, _>(
+                        &params,
+                        PlacePredicate::AcceptAll,
+                        klv::AdjustLeave::Identity,
+                        EquityPredicate::AcceptAll,
+                    )
+                    .unwrap();
             }
             move_generator
                 .plays
@@ -19036,14 +19204,16 @@ pub(crate) mod tests {
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
         move_generator.working_buffer.is_census = is_census;
-        move_generator.gen_moves_unfiltered(&GenMovesParams {
-            board_snapshot: &board_snapshot,
-            rack: &parse_test_rack(alphabet, rack),
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(alphabet, rack),
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         move_generator
             .plays
             .iter()
@@ -19317,14 +19487,16 @@ pub(crate) mod tests {
             klv: &klv,
         };
         let plays = |move_generator: &mut KurniaMoveGenerator| {
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &seat_snapshot,
-                rack: &rack,
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &seat_snapshot,
+                    rack: &rack,
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             move_generator
                 .plays
                 .iter()
@@ -19442,14 +19614,16 @@ pub(crate) mod tests {
                 rack_lengths: None,
                 klv: &klv,
             };
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: &rack,
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &rack,
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             move_generator
                 .plays
                 .iter()
@@ -19504,14 +19678,16 @@ pub(crate) mod tests {
                 rack_lengths: None,
                 klv: &klv,
             };
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: &parse_test_rack(gc.alphabet(), rack),
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &parse_test_rack(gc.alphabet(), rack),
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             move_generator
                 .plays
                 .iter()
@@ -19583,14 +19759,16 @@ pub(crate) mod tests {
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: &[2, 3],
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &[2, 3],
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             (move_generator.plays.iter())
                 .map(|p| {
                     format!(
@@ -19659,14 +19837,16 @@ pub(crate) mod tests {
                 rack_lengths: (!tables).then_some(&rack_lengths),
                 klv: &klv,
             };
-            move_generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: &parse_test_rack(gc.alphabet(), rack),
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: &parse_test_rack(gc.alphabet(), rack),
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             move_generator
                 .plays
                 .iter()
@@ -19730,14 +19910,16 @@ pub(crate) mod tests {
                     rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                     klv: &klv,
                 };
-                move_generator.gen_moves_unfiltered(&GenMovesParams {
-                    board_snapshot: &board_snapshot,
-                    rack: &rack,
-                    max_gen: usize::MAX,
-                    num_exchanges_by_this_player: 0,
-                    pass_policy: PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
-                });
+                move_generator
+                    .gen_moves_unfiltered(&GenMovesParams {
+                        board_snapshot: &board_snapshot,
+                        rack: &rack,
+                        max_gen: usize::MAX,
+                        num_exchanges_by_this_player: 0,
+                        pass_policy: PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    })
+                    .unwrap();
                 move_generator
                     .plays
                     .iter()
@@ -20247,7 +20429,9 @@ pub(crate) mod tests {
                             pass_policy: PassPolicy::OnlyWhenForced,
                             dynamic_leaves: None,
                         };
-                        move_generator.gen_moves_unfiltered(&params(usize::MAX));
+                        move_generator
+                            .gen_moves_unfiltered(&params(usize::MAX))
+                            .unwrap();
                         let mut all = move_generator
                             .plays
                             .iter()
@@ -20255,7 +20439,7 @@ pub(crate) mod tests {
                             .collect::<Vec<_>>();
                         all.sort_unstable_by(|a, b| b.cmp(a));
                         for k in 1..=all.len() {
-                            move_generator.gen_moves_unfiltered(&params(k));
+                            move_generator.gen_moves_unfiltered(&params(k)).unwrap();
                             let mut best = move_generator
                                 .plays
                                 .iter()
@@ -20540,7 +20724,9 @@ pub(crate) mod tests {
                             pass_policy: PassPolicy::OnlyWhenForced,
                             dynamic_leaves: None,
                         };
-                        move_generator.gen_moves_unfiltered(&params(usize::MAX));
+                        move_generator
+                            .gen_moves_unfiltered(&params(usize::MAX))
+                            .unwrap();
                         let every = plays_with_equity(&move_generator);
                         let mut want_once = every
                             .iter()
@@ -20566,19 +20752,21 @@ pub(crate) mod tests {
                             })
                             .collect::<Vec<_>>();
                         want_once.sort_unstable();
-                        move_generator.gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
-                            &params(usize::MAX),
-                            PlacePredicate::AcceptAll,
-                            klv::AdjustLeave::Identity,
-                            EquityPredicate::AcceptAll,
-                        );
+                        move_generator
+                            .gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
+                                &params(usize::MAX),
+                                PlacePredicate::AcceptAll,
+                                klv::AdjustLeave::Identity,
+                                EquityPredicate::AcceptAll,
+                            )
+                            .unwrap();
                         let once = plays_with_equity(&move_generator);
                         assert_eq!(once, want_once, "{side} {rack:?} {board_tiles:?}");
                         collapsed += every.len() - once.len();
                         let mut all = every.iter().map(|play| play.5).collect::<Vec<_>>();
                         all.sort_unstable_by(|a, b| b.cmp(a));
                         for k in 1..=all.len() {
-                            move_generator.gen_moves_unfiltered(&params(k));
+                            move_generator.gen_moves_unfiltered(&params(k)).unwrap();
                             let mut best = move_generator
                                 .plays
                                 .iter()
@@ -21089,6 +21277,7 @@ pub(crate) mod tests {
                                     cols,
                                 ),
                             }
+                            .unwrap();
                             let mut got = Vec::new();
                             let mut passes = 0usize;
                             for valued in &move_generator.plays {
@@ -21210,12 +21399,9 @@ pub(crate) mod tests {
                     klv: &klv,
                 };
                 let mut move_generator = KurniaMoveGenerator::new(&gc);
-                move_generator.gen_moves_raw_all_unsorted(
-                    &board_snapshot,
-                    rack,
-                    0,
-                    PassPolicy::AsACandidate,
-                );
+                move_generator
+                    .gen_moves_raw_all_unsorted(&board_snapshot, rack, 0, PassPolicy::AsACandidate)
+                    .unwrap();
                 let got = (move_generator.plays.iter())
                     .filter_map(|valued| match &valued.play {
                         Play::Place {
@@ -21248,14 +21434,16 @@ pub(crate) mod tests {
         rack: &[u8],
         transposed: bool,
     ) -> Vec<(bool, i8, i8, Vec<u8>, i32)> {
-        move_generator.gen_moves_unfiltered(&GenMovesParams {
-            board_snapshot,
-            rack,
-            max_gen: usize::MAX,
-            num_exchanges_by_this_player: 0,
-            pass_policy: PassPolicy::OnlyWhenForced,
-            dynamic_leaves: None,
-        });
+        move_generator
+            .gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot,
+                rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            })
+            .unwrap();
         let mut out = move_generator
             .plays
             .iter()
@@ -21519,14 +21707,16 @@ pub(crate) mod tests {
                 let key = (down, lane, idx, word.len(), letters, blanked, score);
                 found.push((key, tiles.copied().collect()));
             });
-            generator.gen_moves_unfiltered(&GenMovesParams {
-                board_snapshot: &board_snapshot,
-                rack: pool,
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
+            generator
+                .gen_moves_unfiltered(&GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack: pool,
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             let mut want: Answer = Default::default();
             let mut smallest = std::collections::BTreeMap::<Key, Vec<u8>>::new();
             for p in generator.plays.iter() {
@@ -22105,18 +22295,20 @@ pub(crate) mod tests {
                     pass_policy: PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 };
-                whole.gen_moves_unfiltered(&params);
+                whole.gen_moves_unfiltered(&params).unwrap();
                 for &(touched_rows, touched_cols) in &touched {
-                    steered.gen_moves_unfiltered_lanes_steered(
-                        &params,
-                        !0,
-                        !0,
-                        &Steer {
-                            census: &census,
-                            touched_rows,
-                            touched_cols,
-                        },
-                    );
+                    steered
+                        .gen_moves_unfiltered_lanes_steered(
+                            &params,
+                            !0,
+                            !0,
+                            &Steer {
+                                census: &census,
+                                touched_rows,
+                                touched_cols,
+                            },
+                        )
+                        .unwrap();
                     assert!(
                         steered.plays[0].play == whole.plays[0].play,
                         "rack {rack:?}"
@@ -22294,24 +22486,26 @@ pub(crate) mod tests {
             |move_generator: &mut KurniaMoveGenerator,
              board_snapshot: &BoardSnapshot<'_, kwg::Node24, kwg::Node24>| {
                 let mut words = Vec::new();
-                move_generator.gen_census_sheet(
-                    &GenMovesParams {
-                        board_snapshot,
-                        rack: &rack,
-                        max_gen: 1,
-                        num_exchanges_by_this_player: i16::MAX,
-                        pass_policy: PassPolicy::OnlyWhenForced,
-                        dynamic_leaves: None,
-                    },
-                    PlacePredicate::Dyn(
-                        &mut |down, lane, idx, word: &[u8], score: equity::Equity| {
-                            words.push((down, lane, idx, word.to_vec(), score));
-                            false
+                move_generator
+                    .gen_census_sheet(
+                        &GenMovesParams {
+                            board_snapshot,
+                            rack: &rack,
+                            max_gen: 1,
+                            num_exchanges_by_this_player: i16::MAX,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
                         },
-                    ),
-                    klv::AdjustLeave::Identity,
-                    EquityPredicate::RejectAll,
-                );
+                        PlacePredicate::Dyn(
+                            &mut |down, lane, idx, word: &[u8], score: equity::Equity| {
+                                words.push((down, lane, idx, word.to_vec(), score));
+                                false
+                            },
+                        ),
+                        klv::AdjustLeave::Identity,
+                        EquityPredicate::RejectAll,
+                    )
+                    .unwrap();
                 words.sort_unstable();
                 words
             };
@@ -23021,7 +23215,7 @@ pub(crate) mod tests {
                     // a fresh generator at every cap, and raw
                     let mut fresh = KurniaMoveGenerator::new(gc);
                     for max_gen in [1, 5, usize::MAX] {
-                        fresh.gen_moves_unfiltered(&params(max_gen));
+                        fresh.gen_moves_unfiltered(&params(max_gen)).unwrap();
                         assert_eq!(
                             place_list(&fresh.plays, all, all, false),
                             &walked_list[..walked_list.len().min(max_gen)],
@@ -23034,32 +23228,36 @@ pub(crate) mod tests {
                         "{why}, dense or not"
                     );
                     let mut fresh = KurniaMoveGenerator::new(gc);
-                    fresh.gen_moves_unfiltered_lean(&params(usize::MAX));
+                    fresh
+                        .gen_moves_unfiltered_lean(&params(usize::MAX))
+                        .unwrap();
                     assert_eq!(
                         place_list(&fresh.plays, all, all, false),
                         walked_list,
                         "{why}, fresh, lean"
                     );
                     let mut fresh = KurniaMoveGenerator::new(gc);
-                    fresh.gen_moves_raw_all_unsorted(
-                        &board_snapshot,
-                        &rack,
-                        i16::MAX,
-                        PassPolicy::OnlyWhenForced,
-                    );
+                    fresh
+                        .gen_moves_raw_all_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            i16::MAX,
+                            PassPolicy::OnlyWhenForced,
+                        )
+                        .unwrap();
                     assert_eq!(
                         place_list(&fresh.plays, all, all, true),
                         walked_raw,
                         "{why}, fresh, raw"
                     );
                     // the kept generator, every kind
-                    kept.gen_moves_unfiltered(&params(5));
+                    kept.gen_moves_unfiltered(&params(5)).unwrap();
                     assert_eq!(
                         place_list(&kept.plays, all, all, false),
                         &walked_list[..walked_list.len().min(5)],
                         "{why}, kept, at a cap of 5"
                     );
-                    kept.gen_moves_unfiltered_lean(&params(usize::MAX));
+                    kept.gen_moves_unfiltered_lean(&params(usize::MAX)).unwrap();
                     assert_eq!(
                         place_list(&kept.plays, all, all, false),
                         walked_list,
@@ -23075,7 +23273,12 @@ pub(crate) mod tests {
                             || std::future::ready(()),
                         ));
                         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-                        while fut.as_mut().poll(&mut cx).is_pending() {}
+                        loop {
+                            if let std::task::Poll::Ready(result) = fut.as_mut().poll(&mut cx) {
+                                result.unwrap();
+                                break;
+                            }
+                        }
                     }
                     assert_eq!(
                         place_list(&kept.plays, all, all, false),
@@ -23088,7 +23291,8 @@ pub(crate) mod tests {
                         &rack,
                         all,
                         all,
-                    );
+                    )
+                    .unwrap();
                     assert_eq!(
                         place_list(&kept.plays, all, all, true),
                         walked_raw,
@@ -23106,7 +23310,8 @@ pub(crate) mod tests {
                             PassPolicy::OnlyWhenForced,
                             rows,
                             cols,
-                        );
+                        )
+                        .unwrap();
                         let mut want = walked_raw.clone();
                         want.retain(|(down, lane, ..)| {
                             ((if *down { cols } else { rows }) >> lane) & 1 != 0
@@ -23116,7 +23321,8 @@ pub(crate) mod tests {
                             want,
                             "{why}, kept, raw, rows {rows:#x}, columns {cols:#x}"
                         );
-                        kept.gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols);
+                        kept.gen_moves_unfiltered_lanes(&params(usize::MAX), rows, cols)
+                            .unwrap();
                         assert_eq!(
                             place_list(&kept.plays, all, all, false),
                             place_list(&walked, rows, cols, false),
@@ -23133,7 +23339,8 @@ pub(crate) mod tests {
                         }),
                         klv::AdjustLeave::Identity,
                         EquityPredicate::AcceptAll,
-                    );
+                    )
+                    .unwrap();
                     calls.sort_unstable();
                     assert_eq!(calls, census_calls, "{why}, kept, the census's calls");
                     assert_eq!(
@@ -23143,19 +23350,23 @@ pub(crate) mod tests {
                     );
                     if square && let Some(kept_wasm) = kept_wasm.as_mut() {
                         for max_gen in [1, usize::MAX] {
-                            kept_wasm.gen_moves_unfiltered_lean(&params(max_gen));
+                            kept_wasm
+                                .gen_moves_unfiltered_lean(&params(max_gen))
+                                .unwrap();
                             assert_eq!(
                                 place_list(&kept_wasm.plays, all, all, false),
                                 &walked_list[..walked_list.len().min(max_gen)],
                                 "{why}, the wasm's, at a cap of {max_gen}"
                             );
                         }
-                        kept_wasm.gen_moves_raw_all_unsorted_lean(
-                            &board_snapshot,
-                            &rack,
-                            i16::MAX,
-                            PassPolicy::OnlyWhenForced,
-                        );
+                        kept_wasm
+                            .gen_moves_raw_all_unsorted_lean(
+                                &board_snapshot,
+                                &rack,
+                                i16::MAX,
+                                PassPolicy::OnlyWhenForced,
+                            )
+                            .unwrap();
                         assert_eq!(
                             place_list(&kept_wasm.plays, all, all, true),
                             walked_raw,
@@ -23192,16 +23403,16 @@ pub(crate) mod tests {
                         ..params(usize::MAX)
                     };
                     let mut fresh = KurniaMoveGenerator::new(gc);
-                    fresh.gen_moves_unfiltered(&next_params);
-                    kept.gen_moves_unfiltered(&next_params);
+                    fresh.gen_moves_unfiltered(&next_params).unwrap();
+                    kept.gen_moves_unfiltered(&next_params).unwrap();
                     assert_eq!(
                         plays_text(&kept.plays, &next_snapshot),
                         plays_text(&fresh.plays, &next_snapshot),
                         "{why}, the board after"
                     );
                     if square && let Some(kept_wasm) = kept_wasm.as_mut() {
-                        fresh.gen_moves_unfiltered_lean(&next_params);
-                        kept_wasm.gen_moves_unfiltered_lean(&next_params);
+                        fresh.gen_moves_unfiltered_lean(&next_params).unwrap();
+                        kept_wasm.gen_moves_unfiltered_lean(&next_params).unwrap();
                         assert_eq!(
                             plays_text(&kept_wasm.plays, &next_snapshot),
                             plays_text(&fresh.plays, &next_snapshot),
@@ -23292,11 +23503,11 @@ pub(crate) mod tests {
                 mut move_generator: KurniaMoveGenerator<u128, true, true, BAG_TERM>,
                 params: &GenMovesParams<'_, kwg::Node24, kwg::Node24>,
                 lean: bool,
-            ) -> (Vec<ValuedMove>, i16) {
+            ) -> (Vec<ValuedMove>, i32) {
                 if lean {
-                    move_generator.gen_moves_unfiltered_lean(params);
+                    move_generator.gen_moves_unfiltered_lean(params).unwrap();
                 } else {
-                    move_generator.gen_moves_unfiltered(params);
+                    move_generator.gen_moves_unfiltered(params).unwrap();
                 }
                 let bag = move_generator.num_tiles_in_bag();
                 (move_generator.plays, bag)
@@ -23324,7 +23535,7 @@ pub(crate) mod tests {
                     lean,
                 ),
             };
-            assert_eq!(bag_seen, bag);
+            assert_eq!(bag_seen, i32::from(bag));
             plays
                 .iter()
                 .map(|p| {
@@ -23564,11 +23775,11 @@ pub(crate) mod tests {
                 dynamic_leaves: None,
             };
             let mut plain = KurniaMoveGenerator::new(&gc);
-            plain.gen_moves_unfiltered(&params);
+            plain.gen_moves_unfiltered(&params).unwrap();
             assert!(plain.num_tiles_in_bag() <= 0);
             let mut with =
                 KurniaMoveGenerator::with_bag_term(&gc, BagTerm::new(-7, vec![1_000_000; 15]));
-            with.gen_moves_unfiltered(&params);
+            with.gen_moves_unfiltered(&params).unwrap();
             assert!(plain.plays.len() > 3);
             assert!(with.plays == plain.plays);
         }

@@ -122,7 +122,7 @@ fn position(
             num_exchanges_by_this_player: gs.current_player().num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         play.clone_from(&mg.plays[0].play);
         gs.play(gc, &mut rng, play)?;
         if !matches!(
@@ -308,7 +308,7 @@ fn main() -> error::Returns<()> {
             num_exchanges_by_this_player: real.players[turn].num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
-        });
+        })?;
         candidates.clone_from(&mg.plays);
         candidates.sort_by_key(|m| std::cmp::Reverse(m.equity));
         // each candidate's exact mean reply, in points, and its time

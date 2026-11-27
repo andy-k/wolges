@@ -520,14 +520,16 @@ mod tests {
             assert_eq!(table.rank(&rack), Some(rank));
             let (setup_leaves, given) = table.get(&rack).unwrap();
             assert_eq!(read_owned.get(&rack), Some((setup_leaves, given)));
-            walked.init(
-                &rack,
-                &klv,
-                true,
-                klv::AdjustLeave::Identity,
-                walked.dense_most(),
-                std::iter::empty(),
-            );
+            walked
+                .init(
+                    &rack,
+                    &klv,
+                    true,
+                    klv::AdjustLeave::Identity,
+                    walked.dense_most(),
+                    std::iter::empty(),
+                )
+                .unwrap();
             read.init_from_leaves(&rack, setup_leaves, read.dense_most(), std::iter::empty());
             assert_eq!(read.leave_values(), walked.leave_values());
             assert_eq!(read.num_playeds(), walked.num_playeds());

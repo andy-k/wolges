@@ -14,7 +14,7 @@ fn gen_all<N: kwg::Node, L: kwg::Node>(
     snap: &movegen::BoardSnapshot<'_, N, L>,
     rack: &[u8],
     num_exchanges: i16,
-) {
+) -> error::Returns<()> {
     mg.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot: snap,
         rack,
@@ -22,7 +22,7 @@ fn gen_all<N: kwg::Node, L: kwg::Node>(
         num_exchanges_by_this_player: num_exchanges,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
-    });
+    })
 }
 
 #[inline(always)]
@@ -375,7 +375,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Progress<'a, N, L> {
         unseen: &[u8],
         bag_size: usize,
     ) -> error::Returns<Self> {
-        gen_all(mg, snap, rack, num_exchanges);
+        gen_all(mg, snap, rack, num_exchanges)?;
         Self::from_plays(&mut mg.plays, snap, rack, unseen, bag_size)
     }
 
@@ -861,7 +861,7 @@ mod tests {
     ) -> (movegen::Play, Vec<i128>) {
         let snap = f.snap();
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
-        gen_all(&mut mg, &snap, rack, 0);
+        gen_all(&mut mg, &snap, rack, 0).unwrap();
         let mut plays = std::mem::take(&mut mg.plays);
         plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
         let mut each = Vec::new();
@@ -905,7 +905,7 @@ mod tests {
                 let theirs: Vec<u8> = (0..tally.len())
                     .flat_map(|t| std::iter::repeat_n(t as u8, tally[t] as usize))
                     .collect();
-                gen_all(&mut mg, &after, &theirs, 0);
+                gen_all(&mut mg, &after, &theirs, 0).unwrap();
                 let out = mg
                     .plays
                     .iter()
@@ -986,7 +986,7 @@ mod tests {
         let draws = Draws::new(f.gc.alphabet(), &unseen, bag as u8);
         assert_eq!(draws.ways, 3);
         let (_, want) = every_play_valued(&f, &rack, &unseen, bag);
-        gen_all(&mut mg, &snap, &rack, 0);
+        gen_all(&mut mg, &snap, &rack, 0).unwrap();
         let mut plays = std::mem::take(&mut mg.plays);
         plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
         let mut worker = Worker::new(&f.gc);
@@ -1060,7 +1060,7 @@ mod tests {
             &[5, 5],
             &[2, 2, 1, 20],
         ] {
-            gen_all(&mut mg, &snap, rack, 0);
+            gen_all(&mut mg, &snap, rack, 0).unwrap();
             let want = mg
                 .plays
                 .iter()
@@ -1101,7 +1101,7 @@ mod tests {
                 ..f.snap()
             };
             let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
-            gen_all(&mut mg, &before, &[0, 1, 2, 5, 20], 0);
+            gen_all(&mut mg, &before, &[0, 1, 2, 5, 20], 0).unwrap();
             let plays = std::mem::take(&mut mg.plays);
             assert!(!plays.is_empty());
             for theirs in [&[2, 5][..], &[0, 20], &[1], &[5, 5]] {
@@ -1133,7 +1133,7 @@ mod tests {
                     mg.gen_outs(&after, theirs, lanes, |_, _, score| {
                         got = got.max(Some(score))
                     });
-                    gen_all(&mut mg, &after, theirs, 0);
+                    gen_all(&mut mg, &after, theirs, 0).unwrap();
                     let want = mg
                         .plays
                         .iter()
@@ -1163,7 +1163,7 @@ mod tests {
         let unseen = f.tally(&[1, 2, 5, 20]);
         let snap = f.snap();
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
-        gen_all(&mut mg, &snap, &rack, 0);
+        gen_all(&mut mg, &snap, &rack, 0).unwrap();
         mg.plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
         let static_best = mg.plays[0].clone();
         assert!(
@@ -1285,7 +1285,9 @@ mod tests {
         for fixture in [&full, &limited] {
             let snap = fixture.snap();
             generator.reset_for_another_kwg();
-            filter.gen_moves(&mut generator, &snap, &rack, 0, usize::MAX, None);
+            filter
+                .gen_moves(&mut generator, &snap, &rack, 0, usize::MAX, None)
+                .unwrap();
             assert!(generator.plays.iter().all(|vm| matches!(
                 &vm.play, movegen::Play::Place { word, .. } if **word == rack
             )));
@@ -1299,7 +1301,9 @@ mod tests {
         let mut tilt = crate::move_filter::Tilt::new(&full.gc, &full.kwg, &importance);
         tilt.tilt_to(crate::move_filter::TILT_DENOM, 0);
         let mut filter = crate::move_filter::GenMoves::Tilt { tilt, bot_level: 0 };
-        filter.gen_moves(&mut generator, &snap, &rack, 0, usize::MAX, None);
+        filter
+            .gen_moves(&mut generator, &snap, &rack, 0, usize::MAX, None)
+            .unwrap();
         pick_generated(&mut generator.plays, &snap, &rack, 1).unwrap();
         assert!(
             matches!(&generator.plays[0].play, movegen::Play::Exchange { tiles } if tiles.is_empty())
@@ -1433,7 +1437,8 @@ mod tests {
             num_exchanges_by_this_player: 0,
             pass_policy: movegen::PassPolicy::AsACandidate,
             dynamic_leaves: None,
-        });
+        })
+        .unwrap();
         let placement = mg
             .plays
             .iter()
@@ -1497,7 +1502,7 @@ mod tests {
                     );
                     for rack in &draws.theirs {
                         let cached = sheet.scores(rack).unwrap();
-                        gen_all(&mut mg, &snap, rack, 0);
+                        gen_all(&mut mg, &snap, rack, 0).unwrap();
                         let mut out = None;
                         let mut other = None;
                         for vm in &mg.plays {
@@ -1577,7 +1582,7 @@ mod tests {
         let rack = &dealt.players[1].rack;
         let snap = f.snap();
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
-        gen_all(&mut mg, &snap, rack, 0);
+        gen_all(&mut mg, &snap, rack, 0).unwrap();
         pick_generated(&mut mg.plays, &snap, rack, dealt.bag.len()).unwrap();
         let expected = mg.plays[0].equity;
         worker
@@ -1603,7 +1608,7 @@ mod tests {
             let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
             let rack = [2u8, 1, 20];
             let unseen = f.tally(&[1, 1, 2, 5, 5, 20, 20, 20, 20, 20, 1, 1]);
-            gen_all(&mut mg, &f.snap(), &rack, 0);
+            gen_all(&mut mg, &f.snap(), &rack, 0).unwrap();
             let mut plays = std::mem::take(&mut mg.plays);
             plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
             for bag in 0..=usize::from(rack_size) + 1 {
@@ -1625,7 +1630,7 @@ mod tests {
         let rack = [2u8, 1, 20, 5];
         // the opponent then holds only E's, which form no word
         let unseen = f.tally(&[5, 5, 5, 5, 5, 5, 5, 20]);
-        gen_all(&mut mg, &f.snap(), &rack, 0);
+        gen_all(&mut mg, &f.snap(), &rack, 0).unwrap();
         let mut plays = std::mem::take(&mut mg.plays);
         plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
         let (_, values) = every_play_valued(&f, &rack, &unseen, 1);

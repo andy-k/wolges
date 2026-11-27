@@ -2202,7 +2202,7 @@ impl Session {
                 num_exchanges_by_this_player: self.state.current_player().num_exchanges,
                 pass_policy: movegen::PassPolicy::AsACandidate,
                 dynamic_leaves: None,
-            });
+            })?;
         let mut out = std::io::stdout();
         for (i, valued) in self.move_generator.plays.iter().enumerate() {
             writeln!(
@@ -2245,7 +2245,7 @@ impl Session {
                 num_exchanges_by_this_player: self.state.current_player().num_exchanges,
                 pass_policy: movegen::PassPolicy::AsACandidate,
                 dynamic_leaves: None,
-            });
+            })?;
         let tables = infer_tables_for(&mut self.infer_tables, self.game_config, self.klv)?;
         let mut out = std::io::stdout();
         for (i, valued) in self.move_generator.plays.iter().enumerate() {
@@ -2351,7 +2351,7 @@ impl Session {
             self.state.current_player().num_exchanges,
             move_picker::SIMMER_FIELD,
             &mut Vec::new(),
-        );
+        )?;
         let t0 = std::time::Instant::now();
         let mut simmer = move_picker::Simmer::<_, _, false>::new(
             self.game_config,
@@ -2542,7 +2542,7 @@ impl Session {
                 self.state.current_player().num_exchanges,
                 move_picker::SIMMER_FIELD,
                 &mut Vec::new(),
-            );
+            )?;
             let made_for = [
                 std::ptr::from_ref(self.game_config).addr(),
                 std::ptr::from_ref(kwg).addr(),
@@ -4099,21 +4099,23 @@ mod tests {
         let rack = session.state.current_player().rack.clone();
         let plays = |arm_tables: &anagrams::ArmTables| {
             let mut move_generator = movegen::KurniaMoveGenerator::new(session.game_config);
-            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                board_snapshot: &movegen::BoardSnapshot {
-                    board_tiles: &session.state.board_tiles,
-                    game_config: session.game_config,
-                    kwg,
-                    anagrams: arm_tables.anagrams(),
-                    rack_lengths: arm_tables.rack_lengths(),
-                    klv: session.klv,
-                },
-                rack: &rack,
-                max_gen: usize::MAX,
-                num_exchanges_by_this_player: 0,
-                pass_policy: movegen::PassPolicy::AsACandidate,
-                dynamic_leaves: None,
-            });
+            move_generator
+                .gen_moves_unfiltered(&movegen::GenMovesParams {
+                    board_snapshot: &movegen::BoardSnapshot {
+                        board_tiles: &session.state.board_tiles,
+                        game_config: session.game_config,
+                        kwg,
+                        anagrams: arm_tables.anagrams(),
+                        rack_lengths: arm_tables.rack_lengths(),
+                        klv: session.klv,
+                    },
+                    rack: &rack,
+                    max_gen: usize::MAX,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: movegen::PassPolicy::AsACandidate,
+                    dynamic_leaves: None,
+                })
+                .unwrap();
             (move_generator.plays.iter())
                 .map(|valued| (valued.play.clone(), valued.equity))
                 .collect::<Vec<_>>()
@@ -4629,7 +4631,8 @@ mod tests {
             num_exchanges_by_this_player: 0,
             pass_policy: movegen::PassPolicy::AsACandidate,
             dynamic_leaves: None,
-        });
+        })
+        .unwrap();
         let outside = all
             .plays
             .iter()

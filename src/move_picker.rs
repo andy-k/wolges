@@ -62,7 +62,7 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
     num_exchanges_by_this_player: i16,
     field: FieldShape,
     scratch: &mut Vec<movegen::ValuedMove>,
-) {
+) -> error::Returns<()> {
     gen_simmer_field(
         filtered_movegen,
         move_generator,
@@ -76,7 +76,7 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
         },
         field.nonplacing_quota,
         scratch,
-    );
+    )
 }
 
 #[inline]
@@ -86,7 +86,7 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
     params: &movegen::GenMovesParams<'_, N, L>,
     nonplacing_quota: usize,
     scratch: &mut Vec<movegen::ValuedMove>,
-) {
+) -> error::Returns<()> {
     let max_gen = params.max_gen;
     filtered_movegen.gen_moves(
         move_generator,
@@ -95,7 +95,7 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         params.num_exchanges_by_this_player,
         max_gen,
         params.dynamic_leaves,
-    );
+    )?;
     let quota = nonplacing_quota.min(max_gen);
     let mut held = move_generator
         .plays
@@ -103,17 +103,17 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         .filter(|valued_move| places_no_tiles(&valued_move.play))
         .count();
     if held >= quota {
-        return;
+        return Ok(());
     }
     let pass_policy = if move_generator.num_tiles_in_bag()
-        < params.board_snapshot.game_config.exchange_tile_limit()
+        < i32::from(params.board_snapshot.game_config.exchange_tile_limit())
     {
         movegen::PassPolicy::AsACandidate
     } else {
         movegen::PassPolicy::OnlyWhenForced
     };
     std::mem::swap(&mut move_generator.plays, scratch);
-    filtered_movegen.gen_nonplacing_moves_with(
+    let generated = filtered_movegen.gen_nonplacing_moves_with(
         move_generator,
         &movegen::GenMovesParams {
             max_gen: quota,
@@ -130,6 +130,10 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
             ..*params
         },
     );
+    if let Err(e) = generated {
+        std::mem::swap(&mut move_generator.plays, scratch);
+        return Err(e);
+    }
     let mut held_any = false;
     for candidate in move_generator.plays.drain(..) {
         if held >= quota {
@@ -158,6 +162,7 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         scratch.sort_unstable();
     }
     std::mem::swap(&mut move_generator.plays, scratch);
+    Ok(())
 }
 
 // https://doi.org/10.1145/2714064.2660195
@@ -1237,7 +1242,7 @@ fn gen_plays<N: kwg::Node, L: kwg::Node>(
     rows: u128,
     cols: u128,
 ) {
-    generator.gen_moves_raw_lanes_unsorted(
+    generator.gen_raw_placements_in_lanes(
         &movegen::BoardSnapshot {
             board_tiles,
             game_config: board_snapshot.game_config,
@@ -1247,8 +1252,6 @@ fn gen_plays<N: kwg::Node, L: kwg::Node>(
             klv: board_snapshot.klv,
         },
         rack,
-        i16::MAX,
-        movegen::PassPolicy::OnlyWhenForced,
         rows,
         cols,
     );
@@ -2908,7 +2911,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                 game_state.current_player().num_exchanges,
                 usize::MAX,
                 dynamic,
-            );
+            )?;
             if let MovePicker::Deft(deft) = self {
                 let (term, scratch) = deft.term_and_scratch(game_config);
                 if let Some(term) = term {
@@ -2972,7 +2975,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     game_state.current_player().num_exchanges,
                     1,
                     None,
-                );
+                )?;
             }
             MovePicker::Dynamic(dynamic_leaves) => {
                 filtered_movegen.gen_moves(
@@ -2982,7 +2985,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     game_state.current_player().num_exchanges,
                     1,
                     Some(*dynamic_leaves),
-                );
+                )?;
             }
             MovePicker::Simmer(simmer) => {
                 let t0 =
@@ -3001,7 +3004,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     },
                     SIMMER_FIELD.nonplacing_quota,
                     &mut scratch,
-                );
+                )?;
                 simmer.candidate_scratch = scratch;
                 // the leaves inferred from the last move, packed and shared
                 // with the simmer, not copied
@@ -3073,7 +3076,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     game_state.current_player().num_exchanges,
                     if late { DEFT_LATE_FIELD } else { DEFT_FIELD },
                     None,
-                );
+                )?;
                 if let Some(term) = positional {
                     term.add_to(
                         game_config,
@@ -3216,7 +3219,8 @@ mod tests {
             0,
             field,
             &mut scratch,
-        );
+        )
+        .unwrap();
         move_generator.plays
     }
 
@@ -3636,7 +3640,8 @@ mod tests {
             0,
             SIMMER_FIELD,
             &mut scratch,
-        );
+        )
+        .unwrap();
         assert!(move_generator.plays.len() > 2);
         let new_simmer = |sim_threads| {
             let mut simmer = Simmer::<_, _, true>::new(
@@ -3789,7 +3794,8 @@ mod tests {
             0,
             SIMMER_FIELD,
             &mut Vec::new(),
-        );
+        )
+        .unwrap();
         assert!(move_generator.plays.len() > 2);
         let decide = |sim_threads| {
             let mut simmer = Simmer::<_, _, true>::new(
@@ -3861,7 +3867,8 @@ mod tests {
             0,
             SIMMER_FIELD,
             &mut Vec::new(),
-        );
+        )
+        .unwrap();
         assert!(move_generator.plays.len() > 2);
         let made = |memory: Option<endgame::MemoryLimit>| {
             let mut simmer = Simmer::<_, _, true>::new(
@@ -3953,7 +3960,8 @@ mod tests {
                 0,
                 SIMMER_FIELD,
                 &mut Vec::new(),
-            );
+            )
+            .unwrap();
         };
         let new_simmer = || {
             let mut simmer = Simmer::<_, _, true>::new(
@@ -4031,7 +4039,8 @@ mod tests {
             0,
             SIMMER_FIELD,
             &mut scratch,
-        );
+        )
+        .unwrap();
         let num_plays = move_generator.plays.len();
         assert!(num_plays > 2);
         let mut simmer = Simmer::<_, _, false>::new(
@@ -4264,7 +4273,8 @@ mod tests {
             0,
             SIMMER_FIELD,
             &mut Vec::new(),
-        );
+        )
+        .unwrap();
         by_hand
             .begin_decision(&move_generator, &game_state, 8, &shell_leaves)
             .unwrap();
@@ -5242,14 +5252,16 @@ mod tests {
         // without its winning out, deft would keep CASTE
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-        filtered_movegen.gen_moves(
-            &mut move_generator,
-            &board_snapshot,
-            &game_state.players[mover].rack,
-            0,
-            DEFT_LATE_FIELD,
-            None,
-        );
+        filtered_movegen
+            .gen_moves(
+                &mut move_generator,
+                &board_snapshot,
+                &game_state.players[mover].rack,
+                0,
+                DEFT_LATE_FIELD,
+                None,
+            )
+            .unwrap();
         let plays = &move_generator.plays;
         let fewest = lane_pick(
             &game_config,
@@ -5313,14 +5325,16 @@ mod tests {
         assert_eq!(deft_picks(&board_snapshot, &game_state), "H10 E(A)RS 7");
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-        filtered_movegen.gen_moves(
-            &mut move_generator,
-            &board_snapshot,
-            &game_state.players[mover].rack,
-            0,
-            DEFT_LATE_FIELD,
-            None,
-        );
+        filtered_movegen
+            .gen_moves(
+                &mut move_generator,
+                &board_snapshot,
+                &game_state.players[mover].rack,
+                0,
+                DEFT_LATE_FIELD,
+                None,
+            )
+            .unwrap();
         let plays = &move_generator.plays;
         let fewest = lane_pick(
             &game_config,
@@ -5363,14 +5377,16 @@ mod tests {
         // that move ranks past the usual field
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-        filtered_movegen.gen_moves(
-            &mut move_generator,
-            &board_snapshot,
-            &game_state.players[mover].rack,
-            0,
-            DEFT_LATE_FIELD,
-            None,
-        );
+        filtered_movegen
+            .gen_moves(
+                &mut move_generator,
+                &board_snapshot,
+                &game_state.players[mover].rack,
+                0,
+                DEFT_LATE_FIELD,
+                None,
+            )
+            .unwrap();
         let at = move_generator
             .plays
             .iter()
@@ -5627,14 +5643,16 @@ mod tests {
             .filter(|game_state| game_state.bag.len() > game_config.rack_size() as usize)
         {
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-            move_filter::GenMoves::Unfiltered.gen_moves(
-                &mut move_generator,
-                &board_snapshot,
-                &game_state.players[game_state.turn as usize].rack,
-                0,
-                DEFT_FIELD,
-                None,
-            );
+            move_filter::GenMoves::Unfiltered
+                .gen_moves(
+                    &mut move_generator,
+                    &board_snapshot,
+                    &game_state.players[game_state.turn as usize].rack,
+                    0,
+                    DEFT_FIELD,
+                    None,
+                )
+                .unwrap();
             let sums = move_generator
                 .plays
                 .iter()

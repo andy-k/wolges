@@ -323,7 +323,7 @@ fn simulate(
         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
-    });
+    })?;
 
     let sim_iters = 10000u64;
     let mut driver = move_picker::Simmer::<_, _, true>::new(

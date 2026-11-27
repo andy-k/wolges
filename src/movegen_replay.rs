@@ -135,7 +135,7 @@ fn generate<const N: usize>(
     rack: &[u8],
     exchanges: i16,
     max_gen: usize,
-) {
+) -> error::Returns<()> {
     generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot: snapshot,
         rack,
@@ -143,7 +143,7 @@ fn generate<const N: usize>(
         num_exchanges_by_this_player: exchanges,
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
-    });
+    })
 }
 
 struct Prepared<'a> {
@@ -256,7 +256,7 @@ fn replay_using<const N: usize>(
                 &entry.rack,
                 entry.position.exchanges,
                 args.top.get(),
-            );
+            )?;
             search_time += started.elapsed();
             if pass == 0 {
                 let best = &generator.plays[0];
@@ -343,7 +343,7 @@ fn play_game<const N: usize>(
     for ply in 0.. {
         let mover = state.current_player();
         let snapshot = engine.snapshot(&state.board_tiles);
-        generate(generator, &snapshot, &mover.rack, mover.num_exchanges, 1);
+        generate(generator, &snapshot, &mover.rack, mover.num_exchanges, 1)?;
         let chosen = &generator.plays[0];
         on_turn(ply, state, &snapshot, chosen)?;
         state.play(gc, rng, &chosen.play)?;

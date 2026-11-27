@@ -2620,7 +2620,7 @@ fn gen_raw_lanes<
     rows: u128,
     cols: u128,
     limit: Option<movegen::HeldBytes>,
-) -> bool {
+) -> error::Returns<bool> {
     match (run_letter_bits, limit) {
         (Some(run_letter_bits), None) => {
             generator.gen_moves_raw_lanes_unsorted_by_runs(
@@ -2629,8 +2629,8 @@ fn gen_raw_lanes<
                 rack,
                 rows,
                 cols,
-            );
-            false
+            )?;
+            Ok(false)
         }
         (Some(run_letter_bits), Some(limit)) => generator
             .gen_moves_raw_lanes_unsorted_by_runs_within(
@@ -2660,8 +2660,8 @@ fn gen_raw_lanes<
                     rows,
                     cols,
                 )
-            }
-            false
+            }?;
+            Ok(false)
         }
         (None, Some(limit)) => {
             generator.gen_moves_raw_lanes_unsorted_within(board_snapshot, rack, rows, cols, limit)
@@ -2686,7 +2686,7 @@ fn gen_raw_all<
     rack: &'a [u8],
     num_exchanges_by_this_player: i16,
     pass_policy: movegen::PassPolicy,
-) {
+) -> error::Returns<()> {
     if LEAN {
         generator.gen_moves_raw_all_unsorted_lean(
             board_snapshot,
@@ -3362,7 +3362,7 @@ impl<
             rows,
             cols,
             None,
-        );
+        )?;
         if let Some(t1) = t1 {
             work_buffer.dur_movegen += t1.elapsed();
         }
@@ -3523,7 +3523,7 @@ impl<
         k: usize,
         score: equity::Equity,
         cap: equity::Equity,
-    ) -> bool {
+    ) -> error::Returns<bool> {
         let out = self.work_buffer.outs[ply].slots[k];
         let other = player_idx ^ 1;
         let work_buffer = &mut self.work_buffer;
@@ -3542,7 +3542,7 @@ impl<
             !0,
             !0,
             None,
-        );
+        )?;
         let held = work_buffer.racks[other as usize].len();
         assert!(
             work_buffer.movegen.plays.iter().any(|valued| matches!(
@@ -3555,7 +3555,7 @@ impl<
             "a skip's play out is not the opponent's after the move"
         );
         if work_buffer.out_checks >= 16 {
-            return true;
+            return Ok(true);
         }
         work_buffer.out_checks += 1;
         let mut reply = Self::with_generator(
@@ -3574,13 +3574,13 @@ impl<
             &work_buffer.board_tiles,
             [&work_buffer.racks[0], &work_buffer.racks[1]],
         );
-        let replied = reply.solve(other).unwrap();
+        let replied = reply.solve(other)?;
         assert!(
             score - replied <= cap,
             "a skipped move is worth {} past its cap {cap}",
             score - replied
         );
-        true
+        Ok(true)
     }
 
     // a root's requested placements. Two plies down makes its own list since
@@ -3782,7 +3782,7 @@ impl<
                     new_rows,
                     new_cols,
                     limit,
-                );
+                )?;
                 if work_buffer.movegen_cut {
                     return Ok(());
                 }
@@ -3816,7 +3816,7 @@ impl<
                 rack_walk_rows,
                 rack_walk_cols,
                 limit,
-            );
+            )?;
             if work_buffer.movegen_cut {
                 return Ok(());
             }
@@ -3967,7 +3967,7 @@ impl<
                 walk_rows,
                 walk_cols,
                 limit,
-            );
+            )?;
             if work_buffer.movegen_cut {
                 return Ok(());
             }
@@ -5025,7 +5025,7 @@ impl<
                         self.place(player_idx, &play);
                         let checked = self.check_out_skip(ply, player_idx, k, score, cap);
                         self.unplace(player_idx, &play);
-                        checked
+                        checked?
                     });
                     self.work_buffer.out_skips += 1;
                     if self.take_value(i, index, cap) {
@@ -6088,7 +6088,7 @@ impl<
             &racks[mover as usize],
             0,
             movegen::PassPolicy::AsACandidate,
-        );
+        )?;
 
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
@@ -6246,7 +6246,7 @@ impl<
             &racks[mover as usize],
             0,
             movegen::PassPolicy::AsACandidate,
-        );
+        )?;
 
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &search.mg.plays {
@@ -7835,7 +7835,7 @@ impl<
                         None => {
                             gen_raw_all::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
                                 &mut *mg, &snapshot, mover_rack, 0, pass,
-                            );
+                            )?;
                             false
                         }
                         Some(memory) => mg.gen_moves_raw_all_unsorted_held(
@@ -7844,7 +7844,7 @@ impl<
                             0,
                             pass,
                             movegen::HeldBytes { memory, kept: 0 },
-                        ),
+                        )?,
                     };
                     if cut {
                         return Err(limits.stop_refused());
@@ -10277,7 +10277,7 @@ fn moves_of<
             made,
             movegen::PassPolicy::OnlyWhenForced,
             movegen::HeldBytes { memory, kept: 0 },
-        );
+        )?;
         if cut {
             return Err(limits.stop_refused());
         }
@@ -10317,7 +10317,7 @@ fn moves_of<
         rack,
         made,
         movegen::PassPolicy::OnlyWhenForced,
-    );
+    )?;
     moves.extend(
         (mg.plays.iter())
             .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
@@ -10423,7 +10423,7 @@ fn root_moves<
         made,
         movegen::PassPolicy::OnlyWhenForced,
         movegen::HeldBytes { memory, kept: 0 },
-    );
+    )?;
     let mut plays = std::mem::take(&mut mg.plays);
     if cut {
         return Err(limits.stop_refused());
@@ -11448,7 +11448,7 @@ impl<
                     &pos.racks[mover],
                     pos.exchanges[mover],
                     movegen::PassPolicy::OnlyWhenForced,
-                );
+                )?;
                 let plays = self.mg.plays.iter().map(|vm| &vm.play);
                 let Some(play) =
                     (plays.filter(|play| empties(play))).max_by_key(|play| match play {
@@ -12392,12 +12392,15 @@ mod tests {
             rack_lengths: None,
             klv: fixed.klv,
         };
-        fixed.mg.gen_moves_raw_all_unsorted(
-            &snapshot,
-            &racks[mover],
-            0,
-            movegen::PassPolicy::AsACandidate,
-        );
+        fixed
+            .mg
+            .gen_moves_raw_all_unsorted(
+                &snapshot,
+                &racks[mover],
+                0,
+                movegen::PassPolicy::AsACandidate,
+            )
+            .unwrap();
 
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &fixed.mg.plays {
@@ -12486,12 +12489,15 @@ mod tests {
             rack_lengths: None,
             klv: fixed.klv,
         };
-        fixed.mg.gen_moves_raw_all_unsorted(
-            &snapshot,
-            &racks[mover],
-            0,
-            movegen::PassPolicy::AsACandidate,
-        );
+        fixed
+            .mg
+            .gen_moves_raw_all_unsorted(
+                &snapshot,
+                &racks[mover],
+                0,
+                movegen::PassPolicy::AsACandidate,
+            )
+            .unwrap();
 
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &fixed.mg.plays {
@@ -12591,12 +12597,15 @@ mod tests {
             rack_lengths: None,
             klv: fixed.klv,
         };
-        fixed.mg.gen_moves_raw_all_unsorted(
-            &snapshot,
-            &racks[mover],
-            0,
-            movegen::PassPolicy::AsACandidate,
-        );
+        fixed
+            .mg
+            .gen_moves_raw_all_unsorted(
+                &snapshot,
+                &racks[mover],
+                0,
+                movegen::PassPolicy::AsACandidate,
+            )
+            .unwrap();
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &fixed.mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
@@ -14858,7 +14867,8 @@ mod tests {
                 num_exchanges_by_this_player: 0,
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
-            });
+            })
+            .unwrap();
             let places = (mg.plays.iter())
                 .filter_map(|valued| match &valued.play {
                     movegen::Play::Place {
@@ -15023,21 +15033,23 @@ mod tests {
                             (&mut whole_generator, &kwg, &whole_tables),
                             (&mut board_generator, &board_kwg, &board_tables),
                         ] {
-                            generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                board_snapshot: &movegen::BoardSnapshot {
-                                    board_tiles: &board,
-                                    game_config: &gc,
-                                    kwg: graph,
-                                    anagrams: tables.anagrams(),
-                                    rack_lengths: tables.rack_lengths(),
-                                    klv: &klv,
-                                },
-                                rack: &rack,
-                                max_gen: usize::MAX,
-                                num_exchanges_by_this_player: 0,
-                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: None,
-                            });
+                            generator
+                                .gen_moves_unfiltered(&movegen::GenMovesParams {
+                                    board_snapshot: &movegen::BoardSnapshot {
+                                        board_tiles: &board,
+                                        game_config: &gc,
+                                        kwg: graph,
+                                        anagrams: tables.anagrams(),
+                                        rack_lengths: tables.rack_lengths(),
+                                        klv: &klv,
+                                    },
+                                    rack: &rack,
+                                    max_gen: usize::MAX,
+                                    num_exchanges_by_this_player: 0,
+                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                    dynamic_leaves: None,
+                                })
+                                .unwrap();
                         }
                         assert!(
                             whole_generator.plays == board_generator.plays,
@@ -17387,7 +17399,8 @@ mod tests {
                                 &racks[mover],
                                 0,
                                 movegen::PassPolicy::AsACandidate,
-                            );
+                            )
+                            .unwrap();
                             let found = mg.plays.iter().any(|vm| {
                                 if let movegen::Play::Place {
                                     down: d2,
@@ -18626,12 +18639,9 @@ mod tests {
                 rack_lengths: None,
                 klv: &klv,
             };
-            (fixed.mg).gen_moves_raw_all_unsorted(
-                &snap,
-                mover_rack,
-                0,
-                movegen::PassPolicy::AsACandidate,
-            );
+            (fixed.mg)
+                .gen_moves_raw_all_unsorted(&snap, mover_rack, 0, movegen::PassPolicy::AsACandidate)
+                .unwrap();
             let mut cands: Vec<Option<movegen::Play>> = vec![None]; // None = pass
             for vm in &fixed.mg.plays {
                 if let movegen::Play::Place { .. } = &vm.play {
