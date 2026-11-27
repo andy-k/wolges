@@ -85,6 +85,13 @@ fn refuse_a_wider_graph<N: kwg::Node>(
     ));
 }
 
+#[inline]
+fn score_the_question(players: &mut [game_state::GamePlayer]) {
+    for (player, score) in players.iter_mut().zip([16, 44]) {
+        player.score = equity::Points::new(score).scaled();
+    }
+}
+
 #[inline(always)]
 fn answer<N: kwg::Node + Send + Sync + 'static>(
     kwg: &std::sync::Arc<kwg::Kwg<N>>,
@@ -227,12 +234,8 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
 
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::try_from_rng(&mut rand::rngs::SysRng)?;
     let mut game_state = game_state::GameState::new(game_config);
-    if game_state.players.len() < 2 {
-        wolges::return_error!("the question scores two players".to_string());
-    }
     // temp hardcode
-    game_state.players[0].score = equity::Points::new(16).scaled();
-    game_state.players[1].score = equity::Points::new(44).scaled();
+    score_the_question(&mut game_state.players);
 
     let mut kibitzer = kibitzer::Kibitzer::new();
     kibitzer.prepare(game_config, &question.rack, &question.board_tiles)?;
@@ -363,6 +366,41 @@ fn moves_json(plays: &[movegen::ValuedMove]) -> error::Returns<serde_json::Value
 mod tests {
     use super::*;
     use wolges::{anagrams, build};
+
+    #[test]
+    fn a_one_player_question_is_answered() {
+        let game_config::GameConfig::Static(rules) = game_config::make_super_english_game_config();
+        let game_config = std::sync::Arc::new(game_config::GameConfig::Static(
+            game_config::StaticGameConfig {
+                num_players: 1,
+                ..rules
+            },
+        ));
+        let mut words: Vec<wolges::bites::Bites> = vec![[1u8, 20][..].into(), [20u8, 1][..].into()];
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
+        let klv = std::sync::Arc::new(klv::Klv::<kwg::Node24>::empty().unwrap());
+        answer(&kwg, &klv, &game_config, false).unwrap();
+    }
+
+    #[test]
+    fn one_player_takes_the_first_score() {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        score_the_question(&mut game_state.players[..1]);
+        assert_eq!(
+            game_state.players[0].score,
+            equity::Points::new(16).scaled()
+        );
+    }
 
     #[test]
     fn each_move_object_keeps_its_keys() {
