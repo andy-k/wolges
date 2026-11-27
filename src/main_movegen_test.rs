@@ -466,7 +466,7 @@ fn run(
             }
         }
         let every_way = match game_config.game_rules() {
-            game_config::GameRules::Classic => true,
+            game_config::GameRules::Classic | game_config::GameRules::Woadwage => true,
             game_config::GameRules::Jumbled => false,
         } || rack.len() <= game_config.rack_size() as usize;
         if !every_way {

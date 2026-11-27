@@ -7,6 +7,7 @@ use std::str::FromStr;
 pub enum GameRules {
     Classic,
     Jumbled,
+    Woadwage, // a word, or two words of the lexicon joined (woadwage.rs)
 }
 
 #[derive(Clone)]
@@ -158,6 +159,16 @@ impl GameConfig {
         match self {
             GameConfig::Static(x) => GameConfig::Static(StaticGameConfig {
                 game_rules: GameRules::Jumbled,
+                ..x.clone()
+            }),
+        }
+    }
+
+    #[inline]
+    pub fn woadwage(&self) -> Self {
+        match self {
+            GameConfig::Static(x) => GameConfig::Static(StaticGameConfig {
+                game_rules: GameRules::Woadwage,
                 ..x.clone()
             }),
         }
@@ -327,6 +338,11 @@ pub fn make_board_test_game_config(board_layout: board_layout::BoardLayout) -> G
 #[inline]
 pub fn make_jumbled_english_game_config() -> GameConfig {
     make_english_game_config().jumbled()
+}
+
+#[inline]
+pub fn make_woadwage_english_game_config() -> GameConfig {
+    make_english_game_config().woadwage()
 }
 
 #[cfg(test)]
@@ -654,6 +670,7 @@ pub const GAME_CONFIGS: &[(&str, MakeGameConfig)] = &[
     ("super-english", make_super_english_game_config),
     ("super-german", make_super_german_game_config),
     ("swedish", make_swedish_game_config),
+    ("woadwage-english", make_woadwage_english_game_config),
 ];
 
 #[inline]
@@ -740,6 +757,7 @@ pub struct Options<'a> {
     pub board: Option<&'a str>,
     pub rack_size: Option<u8>,
     pub jumbled: bool,
+    pub woadwage: bool,
     pub players: Option<u8>,
     pub bingo_bonus: Option<&'a str>,
     pub zeros_to_end: Option<u8>,
@@ -771,10 +789,11 @@ impl Options<'_> {
         };
         let rack_size = self.rack_size.unwrap_or(preset.rack_size);
         let game_config = GameConfig::Static(StaticGameConfig {
-            game_rules: if self.jumbled {
-                GameRules::Jumbled
-            } else {
-                preset.game_rules
+            game_rules: match (self.jumbled, self.woadwage) {
+                (true, true) => return_error!("jumbled woadwage is not built".into()),
+                (true, false) => GameRules::Jumbled,
+                (false, true) => GameRules::Woadwage,
+                (false, false) => preset.game_rules,
             },
             alphabet: match self.tiles {
                 Some(tiles) => alphabet::make_alphabet_from(tiles, read_file)?,
@@ -843,7 +862,8 @@ impl GameConfig {
             game_rules: match take(&mut values, "rules")? {
                 "classic" => GameRules::Classic,
                 "jumbled" => GameRules::Jumbled,
-                rules => return_error!(format!("{rules:?} is not classic or jumbled")),
+                "woadwage" => GameRules::Woadwage,
+                rules => return_error!(format!("{rules:?} is not classic, jumbled, or woadwage")),
             },
             alphabet,
             board_layout,
@@ -1194,6 +1214,7 @@ mod tests {
             match gc.game_rules() {
                 GameRules::Classic => "classic",
                 GameRules::Jumbled => "jumbled",
+                GameRules::Woadwage => "woadwage",
             },
             gc.rack_size(),
             if bonuses.is_empty() {
@@ -1221,10 +1242,10 @@ mod tests {
         let (alphabet, other_alphabet) = (a.alphabet(), b.alphabet());
         let (board_layout, other_board_layout) = (a.board_layout(), b.board_layout());
         let same_rules = match (a.game_rules(), b.game_rules()) {
-            (GameRules::Classic, GameRules::Classic) | (GameRules::Jumbled, GameRules::Jumbled) => {
-                true
-            }
-            (GameRules::Classic, _) | (GameRules::Jumbled, _) => false,
+            (GameRules::Classic, GameRules::Classic)
+            | (GameRules::Jumbled, GameRules::Jumbled)
+            | (GameRules::Woadwage, GameRules::Woadwage) => true,
+            (GameRules::Classic, _) | (GameRules::Jumbled, _) | (GameRules::Woadwage, _) => false,
         };
         same_rules
             && alphabet.len() == other_alphabet.len()
@@ -1291,7 +1312,8 @@ mod tests {
                 "standard"
             };
             let gc = make();
-            let text = preset_text_of(name, board, &gc);
+            let tiles = name.strip_prefix("woadwage-").unwrap_or(name);
+            let text = preset_text_of(tiles, board, &gc);
             let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
             assert!(same_game_config(&read, &gc), "{name}");
         }
@@ -1316,7 +1338,7 @@ mod tests {
             let gc = make();
             match gc.game_rules() {
                 GameRules::Classic => {}
-                GameRules::Jumbled => continue,
+                GameRules::Jumbled | GameRules::Woadwage => continue,
             }
             classic += 1;
             let board = if name.starts_with("super-") {
@@ -1330,6 +1352,52 @@ mod tests {
             assert!(!same_game_config(&gc.jumbled(), &gc), "{name}");
         }
         assert!(classic > 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_woadwage_game_is_its_classic_one_under_the_woadwage_rules() {
+        let gc = make_english_game_config();
+        let text =
+            preset_text_of("english", "standard", &gc).replace("rules classic", "rules woadwage");
+        let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
+        assert!(same_game_config(&gc.woadwage(), &read));
+        assert!(same_game_config(
+            &make_woadwage_english_game_config(),
+            &read
+        ));
+        assert!(!same_game_config(&gc, &read));
+        assert!(!same_game_config(&gc.jumbled(), &read));
+        assert!(matches!(read.game_rules(), GameRules::Woadwage));
+        let text = preset_text_of("english", "standard", &read);
+        assert!(text.contains("\nrules woadwage\n"));
+        let options = |jumbled, woadwage| Options {
+            preset: "english",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled,
+            woadwage,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        let woadwage = options(false, true).make_game_config(&no_files).unwrap();
+        assert!(same_game_config(&woadwage, &read));
+        assert_eq!(
+            options(true, true)
+                .make_game_config(&no_files)
+                .err()
+                .unwrap()
+                .to_string(),
+            "jumbled woadwage is not built"
+        );
+        let text =
+            preset_text_of("english", "standard", &gc).replace("rules classic", "rules both");
+        assert!(GameConfig::new_static_from_text(&text, &no_files).is_err());
     }
 
     #[test]
@@ -1452,6 +1520,7 @@ mod tests {
             board: None,
             rack_size: None,
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1467,6 +1536,7 @@ mod tests {
             board: None,
             rack_size: None,
             jumbled: true,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1485,6 +1555,7 @@ mod tests {
             board: Some("super"),
             rack_size: Some(8),
             jumbled: false,
+            woadwage: false,
             players: Some(3),
             bingo_bonus: Some("7:25,8:50"),
             zeros_to_end: Some(4),
@@ -1510,6 +1581,7 @@ mod tests {
             board: None,
             rack_size: Some(7),
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1524,6 +1596,7 @@ mod tests {
             board: None,
             rack_size: None,
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1553,6 +1626,7 @@ mod tests {
             board: None,
             rack_size: None,
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1594,6 +1668,7 @@ mod tests {
             board: None,
             rack_size: None,
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1610,6 +1685,7 @@ mod tests {
             board: Some("board.txt"),
             rack_size: None,
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
@@ -1632,6 +1708,7 @@ mod tests {
             board: None,
             rack_size: None,
             jumbled: false,
+            woadwage: false,
             players: None,
             bingo_bonus: None,
             zeros_to_end: None,
