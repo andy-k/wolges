@@ -496,7 +496,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "endgame [SECONDS]",
-        "with the bag empty, solve the endgame for the side to move within SECONDS (10 if not given)",
+        "solve the endgame for the side to move within SECONDS (10 if not given), or with tiles in the bag, the pre-endgame",
     ),
     (
         "show",
@@ -1414,6 +1414,45 @@ impl Session {
                     return Err("the game is over".into());
                 }
                 let state = self.endgame_state();
+                if !state.bag.is_empty() {
+                    let mut solver = self.take_solver()?;
+                    let solved = solve_pre_endgame(
+                        &mut solver,
+                        self.game_config,
+                        &state,
+                        &endgame::Limits {
+                            time: Some(std::time::Duration::from_secs_f64(seconds)),
+                            states: None,
+                            memory: self.memory,
+                            clock: None,
+                        },
+                        self.quiet,
+                    );
+                    self.keep_endgame_solver(solver)?;
+                    let solved = solved?;
+                    let best = match &solved.best_move {
+                        Some(play) => play
+                            .fmt(&movegen::BoardSnapshot {
+                                alphagrams: None,
+                                board_tiles: &state.board_tiles,
+                                game_config: self.game_config,
+                                kwg: self.kwg()?,
+                                anagrams: None,
+                                rack_lengths: None,
+                                klv: self.klv,
+                            })?
+                            .to_string(),
+                        None => "none".to_string(),
+                    };
+                    writeln!(
+                        std::io::stdout(),
+                        "the side to move's best move is {best}: win% {:.4}, expected game margin {}{}",
+                        solved.win_pct * 100.0,
+                        solved.expected_margin,
+                        if solved.exact { "" } else { " (provisional)" },
+                    )?;
+                    return Ok(());
+                }
                 let mut solver = self.take_endgame_solver(&state)?;
                 let solved = solve_endgame(
                     &mut solver,
@@ -1637,13 +1676,26 @@ impl Session {
         &mut self,
         state: &game_state::GameState,
     ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
-        let kwg = self.kwg()?;
-        let arm_tables = self.arm_tables()?;
         if !state.bag.is_empty() {
             return Err("the bag is not empty, and an endgame needs it to be".into());
         }
+        let mut solver = self.take_solver()?;
+        solver.init_after_scoreless_turns(
+            &state.board_tiles,
+            [&state.players[0].rack, &state.players[1].rack],
+            state.pass_turns,
+            state.zero_turns,
+        );
+        Ok(solver)
+    }
+
+    fn take_solver(
+        &mut self,
+    ) -> error::Returns<endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>> {
+        let kwg = self.kwg()?;
+        let arm_tables = self.arm_tables()?;
         let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
-        let mut solver = match self.endgame_solvers.remove(path) {
+        let solver = match self.endgame_solvers.remove(path) {
             Some(mut solver) => {
                 solver.renew_for_another_solve(0);
                 solver
@@ -1659,12 +1711,6 @@ impl Session {
                 )?
             }
         };
-        solver.init_after_scoreless_turns(
-            &state.board_tiles,
-            [&state.players[0].rack, &state.players[1].rack],
-            state.pass_turns,
-            state.zero_turns,
-        );
         Ok(solver)
     }
 
@@ -3429,6 +3475,86 @@ fn solve_endgame(
     listened(solver, quiet, |solver| {
         solver.solve_within(state.turn, limits)
     })
+}
+
+struct PreEndgame {
+    best_move: Option<movegen::Play>,
+    win_pct: f64,
+    expected_margin: equity::Equity,
+    exact: bool,
+}
+
+fn solve_pre_endgame(
+    solver: &mut endgame::EndgameSolver<'static, kwg::Node24, kwg::Node24>,
+    game_config: &game_config::GameConfig,
+    state: &game_state::GameState,
+    limits: &endgame::Limits,
+    quiet: bool,
+) -> error::Returns<PreEndgame> {
+    let mover = state.turn as usize;
+    let other = 1 - mover;
+    let rack = &state.players[mover].rack;
+    let mut unseen = game_config.tiles_off_board(&state.board_tiles)?;
+    game_config.take_rack(&mut unseen, rack)?;
+    let score_diff = equity::Equity::new(
+        (state.players[mover].score.raw())
+            .checked_sub(state.players[other].score.raw())
+            .ok_or("score overflow")?,
+    );
+    let scoreless = [state.pass_turns, state.zero_turns];
+    let threads = parallelism::available();
+    let solved = if state.bag.len() == 1 {
+        let mut progress = endgame::PegProgress::new(
+            state.turn,
+            &state.board_tiles,
+            rack,
+            &unseen,
+            score_diff,
+            scoreless,
+        );
+        listened(solver, quiet, |solver| {
+            solver.resume_peg_one_in_bag_on_threads(&mut progress, limits, threads)
+        })?
+        .map(|result| PreEndgame {
+            best_move: result.best_move.map(|play| match play {
+                endgame::PegMove::Pass => movegen::Play::Exchange {
+                    tiles: [][..].into(),
+                },
+                endgame::PegMove::Place(play) => play,
+            }),
+            win_pct: result.win_pct,
+            expected_margin: result.expected_margin,
+            exact: result.exact,
+        })
+    } else {
+        let mut progress = endgame::PegBagProgress::new(
+            endgame::PegBagPosition {
+                mover: state.turn,
+                board: state.board_tiles.to_vec(),
+                mover_rack: rack.to_vec(),
+                unseen_tally: unseen,
+                bag_size: state.bag.len(),
+                score_diff,
+                scoreless,
+                exchanges: [
+                    state.players[0].num_exchanges,
+                    state.players[1].num_exchanges,
+                ],
+                model: endgame::PegModel::InfoSets,
+            },
+            endgame::PegBagChoices::WHOLE,
+        )?;
+        listened(solver, quiet, |solver| {
+            solver.resume_peg(&mut progress, limits, threads)
+        })?
+        .map(|result| PreEndgame {
+            best_move: result.best_move,
+            win_pct: result.win_pct,
+            expected_margin: result.expected_margin,
+            exact: result.exact,
+        })
+    };
+    solved.map_err(|unsupported| unsupported.to_string().into())
 }
 
 // what a line of a GCG file does: a move, as play takes it; the move before
@@ -5564,11 +5690,52 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_pre_endgame_is_solved_with_tiles_in_the_bag() {
+        let mut session = session();
+        run(&mut session, "new 7").unwrap();
+        let game_config = session.game_config;
+        let alphabet = game_config.alphabet();
+        let mut tiles = Vec::new();
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                tiles.push(if tile == 0 { 0x81 } else { tile });
+            }
+        }
+        for held in [1, 20, 5, 9, 15] {
+            let at = tiles.iter().position(|&t| t == held).unwrap();
+            tiles.remove(at);
+        }
+        let limits = endgame::Limits {
+            time: Some(std::time::Duration::from_secs(5)),
+            states: None,
+            memory: None,
+            clock: None,
+        };
+        for (opponent, bag) in [(&[5u8, 9][..], &[15u8][..]), (&[5], &[9, 15])] {
+            let mut state = game_state::GameState::new(game_config);
+            state.board_tiles[..tiles.len()].copy_from_slice(&tiles);
+            state.bag.set_from_iter(bag.iter().copied());
+            state.players[0].rack = vec![1, 20];
+            state.players[1].rack = opponent.to_vec();
+            session.state = state;
+            run(&mut session, "endgame 5").unwrap();
+            let mut solver = session.take_solver().unwrap();
+            let solved =
+                solve_pre_endgame(&mut solver, game_config, &session.state, &limits, true).unwrap();
+            assert!(solved.exact);
+            assert!(matches!(
+                &solved.best_move,
+                Some(movegen::Play::Exchange { tiles }) if tiles.is_empty()
+            ));
+            session.keep_endgame_solver(solver).unwrap();
+        }
+    }
+
+    #[test]
+    #[inline]
     fn an_endgame_is_solved_once_the_bag_is_empty() {
         let mut session = session();
         run(&mut session, "new 7").unwrap();
-        let error = run(&mut session, "endgame").unwrap_err().to_string();
-        assert!(error.contains("bag is not empty"), "{error}");
         // the bag is empty: every tile but AT (the side to move's) and E is on
         // the board, in rows from the top, so that neither rack can make a word
         // on it
@@ -5637,8 +5804,8 @@ mod tests {
         // endgame
         session.seats[0] = Seat::Given;
         session.racks_given[0] = true;
-        let error = run(&mut session, "endgame 5").unwrap_err().to_string();
-        assert!(error.contains("bag is not empty"), "{error}");
+        assert!(!session.endgame_state().bag.is_empty());
+        run(&mut session, "endgame 5").unwrap();
     }
 
     #[test]
