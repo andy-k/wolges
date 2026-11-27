@@ -5906,6 +5906,36 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
+    params: StudyParams<'_>,
+) -> error::Returns<()> {
+    let (rows, t0, num_tasks) = study_results(game_config, kwg, klv, params)?;
+    let run_identifier = run_stamp();
+    let mut csv_out =
+        csv::Writer::from_path(claim_output_path(&format!("study-{run_identifier}"))?)?;
+    for &(size, name, words, halves, games) in &rows {
+        let wins = halves as f64 / 2.0;
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "size {size}: {name}: {words} words, {wins} of {games} games, {:.2}%",
+            100.0 * wins / games.max(1) as f64
+        )?;
+        csv_out.serialize((size, name, words, games, wins))?;
+    }
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "After {} seconds, played {} pairs for study-{run_identifier}",
+        t0.elapsed().as_secs(),
+        num_tasks
+    )?;
+    Ok(())
+}
+
+type StudyRows = Vec<(usize, &'static str, usize, u64, u64)>;
+
+fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
     StudyParams {
         playability,
         sizes,
@@ -5914,7 +5944,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         threads,
         quiet,
     }: StudyParams<'_>,
-) -> error::Returns<()> {
+) -> error::Returns<(StudyRows, std::time::Instant, u64)> {
     match game_config.game_rules() {
         game_config::GameRules::Classic => {}
         game_config::GameRules::Jumbled
@@ -5979,7 +6009,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
     }
     racks.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let mut lists = Vec::<(usize, &str, fash::MyHashSet<bites::Bites>)>::new();
+    let mut lists = Vec::<(usize, &'static str, fash::MyHashSet<bites::Bites>)>::new();
     let mut tally = vec![0u8; alphabet.len() as usize];
     for &size in sizes {
         let mut known = fash::MyHashSet::<bites::Bites>::default();
@@ -6132,26 +6162,12 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         Ok(all)
     })?;
 
-    let run_identifier = run_stamp();
-    let mut csv_out =
-        csv::Writer::from_path(claim_output_path(&format!("study-{run_identifier}"))?)?;
-    for ((size, name, known), (halves, games)) in lists.iter().zip(&results) {
-        let wins = *halves as f64 / 2.0;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "size {size}: {name}: {} words, {wins} of {games} games, {:.2}%",
-            known.len(),
-            100.0 * wins / (*games).max(1) as f64
-        )?;
-        csv_out.serialize((size, name, known.len(), games, wins))?;
-    }
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "After {} seconds, played {} pairs for study-{run_identifier}",
-        t0.elapsed().as_secs(),
-        num_tasks
-    )?;
-    Ok(())
+    let rows = lists
+        .iter()
+        .zip(results)
+        .map(|((size, name, known), (halves, games))| (*size, *name, known.len(), halves, games))
+        .collect();
+    Ok((rows, t0, num_tasks))
 }
 
 #[inline]
