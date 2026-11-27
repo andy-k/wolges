@@ -89,6 +89,96 @@ impl RackTable {
         }
     }
 
+    // the racks of fewer tiles than k, before the first of k in leave_index's
+    // order
+    #[inline(always)]
+    fn leaves_before(&self, k: usize) -> usize {
+        self.ways[..k].iter().sum::<u64>() as usize
+    }
+
+    // the racks of at most rack_size tiles the bag can deal
+    #[inline(always)]
+    fn num_leaves(&self) -> usize {
+        self.leaves_before(self.rack_size as usize + 1)
+    }
+
+    // the racks before a rack of n tiles, within those of n, from the c of tile
+    // t it holds, when it holds n less c of the tiles past t
+    #[inline(always)]
+    fn leave_step(&self, t: usize, n: usize, c: usize) -> usize {
+        let width = self.rack_size as usize + 1;
+        (0..c)
+            .map(|fewer| self.ways[(t + 1) * width + n - fewer])
+            .sum::<u64>() as usize
+    }
+
+    // a rack's index among the racks of at most rack_size tiles, by their
+    // sizes, then as rank orders racks of one size; none for one the bag
+    // cannot deal
+    #[inline(always)]
+    fn leave_index(&self, rack_tally: &[u8]) -> Option<usize> {
+        let size = rack_tally.iter().map(|&c| c as usize).sum::<usize>();
+        if size > self.rack_size as usize
+            || rack_tally.len() > self.counts.len()
+            || rack_tally
+                .iter()
+                .zip(&self.counts[..])
+                .any(|(&c, &most)| c > most)
+        {
+            return None;
+        }
+        let mut left = size;
+        let mut index = self.leaves_before(size);
+        for (t, &count) in rack_tally.iter().enumerate() {
+            index += self.leave_step(t, left, count as usize);
+            left -= count as usize;
+        }
+        Some(index)
+    }
+
+    // each subrack's value of a rack, its tiles' digits (tile, count, place
+    // value) in tile order, read from the values of leave_index's racks
+    pub(crate) fn subrack_values(
+        &self,
+        digits: &[(u8, u8, u32)],
+        leaves: &[i32],
+        values: &mut [i32],
+    ) {
+        struct Gather<'a> {
+            table: &'a RackTable,
+            leaves: &'a [i32],
+            values: &'a mut [i32],
+        }
+
+        impl Gather<'_> {
+            fn smaller(
+                &mut self,
+                digits: &[(u8, u8, u32)],
+                kept: usize,
+                within: usize,
+                index: usize,
+            ) {
+                for (i, &(tile, count, place)) in digits.iter().enumerate().rev() {
+                    for ct in 1..=count as usize {
+                        let n = kept + ct;
+                        let rank = within + self.table.leave_step(tile as usize, n, ct);
+                        let index = index + ct * place as usize;
+                        self.values[index] = self.leaves[self.table.leaves_before(n) + rank];
+                        self.smaller(&digits[..i], n, rank, index);
+                    }
+                }
+            }
+        }
+
+        values[0] = 0;
+        Gather {
+            table: self,
+            leaves,
+            values,
+        }
+        .smaller(digits, 0, 0, 0);
+    }
+
     // advance to the next rack in count order.
     fn next_rack(&self, rack: &mut [u8]) {
         let mut suffix = 0;
@@ -148,6 +238,23 @@ impl RackTable {
         let subrack_ways = Self::ways_of::<true>(&table.counts, rack_size);
         let num_bytes = usize::try_from(subrack_ways[rack_size as usize] * SUBRACK_BYTES as u64)
             .map_err(|_| "the rack table does not fit in memory")?;
+        let ranked = (!klv.is_empty() && klv.has_ordered_leave_runs())
+            .then(|| {
+                let mut values = Vec::new();
+                values.try_reserve_exact(table.num_leaves()).ok()?;
+                values.resize(table.num_leaves(), 0);
+                klv.for_each_tally_leave_up_to(
+                    table.counts.len(),
+                    rack_size as usize,
+                    |tally, val| {
+                        if let Some(index) = table.leave_index(tally) {
+                            values[index] = val;
+                        }
+                    },
+                );
+                Some(values)
+            })
+            .flatten();
         let data_start = (num_racks.checked_mul(8))
             .filter(|start| start.checked_add(num_bytes).is_some())
             .ok_or("the rack table does not fit in memory")?;
@@ -164,7 +271,11 @@ impl RackTable {
                 if i != 0 {
                     table.next_rack(&mut rack_tally);
                 }
-                multi_leaves.init_for_rack_table(&rack_tally, klv);
+                if let Some(values) = &ranked {
+                    multi_leaves.init_for_ranked_rack(&rack_tally, &table, values);
+                } else {
+                    multi_leaves.init_for_rack_table(&rack_tally, klv);
+                }
                 let leaves = multi_leaves.leave_values();
                 let (row, later) = rows.split_at_mut(leaves.len() * SUBRACK_BYTES);
                 rows = later;

@@ -498,11 +498,24 @@ impl<L: kwg::Node> Klv<L> {
         }
     }
 
+    pub(crate) fn has_ordered_leave_runs(&self) -> bool {
+        self.kwg.runs_ascend()
+    }
+
     // every leave leave_value_from_tally finds for a tally of num_tiles
     // letters, as that tally and its value, in one walk of the graph: a tally
     // not given here is one it values at 0
     #[inline]
-    pub fn for_each_tally_leave(&self, num_tiles: usize, mut f: impl FnMut(&[u8], i32)) {
+    pub fn for_each_tally_leave(&self, num_tiles: usize, f: impl FnMut(&[u8], i32)) {
+        self.for_each_tally_leave_up_to(num_tiles, usize::MAX, f);
+    }
+
+    pub(crate) fn for_each_tally_leave_up_to(
+        &self,
+        num_tiles: usize,
+        max_len: usize,
+        mut f: impl FnMut(&[u8], i32),
+    ) {
         struct Env<'a, L: kwg::Node, F: FnMut(&[u8], i32)> {
             klv: &'a Klv<L>,
             tally: Vec<u8>,
@@ -516,6 +529,7 @@ impl<L: kwg::Node> Klv<L> {
             q: i32,
             base: u32,
             min_tile: usize,
+            remaining: usize,
         ) {
             let mut p = q;
             loop {
@@ -530,8 +544,14 @@ impl<L: kwg::Node> Klv<L> {
                     if node.accepts() {
                         (env.f)(&env.tally, env.klv.leave(idx).raw());
                     }
-                    if node.arc_index() != 0 {
-                        iter(env, node.arc_index(), idx + node.accepts() as u32, tile);
+                    if remaining > 1 && node.arc_index() != 0 {
+                        iter(
+                            env,
+                            node.arc_index(),
+                            idx + u32::from(node.accepts()),
+                            tile,
+                            remaining - 1,
+                        );
                     }
                     env.tally[tile] -= 1;
                 }
@@ -542,13 +562,13 @@ impl<L: kwg::Node> Klv<L> {
             }
         }
         let root = self.kwg[0].arc_index();
-        if root != 0 {
+        if root != 0 && max_len != 0 {
             let mut env = Env {
                 klv: self,
                 tally: vec![0u8; num_tiles],
                 f: &mut f,
             };
-            iter(&mut env, root, 0, 0);
+            iter(&mut env, root, 0, 0, max_len);
         }
     }
 }
@@ -870,6 +890,27 @@ impl MultiLeaves {
             },
             std::iter::empty(),
             None,
+        );
+    }
+
+    pub(crate) fn init_for_ranked_rack(
+        &mut self,
+        rack_tally: &[u8],
+        table: &racks::RackTable,
+        ranked: &[i32],
+    ) {
+        let (dense, size, _) = self.set_digits(rack_tally, self.dense_most());
+        debug_assert!(dense);
+        self.leave_values.resize(size as usize, 0);
+        let mut digits = [(0, 0, 0); racks::MAX_RACK_SIZE as usize];
+        for (&tile, digit) in self.unique_tiles.iter().zip(&mut digits) {
+            let MultiLeavesDigit { count, place_value } = self.digits[tile as usize];
+            *digit = (tile, count, place_value);
+        }
+        table.subrack_values(
+            &digits[..self.unique_tiles.len()],
+            ranked,
+            &mut self.leave_values,
         );
     }
 
