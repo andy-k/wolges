@@ -19,7 +19,7 @@ const SHOWN: usize = 8;
 // the best few asked for, beside all
 const TOPS: [usize; 5] = [1, 2, 3, 7, 15];
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Call {
     Tables,
     Lean,
@@ -688,14 +688,14 @@ fn run_case<'a>(
                 if wasm_arm.is_none() {
                     check_arm(
                         &mut kept.arms[i],
-                        arm.call,
+                        arm.call.clone(),
                         &board_snapshot,
                         &ask,
                         &fresh.plays,
                     );
                 } else {
                     let wasm = kept.wasm[i].as_mut().expect("the wasm's generator fits");
-                    check_arm(wasm, arm.call, &board_snapshot, &ask, &fresh.plays);
+                    check_arm(wasm, arm.call.clone(), &board_snapshot, &ask, &fresh.plays);
                 }
             }
             writeln!(
