@@ -18046,7 +18046,7 @@ pub(crate) mod tests {
                         build::BuildContent::DawgOnly,
                         build::BuildLayout::Wolges,
                         build::BuildOrder::Sorted,
-                        &build::make_alphagrams(&words),
+                        &build::make_alphagrams(&words).unwrap(),
                     )
                     .unwrap()
                     .to_vec(),
@@ -18129,7 +18129,7 @@ pub(crate) mod tests {
                 build::BuildContent::DawgOnly,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
-                &build::make_alphagrams(&words),
+                &build::make_alphagrams(&words).unwrap(),
             )
             .unwrap()
             .to_vec(),
@@ -18928,7 +18928,7 @@ pub(crate) mod tests {
                 build::BuildContent::DawgOnly,
                 build::BuildLayout::Wolges,
                 build::BuildOrder::Sorted,
-                &build::make_alphagrams(&machine_words),
+                &build::make_alphagrams(&machine_words).unwrap(),
             )
             .unwrap()
             .to_vec(),
@@ -19280,7 +19280,8 @@ pub(crate) mod tests {
                             buf[..].into()
                         })
                         .collect::<Vec<bites::Bites>>(),
-                ),
+                )
+                .unwrap(),
             )
             .unwrap()
             .to_vec(),

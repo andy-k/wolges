@@ -12907,7 +12907,7 @@ WCMP_P1_SCORE 402.000000
             build::BuildContent::DawgOnly,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
-            &build::make_alphagrams(&words),
+            &build::make_alphagrams(&words).unwrap(),
         )
         .unwrap();
         let dir = format!(

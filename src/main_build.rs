@@ -697,7 +697,7 @@ fn make_kwg(args: &Kwg, alph: &alphabet::Alphabet) -> error::Returns<bites::Bite
     }
     let words = match args.words {
         Words::Plain => words,
-        Words::Alphagrams => build::make_alphagrams(&words),
+        Words::Alphagrams => build::make_alphagrams(&words)?,
         Words::Reversed | Words::PlainReversed => {
             let mut all = Vec::with_capacity(words.len() * 2);
             if matches!(args.words, Words::PlainReversed) {
@@ -997,7 +997,7 @@ fn old_main() -> error::Returns<()> {
                 &build::make_alphagrams(&read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW24.txt")?,
-                )?),
+                )?)?,
             )?,
         )?;
         writeln!(

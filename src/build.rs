@@ -373,7 +373,12 @@ impl PackedWords {
         start: usize,
         turnaround_target: u32,
         memory: Option<&endgame::MemoryLimit>,
-    ) -> Result<(), endgame::Refused> {
+    ) -> error::Returns<()> {
+        let start_u32 = u32::try_from(start)?;
+        let end = u32::try_from(self.tiles.len())?;
+        let len = end
+            .checked_sub(start_u32)
+            .ok_or("packed word starts past its tiles")?;
         endgame::room_in(memory, &mut self.words, 1)?;
         let tiles = &self.tiles[start..];
         let mut key = [0u8; 8];
@@ -381,8 +386,8 @@ impl PackedWords {
         key[..num_key_tiles].copy_from_slice(&tiles[..num_key_tiles]);
         self.words.push(PackedWord {
             key: u64::from_be_bytes(key),
-            start: start as u32,
-            len: tiles.len() as u32,
+            start: start_u32,
+            len,
             turnaround_target,
         });
         Ok(())
@@ -424,7 +429,7 @@ fn gen_machine_drowwords<W: MachineWords + ?Sized>(
     dawg_start_state: u32,
     machine_drowwords: &mut PackedWords,
     memory: Option<&endgame::MemoryLimit>,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     machine_drowwords.tiles.clear();
     machine_drowwords.words.clear();
     machine_drowwords.path.clear();
@@ -491,13 +496,13 @@ fn gen_machine_drowwords<W: MachineWords + ?Sized>(
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
 #[inline]
-pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
+pub fn make_alphagrams(machine_words: &[bites::Bites]) -> error::Returns<Box<[bites::Bites]>> {
     let mut machine_dorws = PackedWords::default();
     // with no limit, nothing is refused
-    let _ = fill_packed_alphagrams(machine_words, &mut machine_dorws, None);
-    (0..machine_dorws.num_words())
+    fill_packed_alphagrams(machine_words, &mut machine_dorws, None)?;
+    Ok((0..machine_dorws.num_words())
         .map(|index| machine_dorws.word(index).into())
-        .collect()
+        .collect())
 }
 
 // make_alphagrams packed into machine_dorws, the builder's, emptied here, each
@@ -507,7 +512,7 @@ fn fill_packed_alphagrams(
     machine_words: &[bites::Bites],
     machine_dorws: &mut PackedWords,
     memory: Option<&endgame::MemoryLimit>,
-) -> Result<(), endgame::Refused> {
+) -> error::Returns<()> {
     machine_dorws.tiles.clear();
     machine_dorws.words.clear();
     for this_word in machine_words {
@@ -1573,7 +1578,6 @@ impl Builder {
                 // lent to the build, then put back for the next
                 let mut alphagrams = std::mem::take(&mut self.alphagrams);
                 let built = fill_packed_alphagrams(machine_words, &mut alphagrams, memory)
-                    .map_err(error::BoxAnyError::from)
                     .and_then(|()| {
                         self.do_build::<2, _>(
                             BuildContent::DawgOnly,
@@ -2238,7 +2242,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{name}: kbwg refused {len} tiles: {e}"));
             assert_eq!(words_in_graph::<kwg::Node24>(&bytes), words, "{name}: kbwg");
 
-            let alphagrams = make_alphagrams(&words);
+            let alphagrams = make_alphagrams(&words).unwrap();
             let bytes = build(
                 BuildContent::DawgOnly,
                 BuildLayout::Wolges,

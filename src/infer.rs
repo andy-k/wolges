@@ -2776,7 +2776,7 @@ mod tests {
             build::BuildContent::DawgOnly,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
-            &build::make_alphagrams(&tiny_words()),
+            &build::make_alphagrams(&tiny_words()).unwrap(),
         )
         .unwrap();
         let alphagrams = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
@@ -2803,7 +2803,7 @@ mod tests {
             build::BuildContent::DawgOnly,
             build::BuildLayout::Wolges,
             build::BuildOrder::Sorted,
-            &build::make_alphagrams(&tiny_words()),
+            &build::make_alphagrams(&tiny_words()).unwrap(),
         )
         .unwrap();
         let alphagrams = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
