@@ -411,6 +411,7 @@ fn check(
     position: &Position<'_>,
 ) -> error::Returns<(usize, usize, usize, bool)> {
     let board_snapshot = movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles: position.board_tiles,
         game_config: position.gc,
         kwg: position.graph,
@@ -572,6 +573,7 @@ fn main() -> error::Returns<()> {
             plays_seen += plays;
             move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config: &gc,
                     kwg: graph,

@@ -546,6 +546,7 @@ impl<
             std::iter::repeat_n(tile, off_board[tile as usize].min(rack_size) as usize)
         }));
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.initial_game_state.board_tiles,
             game_config,
             kwg,
@@ -895,6 +896,7 @@ impl<
             } else {
                 let params = &movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &self.game_state.board_tiles,
                         game_config,
                         kwg,
@@ -1032,6 +1034,7 @@ impl<
             return Ok(false);
         }
         let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.game_state.board_tiles,
             game_config,
             kwg,
@@ -1107,6 +1110,7 @@ impl<
         while off.is_none() && !self.lanes_exhausted {
             let params = &movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &self.initial_game_state.board_tiles,
                     game_config,
                     kwg,
@@ -1170,6 +1174,7 @@ impl<
         }
         let params = &movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &self.game_state.board_tiles,
                 game_config,
                 kwg,
@@ -2322,6 +2327,7 @@ mod tests {
         generator
             .gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config,
                     kwg,
@@ -2381,6 +2387,7 @@ mod tests {
             field
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &initial.board_tiles,
                         game_config: &game_config,
                         kwg: &kwg,
@@ -2439,6 +2446,7 @@ mod tests {
                     &simmer.game_state,
                 );
                 let snapshot = movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &simmer.game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -2500,6 +2508,7 @@ mod tests {
             field
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
                         kwg: &kwg,
@@ -2571,6 +2580,7 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
                         kwg: &kwg,
@@ -2648,6 +2658,7 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
                         kwg: &kwg,
@@ -2712,6 +2723,7 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
                         kwg: &kwg,
@@ -2776,6 +2788,7 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
                         kwg: &kwg,
@@ -2973,6 +2986,7 @@ mod tests {
                     field
                         .gen_moves_unfiltered(&movegen::GenMovesParams {
                             board_snapshot: &movegen::BoardSnapshot {
+                                alphagrams: None,
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &gc,
                                 kwg: &kwg,

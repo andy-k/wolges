@@ -233,6 +233,7 @@ fn a_jumbled_generation_refused_its_largest_growth_says_so() {
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
     let board_snapshot = movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles: &board_tiles,
         game_config: &gc,
         kwg: &kwg,

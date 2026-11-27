@@ -414,6 +414,7 @@ fn run(
         let mut lean = String::new();
         for (arm, table) in [(" lean", None), ("", Some(&anagrams))] {
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles,
                 game_config,
                 kwg,
@@ -482,6 +483,7 @@ fn run(
         let mut first_all = None;
         for &(arm, anagrams, rack_lengths, tables) in &every_arm {
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles,
                 game_config,
                 kwg,
@@ -603,6 +605,7 @@ fn run(
             let warm = pass == 0;
             for (case, board_tiles, rack) in &cases {
                 let board_snapshot = movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles,
                     game_config,
                     kwg,

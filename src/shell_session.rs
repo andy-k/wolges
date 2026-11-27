@@ -898,6 +898,7 @@ impl Session {
                         .ok_or("no move to challenge")?
                         .board_before;
                     let board_snapshot = &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: board_before,
                         game_config: self.game_config,
                         kwg: self.kwg()?,
@@ -1955,6 +1956,7 @@ impl Session {
             _ => return Err("play 8D WORD, play D8 WORD, play exch TILES, or play pass".into()),
         };
         let board_snapshot = &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
             kwg,
@@ -2071,6 +2073,7 @@ impl Session {
                         out,
                         "{}",
                         turn.play.fmt(&movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &board.board_tiles,
                             game_config: self.game_config,
                             kwg,
@@ -2187,6 +2190,7 @@ impl Session {
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
         let board_snapshot = &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
             kwg,
@@ -2229,6 +2233,7 @@ impl Session {
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
         let board_snapshot = &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
             kwg,
@@ -2324,6 +2329,7 @@ impl Session {
             None => Vec::new(),
         };
         let board_snapshot = &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
             kwg,
@@ -2486,6 +2492,7 @@ impl Session {
                 tables,
                 &mut self.infer_generator,
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &shown.board_before,
                     game_config: self.game_config,
                     kwg,
@@ -2531,6 +2538,7 @@ impl Session {
                 &mut move_filter::GenMoves::Unfiltered,
                 &mut move_generator,
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &self.state.board_tiles,
                     game_config: self.game_config,
                     kwg,
@@ -2622,6 +2630,7 @@ impl Session {
         };
         let equity = self.play_scorer.compute_equity(
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &self.state.board_tiles,
                 game_config: self.game_config,
                 kwg,
@@ -2678,6 +2687,7 @@ impl Session {
     fn sim_show(&self, n: usize) -> error::Returns<()> {
         let sim = self.sim.as_ref().ok_or("no sim: sim first")?;
         let board_snapshot = &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
             kwg: self.kwg()?,
@@ -3187,6 +3197,7 @@ impl Session {
                 mover + 1,
                 self.rack_text(mover, &state.players[mover].rack),
                 play.fmt(&movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &state.board_tiles,
                     game_config: self.game_config,
                     kwg,
@@ -3285,6 +3296,7 @@ impl Session {
             let mut written = Ok(());
             words.words_all(
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &replay.state.board_tiles,
                     game_config: self.game_config,
                     kwg,
@@ -3341,6 +3353,7 @@ impl Session {
                     text,
                     "{}",
                     play.fmt(&movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &self.state.board_tiles,
                         game_config: self.game_config,
                         kwg: self.kwg()?,
@@ -4102,6 +4115,7 @@ mod tests {
             move_generator
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &session.state.board_tiles,
                         game_config: session.game_config,
                         kwg,
@@ -4619,6 +4633,7 @@ mod tests {
         let mut all = movegen::KurniaMoveGenerator::new(session.game_config);
         all.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &session.state.board_tiles,
                 game_config: session.game_config,
                 kwg: session.kwg().unwrap(),
@@ -5789,6 +5804,7 @@ mod tests {
                     &mut tables,
                     &mut move_generator,
                     &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &shown.board_before,
                         game_config,
                         kwg,
@@ -6293,6 +6309,7 @@ mod tests {
         };
         let score = first.play_scorer.compute_score(
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &first.state.board_tiles,
                 game_config: first.game_config,
                 kwg: first.kwg().unwrap(),

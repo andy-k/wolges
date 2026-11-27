@@ -833,6 +833,7 @@ mod tests {
 
         fn snap(&self) -> movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24> {
             movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &self.board,
                 game_config: &self.gc,
                 kwg: &self.kwg,
@@ -1351,6 +1352,7 @@ mod tests {
         let klv = Arc::new(klv);
         let tables = Arc::new(anagrams::ArmTables::None);
         let snap = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board,
             game_config: &gc,
             kwg: &kwg,

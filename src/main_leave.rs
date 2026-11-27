@@ -1443,6 +1443,7 @@ fn run(
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -1641,6 +1642,7 @@ fn run(
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -2345,6 +2347,7 @@ fn generate_autoplay_logs<
                         }
 
                         let board_snapshot = &movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
@@ -2919,6 +2922,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 // a block of the racks still short, consecutive
                                 // and so each at most once on this board
                                 let board_snapshot = movegen::BoardSnapshot {
+                                    alphagrams: None,
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
                                     kwg: &kwg,
@@ -2988,6 +2992,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     }
 
                                     let board_snapshot = movegen::BoardSnapshot {
+                                        alphagrams: None,
                                         board_tiles: &game_state.board_tiles,
                                         game_config: &game_config,
                                         kwg: &kwg,
@@ -3041,6 +3046,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             }
 
                             let board_snapshot = movegen::BoardSnapshot {
+                                alphagrams: None,
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &game_config,
                                 kwg: &kwg,
@@ -4661,6 +4667,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 .rack
                                 .sort_unstable();
                             let board_snapshot = &movegen::BoardSnapshot {
+                                alphagrams: None,
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &game_config,
                                 kwg: &kwg,
@@ -6034,6 +6041,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             }
                             loop {
                                 let board_snapshot = &movegen::BoardSnapshot {
+                                    alphagrams: None,
                                     board_tiles: &game_state.board_tiles,
                                     game_config,
                                     kwg,
@@ -6235,6 +6243,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         let old_bag_len = game_state.bag.len();
 
                         let board_snapshot = &movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
@@ -6924,6 +6933,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             lead,
         ));
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
@@ -7332,6 +7342,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
      -> error::Returns<bool> {
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &game_state.board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -7369,6 +7380,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                      label: &str|
      -> error::Returns<usize> {
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -7522,6 +7534,7 @@ fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot: &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -7683,6 +7696,7 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
     let mut ranked = Vec::new(); // each position's plays, best first
     while (tally.len() as u64) < a.positions {
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
@@ -7942,6 +7956,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
         )?;
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -8236,6 +8251,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     }
     let fuzz = equity_fuzz(params.fuzz)?;
     let board_snapshot = movegen::BoardSnapshot {
+        alphagrams: None,
         board_tiles: &board_tiles,
         game_config: &game_config,
         kwg: &kwg,
@@ -8591,6 +8607,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                     loop {
                         let is_mover = game_state.turn == 0;
                         let board_snapshot = movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &game_state.board_tiles,
                             game_config,
                             kwg,
@@ -9295,6 +9312,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     let mut num_turns = 0u32;
                     loop {
                         let board_snapshot = movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &game_state.board_tiles,
                             game_config,
                             kwg,
@@ -9683,6 +9701,7 @@ fn play_out_hasty<N: kwg::Node, L: kwg::Node>(
     ) {
         state.next_turn()?;
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &state.board_tiles,
             game_config,
             kwg,
@@ -9928,6 +9947,7 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     loop {
                         let bag = game_state.bag.len();
                         let board_snapshot = movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: &game_state.board_tiles,
                             game_config,
                             kwg,
@@ -10534,6 +10554,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     };
     if let Some(rack) = rack {
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -10695,6 +10716,7 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
         let mut ply = 0u32;
         loop {
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &game_state.board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -11066,6 +11088,7 @@ impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
         seat: usize,
     ) -> movegen::BoardSnapshot<'a, N, L> {
         movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &state.board_tiles,
             game_config: self.game_config,
             kwg: self.kwg,
@@ -11482,6 +11505,7 @@ fn compare_seats<
                             let end_reason = loop {
                                 let is_p0_seat = (game_state.turn == 0) != seat_swapped;
                                 let board_snapshot = movegen::BoardSnapshot {
+                                    alphagrams: None,
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
                                     kwg: &kwg,
@@ -12396,6 +12420,7 @@ WCMP_P1_SCORE 402.000000
         board_tiles[dim.at_row_col(7, 7).unwrap()] = 17;
         board_tiles[dim.at_row_col(7, 8).unwrap()] = 9;
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -12701,6 +12726,7 @@ WCMP_P1_SCORE 402.000000
                     .rack
                     .sort_unstable();
                 let board_snapshot = &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,

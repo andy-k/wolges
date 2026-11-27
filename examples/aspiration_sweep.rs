@@ -73,6 +73,7 @@ fn autoplay(
             }
             generator.gen_moves_unfiltered(&GenMovesParams {
                 board_snapshot: &BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game.board_tiles,
                     game_config: gc,
                     kwg,

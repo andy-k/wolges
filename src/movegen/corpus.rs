@@ -627,6 +627,7 @@ fn run_case<'a>(
                 continue;
             }
             let snapshot = |arm: &Arm<'a>| BoardSnapshot {
+                alphagrams: None,
                 board_tiles,
                 game_config: gc,
                 kwg,

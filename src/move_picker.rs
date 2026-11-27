@@ -1244,6 +1244,7 @@ fn gen_plays<N: kwg::Node, L: kwg::Node>(
 ) {
     generator.gen_raw_placements_in_lanes(
         &movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles,
             game_config: board_snapshot.game_config,
             kwg: board_snapshot.kwg,
@@ -2634,6 +2635,7 @@ impl<
             tables,
             infer_generator,
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: last.board_before,
                 game_config: self.game_config,
                 kwg: self.kwg,
@@ -2743,6 +2745,7 @@ impl<
                     .get_or_insert_with(|| movegen::KurniaMoveGenerator::new(self.game_config)))
                 .gen_remaining_words_within(
                     &movegen::BoardSnapshot {
+                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: self.game_config,
                         kwg: self.kwg,
@@ -3201,6 +3204,7 @@ mod tests {
         let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv_bytes.to_vec()).unwrap();
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles,
             game_config,
             kwg: &kwg,
@@ -3623,6 +3627,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -3778,6 +3783,7 @@ mod tests {
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -3851,6 +3857,7 @@ mod tests {
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -3949,6 +3956,7 @@ mod tests {
                 &mut move_filter::GenMoves::Unfiltered,
                 move_generator,
                 &movegen::BoardSnapshot {
+                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
@@ -4022,6 +4030,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -4208,6 +4217,7 @@ mod tests {
             &mut infer::InferTables::new(&game_config, &klv).unwrap(),
             &mut movegen::KurniaMoveGenerator::new(&game_config),
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board_before,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -4235,6 +4245,7 @@ mod tests {
             &mut mixed_tables,
             &mut movegen::KurniaMoveGenerator::new(&game_config),
             &movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board_before,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -4254,6 +4265,7 @@ mod tests {
         // and the move picked with the last move given is the one a decision
         // handed those leaves picks
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -4371,6 +4383,7 @@ mod tests {
         loop {
             let seat = game_state.turn as usize;
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &game_state.board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -4403,6 +4416,7 @@ mod tests {
                         &mut tables,
                         &mut infer_generator,
                         &movegen::BoardSnapshot {
+                            alphagrams: None,
                             board_tiles: board_before,
                             game_config: &game_config,
                             kwg: &kwg,
@@ -4745,6 +4759,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -4779,6 +4794,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 14, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -4912,6 +4928,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -4979,6 +4996,7 @@ mod tests {
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         board_tiles[dim.at_on_board(7, 7)] = 1; // A
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5024,6 +5042,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5071,6 +5090,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5111,6 +5131,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5230,6 +5251,7 @@ mod tests {
             .unwrap()
             .to_vec();
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5302,6 +5324,7 @@ mod tests {
             .unwrap()
             .to_vec();
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5361,6 +5384,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5414,6 +5438,7 @@ mod tests {
         ] {
             let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
             let board_snapshot = movegen::BoardSnapshot {
+                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
@@ -5600,6 +5625,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let (board_tiles, positions) = care_positions(&game_config);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5632,6 +5658,7 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let (board_tiles, positions) = care_positions(&game_config);
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
@@ -5719,6 +5746,7 @@ mod tests {
             memory: None,
         };
         let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
