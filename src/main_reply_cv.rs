@@ -131,7 +131,7 @@ fn position(
         ) {
             return Err("the game ended".into());
         }
-        gs.next_turn();
+        gs.next_turn()?;
     }
     Ok(())
 }

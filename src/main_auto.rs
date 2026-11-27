@@ -635,7 +635,7 @@ fn do_it(
                 }
                 game_state::CheckGameEnded::NotEnded => {}
             }
-            game_state.next_turn();
+            game_state.next_turn()?;
 
             if let Some(harvest) = &harvest
                 && game_state.bag.is_empty()

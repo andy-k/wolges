@@ -2522,7 +2522,7 @@ fn generate_autoplay_logs<
 
                         let old_turn = game_state.turn;
                         num_turns[old_turn as usize] += 1;
-                        game_state.next_turn();
+                        game_state.next_turn().map_err(fail)?;
                         let new_turn = game_state.turn;
                         game_state.turn = old_turn;
 
@@ -3055,7 +3055,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             game_state.play(&game_config, &mut rng, &play.play)?;
                             let game_ended =
                                 game_state.check_game_ended(&game_config, &mut final_scores)?;
-                            game_state.next_turn();
+                            game_state.next_turn()?;
                             turn_idx += 1;
                             if !matches!(game_ended, game_state::CheckGameEnded::NotEnded) {
                                 break;
@@ -4677,7 +4677,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     break 'boards;
                                 }
                             };
-                            game_state.next_turn();
+                            if let Err(e) = game_state.next_turn() {
+                                error = Some(e);
+                                failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                break 'boards;
+                            }
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
                                 break;
                             }
@@ -6043,7 +6047,7 @@ fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     | game_state::CheckGameEnded::ZeroScores => break,
                                     game_state::CheckGameEnded::NotEnded => {}
                                 }
-                                game_state.next_turn();
+                                game_state.next_turn()?;
                             }
                             let (theirs, whole) = if swapped {
                                 (final_scores[1], final_scores[0])
@@ -6286,7 +6290,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         }
 
                         completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        game_state.next_turn();
+                        game_state.next_turn()?;
                     }
                 }
 
@@ -6906,7 +6910,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             game_state::CheckGameEnded::NotEnded => {}
             _ => break,
         }
-        game_state.next_turn();
+        game_state.next_turn()?;
     }
     Ok(())
 }
@@ -7311,7 +7315,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
         let mut final_scores = vec![0i32; game_config.num_players() as usize];
         match game_state.check_game_ended(&game_config, &mut final_scores)? {
             game_state::CheckGameEnded::NotEnded => {
-                game_state.next_turn();
+                game_state.next_turn()?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -7696,7 +7700,7 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
         }
         game_state.play(game_config, &mut rng, &static_best)?;
         match game_state.check_game_ended(game_config, &mut final_scores)? {
-            game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+            game_state::CheckGameEnded::NotEnded => game_state.next_turn()?,
             _ => game_state.reset_and_draw_tiles(game_config, &mut rng),
         }
     }
@@ -8708,7 +8712,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                             | game_state::CheckGameEnded::ZeroScores => break,
                             game_state::CheckGameEnded::NotEnded => {}
                         }
-                        game_state.next_turn();
+                        game_state.next_turn()?;
                     }
                     finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -9334,7 +9338,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             | game_state::CheckGameEnded::ZeroScores => break,
                             game_state::CheckGameEnded::NotEnded => {}
                         }
-                        game_state.next_turn();
+                        game_state.next_turn()?;
                     }
                 }
                 Ok((out, cands))
@@ -9632,7 +9636,7 @@ fn play_out_hasty<N: kwg::Node, L: kwg::Node>(
         state.check_game_ended(game_config, final_scores)?,
         game_state::CheckGameEnded::NotEnded
     ) {
-        state.next_turn();
+        state.next_turn()?;
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &state.board_tiles,
             game_config,
@@ -9922,7 +9926,7 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         match game_state.check_game_ended(game_config, &mut work.final_scores)? {
                             game_state::CheckGameEnded::PlayedOut
                             | game_state::CheckGameEnded::ZeroScores => break,
-                            game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+                            game_state::CheckGameEnded::NotEnded => game_state.next_turn()?,
                         }
                     }
                     let secs = t0.elapsed().as_secs();
@@ -10659,7 +10663,7 @@ fn harvest_boards_impl<N: kwg::Node, L: kwg::Node, const LEAN: bool>(
                 fen(&mut out, &game_state.board_tiles)?;
             }
             match game_state.check_game_ended(&game_config, &mut final_scores)? {
-                game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+                game_state::CheckGameEnded::NotEnded => game_state.next_turn()?,
                 _ => break,
             }
         }
@@ -11036,7 +11040,7 @@ impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
         let mut scores = [0; 2];
         let end = state.check_game_ended(self.game_config, &mut scores)?;
         if matches!(end, game_state::CheckGameEnded::NotEnded) {
-            state.next_turn();
+            state.next_turn()?;
             Ok(None)
         } else {
             Ok(Some((scores[swapped], scores[1 - swapped], *turns, end)))
@@ -11559,7 +11563,7 @@ fn compare_seats<
                                     | game_state::CheckGameEnded::ZeroScores => break end,
                                     game_state::CheckGameEnded::NotEnded => {}
                                 }
-                                game_state.next_turn();
+                                game_state.next_turn()?;
                             };
 
                             let (p0_score, p1_score) = if seat_swapped {
@@ -12681,7 +12685,7 @@ WCMP_P1_SCORE 402.000000
                 ) {
                     break;
                 }
-                game_state.next_turn();
+                game_state.next_turn().unwrap();
             }
         }
         // both ways were taken

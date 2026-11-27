@@ -280,7 +280,9 @@ impl Question {
                 game_state
                     .play(game_config, &mut rng, &play)
                     .map_err(|e| fmt_error!(format_args!("invalid play: {e}")))?;
-                game_state.next_turn();
+                game_state
+                    .next_turn()
+                    .map_err(|e| error::new(e.to_string()))?;
             }
         }
         let board_tiles = game_state

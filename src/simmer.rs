@@ -975,7 +975,7 @@ impl<
                     return Ok(true);
                 }
             }
-            self.game_state.next_turn();
+            self.game_state.next_turn()?;
             ply += 1;
         }
         // if the rollout stops before the game ends while the bag is empty,
@@ -2303,7 +2303,7 @@ mod tests {
                 game_state
                     .play(&game_config, &mut deal_rng, &play.play)
                     .unwrap();
-                game_state.next_turn();
+                game_state.next_turn().unwrap();
             }
             let mut simmer = Simmer::new(&game_config).unwrap();
             simmer.reseed(seed);
@@ -2346,7 +2346,7 @@ mod tests {
                 ) {
                     continue;
                 }
-                simmer.game_state.next_turn();
+                simmer.game_state.next_turn().unwrap();
                 if infer::bag_size(&simmer.game_state.board_tiles, &game_config) <= 0 {
                     continue;
                 }
@@ -2423,7 +2423,7 @@ mod tests {
                 game_state
                     .play(&game_config, &mut deal_rng, &play.play)
                     .unwrap();
-                game_state.next_turn();
+                game_state.next_turn().unwrap();
             }
             field.gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
