@@ -541,7 +541,11 @@ fn run_batch<N: kwg::Node>(
 
         let line = Line {
             game_config: &game_config,
-            graphs: &wolges::movegen::Vocab::lean(smaller_kwg),
+            graphs: &if solving.lean {
+                wolges::movegen::Vocab::lean(smaller_kwg)
+            } else {
+                wolges::movegen::Vocab::new(&game_config, smaller_kwg)?
+            },
             arm_tables: &arm_tables,
             run_letters: smaller_graph.run_letters(),
             board_tiles: &board_tiles,
@@ -1744,7 +1748,11 @@ fn solve_position<N: kwg::Node>(
     let arm_tables = solver_tables(&smaller_kwg, game_config, solving.lean)?;
     move_generator.reset_for_another_kwg();
 
-    let vocab = wolges::movegen::Vocab::lean(&smaller_kwg);
+    let vocab = if solving.lean {
+        wolges::movegen::Vocab::lean(&smaller_kwg)
+    } else {
+        wolges::movegen::Vocab::new(game_config, &smaller_kwg)?
+    };
     let mut egs =
         endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(game_config, &vocab, &arm_tables)?;
     reserve_table(&mut egs, solving);
