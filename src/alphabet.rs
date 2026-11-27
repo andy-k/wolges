@@ -10,7 +10,7 @@ struct Tile {
     blank_label: bites_str::BitesStr,
     freq: u8,
     score: i8,
-    scaled_score: i16, // score * equity::SCALE, precomputed once
+    scaled_score: i32, // score * equity::SCALE, precomputed once
     is_vowel: bool,
     alias_labels: Vec<bites_str::BitesStr>,
     alias_blank_labels: Vec<bites_str::BitesStr>,
@@ -73,7 +73,7 @@ impl Alphabet {
             let tile = if byte & 0x80 != 0 { 0 } else { byte };
             if let Some(tile) = tiles.get(tile) {
                 scores[byte] = tile.score;
-                scaled_scores[byte] = i32::from(tile.scaled_score);
+                scaled_scores[byte] = tile.scaled_score;
             }
         }
         let mut tiles_by_descending_scores = Box::from_iter(0..num_letters);
@@ -110,9 +110,6 @@ impl Alphabet {
             let blank_label = tokens.next().ok_or("not enough tokens")?.into();
             let freq = u8::from_str(tokens.next().ok_or("not enough tokens")?)?;
             let score = i8::from_str(tokens.next().ok_or("not enough tokens")?)?;
-            if !(-32..=32).contains(&score) {
-                return Err("a tile scores from -32 to 32".into());
-            }
             let is_vowel = match u8::from_str(tokens.next().ok_or("not enough tokens")?)? {
                 0 => false,
                 1 => true,
@@ -136,7 +133,7 @@ impl Alphabet {
                 label,
                 blank_label,
                 freq,
-                scaled_score: i16::from(score) * equity::SCALE as i16,
+                scaled_score: i32::from(score) * equity::SCALE,
                 score,
                 is_vowel,
                 alias_labels,
@@ -719,11 +716,12 @@ mod tests {
 
     #[test]
     #[inline]
-    fn a_tile_file_is_refused_where_its_scores_would_not_fit() {
+    fn a_tile_file_takes_any_score_and_up_to_64_tiles() {
         assert!(Alphabet::new_static_from_text(&tiles_text(27, 32)).is_ok());
         assert!(Alphabet::new_static_from_text(&tiles_text(27, -32)).is_ok());
-        assert!(Alphabet::new_static_from_text(&tiles_text(27, 33)).is_err());
-        assert!(Alphabet::new_static_from_text(&tiles_text(27, -33)).is_err());
+        let alphabet = Alphabet::new_static_from_text(&tiles_text(27, 127)).unwrap();
+        assert_eq!(alphabet.scaled_score(1).raw(), 127 * equity::SCALE);
+        assert!(Alphabet::new_static_from_text(&tiles_text(27, -128)).is_ok());
         assert!(Alphabet::new_static_from_text(&tiles_text(64, 1)).is_ok());
         assert!(Alphabet::new_static_from_text(&tiles_text(65, 1)).is_err());
         assert!(Alphabet::new_static_from_text("").is_err());
@@ -772,7 +770,7 @@ mod tests {
         let read_file = |path: &str| -> error::Returns<String> {
             match path {
                 "few.txt" => Ok(tiles_text(5, 3)),
-                "dear.txt" => Ok(tiles_text(5, 33)),
+                "dear.txt" => Ok("?\t?\t2\t0\t0\t0\t0\nA\ta\t1\t128\t0\t0\t0\n".to_string()),
                 _ => Err(format!("no file {path}").into()),
             }
         };
