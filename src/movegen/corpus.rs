@@ -159,7 +159,7 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
         rack: ask.rack,
         max_gen,
         num_exchanges_by_this_player: ask.num_exchanges_by_this_player,
-        pass_policy: ask.pass_policy,
+        pass_policy: ask.pass_policy.clone(),
         dynamic_leaves: None,
     };
     let generate = |g: &mut KurniaMoveGenerator<G, JUMPS, ANY_SIDE>, max_gen: usize| match call {
@@ -194,7 +194,7 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
                     board_snapshot,
                     ask.rack,
                     ask.num_exchanges_by_this_player,
-                    ask.pass_policy,
+                    ask.pass_policy.clone(),
                 )
                 .unwrap(),
             Call::Lean => generator
@@ -202,7 +202,7 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
                     board_snapshot,
                     ask.rack,
                     ask.num_exchanges_by_this_player,
-                    ask.pass_policy,
+                    ask.pass_policy.clone(),
                 )
                 .unwrap(),
         }
@@ -261,7 +261,7 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
                         board_snapshot,
                         ask.rack,
                         ask.num_exchanges_by_this_player,
-                        ask.pass_policy,
+                        ask.pass_policy.clone(),
                         rows,
                         cols,
                     )
@@ -271,7 +271,7 @@ fn check_arm<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, N: kwg::Node,
                         board_snapshot,
                         ask.rack,
                         ask.num_exchanges_by_this_player,
-                        ask.pass_policy,
+                        ask.pass_policy.clone(),
                         rows,
                         cols,
                     )
@@ -643,7 +643,7 @@ fn run_case<'a>(
                 rack,
                 max_gen: usize::MAX,
                 num_exchanges_by_this_player,
-                pass_policy,
+                pass_policy: pass_policy.clone(),
                 dynamic_leaves: None,
             };
             match arms[0].call {
@@ -678,7 +678,7 @@ fn run_case<'a>(
                 let board_snapshot = snapshot(arm);
                 let ask = Ask {
                     rack,
-                    pass_policy,
+                    pass_policy: pass_policy.clone(),
                     num_exchanges_by_this_player,
                     masks,
                     run_letter_bits,
