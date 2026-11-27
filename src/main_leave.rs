@@ -12741,6 +12741,127 @@ WCMP_P1_SCORE 402.000000
         std::fs::remove_dir(&dir).unwrap();
     }
 
+    #[test]
+    fn harvest_boards_plays_under_woadwage_rules() {
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let classic = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            rack_size: 5,
+            ..english
+        });
+        let mut words = [
+            "AE", "AI", "AN", "AR", "AS", "AT", "EA", "EN", "ER", "ES", "ET", "IN", "IS", "IT",
+            "NA", "NE", "NO", "ON", "OR", "OS", "RE", "SO", "TA", "TE", "TI", "TO", "ANT", "ATE",
+            "EAT", "EON", "ERA", "ETA", "ION", "ITS", "NET", "NIT", "NOR", "NOT", "ONE", "ORE",
+            "RAN", "RAT", "ROE", "SAT", "SEA", "SET", "SIT", "TAN", "TEA", "TEN", "TIE", "TIN",
+            "TOE", "TON", "NOTE", "RAIN", "RATE", "REST", "SEAT", "STAR", "TEAR", "TONE", "STONE",
+            "TEARS",
+        ]
+        .iter()
+        .map(|word| word.bytes().map(|c| c - b'A' + 1).collect::<Vec<u8>>()[..].into())
+        .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let longest = words.iter().map(|w| w.len()).max().unwrap();
+        let gaddawg = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let alphadawg = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &build::make_alphagrams(&words),
+        )
+        .unwrap();
+        let dir = format!(
+            "{}/target/harvest_boards_woadwage-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let boards_path = format!("{dir}/boards");
+        let boards = |game_config: &game_config::GameConfig, kwg_bytes: &[u8], lean, digest| {
+            harvest_boards(
+                game_config.clone(),
+                kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+                read_klv(game_config, "-").unwrap(),
+                &boards_path,
+                HarvestParams {
+                    num_games: 4,
+                    seed: 1,
+                    stride: 1,
+                    lean,
+                    digest,
+                    quiet: true,
+                },
+            )
+            .unwrap();
+            std::fs::read_to_string(&boards_path).unwrap()
+        };
+        let longest_run = |fen: &str| {
+            let rows = fen
+                .split('/')
+                .map(|row| {
+                    let mut cells = Vec::new();
+                    let mut skip = 0usize;
+                    for c in row.chars() {
+                        if let Some(d) = c.to_digit(10) {
+                            skip = skip * 10 + d as usize;
+                        } else {
+                            cells.resize(cells.len() + skip, false);
+                            skip = 0;
+                            cells.push(true);
+                        }
+                    }
+                    cells.resize(cells.len() + skip, false);
+                    cells
+                })
+                .collect::<Vec<_>>();
+            let mut most = 0;
+            for down in [false, true] {
+                for a in 0..rows.len() {
+                    let mut run = 0;
+                    for b in 0..rows.len() {
+                        if if down { rows[b][a] } else { rows[a][b] } {
+                            run += 1;
+                            most = most.max(run);
+                        } else {
+                            run = 0;
+                        }
+                    }
+                }
+            }
+            most
+        };
+        let classic_digest = boards(&classic, &gaddawg, true, true);
+        for (rules, game_config, kwg_bytes) in [
+            ("woadwage", classic.woadwage(), &gaddawg),
+            ("jumbled woadwage", classic.jumbled_woadwage(), &alphadawg),
+        ] {
+            let walked = boards(&game_config, kwg_bytes, true, false);
+            assert!(
+                walked.lines().map(longest_run).max().unwrap() > longest,
+                "{rules}"
+            );
+            let digest = boards(&game_config, kwg_bytes, true, true);
+            assert_ne!(digest, classic_digest, "{rules}");
+            assert_eq!(
+                boards(&game_config, kwg_bytes, false, false),
+                walked,
+                "{rules}"
+            );
+            assert_eq!(
+                boards(&game_config, kwg_bytes, false, true),
+                digest,
+                "{rules}"
+            );
+        }
+        std::fs::remove_file(&boards_path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
     fn each_mangling(
         seed: &[u8],
         rng: &mut rand_xoshiro::Xoshiro256PlusPlus,
