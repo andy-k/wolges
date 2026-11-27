@@ -61,8 +61,8 @@ fn draw_counts(unseen: &[u8], bag: usize) -> BTreeMap<Vec<u8>, u32> {
 
 #[test]
 #[ignore = "requires an external CSW24.kwg"]
-fn woogles_peg_draw_outcomes() {
-    let cases: Vec<Case> = serde_json::from_str(include_str!("fixtures/woogles_peg.json")).unwrap();
+fn peg_draw_outcomes() {
+    let cases: Vec<Case> = serde_json::from_str(include_str!("fixtures/peg_draws.json")).unwrap();
     let graph = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lexbin/CSW24.kwg");
     let bytes = std::fs::read(&graph).unwrap_or_else(|e| panic!("{}: {e}", graph.display()));
     let kwg = kwg::kbwg_from_bytes_alloc(bytes, false).unwrap();
