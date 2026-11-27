@@ -29,7 +29,7 @@ pub struct StaticGameConfig {
     pub exchange_tile_limit: i16, // >= 1
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Op {
     Generation,
     Inference,
@@ -1120,7 +1120,7 @@ mod tests {
                     let too_long_a_rack =
                         op == Op::Tables && game_config.rack_size() > racks::MAX_RACK_SIZE;
                     assert_eq!(
-                        game_config.supports(op).is_err(),
+                        game_config.supports(op.clone()).is_err(),
                         too_long_a_rack,
                         "{name} {op:?}"
                     );
