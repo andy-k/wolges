@@ -11600,8 +11600,9 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
     // each word the board can still take, whatever the racks and the bag hold:
     // found_word is called once for each, in ascending order
     // it prunes to the graph's words, one word a play; a woadwage or jumbled
-    // woadwage game's (a simmer's, an endgame's) it gives every word of the
-    // graph, unpruned, as a play's two words may split anywhere
+    // woadwage game's (a simmer's, an endgame's) it prunes to the graph's
+    // words some span of some line can take, as a play's two words may split
+    // anywhere
     #[inline(always)]
     pub fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
         &mut self,
@@ -15447,6 +15448,7 @@ struct PruneBuffers {
     shapes: Vec<(usize, usize)>,
     kept_shapes: Vec<(usize, usize)>,
     lone: LoneBuffers,
+    empty_line: Vec<u8>,
 }
 
 // the words a prune finds, each kept once however often it is found: their
@@ -15792,6 +15794,193 @@ fn gen_remaining_jumbled_words<
     )
 }
 
+fn gen_remaining_woadwage_words<
+    'a,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+    const BAG_TERM: bool,
+    S: BoardStore,
+>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
+    memory: Option<&endgame::MemoryLimit>,
+) -> Result<(), endgame::Refused> {
+    struct Env<'a, N: kwg::Node> {
+        kwg: &'a kwg::Kwg<N>,
+        available: &'a mut [u8], // the tiles not on the board, a blank at 0
+        required: &'a mut [u8],  // a jumbled span's tiles still to place
+        word: &'a mut Vec<u8>,
+        found: &'a mut FoundWords,
+        memory: Option<&'a endgame::MemoryLimit>,
+    }
+
+    #[inline(always)]
+    fn take_from(available: &[u8], tile: usize) -> Option<usize> {
+        if available[tile] > 0 {
+            Some(tile)
+        } else if available[0] > 0 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    fn walk_along<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32, squares: &[u8]) {
+        let Some((&square, rest)) = squares.split_first() else {
+            return;
+        };
+        loop {
+            let node = env.kwg[p];
+            let tile = node.tile() as usize;
+            let from = if square != 0 {
+                if tile == (square & 0x7f) as usize {
+                    Some(None)
+                } else {
+                    None
+                }
+            } else {
+                take_from(env.available, tile).map(Some)
+            };
+            if let Some(from) = from {
+                if let Some(from) = from {
+                    env.available[from] -= 1;
+                }
+                env.word.push(tile as u8);
+                if node.accepts() {
+                    env.found.insert(env.word, env.memory);
+                }
+                let next = node.arc_index();
+                if next != 0 {
+                    walk_along(env, next, rest);
+                }
+                env.word.pop();
+                if let Some(from) = from {
+                    env.available[from] += 1;
+                }
+            }
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+
+    fn walk_jumbled<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32, left: usize, owed: usize) {
+        let lowest_owed = if owed > 0 {
+            env.required.iter().position(|&count| count > 0)
+        } else {
+            None
+        };
+        loop {
+            let node = env.kwg[p];
+            let tile = node.tile() as usize;
+            if lowest_owed.is_some_and(|lowest| tile > lowest) {
+                break;
+            }
+            let from = if env.required[tile] > 0 {
+                Some((true, tile))
+            } else {
+                take_from(env.available, tile).map(|index| (false, index))
+            };
+            if let Some((required, index)) = from {
+                let tally = if required {
+                    &mut *env.required
+                } else {
+                    &mut *env.available
+                };
+                tally[index] -= 1;
+                env.word.push(tile as u8);
+                let owed = owed - required as usize;
+                if left == 1 {
+                    if owed == 0 && node.accepts() {
+                        env.found.insert(env.word, env.memory);
+                    }
+                } else if owed < left {
+                    let next = node.arc_index();
+                    if next != 0 {
+                        walk_jumbled(env, next, left - 1, owed);
+                    }
+                }
+                env.word.pop();
+                let tally = if required {
+                    &mut *env.required
+                } else {
+                    &mut *env.available
+                };
+                tally[index] += 1;
+            }
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+
+    let game_config = &board_snapshot.game_config;
+    let dim = game_config.board_layout().dim();
+    let jumbled = matches!(
+        game_config.game_rules(),
+        game_config::GameRules::JumbledWoadwage
+    );
+    let PruneBuffers {
+        found,
+        required,
+        empty_line,
+        ..
+    } = &mut working_buffer.prune;
+    let longest = dim.rows.max(dim.cols) as usize;
+    required.clear();
+    endgame::room_in(memory, required, game_config.alphabet().len() as usize)?;
+    required.resize(game_config.alphabet().len() as usize, 0);
+    let root = board_snapshot.kwg[0].arc_index();
+    if root == 0 {
+        return Ok(());
+    }
+    let word = &mut working_buffer.exchange_buffer;
+    word.clear();
+    endgame::room_in(memory, word, longest)?;
+    let mut env = Env {
+        kwg: board_snapshot.kwg,
+        available: &mut working_buffer.used_letters_tally,
+        required,
+        word,
+        found,
+        memory,
+    };
+    empty_line.clear();
+    endgame::room_in(memory, empty_line, longest)?;
+    empty_line.resize(longest, 0);
+    let lines = std::iter::once(&empty_line[..]).chain(
+        (board_snapshot.board_tiles.chunks_exact(dim.cols as usize))
+            .chain(
+                working_buffer
+                    .transposed_board_tiles
+                    .chunks_exact(dim.rows as usize),
+            )
+            .filter(|line| line.iter().any(|&tile| tile != 0)),
+    );
+    for (index, line) in lines.enumerate() {
+        let len = line.len();
+        for start in 0..if index == 0 { 1 } else { len } {
+            if !jumbled {
+                walk_along(&mut env, root, &line[start..]);
+                continue;
+            }
+            env.required.fill(0);
+            let mut held = 0;
+            for end in start..len {
+                if line[end] != 0 {
+                    env.required[(line[end] & 0x7f) as usize] += 1;
+                    held += 1;
+                }
+                walk_jumbled(&mut env, root, end + 1 - start, held);
+            }
+        }
+    }
+    env.found.refused()
+}
+
 // each word the board can still take: the tiles on it stay, and those not on
 // it, a blank as any letter, may fill its empty squares however they come to
 // the racks. found_word is called once for each, in ascending order. A word
@@ -15841,37 +16030,9 @@ fn gen_remaining_words<
     match game_config.game_rules() {
         game_config::GameRules::Classic => {}
         game_config::GameRules::Woadwage | game_config::GameRules::JumbledWoadwage => {
-            fn each_word<N: kwg::Node>(
-                kwg: &kwg::Kwg<N>,
-                mut p: i32,
-                word: &mut Vec<u8>,
-                found_word: &mut impl FnMut(&[u8]),
-            ) {
-                loop {
-                    let node = kwg[p];
-                    word.push(node.tile());
-                    if node.accepts() {
-                        found_word(word);
-                    }
-                    if node.arc_index() != 0 {
-                        each_word(kwg, node.arc_index(), word, found_word);
-                    }
-                    word.pop();
-                    if node.is_end() {
-                        break;
-                    }
-                    p += 1;
-                }
-            }
-            let word = &mut working_buffer.exchange_buffer;
-            word.clear();
-            endgame::room_in(memory, word, dim.rows.max(dim.cols) as usize)?;
-            let root = board_snapshot.kwg[0].arc_index();
-            let mut found_word = found_word;
-            if root != 0 {
-                each_word(board_snapshot.kwg, root, word, &mut found_word);
-            }
-            return Ok(());
+            gen_remaining_woadwage_words(board_snapshot, working_buffer, memory)?;
+            let PruneBuffers { found, order, .. } = &mut working_buffer.prune;
+            return found.each_kept(|_| true, order, found_word, memory);
         }
         game_config::GameRules::Jumbled => {
             gen_remaining_jumbled_words(board_snapshot, working_buffer, memory)?;
@@ -20294,6 +20455,12 @@ pub(crate) mod tests {
                     };
                     for _rack in 0..5 {
                         let rack = woadwage_toy_rack(&mut seed, woadwage_toy_most_tiles());
+                        let with_rack = (board_tiles.iter().copied())
+                            .chain(rack.iter().map(|&tile| if tile == 0 { 0x80 } else { tile }))
+                            .collect::<Vec<_>>();
+                        if !woadwage_within_bag(&gc, &with_rack) {
+                            continue;
+                        }
                         assert_eq!(
                             woadwage_brute_keys(side, &board_tiles, &rack, &pruned),
                             woadwage_brute_keys(side, &board_tiles, &rack, &explicit),
@@ -20428,6 +20595,55 @@ pub(crate) mod tests {
                     "[jumbled {jumbled} {run:?} {rack:?} {kept:?}]"
                 );
             }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn the_woadwage_word_prune_drops_a_word_no_span_can_take() {
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let words: Vec<Vec<u8>> = vec![vec![1, 2], vec![1, 4], vec![26, 26]];
+        let side = 5i8;
+        for jumbled in [false, true] {
+            let (gc, kwg) = if jumbled {
+                (
+                    woadwage_toy_config(side).jumbled_woadwage(),
+                    crate::jumbled_woadwage::tests::kad_for(&words),
+                )
+            } else {
+                let kwg = kwg::kbwg_from_bytes_alloc(
+                    build::build(
+                        build::BuildContent::Gaddawg,
+                        build::BuildLayout::Wolges,
+                        build::BuildOrder::Sorted,
+                        &(words.iter())
+                            .map(|word| bites::Bites::from(&word[..]))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap()
+                    .to_vec(),
+                    false,
+                )
+                .unwrap();
+                (woadwage_toy_config(side), kwg)
+            };
+            let mut board_tiles = vec![0u8; side as usize * side as usize];
+            board_tiles[12] = 1;
+            board_tiles[13] = 0x84;
+            board_tiles[0] = 0x84;
+            let mut kept = Vec::<Vec<u8>>::new();
+            KurniaMoveGenerator::new(&gc).gen_remaining_words(
+                &BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                |word: &[u8]| kept.push(word.to_vec()),
+            );
+            assert_eq!(kept, vec![vec![1, 2], vec![1, 4]], "[jumbled {jumbled}]");
         }
     }
 

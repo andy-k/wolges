@@ -13384,6 +13384,15 @@ mod tests {
                         woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
                         woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
                     ];
+                    let with_racks = (board.iter().copied())
+                        .chain(
+                            (racks.iter().flatten())
+                                .map(|&tile| if tile == 0 { 0x80 } else { tile }),
+                        )
+                        .collect::<Vec<_>>();
+                    if !woadwage_within_bag(&gc, &with_racks) {
+                        continue;
+                    }
                     let mover = (woadwage_rng(&mut seed) % gc.num_players() as u64) as u8;
                     let solve = |kwg: &kwg::Kwg<kwg::Node24>| {
                         let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
