@@ -995,23 +995,14 @@ impl<
                 next_play = movegen::Play::Exchange {
                     tiles: [][..].into(),
                 };
-            } else if {
-                #[cfg(not(target_family = "wasm"))]
-                {
-                    self.pick_preempty(
-                        game_config,
-                        graphs,
-                        arm_tables,
-                        klv,
-                        (ply, term),
-                        &mut next_play,
-                    )?
-                }
-                #[cfg(target_family = "wasm")]
-                {
-                    false
-                }
-            } {
+            } else if self.pick_preempty(
+                game_config,
+                graphs,
+                arm_tables,
+                klv,
+                (ply, term),
+                &mut next_play,
+            )? {
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
                 let reply = self.reply_at_ply_one::<LEAN, _, _, _>(
                     game_config,
@@ -1150,6 +1141,20 @@ impl<
                     - 2 * alphabet.scaled_rack_score(&player.rack).raw();
             }
         }
+        Ok(false)
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[inline(always)]
+    fn pick_preempty<N: kwg::Node, L: kwg::Node, T: RolloutTerm>(
+        &mut self,
+        _game_config: &game_config::GameConfig,
+        _graphs: movegen::KwgForMovegen<'_, N>,
+        _arm_tables: &anagrams::ArmTables,
+        _klv: &klv::Klv<L>,
+        _ply_term: (usize, &T),
+        _next_play: &mut movegen::Play,
+    ) -> error::Returns<bool> {
         Ok(false)
     }
 
