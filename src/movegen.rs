@@ -6031,9 +6031,16 @@ pub struct PoolWindow {
     pub window: std::ops::Range<u64>,
 }
 
+type JumbledWoadwageFound = (i8, i8, bites::Bites, i32, i32, bites::Bites);
+
 #[derive(Default)]
 struct WoadwageScratch {
     stack: Vec<i32>,
+    letters: Vec<u8>,    // the span's letters, board tiles' among them
+    prefixes: Vec<bool>, // by length, whether idx_left's span that long is a jumble
+    jumbles: crate::fash::MyHashMap<[u8; crate::census::MAX_LETTERS], bool>, // asked: counts, answer
+    found: Vec<JumbledWoadwageFound>,
+    placed: Vec<u8>,
 }
 
 #[derive(Clone, Default)]
@@ -7622,13 +7629,354 @@ fn gen_place_moves_lean<
                 runs,
             )
         }
-        game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+        game_config::GameRules::Jumbled => {
             gen_jumbled_place_moves::<BAG_TERM, _, _, _>(params, single_tile_plays, None)
         }
         game_config::GameRules::Woadwage => {
             gen_woadwage_place_moves::<LEAVES, BAG_TERM, _, _, _>(params, single_tile_plays)
         }
+        game_config::GameRules::JumbledWoadwage => {
+            gen_jumbled_woadwage_place_moves::<LEAVES, BAG_TERM, _, _, _>(
+                params,
+                single_tile_plays,
+                None,
+            )
+        }
     }
+}
+
+#[inline]
+fn gen_jumbled_woadwage_place_moves<
+    'a,
+    const LEAVES: bool,
+    const BAG_TERM: bool,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
+    single_tile_plays: bool,
+    opening: Option<bool>,
+) {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
+        params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
+        alphabet: &'a alphabet::Alphabet,
+        num_played: u8,
+        idx_left: i8,
+        opening: Option<bool>,
+        tally: [u8; crate::census::MAX_LETTERS], // the letters of idx_left..idx, each one's count
+        once_per_score: bool,
+    }
+    #[derive(Clone)]
+    struct Accumulator {
+        main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
+        leave_idx: u32,
+    }
+
+    #[inline(always)]
+    fn record<
+        const LEAVES: bool,
+        const BAG_TERM: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        acc: &Accumulator,
+        idx_right: i8,
+    ) {
+        let score = acc.main_score * acc.word_multiplier
+            + acc.perpendicular_cumulative_score
+            + env
+                .params
+                .board_snapshot
+                .game_config
+                .num_played_bonus(env.num_played) as i32
+                * equity::SCALE;
+        let leave_value = if LEAVES {
+            leave_value_of::<BAG_TERM, _>(
+                env.params.multi_leaves,
+                env.params.board_snapshot.klv,
+                env.params.rack_tally,
+                acc.leave_idx,
+                env.params.num_tiles_in_bag,
+                env.params.play_out_bonus,
+                env.alphabet,
+            )
+        } else {
+            0
+        };
+        if score + leave_value < env.params.threshold {
+            return;
+        }
+        let word = &env.params.word_strip_buffer[env.idx_left as usize..idx_right as usize];
+        if env.once_per_score {
+            let placed = &mut env.params.woadwage.placed;
+            placed.clear();
+            placed.extend(word.iter().copied().filter(|&tile| tile != 0));
+            placed.sort_unstable();
+            let penalty = env.opening.map_or(0, |down| {
+                hotspot_penalty(
+                    env.params.board_snapshot.game_config,
+                    down,
+                    env.idx_left,
+                    word,
+                )
+            });
+            let placed = placed[..].into();
+            env.params.woadwage.found.push((
+                env.idx_left,
+                idx_right,
+                placed,
+                score,
+                leave_value + penalty,
+                word.into(),
+            ));
+            return;
+        }
+        env.params.threshold = (env.params.callback)(env.idx_left, word, score, leave_value);
+    }
+
+    fn extend<
+        const LEAVES: bool,
+        const BAG_TERM: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        acc: &Accumulator,
+        idx: i8,
+        is_unique: bool,
+        splits: Splits,
+    ) {
+        if stops_walk(env.params.threshold) {
+            return;
+        }
+        let ends = idx >= env.params.rightmost || env.params.board_strip[idx as usize] == 0;
+        if ends
+            && idx > env.params.anchor
+            && idx - env.idx_left >= 2
+            && env.num_played > !is_unique as u8
+            && splits.accepts(env, idx)
+        {
+            record::<LEAVES, BAG_TERM, _, _, _>(env, acc, idx);
+        }
+        if idx >= env.params.rightmost {
+            return;
+        }
+        let b = env.params.board_strip[idx as usize];
+        if b != 0 {
+            env.params.woadwage.letters[idx as usize] = b & 0x7f;
+            let acc = Accumulator {
+                main_score: acc.main_score + env.params.face_value_scores_strip[idx as usize],
+                ..*acc
+            };
+            let next = splits.grown(env, idx);
+            extend::<LEAVES, BAG_TERM, _, _, _>(env, &acc, idx + 1, is_unique, next);
+            Splits::shrunk(env, b & 0x7f);
+            return;
+        }
+        if env.num_played >= env.params.num_max_played {
+            return;
+        }
+        let allowed = env.params.allowed_strip[idx as usize];
+        let is_unique = is_unique || allowed & 1 == 0;
+        let mut candidates = allowed
+            & !1
+            & if env.params.rack_tally[0] > 0 {
+                (u64::MAX >> (64 - env.alphabet.len() as u32)) & !1
+            } else {
+                env.params.rack_bits
+            };
+        let word_multiplier =
+            acc.word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+        let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+        let perpendicular_word_multiplier =
+            env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+        let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+        env.num_played += 1;
+        while candidates != 0 {
+            let tile = candidates.trailing_zeros() as u8;
+            candidates &= candidates - 1;
+            env.params.woadwage.letters[idx as usize] = tile;
+            let next = splits.grown(env, idx);
+            for (spent, written) in [(tile, tile), (0, tile | 0x80)] {
+                if env.params.rack_tally[spent as usize] == 0 {
+                    continue;
+                }
+                let tile_value = env.alphabet.scaled_score(spent).raw() * tile_multiplier;
+                let acc = Accumulator {
+                    main_score: acc.main_score + tile_value,
+                    perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                        + perpendicular_score
+                        + tile_value * perpendicular_word_multiplier,
+                    word_multiplier,
+                    leave_idx: if LEAVES {
+                        acc.leave_idx
+                            .wrapping_sub(env.params.multi_leaves.place_value(spent))
+                    } else {
+                        0
+                    },
+                };
+                env.params.rack_tally[spent as usize] -= 1;
+                env.params.word_strip_buffer[idx as usize] = written;
+                extend::<LEAVES, BAG_TERM, _, _, _>(env, &acc, idx + 1, is_unique, next);
+                env.params.rack_tally[spent as usize] += 1;
+            }
+            Splits::shrunk(env, tile);
+        }
+        env.params.word_strip_buffer[idx as usize] = 0;
+        env.num_played -= 1;
+    }
+
+    #[derive(Clone, Copy)]
+    struct Splits {
+        whole: bool,
+    }
+
+    #[inline(always)]
+    fn is_jumble<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        tally: &[u8; crate::census::MAX_LETTERS],
+    ) -> bool {
+        let alphabet_len = env.alphabet.len() as usize;
+        let kwg = env.params.board_snapshot.kwg;
+        *env.params
+            .woadwage
+            .jumbles
+            .entry(*tally)
+            .or_insert_with(|| kwg.accepts_alpha(&tally[..alphabet_len]))
+    }
+
+    impl Splits {
+        #[inline(always)]
+        fn shrunk<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+            env: &mut Env<'_, CallbackType, N, L>,
+            tile: u8,
+        ) {
+            env.tally[tile as usize] -= 1;
+        }
+
+        #[inline(always)]
+        fn grown<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+            self,
+            env: &mut Env<'_, CallbackType, N, L>,
+            idx: i8,
+        ) -> Self {
+            env.params.woadwage.prefixes[(idx - env.idx_left) as usize] = self.whole;
+            let tile = env.params.woadwage.letters[idx as usize];
+            env.tally[tile as usize] += 1;
+            let tally = env.tally;
+            Self {
+                whole: is_jumble(env, &tally),
+            }
+        }
+
+        #[inline(always)]
+        fn accepts<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
+            self,
+            env: &mut Env<'_, CallbackType, N, L>,
+            idx: i8,
+        ) -> bool {
+            if self.whole {
+                return true;
+            }
+            for k in 1..idx - env.idx_left {
+                if !env.params.woadwage.prefixes[k as usize] {
+                    continue;
+                }
+                let mut rest = [0u8; crate::census::MAX_LETTERS];
+                for &tile in &env.params.woadwage.letters[(env.idx_left + k) as usize..idx as usize]
+                {
+                    rest[tile as usize] += 1;
+                }
+                if is_jumble(env, &rest) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+
+    let alphabet = params.board_snapshot.game_config.alphabet();
+    let anchor = params.anchor;
+    let leftmost = params.leftmost;
+    let num_max_played = params.num_max_played;
+    let once_per_score = params.jumbled.walk == JUMBLED_ONCE_PER_SCORE;
+    let strip_len = params.board_strip.len();
+    let scratch = &mut *params.woadwage;
+    scratch.letters.clear();
+    scratch.letters.resize(strip_len, 0);
+    scratch.prefixes.clear();
+    scratch.prefixes.resize(strip_len, false);
+    scratch.jumbles.clear();
+    scratch.found.clear();
+    let start = Accumulator {
+        main_score: 0,
+        perpendicular_cumulative_score: 0,
+        word_multiplier: 1,
+        leave_idx: params.multi_leaves.pass_leave_idx(),
+    };
+    let mut env = Env {
+        params,
+        alphabet,
+        num_played: 0,
+        idx_left: 0,
+        opening,
+        tally: [0u8; crate::census::MAX_LETTERS],
+        once_per_score,
+    };
+    let mut empties = 0u8;
+    let mut idx_l = anchor;
+    while idx_l >= leftmost {
+        let b = env.params.board_strip[idx_l as usize];
+        if b == 0 {
+            if env.params.allowed_strip[idx_l as usize] == 1 {
+                break;
+            }
+            empties += 1;
+            if empties > num_max_played {
+                break;
+            }
+        }
+        if idx_l == leftmost || env.params.board_strip[idx_l as usize - 1] == 0 {
+            env.idx_left = idx_l;
+            extend::<LEAVES, BAG_TERM, _, _, _>(
+                &mut env,
+                &start,
+                idx_l,
+                single_tile_plays,
+                Splits { whole: false },
+            );
+            if stops_walk(env.params.threshold) {
+                return;
+            }
+        }
+        idx_l -= 1;
+    }
+    if !once_per_score {
+        return;
+    }
+    let mut found = std::mem::take(&mut env.params.woadwage.found);
+    found.sort_unstable();
+    found.dedup_by(|b, a| (a.0, a.1, &a.2, a.3, a.4) == (b.0, b.1, &b.2, b.3, b.4));
+    for (idx_left, _, _, score, keyed_leave, word) in found.drain(..) {
+        let penalty = env.opening.map_or(0, |down| {
+            hotspot_penalty(env.params.board_snapshot.game_config, down, idx_left, &word)
+        });
+        let leave_value = keyed_leave - penalty;
+        if score + leave_value < env.params.threshold {
+            continue;
+        }
+        env.params.threshold = (env.params.callback)(idx_left, &word, score, leave_value);
+        if stops_walk(env.params.threshold) {
+            break;
+        }
+    }
+    env.params.woadwage.found = found;
 }
 
 #[inline]
@@ -11883,9 +12231,6 @@ fn lean_cross_sets<
     }
 }
 
-// the opening's penalty for each vowel a play on an empty board puts on one of
-// the layout's danger squares (one beside a premium square of a lane next to
-// the star's)
 #[inline(always)]
 fn hotspot_penalty(game_config: &game_config::GameConfig, down: bool, idx: i8, word: &[u8]) -> i32 {
     let alphabet = game_config.alphabet();
@@ -11905,9 +12250,6 @@ fn hotspot_penalty(game_config: &game_config::GameConfig, down: bool, idx: i8, w
         * -equity::OPENING_HOTSPOT_PENALTY
 }
 
-// a lane through the star of an empty board: its way and number; the star's
-// place along it and its length; its squares a tile may take (a bit each) and
-// their premiums
 #[derive(Clone, Copy)]
 struct StarLane<'a> {
     down: bool,
@@ -11919,12 +12261,6 @@ struct StarLane<'a> {
     tile_multipliers: &'a [i8],
 }
 
-// a jumbled game's place moves on an empty board: the span filler's on each
-// lane through the star given (its way, its number, the star's place along it),
-// as the walk finds the star's anchor there, from the lane's start to its end
-// (a square that takes no tile stops it as it stops the walk); found_place_move
-// is handed each leave value with the opening's penalty. One copy serves every
-// generation, by the dyn callback.
 #[inline(never)]
 fn walk_jumbled_star_lanes<
     'a,
@@ -12142,6 +12478,115 @@ fn walk_woadwage_star_lanes<
     }
 }
 
+#[inline(never)]
+fn walk_jumbled_woadwage_star_lanes<
+    'a,
+    N: kwg::Node,
+    L: kwg::Node,
+    G: LaneBits,
+    const BAG_TERM: bool,
+    S: BoardStore,
+>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer<G, BAG_TERM, S>,
+    multi_leaves: &'a klv::MultiLeaves,
+    lanes: [Option<(bool, i8, i8)>; 2],
+    threshold: i32,
+    found_place_move: FoundPlaceMoveFn<'_>,
+) {
+    let game_config = board_snapshot.game_config;
+    let dim = game_config.board_layout().dim();
+    let num_max_played = game_config
+        .rack_size()
+        .min(working_buffer.num_tiles_on_rack);
+    let mut threshold = threshold;
+    for (down, lane, anchor) in lanes.into_iter().flatten() {
+        let len = if down { dim.rows } else { dim.cols } as usize;
+        let start = lane as usize * len;
+        let end = start + len;
+        let first_threshold = threshold;
+        let mut callback = |idx: i8, word: &[u8], score: i32, leave_value: i32| {
+            threshold = found_place_move(
+                down,
+                lane,
+                idx,
+                word,
+                equity::Equity::new(score),
+                equity::Equity::new(leave_value + hotspot_penalty(game_config, down, idx, word)),
+            )
+            .raw();
+            threshold
+        };
+        gen_jumbled_woadwage_place_moves::<true, BAG_TERM, _, _, _>(
+            &mut GenPlaceMovesParams {
+                board_snapshot,
+                board_strip: if down {
+                    &working_buffer.transposed_board_tiles[start..end]
+                } else {
+                    &board_snapshot.board_tiles[start..end]
+                },
+                allowed_strip: if down {
+                    &working_buffer.allowed_for_down_plays[start..end]
+                } else {
+                    &working_buffer.allowed_for_across_plays[start..end]
+                },
+                cross_set_buffer_strip: if down {
+                    &working_buffer.cross_set_buffer_for_across_plays[start..end]
+                } else {
+                    &working_buffer.cross_set_buffer_for_down_plays[start..end]
+                },
+                remaining_word_multipliers_strip: if down {
+                    &working_buffer.remaining_word_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.remaining_word_multipliers_for_across_plays[start..end]
+                },
+                remaining_tile_multipliers_strip: if down {
+                    &working_buffer.remaining_tile_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.remaining_tile_multipliers_for_across_plays[start..end]
+                },
+                face_value_scores_strip: if down {
+                    &working_buffer.face_value_scores_for_down_plays[start..end]
+                } else {
+                    &working_buffer.face_value_scores_for_across_plays[start..end]
+                },
+                perpendicular_word_multipliers_strip: if down {
+                    &working_buffer.perpendicular_word_multipliers_for_down_plays[start..end]
+                } else {
+                    &working_buffer.perpendicular_word_multipliers_for_across_plays[start..end]
+                },
+                perpendicular_scores_strip: if down {
+                    &working_buffer.perpendicular_scores_for_down_plays[start..end]
+                } else {
+                    &working_buffer.perpendicular_scores_for_across_plays[start..end]
+                },
+                rack_tally: &mut working_buffer.rack_tally,
+                rack_bits: working_buffer.rack_bits,
+                word_strip_buffer: if down {
+                    &mut working_buffer.word_buffer_for_down_plays[start..end]
+                } else {
+                    &mut working_buffer.word_buffer_for_across_plays[start..end]
+                },
+                num_max_played,
+                anchor,
+                leftmost: 0,
+                rightmost: len as i8,
+                callback: &mut callback as &mut dyn FnMut(i8, &[u8], i32, i32) -> i32,
+                multi_leaves,
+                num_tiles_in_bag: working_buffer.num_tiles_in_bag,
+                play_out_bonus: working_buffer.play_out_bonus,
+                jumbled: &mut working_buffer.jumbled,
+                woadwage: &mut working_buffer.woadwage,
+                is_census: working_buffer.is_census,
+                threshold: first_threshold,
+                best_leave_values: &working_buffer.best_leave_values,
+            },
+            !down,
+            Some(down),
+        );
+    }
+}
+
 // an empty board's place moves, made without the walk, which reads every lane
 // to find plays on the star's alone: on the lanes through the star the masks
 // hold, across its row and, where the layout is not the same both ways, down
@@ -12216,7 +12661,17 @@ fn gen_empty_board_place_moves_made<
     ];
     match game_config.game_rules() {
         game_config::GameRules::Classic => {}
-        game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+        game_config::GameRules::JumbledWoadwage => {
+            return walk_jumbled_woadwage_star_lanes(
+                board_snapshot,
+                working_buffer,
+                multi_leaves,
+                lanes,
+                threshold,
+                found_place_move,
+            );
+        }
+        game_config::GameRules::Jumbled => {
             return walk_jumbled_star_lanes(
                 board_snapshot,
                 working_buffer,
@@ -19158,6 +19613,218 @@ mod tests {
         }
         assert!(squares > 0, "{squares}");
         assert!(taken > 0, "{taken}");
+    }
+
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    struct PlayWithEquity(bool, i8, i8, Vec<u8>, i32, i32);
+
+    #[inline]
+    fn plays_with_equity<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>(
+        move_generator: &KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
+    ) -> Vec<PlayWithEquity> {
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter_map(|p| match &p.play {
+                Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } => Some(PlayWithEquity(
+                    *down,
+                    *lane,
+                    *idx,
+                    word.to_vec(),
+                    score.raw(),
+                    p.equity.raw(),
+                )),
+                Play::Exchange { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_woadwage_plays_are_the_brute_force_ones_and_its_best_are_the_best() {
+        let (kad, explicit) = jumbled_woadwage_toy();
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 218u64;
+        let mut cases = 0usize;
+        let mut plays_seen = 0usize;
+        let mut collapsed = 0usize;
+        for side in [5i8, 7] {
+            let gc = woadwage_toy_config(side).jumbled_woadwage();
+            let n = side as usize;
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            let mut scorer = play_scorer::PlayScorer::new();
+            for _game in 0..12 {
+                let mut board_tiles = vec![0u8; n * n];
+                for _ply in 0..8 {
+                    let mut chosen = None;
+                    for _rack in 0..3 {
+                        let len =
+                            1 + (woadwage_rng(&mut seed) % woadwage_toy_most_tiles()) as usize;
+                        let rack = {
+                            let mut rack = (0..len)
+                                .map(|_| {
+                                    (woadwage_rng(&mut seed) % (woadwage_toy_letters() as u64 + 1))
+                                        as u8
+                                })
+                                .collect::<Vec<_>>();
+                            rack.sort_unstable();
+                            rack
+                        };
+                        let board_snapshot = BoardSnapshot {
+                            board_tiles: &board_tiles,
+                            game_config: &gc,
+                            kwg: &kad,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        };
+                        let generated =
+                            place_plays(&mut move_generator, &board_snapshot, &rack, false);
+                        let mut multi = Vec::new();
+                        let mut single = Vec::new();
+                        for (down, lane, idx, word, score) in &generated {
+                            let play = Play::Place {
+                                down: *down,
+                                lane: *lane,
+                                idx: *idx,
+                                word: word[..].into(),
+                                score: equity::Equity::new(*score),
+                            };
+                            assert_eq!(
+                                scorer.compute_score(&board_snapshot, &play),
+                                *score,
+                                "{word:?}"
+                            );
+                            assert!(scorer.words_are_valid(&board_snapshot, &play), "{word:?}");
+                            let placed = (0i8..)
+                                .zip(word.iter())
+                                .filter(|&(_, &tile)| tile != 0)
+                                .collect::<Vec<_>>();
+                            if placed.len() == 1 {
+                                let along = *idx + placed[0].0;
+                                let (row, col) = if *down {
+                                    (along, *lane)
+                                } else {
+                                    (*lane, along)
+                                };
+                                single.push((row, col, *placed[0].1));
+                            } else {
+                                multi.push((*down, *lane, *idx, word.clone()));
+                            }
+                        }
+                        multi.sort_unstable();
+                        let single_set = single
+                            .iter()
+                            .copied()
+                            .collect::<std::collections::BTreeSet<_>>();
+                        assert_eq!(single.len(), single_set.len(), "a tile played twice");
+                        let WoadwageBrute(want_multi, want_single) =
+                            woadwage_brute_force(side, &board_tiles, &rack, &explicit);
+                        assert_eq!(multi, want_multi, "{side} {rack:?} {board_tiles:?}");
+                        assert_eq!(single_set, want_single, "{side} {rack:?} {board_tiles:?}");
+                        plays_seen += multi.len() + single_set.len();
+                        let params = |max_gen| GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &rack,
+                            max_gen,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        };
+                        move_generator.gen_moves_unfiltered(&params(usize::MAX));
+                        let every = plays_with_equity(&move_generator);
+                        let mut want_once = every
+                            .iter()
+                            .map(|PlayWithEquity(down, lane, idx, word, score, equity)| {
+                                let mut placed = word
+                                    .iter()
+                                    .copied()
+                                    .filter(|&tile| tile != 0)
+                                    .collect::<Vec<_>>();
+                                placed.sort_unstable();
+                                (
+                                    (*down, *lane, *idx, word.len(), placed, *score, *equity),
+                                    word.clone(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        want_once.sort_unstable();
+                        want_once.dedup_by(|b, a| a.0 == b.0);
+                        let mut want_once = want_once
+                            .into_iter()
+                            .map(|((down, lane, idx, _, _, score, equity), word)| {
+                                PlayWithEquity(down, lane, idx, word, score, equity)
+                            })
+                            .collect::<Vec<_>>();
+                        want_once.sort_unstable();
+                        move_generator.gen_moves_filtered_lean_walked::<OncePerScore, _, _>(
+                            &params(usize::MAX),
+                            PlacePredicate::AcceptAll,
+                            klv::AdjustLeave::Identity,
+                            EquityPredicate::AcceptAll,
+                        );
+                        let once = plays_with_equity(&move_generator);
+                        assert_eq!(once, want_once, "{side} {rack:?} {board_tiles:?}");
+                        collapsed += every.len() - once.len();
+                        let mut all = every.iter().map(|play| play.5).collect::<Vec<_>>();
+                        all.sort_unstable_by(|a, b| b.cmp(a));
+                        for k in 1..=all.len() {
+                            move_generator.gen_moves_unfiltered(&params(k));
+                            let mut best = move_generator
+                                .plays
+                                .iter()
+                                .filter(|valued| matches!(valued.play, Play::Place { .. }))
+                                .map(|valued| valued.equity.raw())
+                                .collect::<Vec<_>>();
+                            best.sort_unstable_by(|a, b| b.cmp(a));
+                            assert_eq!(best[..], all[..best.len()], "{side} {k}");
+                        }
+                        cases += 1;
+                        let count = want_multi.len() + want_single.len();
+                        if chosen.is_none() && count > 0 {
+                            let pick = woadwage_rng(&mut seed) as usize % count;
+                            chosen = Some(if pick < want_multi.len() {
+                                let (down, lane, idx, word) = want_multi[pick].clone();
+                                (0i8..)
+                                    .zip(word)
+                                    .filter(|&(_, tile)| tile != 0)
+                                    .map(|(i, tile)| {
+                                        let along = idx + i;
+                                        if down {
+                                            (along, lane, tile)
+                                        } else {
+                                            (lane, along, tile)
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                vec![*want_single.iter().nth(pick - want_multi.len()).unwrap()]
+                            });
+                        }
+                    }
+                    let Some(placed) = chosen else {
+                        break;
+                    };
+                    for (row, col, tile) in placed {
+                        board_tiles[row as usize * n + col as usize] = tile;
+                    }
+                }
+            }
+        }
+        assert!(cases > 0, "{cases}");
+        assert!(plays_seen > 0, "{plays_seen}");
+        assert!(collapsed > 0, "{collapsed}");
+        eprintln!(
+            "jumbled woadwage brute force: {cases} cases, {plays_seen} plays, {collapsed} collapsed"
+        );
     }
 
     #[inline]
