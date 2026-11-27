@@ -2476,6 +2476,67 @@ mod tests {
         assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words);
     }
 
+    fn word_pairs() -> Vec<bites::Bites> {
+        let list = WORD_LIST
+            .iter()
+            .chain(LONGER_WORD_LIST)
+            .map(|w| w.bytes().map(|b| b - b'A' + 1).collect::<Vec<u8>>())
+            .collect::<Vec<_>>();
+        let mut words = Vec::<bites::Bites>::new();
+        for a in &list {
+            for b in &list {
+                words.push([&a[..], &b[..]].concat()[..].into());
+            }
+        }
+        words.sort_unstable();
+        words.dedup();
+        words
+    }
+
+    #[test]
+    #[inline]
+    fn graphs_of_word_pairs_hash_as_pinned() {
+        use std::hash::Hasher;
+        let words = word_pairs();
+        let hashes = [
+            build(
+                BuildContent::DawgOnly,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &words,
+            ),
+            build(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &words,
+            ),
+            build(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Reordered,
+                &words,
+            ),
+            build_for_game(&game_config::make_english_game_config(), &words),
+            build_for_game(&game_config::make_jumbled_english_game_config(), &words),
+        ]
+        .map(|bytes| {
+            let mut hasher = crate::fash::MyHasher::default();
+            hasher.write(&bytes.unwrap());
+            hasher.finish()
+        });
+        assert_eq!(
+            hashes,
+            [
+                9410701853418661572,
+                4675284153902678577,
+                3611773842155624088,
+                10380916629199273863,
+                8385835045533195476
+            ]
+        );
+    }
+
     #[test]
     #[inline]
     fn an_empty_word_is_refused_not_a_panic() {
