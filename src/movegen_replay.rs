@@ -5,9 +5,7 @@ use rand::SeedableRng;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
-use wolges::{
-    anagrams, display, error, game_config, game_state, klv, kwg, movegen, racks, return_error,
-};
+use wolges::{display, error, game_config, game_state, klv, kwg, movegen, racks, return_error};
 
 #[derive(clap::Args)]
 struct EngineArgs {
@@ -61,7 +59,6 @@ struct Engine {
     game: game_config::GameConfig,
     kwg: std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: klv::Klv<kwg::Node24>,
-    tables: anagrams::ArmTables,
     lean: bool,
 }
 
@@ -79,19 +76,18 @@ impl Engine {
             }
             let klv = klv::kbwg_from_bytes_alloc(run_line::read_input(&args.klv)?)?;
             game.check_klv(&klv)?;
-            let tables = anagrams::ArmTables::build(&kwg, &game, args.lean)?;
-            Ok((std::sync::Arc::new(kwg), klv, tables))
+            Ok((std::sync::Arc::new(kwg), klv))
         };
-        let (kwg, klv, tables) = if let Some(path) = &args.racks {
+        let (kwg, klv) = if let Some(path) = &args.racks {
             std::thread::scope(|scope| -> error::Returns<_> {
                 let racks = std::thread::Builder::new().spawn_scoped(scope, || {
                     racks::RackTable::from_bytes_alloc(&game, run_line::read_input(path)?)
                 })?;
                 let loaded = load();
                 let racks = racks.join().map_err(|_| "rack table loader panicked");
-                let (kwg, klv, tables) = loaded?;
+                let (kwg, klv) = loaded?;
                 let klv = klv.with_racks(racks??);
-                Ok((kwg, klv, tables))
+                Ok((kwg, klv))
             })?
         } else {
             load()?
@@ -104,17 +100,20 @@ impl Engine {
             game,
             kwg,
             klv,
-            tables,
             lean: args.lean,
         })
     }
 
     fn graphs(&self) -> error::Returns<movegen::Vocab<'_, kwg::Node24>> {
-        if self.lean {
-            Ok(movegen::Vocab::lean(&self.kwg))
-        } else {
-            movegen::Vocab::new(&self.game, &self.kwg)
-        }
+        movegen::Vocab::new(
+            &self.game,
+            &self.kwg,
+            if self.lean {
+                movegen::Tables::RackLengths
+            } else {
+                movegen::Tables::Anagrams
+            },
+        )
     }
 
     fn snapshot<'a>(
@@ -122,14 +121,7 @@ impl Engine {
         graphs: &'a movegen::Vocab<'a, kwg::Node24>,
         board: &'a [u8],
     ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
-        movegen::BoardSnapshot {
-            board_tiles: board,
-            game_config: &self.game,
-            vocab: graphs,
-            klv: &self.klv,
-            anagrams: self.tables.anagrams(),
-            rack_lengths: self.tables.rack_lengths(),
-        }
+        movegen::BoardSnapshot::new(board, &self.game, graphs, &self.klv)
     }
 }
 

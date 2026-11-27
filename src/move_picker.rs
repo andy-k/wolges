@@ -212,12 +212,11 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     simmer: &mut simmer::Simmer<R>,
     game_config: &game_config::GameConfig,
     graphs: &'_ movegen::Vocab<'_, N>,
-    arm_tables: &anagrams::ArmTables,
     klv: &klv::Klv<L>,
     play: &movegen::Play,
     table: Option<&win_pct::WinPctTable>,
 ) -> error::Returns<(f64, i32, f64)> {
-    let game_ended = simmer.simulate(game_config, graphs, arm_tables, klv, play)?;
+    let game_ended = simmer.simulate(game_config, graphs, klv, play)?;
     let final_spread = simmer.final_equity_spread()?;
     let win_prob = if simmer.wants_win_prob() {
         simmer.compute_win_prob(game_ended, final_spread, table)?
@@ -483,7 +482,6 @@ pub struct Simmer<
     #[cfg(not(target_family = "wasm"))]
     kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
     graphs: &'a movegen::Vocab<'a, N>,
-    arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
     klv: &'a std::sync::Arc<klv::Klv<L>>,
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer<R>,
@@ -530,7 +528,7 @@ struct LatePrune {
     words: Vec<bites::Bites>,
     builder: build::Builder,
     spare: Option<std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
-    spare_tables: anagrams::ArmTables,
+    spare_tables: Option<std::sync::Arc<anagrams::ArmTables>>,
     spare_kad: Option<std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
     arm_scratch: anagrams::ArmScratch,
 }
@@ -556,7 +554,7 @@ pub struct SimBlock {
 // a late graph and its tables
 type LateGraph = (
     std::sync::Arc<kwg::Kwg<kwg::Node24>>,
-    anagrams::ArmTables,
+    std::sync::Arc<anagrams::ArmTables>,
     Option<std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
 );
 
@@ -624,7 +622,6 @@ impl SimRows {
 struct RowsOf<'a, 'g, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
     graphs: &'a movegen::Vocab<'a, N>,
-    arm_tables: &'a anagrams::ArmTables,
     klv: &'a klv::Klv<L>,
     win_pct_table: Option<&'a win_pct::WinPctTable>,
     decision_seed: u64,
@@ -653,8 +650,8 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
             return Err(out_of_memory());
         }
         simmer.begin_within(self.memory.clone());
-        let late = self.late_graph.map(|(late, arm_tables, kad)| {
-            (movegen::Vocab::with_kad(late, kad.clone()), arm_tables)
+        let late = self.late_graph.map(|(late, tables, kad)| {
+            movegen::Vocab::with_parts(late, kad.clone(), Some(tables.clone()))
         });
         for sim_iter in lo + 1..=hi {
             simmer.restore_prepared(pristine);
@@ -662,11 +659,10 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
             simmer.prepare_iteration(Some(stratum_at(self.decision_seed, sim_iter)))?;
             for play in plays {
                 let (value, sim_spread, win_prob) = match &late {
-                    Some((late, arm_tables)) => rollout_objective(
+                    Some(late) => rollout_objective(
                         simmer,
                         self.game_config,
                         late,
-                        arm_tables,
                         self.klv,
                         play,
                         self.win_pct_table,
@@ -675,7 +671,6 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
                         simmer,
                         self.game_config,
                         self.graphs,
-                        self.arm_tables,
                         self.klv,
                         play,
                         self.win_pct_table,
@@ -717,14 +712,12 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
     pub fn new(
         game_config: &'a std::sync::Arc<game_config::GameConfig>,
         vocab: &'a movegen::Vocab<'a, N>,
-        arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
         klv: &'a std::sync::Arc<klv::Klv<L>>,
         params: SimmerParams<'a>,
     ) -> error::Returns<Self> {
         Ok(Self::with_rng(
             game_config,
             vocab,
-            arm_tables,
             klv,
             params,
             simmer::DefaultRng::try_from_rng(&mut rand::rngs::SysRng)?,
@@ -743,7 +736,6 @@ impl<
     pub fn with_rng(
         game_config: &'a std::sync::Arc<game_config::GameConfig>,
         vocab: &'a movegen::Vocab<'a, N>,
-        arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
         klv: &'a std::sync::Arc<klv::Klv<L>>,
         params: SimmerParams<'a>,
         mut rng: R,
@@ -754,7 +746,6 @@ impl<
             #[cfg(not(target_family = "wasm"))]
             kwg: vocab.shared_words(),
             graphs: vocab,
-            arm_tables,
             klv,
             candidates: Vec::new(),
             simmer: simmer::Simmer::with_rng(game_config, rng),
@@ -792,7 +783,7 @@ impl<
                 words: Vec::new(),
                 builder: Default::default(),
                 spare: None,
-                spare_tables: anagrams::ArmTables::None,
+                spare_tables: None,
                 spare_kad: None,
                 arm_scratch: Default::default(),
             },
@@ -1282,14 +1273,12 @@ fn gen_plays<N: kwg::Node, L: kwg::Node>(
     cols: u128,
 ) {
     generator.gen_raw_placements_in_lanes(
-        &movegen::BoardSnapshot {
+        &movegen::BoardSnapshot::new(
             board_tiles,
-            game_config: board_snapshot.game_config,
-            vocab: board_snapshot.vocab,
-            anagrams: board_snapshot.anagrams,
-            rack_lengths: board_snapshot.rack_lengths,
-            klv: board_snapshot.klv,
-        },
+            board_snapshot.game_config,
+            board_snapshot.vocab,
+            board_snapshot.klv,
+        ),
         rack,
         rows,
         cols,
@@ -2316,8 +2305,8 @@ impl<
         let start = self.iters_done;
         let memory = self.memory.clone();
         self.simmer.begin_within(memory.clone());
-        let late = self.late_graph.as_ref().map(|(late, arm_tables, kad)| {
-            (movegen::Vocab::with_kad(late, kad.clone()), arm_tables)
+        let late = self.late_graph.as_ref().map(|(late, tables, kad)| {
+            movegen::Vocab::with_parts(late, kad.clone(), Some(tables.clone()))
         });
         for sim_iter in (start + 1)..=(start + count) {
             self.iters_done = sim_iter;
@@ -2328,11 +2317,10 @@ impl<
             for candidate in candidates.iter_mut() {
                 let play = &move_generator.plays[candidate.play_index].play;
                 let (value, sim_spread, win_prob) = match &late {
-                    Some((late, arm_tables)) => rollout_objective(
+                    Some(late) => rollout_objective(
                         &mut self.simmer,
                         self.game_config,
                         late,
-                        arm_tables,
                         &self.rollout_klv,
                         play,
                         self.win_pct_table.map(|table| &**table),
@@ -2341,7 +2329,6 @@ impl<
                         &mut self.simmer,
                         self.game_config,
                         self.graphs,
-                        self.arm_tables,
                         &self.rollout_klv,
                         play,
                         self.win_pct_table.map(|table| &**table),
@@ -2454,7 +2441,6 @@ impl<
         RowsOf {
             game_config: self.game_config,
             graphs: self.graphs,
-            arm_tables: self.arm_tables,
             klv: &self.rollout_klv,
             win_pct_table: self.win_pct_table.map(|table| &**table),
             decision_seed: self.decision_seed,
@@ -2650,7 +2636,7 @@ impl<
         let game_config = std::sync::Arc::clone(self.game_config);
         let kwg = std::sync::Arc::clone(self.kwg);
         let kad = self.graphs.shared_kad().cloned();
-        let arm_tables = std::sync::Arc::clone(self.arm_tables);
+        let tables = self.graphs.shared_tables().cloned();
         let klv = std::sync::Arc::clone(&self.rollout_klv);
         let win_pct_table = self.win_pct_table.cloned();
         let memory = self.memory.clone();
@@ -2660,7 +2646,7 @@ impl<
         };
         let (ours, our_late) = (std::sync::Arc::clone(&plays), std::sync::Arc::clone(&late));
         std::thread::Builder::new().spawn(move || {
-            let graphs = &movegen::Vocab::with_kad(&kwg, kad);
+            let graphs = &movegen::Vocab::with_parts(&kwg, kad, tables);
             for (lo, hi, decision_seed) in job_rx {
                 let made = (|| -> error::Returns<()> {
                     let stopped = || "a sim thread's share was dropped";
@@ -2671,7 +2657,6 @@ impl<
                     let rows_of = RowsOf {
                         game_config: &game_config,
                         graphs,
-                        arm_tables: &arm_tables,
                         klv: &klv,
                         win_pct_table: win_pct_table.as_deref(),
                         decision_seed,
@@ -2737,14 +2722,12 @@ impl<
         infer::kept_leaves_carried_into(
             tables,
             infer_generator,
-            &movegen::BoardSnapshot {
-                board_tiles: last.board_before,
-                game_config: self.game_config,
-                vocab: self.graphs,
-                anagrams: None,
-                rack_lengths: None,
-                klv: self.klv,
-            },
+            &movegen::BoardSnapshot::new(
+                last.board_before,
+                self.game_config,
+                &self.graphs.with_tables(None),
+                self.klv,
+            ),
             watcher_rack,
             (last.play, last.held),
             infer::InferOptions {
@@ -2814,7 +2797,10 @@ impl<
             self.num_sim_iters,
             threads,
         ) && (self.memory.is_none()
-            || matches!(&**self.arm_tables, anagrams::ArmTables::None));
+            || matches!(
+                self.graphs.shared_tables().map(|tables| &**tables),
+                None | Some(anagrams::ArmTables::None)
+            ));
         #[cfg(not(target_family = "wasm"))]
         let late = late && !self.simmer.preempty_enabled();
         // only the very board the graph was pruned for keeps it: tiles added
@@ -2851,14 +2837,12 @@ impl<
                 let pruned = (generator
                     .get_or_insert_with(|| movegen::KurniaMoveGenerator::new(self.game_config)))
                 .gen_remaining_words_within(
-                    &movegen::BoardSnapshot {
-                        board_tiles: &game_state.board_tiles,
-                        game_config: self.game_config,
-                        vocab: self.graphs,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: self.klv,
-                    },
+                    &movegen::BoardSnapshot::new(
+                        &game_state.board_tiles,
+                        self.game_config,
+                        &self.graphs.with_tables(None),
+                        self.klv,
+                    ),
                     memory,
                     |word: &[u8]| {
                         if refused {
@@ -2887,7 +2871,8 @@ impl<
                     Some(late) => late,
                     None => (
                         (spare.take()).unwrap_or_else(|| std::sync::Arc::new(kwg::Kwg(Vec::new()))),
-                        std::mem::replace(spare_tables, anagrams::ArmTables::None),
+                        (spare_tables.take())
+                            .unwrap_or_else(|| std::sync::Arc::new(anagrams::ArmTables::None)),
                         spare_kad.take(),
                     ),
                 };
@@ -2915,18 +2900,28 @@ impl<
                 };
                 if !refilled {
                     *spare = Some(kwg);
-                    *spare_tables = arm_tables;
+                    *spare_tables = Some(arm_tables);
                     *spare_kad = kad;
                     break 'late None;
                 }
-                match &**self.arm_tables {
-                    anagrams::ArmTables::Anagrams(_) => {
-                        arm_tables.rebuild(&kwg, self.game_config, false, arm_scratch)?
+                let lean = match self.graphs.shared_tables().map(|tables| &**tables) {
+                    Some(anagrams::ArmTables::Anagrams(_)) => Some(false),
+                    Some(anagrams::ArmTables::RackLengths(_)) => Some(true),
+                    Some(anagrams::ArmTables::None) | None => None,
+                };
+                match (lean, std::sync::Arc::get_mut(&mut arm_tables)) {
+                    (Some(lean), Some(tables)) => {
+                        tables.rebuild(&kwg, self.game_config, lean, arm_scratch)?
                     }
-                    anagrams::ArmTables::RackLengths(_) => {
-                        arm_tables.rebuild(&kwg, self.game_config, true, arm_scratch)?
+                    (Some(lean), None) => {
+                        arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(
+                            &kwg,
+                            self.game_config,
+                            lean,
+                        )?)
                     }
-                    anagrams::ArmTables::None => arm_tables = anagrams::ArmTables::None,
+                    (None, Some(tables)) => *tables = anagrams::ArmTables::None,
+                    (None, None) => arm_tables = std::sync::Arc::new(anagrams::ArmTables::None),
                 }
                 let joined = self.graphs.kad().is_some()
                     && match builder.build_alphagrams_within(words, memory) {
@@ -2956,7 +2951,7 @@ impl<
         } else {
             if let Some((kwg, arm_tables, kad)) = self.late_graph.take() {
                 *spare = Some(kwg);
-                *spare_tables = arm_tables;
+                *spare_tables = Some(arm_tables);
                 *spare_kad = kad;
             }
             None
@@ -3391,14 +3386,9 @@ mod tests {
         let kwg =
             std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv_bytes.to_vec()).unwrap();
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles,
-            game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(board_tiles, game_config, &vocab_view, &klv);
         let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
         let mut scratch = Vec::new();
@@ -3813,14 +3803,10 @@ mod tests {
         let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut scratch = Vec::new();
         gen_simmer_candidates(
@@ -3834,12 +3820,12 @@ mod tests {
         )
         .unwrap();
         assert!(move_generator.plays.len() > 2);
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let new_simmer = |sim_threads| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &vocab,
-                &arm_tables,
+                &tabled,
                 &klv,
                 SimmerParams {
                     num_sim_iters: 64,
@@ -3969,14 +3955,10 @@ mod tests {
         // eight (a blank is off the board)
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
@@ -3989,12 +3971,12 @@ mod tests {
         )
         .unwrap();
         assert!(move_generator.plays.len() > 2);
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let decide = |sim_threads| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &vocab,
-                &arm_tables,
+                &tabled,
                 &klv,
                 SimmerParams {
                     num_sim_iters: 1000,
@@ -4043,14 +4025,10 @@ mod tests {
         // eight (a blank is off the board)
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
@@ -4062,13 +4040,13 @@ mod tests {
             &mut Vec::new(),
         )
         .unwrap();
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
         assert!(move_generator.plays.len() > 2);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let made = |memory: Option<endgame::MemoryLimit>| {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &vocab,
-                &arm_tables,
+                &tabled,
                 &klv,
                 SimmerParams {
                     num_sim_iters: 1000,
@@ -4137,20 +4115,19 @@ mod tests {
         let bag = game_state.bag.as_slice()[..12].to_vec();
         game_state.bag.set_from_iter(bag);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
         let gen_candidates = |move_generator: &mut movegen::KurniaMoveGenerator,
                               game_state: &game_state::GameState| {
             gen_simmer_candidates(
                 &mut move_filter::GenMoves::Unfiltered,
                 move_generator,
-                &movegen::BoardSnapshot {
-                    board_tiles: &game_state.board_tiles,
-                    game_config: &game_config,
-                    vocab: &crate::movegen::Vocab::lean(&kwg),
-                    anagrams: arm_tables.anagrams(),
-                    rack_lengths: arm_tables.rack_lengths(),
-                    klv: &klv,
-                },
+                &movegen::BoardSnapshot::new(
+                    &game_state.board_tiles,
+                    &game_config,
+                    &crate::movegen::Vocab::bare(&kwg)
+                        .with_tables(Some(std::sync::Arc::clone(&arm_tables))),
+                    &klv,
+                ),
                 &game_state.current_player().rack,
                 0,
                 SIMMER_FIELD,
@@ -4158,11 +4135,11 @@ mod tests {
             )
             .unwrap();
         };
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let new_simmer = || {
             let mut simmer = Simmer::<_, _, true>::new(
                 &game_config,
-                &vocab,
-                &arm_tables,
+                &tabled,
                 &klv,
                 SimmerParams {
                     num_sim_iters: 1000,
@@ -4216,17 +4193,13 @@ mod tests {
         let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         let mut scratch = Vec::new();
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
         gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
             &mut move_generator,
@@ -4239,10 +4212,10 @@ mod tests {
         .unwrap();
         let num_plays = move_generator.plays.len();
         assert!(num_plays > 2);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let mut simmer = Simmer::<_, _, false>::new(
             &game_config,
-            &vocab,
-            &arm_tables,
+            &tabled,
             &klv,
             SimmerParams {
                 num_sim_iters: 16,
@@ -4386,7 +4359,7 @@ mod tests {
             held: infer::Held::Any,
         };
         let rack = game_state.current_player().rack.clone();
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
         let params = || SimmerParams {
             num_sim_iters: 8,
             num_sim_plies: 2,
@@ -4397,34 +4370,33 @@ mod tests {
         };
 
         // the leaves are the inference's own, as the shell asks for them
-        let mut simmer =
-            Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let mut simmer = Simmer::<_, _, false>::new(&game_config, &tabled, &klv, params()).unwrap();
         let leaves = simmer.kept_leaves(&rack, last.clone()).unwrap();
         assert!(!leaves.is_empty());
         let shell_leaves = infer::kept_leaves(
             &mut infer::InferTables::new(&game_config, &klv).unwrap(),
             &mut movegen::KurniaMoveGenerator::new(&game_config),
-            &movegen::BoardSnapshot {
-                board_tiles: &board_before,
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            },
+            &movegen::BoardSnapshot::new(
+                &board_before,
+                &game_config,
+                &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                &klv,
+            ),
             &rack,
             &opening,
             infer::FUZZ,
             1,
         )
         .unwrap();
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
         assert_eq!(leaves, shell_leaves);
 
         let fuzz = infer::fitted_fuzz(bag_before, bag_before, false);
         assert_eq!(fuzz, (1.507, infer::FUZZ_PRIOR_MIX));
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let mut fitted_simmer =
-            Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
+            Simmer::<_, _, false>::new(&game_config, &tabled, &klv, params()).unwrap();
         fitted_simmer.set_infer_fuzz(fuzz);
         let fitted = fitted_simmer.kept_leaves(&rack, last.clone()).unwrap();
         let mut mixed_tables = infer::InferTables::new(&game_config, &klv).unwrap();
@@ -4432,14 +4404,12 @@ mod tests {
         let shell_fitted = infer::kept_leaves(
             &mut mixed_tables,
             &mut movegen::KurniaMoveGenerator::new(&game_config),
-            &movegen::BoardSnapshot {
-                board_tiles: &board_before,
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            },
+            &movegen::BoardSnapshot::new(
+                &board_before,
+                &game_config,
+                &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                &klv,
+            ),
             &rack,
             &opening,
             fuzz.0,
@@ -4451,17 +4421,14 @@ mod tests {
 
         // and the move picked with the last move given is the one a decision
         // handed those leaves picks
-        let vocab = crate::movegen::Vocab::lean(&kwg);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab = crate::movegen::Vocab::bare(&kwg);
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let mut by_hand =
-            Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params()).unwrap();
+            Simmer::<_, _, false>::new(&game_config, &tabled, &klv, params()).unwrap();
         by_hand.reseed(3);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         gen_simmer_candidates(
@@ -4519,7 +4486,8 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let kwg = kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
-        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let arm_tables =
+            std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, false).unwrap());
         let alphabet = game_config.alphabet();
         let mut tiles = Vec::new();
         for tile in 0..alphabet.len() {
@@ -4540,7 +4508,7 @@ mod tests {
             std::sync::Arc::new(arm_tables),
             std::sync::Arc::new(klv),
         );
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
         let params = || SimmerParams {
             num_sim_iters: 2,
             num_sim_plies: 1,
@@ -4549,10 +4517,10 @@ mod tests {
             quiet: true,
             memory: None,
         };
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
         let mut pickers = [0, 1].map(|_| {
             MovePicker::Simmer(Box::new(
-                Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params())
-                    .unwrap(),
+                Simmer::<_, _, false>::new(&game_config, &tabled, &klv, params()).unwrap(),
             ))
         });
         let mut rng = simmer::DefaultRng::seed_from_u64(7);
@@ -4570,14 +4538,14 @@ mod tests {
         let mut final_scores = vec![0; 2];
         loop {
             let seat = game_state.turn as usize;
-            let board_snapshot = movegen::BoardSnapshot {
-                board_tiles: &game_state.board_tiles,
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: arm_tables.anagrams(),
-                rack_lengths: arm_tables.rack_lengths(),
-                klv: &klv,
-            };
+            let vocab_view = crate::movegen::Vocab::bare(&kwg)
+                .with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+            let board_snapshot = movegen::BoardSnapshot::new(
+                &game_state.board_tiles,
+                &game_config,
+                &vocab_view,
+                &klv,
+            );
             let rack = game_state.current_player().rack.clone();
             pickers[seat]
                 .pick_a_move_after(
@@ -4602,14 +4570,12 @@ mod tests {
                     infer::kept_leaves_carried_into(
                         &mut tables,
                         &mut infer_generator,
-                        &movegen::BoardSnapshot {
-                            board_tiles: board_before,
-                            game_config: &game_config,
-                            vocab: &crate::movegen::Vocab::lean(&kwg),
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: &klv,
-                        },
+                        &movegen::BoardSnapshot::new(
+                            board_before,
+                            &game_config,
+                            &crate::movegen::Vocab::bare(&kwg).with_tables(None),
+                            &klv,
+                        ),
                         &rack,
                         (play, held),
                         infer::InferOptions {
@@ -4946,14 +4912,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let game_state = at_endgame(&game_config, 0);
         let mut scratch = Scratch::new(&game_config);
         let first = OutInTwo::new(&board_snapshot, &game_state, &mut scratch).unwrap();
@@ -4982,14 +4943,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 14, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         // on the bottom row, ATT (9, its T on a triple word) leaves the E no
         // move, and the T it keeps no out on the board as it is but ATTT, which
         // ATT itself opens (4): stuck there, 9 less the penalty and twice the
@@ -5117,14 +5073,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         // AT down column 5 (2) leaves the E its ATE along row 7 (6, on the
         // center's double word) and down column 5: 2 less 6 less twice the T
         // kept. ATT along row 7 (6) leaves the E no move and the T its AT down:
@@ -5185,15 +5136,10 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
         board_tiles[dim.at_on_board(7, 7)] = 1; // A
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let mut game_state = at_endgame(&game_config, -10);
         game_state.board_tiles.copy_from_slice(&board_tiles);
         // AT along row 7 and AT down column 7 (2 each) mirror each other: each
@@ -5233,14 +5179,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         // ATT along row 7 (6) opens ATTT (4) for the T it keeps, beside its AT
         // down (2): 6, twice the E, and 4; ATTT at once goes out for 8 and
         // twice the E
@@ -5282,14 +5223,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         // ATT down column 5 goes out for 5 (its last T on a triple letter) and
         // twice the E; ATT along row 7 is worth 10 by out in two
         let att_down = place(0, true, 5, 7, &[0, 20, 20], 5).play;
@@ -5324,14 +5260,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let att_down = place(0, true, 5, 7, &[0, 20, 20], 5).play;
         let att_along = place(0, false, 7, 5, &[0, 0, 20], 6).play;
         for (bag, want) in [(3, &att_down), (4, &att_along)] {
@@ -5443,14 +5374,9 @@ mod tests {
             .parse("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15")
             .unwrap()
             .to_vec();
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.board_tiles.copy_from_slice(&board_tiles);
@@ -5515,14 +5441,9 @@ mod tests {
             .parse("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15")
             .unwrap()
             .to_vec();
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.board_tiles.copy_from_slice(&board_tiles);
@@ -5576,14 +5497,9 @@ mod tests {
         );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_with(&game_config, 7, 0);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.board_tiles.copy_from_slice(&board_tiles);
         game_state.bag.set_from_iter(std::iter::repeat_n(5u8, 3));
@@ -5629,14 +5545,9 @@ mod tests {
             "15/15/15/15/15/15/15/4TRANCE5/15/6NEST5/15/15/15/15/15",
         ] {
             let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
-            let board_snapshot = movegen::BoardSnapshot {
-                board_tiles: &board_tiles,
-                game_config: &game_config,
-                vocab: &crate::movegen::Vocab::lean(&kwg),
-                anagrams: None,
-                rack_lengths: None,
-                klv: &klv,
-            };
+            let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+            let board_snapshot =
+                movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
             // the last four give the other side more tiles than it can go out
             // with, so its blocks set many values
             for (mine, theirs) in [
@@ -5819,14 +5730,9 @@ mod tests {
         let kwg = std::sync::Arc::new(end_words_kwg(&game_config));
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let (board_tiles, positions) = care_positions(&game_config);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         for text in ["3 1 1 0\n2 1 1 0\n1 3 1 0\n1 2 1 0\n", ""] {
             let zero = PositionalTerm::parse(text).unwrap();
             for game_state in &positions {
@@ -5851,14 +5757,9 @@ mod tests {
         let kwg = std::sync::Arc::new(end_words_kwg(&game_config));
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let (board_tiles, positions) = care_positions(&game_config);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let term =
             PositionalTerm::parse("3 1 1 -100\n2 1 1 -100\n1 3 1 -100\n1 2 1 -100\n").unwrap();
         let (mut reach, mut after) = (Vec::new(), Vec::new());
@@ -5938,19 +5839,15 @@ mod tests {
             quiet: true,
             memory: None,
         };
-        let vocab = crate::movegen::Vocab::lean(&kwg);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab = crate::movegen::Vocab::bare(&kwg);
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let decide = |rollout_klv: Option<std::sync::Arc<klv::Klv<_>>>| {
+            let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
             let mut simmer =
-                Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params())
-                    .unwrap();
+                Simmer::<_, _, false>::new(&game_config, &tabled, &klv, params()).unwrap();
             if let Some(rollout_klv) = rollout_klv {
                 simmer.set_rollout_klv(rollout_klv);
             }
@@ -5998,16 +5895,12 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         game_state.set_current_rack(&[1, 20, 5, 5, 0, 1, 20]);
         let rack = game_state.current_player().rack.clone();
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let vocab_view =
+            crate::movegen::Vocab::bare(&kwg).with_tables(Some(std::sync::Arc::clone(&arm_tables)));
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let decide = |term: Option<PositionalTerm>| {
-            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let vocab = crate::movegen::Vocab::bare(&kwg);
             let params = SimmerParams {
                 num_sim_iters: 8,
                 num_sim_plies: 2,
@@ -6016,9 +5909,9 @@ mod tests {
                 quiet: true,
                 memory: None,
             };
+            let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&arm_tables)));
             let mut simmer =
-                Simmer::<_, _, false>::new(&game_config, &vocab, &arm_tables, &klv, params)
-                    .unwrap();
+                Simmer::<_, _, false>::new(&game_config, &tabled, &klv, params).unwrap();
             if let Some(term) = term {
                 simmer = simmer.with_positional(term);
             }
@@ -6081,14 +5974,9 @@ mod tests {
         let kwg = std::sync::Arc::new(end_words_kwg(&game_config));
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let (board_tiles, positions) = care_positions(&game_config);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let zero = PositionalTerm::parse("3 1 1 0\n2 1 1 0\n1 3 1 0\n1 2 1 0\n").unwrap();
         for game_state in &positions {
             assert_eq!(
@@ -6109,14 +5997,9 @@ mod tests {
         let kwg = std::sync::Arc::new(end_words_kwg(&game_config));
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let (board_tiles, positions) = care_positions(&game_config);
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let term =
             PositionalTerm::parse("3 1 1 -100\n2 1 1 -100\n1 3 1 -100\n1 2 1 -100\n").unwrap();
         let (mut reach, mut after) = (Vec::new(), Vec::new());

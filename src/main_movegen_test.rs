@@ -399,14 +399,21 @@ fn run(
         .ok_or("this alphabet does not lay out a key")?;
     let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
-    let detected = wolges::anagrams::ArmTables::build(kwg, game_config, false)?;
-    let vocab = movegen::Vocab::new(game_config, kwg)?;
-    let lean_vocab = movegen::Vocab::lean(kwg);
+    let detected =
+        std::sync::Arc::new(wolges::anagrams::ArmTables::build(kwg, game_config, false)?);
+    let vocab = movegen::Vocab::new(game_config, kwg, movegen::Tables::None)?;
+    let lean_vocab = movegen::Vocab::bare(kwg);
+    let layout = vocab.with_tables(Some(std::sync::Arc::new(
+        wolges::anagrams::ArmTables::Anagrams(anagrams),
+    )));
+    let rack_vocab = lean_vocab.with_tables(Some(std::sync::Arc::new(
+        wolges::anagrams::ArmTables::RackLengths(rack_lengths),
+    )));
     let every_arm = [
-        ("detected", detected.anagrams(), None, true),
-        ("layout", Some(&anagrams), None, true),
-        ("lean", None, Some(&rack_lengths), false),
-        ("lean bare", None, None, false),
+        ("detected", &vocab.with_tables(Some(detected)), true),
+        ("layout", &layout, true),
+        ("lean", &rack_vocab, false),
+        ("lean bare", &lean_vocab, false),
     ];
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
@@ -414,15 +421,13 @@ fn run(
         let rack = parse_rack(alphabet, case.rack)?;
 
         let mut lean = String::new();
-        for (arm, table) in [(" lean", None), ("", Some(&anagrams))] {
-            let board_snapshot = movegen::BoardSnapshot {
+        for (arm, table) in [(" lean", None), ("", Some(&layout))] {
+            let board_snapshot = movegen::BoardSnapshot::new(
                 board_tiles,
                 game_config,
-                vocab: if table.is_some() { &vocab } else { &lean_vocab },
-                anagrams: table,
-                rack_lengths: table.is_none().then_some(&rack_lengths),
+                table.unwrap_or(&rack_vocab),
                 klv,
-            };
+            );
             let params = movegen::GenMovesParams {
                 board_snapshot: &board_snapshot,
                 rack: &rack,
@@ -482,15 +487,8 @@ fn run(
         // every arm asked every way: all, capped (the head of all), and raw
         // (all's moves), all the same on every arm
         let mut first_all = None;
-        for &(arm, anagrams, rack_lengths, tables) in &every_arm {
-            let board_snapshot = movegen::BoardSnapshot {
-                board_tiles,
-                game_config,
-                vocab: if tables { &vocab } else { &lean_vocab },
-                anagrams,
-                rack_lengths,
-                klv,
-            };
+        for &(arm, vocab, tables) in &every_arm {
+            let board_snapshot = movegen::BoardSnapshot::new(board_tiles, game_config, vocab, klv);
             let digest = |g: &movegen::KurniaMoveGenerator, head: usize| -> error::Returns<_> {
                 use std::hash::{Hash, Hasher};
                 let mut ordered = fash::MyHasher::default();
@@ -598,20 +596,14 @@ fn run(
         let board_tiles = fen_parser.parse(case.fen)?.to_vec();
         cases.push((case, board_tiles, parse_rack(alphabet, case.rack)?));
     }
-    for &(arm, anagrams, rack_lengths, tables) in &every_arm {
+    for &(arm, vocab, tables) in &every_arm {
         let mut generator = movegen::KurniaMoveGenerator::new(game_config);
         let mut timed = std::time::Duration::ZERO;
         for pass in 0..=files.passes {
             let warm = pass == 0;
             for (case, board_tiles, rack) in &cases {
-                let board_snapshot = movegen::BoardSnapshot {
-                    board_tiles,
-                    game_config,
-                    vocab: if tables { &vocab } else { &lean_vocab },
-                    anagrams,
-                    rack_lengths,
-                    klv,
-                };
+                let board_snapshot =
+                    movegen::BoardSnapshot::new(board_tiles, game_config, vocab, klv);
                 let params = movegen::GenMovesParams {
                     board_snapshot: &board_snapshot,
                     rack,

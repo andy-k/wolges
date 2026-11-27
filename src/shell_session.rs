@@ -8,8 +8,8 @@ use crate::{endgame_watch, run_line};
 use rand::{Rng, SeedableRng};
 use std::io::Write;
 use wolges::{
-    alphabet, anagrams, display, endgame, equity, error, fash, game_config, game_state, infer, klv,
-    kwg, move_filter, move_picker, movegen, notation, parallelism, play_scorer, text,
+    alphabet, display, endgame, equity, error, fash, game_config, game_state, infer, klv, kwg,
+    move_filter, move_picker, movegen, notation, parallelism, play_scorer, text,
 };
 
 type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
@@ -354,6 +354,11 @@ impl Readers {
     }
 }
 
+type Vocabs = (
+    &'static movegen::Vocab<'static, kwg::Node24>,
+    &'static movegen::Vocab<'static, kwg::Node24>,
+);
+
 pub struct Session {
     game_config: &'static std::sync::Arc<game_config::GameConfig>,
     spare_state: std::cell::Cell<Option<game_state::GameState>>, // the next deal's, none at first or after the rules change
@@ -369,11 +374,7 @@ pub struct Session {
     kwgs_read: fash::MyHashMap<String, &'static std::sync::Arc<kwg::Kwg<kwg::Node24>>>,
     run_letters_found: fash::MyHashMap<usize, kwg::RunLetters<'static>>, // by graph's address
     klvs_read: fash::MyHashMap<String, &'static std::sync::Arc<klv::Klv<kwg::Node24>>>,
-    arm_tables_built:
-        fash::MyHashMap<(String, usize), &'static std::sync::Arc<anagrams::ArmTables>>,
-    vocabs_built: std::cell::RefCell<
-        fash::MyHashMap<(String, usize), &'static movegen::Vocab<'static, kwg::Node24>>,
-    >,
+    vocabs_built: std::cell::RefCell<fash::MyHashMap<(String, usize), Vocabs>>,
     endgame_solvers: fash::MyHashMap<String, ShellSolver>, // by lexicon path
     seats_endgame_solvers: fash::MyHashMap<String, AnySolver<false>>,
     rules_made: fash::MyHashMap<String, &'static std::sync::Arc<game_config::GameConfig>>,
@@ -592,7 +593,6 @@ impl Session {
             kwgs_read: Default::default(),
             run_letters_found: Default::default(),
             klvs_read: [("-".to_string(), none)].into_iter().collect(),
-            arm_tables_built: Default::default(),
             vocabs_built: Default::default(),
             endgame_solvers: Default::default(),
             seats_endgame_solvers: Default::default(),
@@ -932,14 +932,12 @@ impl Session {
                         .last()
                         .ok_or("no move to challenge")?
                         .board_before;
-                    let board_snapshot = &movegen::BoardSnapshot {
-                        board_tiles: board_before,
-                        game_config: self.game_config,
-                        vocab: self.vocab()?,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: self.klv,
-                    };
+                    let board_snapshot = &movegen::BoardSnapshot::new(
+                        board_before,
+                        self.game_config,
+                        self.walk_vocab()?,
+                        self.klv,
+                    );
                     let mut made = Vec::<Vec<u8>>::new();
                     self.play_scorer
                         .words_all(board_snapshot, &turn.play, |word: &[u8]| {
@@ -1470,14 +1468,12 @@ impl Session {
                     let solved = solved?;
                     let best = match &solved.best_move {
                         Some(play) => play
-                            .fmt(&movegen::BoardSnapshot {
-                                board_tiles: &state.board_tiles,
-                                game_config: self.game_config,
-                                vocab: self.vocab()?,
-                                anagrams: None,
-                                rack_lengths: None,
-                                klv: self.klv,
-                            })?
+                            .fmt(&movegen::BoardSnapshot::new(
+                                &state.board_tiles,
+                                self.game_config,
+                                self.walk_vocab()?,
+                                self.klv,
+                            ))?
                             .to_string(),
                         None => "none".to_string(),
                     };
@@ -1731,7 +1727,6 @@ impl Session {
         AnySolver<TWO_SEATS>: KeptSolvers,
     {
         let vocab = self.vocab()?;
-        let arm_tables = self.arm_tables()?;
         let path = &self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?.0;
         let kept = AnySolver::<TWO_SEATS>::kept(
             &mut self.endgame_solvers,
@@ -1747,7 +1742,6 @@ impl Session {
                 endgame::EndgameSolver::with_generator(
                     self.game_config,
                     vocab,
-                    arm_tables,
                     self.run_letters()?,
                     movegen::KurniaMoveGenerator::new(self.game_config),
                 )?
@@ -1802,34 +1796,31 @@ impl Session {
         play
     }
 
-    fn arm_tables(&mut self) -> error::Returns<&'static std::sync::Arc<anagrams::ArmTables>> {
+    fn vocabs(&self) -> error::Returns<Vocabs> {
         let (path, kwg) = self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?;
         let key = (path.clone(), std::ptr::from_ref(self.game_config).addr());
-        Ok(match self.arm_tables_built.get(&key) {
-            Some(&arm_tables) => arm_tables,
+        let mut vocabs_built = self.vocabs_built.borrow_mut();
+        Ok(match vocabs_built.get(&key) {
+            Some(&vocabs) => vocabs,
             None => {
-                let arm_tables: &'static _ = Box::leak(Box::new(std::sync::Arc::new(
-                    anagrams::ArmTables::build(*kwg, self.game_config, false)?,
-                )));
-                self.arm_tables_built.insert(key, arm_tables);
-                arm_tables
+                let vocab: &'static _ = Box::leak(Box::new(movegen::Vocab::new(
+                    self.game_config,
+                    kwg,
+                    movegen::Tables::Anagrams,
+                )?));
+                let walk: &'static _ = Box::leak(Box::new(vocab.without_tables()));
+                vocabs_built.insert(key, (vocab, walk));
+                (vocab, walk)
             }
         })
     }
 
     fn vocab(&self) -> error::Returns<&'static movegen::Vocab<'static, kwg::Node24>> {
-        let (path, kwg) = self.kwg.as_ref().ok_or("no lexicon: lexicon FILE first")?;
-        let key = (path.clone(), std::ptr::from_ref(self.game_config).addr());
-        let mut vocabs_built = self.vocabs_built.borrow_mut();
-        Ok(match vocabs_built.get(&key) {
-            Some(&vocab) => vocab,
-            None => {
-                let vocab: &'static _ =
-                    Box::leak(Box::new(movegen::Vocab::new(self.game_config, kwg)?));
-                vocabs_built.insert(key, vocab);
-                vocab
-            }
-        })
+        Ok(self.vocabs()?.0)
+    }
+
+    fn walk_vocab(&self) -> error::Returns<&'static movegen::Vocab<'static, kwg::Node24>> {
+        Ok(self.vocabs()?.1)
     }
 
     // a change to the game, kept only if the game it makes can be rebuilt;
@@ -2060,7 +2051,7 @@ impl Session {
         if self.final_scores.is_some() {
             return Err("the game is over".into());
         }
-        let vocab = self.vocab()?;
+        let walk = self.walk_vocab()?;
         let play = match args {
             [pass] if pass == "pass" => movegen::Play::Exchange {
                 tiles: [][..].into(),
@@ -2094,14 +2085,8 @@ impl Session {
             }
             _ => return Err("play 8D WORD, play D8 WORD, play exch TILES, or play pass".into()),
         };
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &self.state.board_tiles,
-            game_config: self.game_config,
-            vocab,
-            anagrams: None,
-            rack_lengths: None,
-            klv: self.klv,
-        };
+        let board_snapshot =
+            &movegen::BoardSnapshot::new(&self.state.board_tiles, self.game_config, walk, self.klv);
         let mut play = self
             .play_scorer
             .validate_play(board_snapshot, &self.state, &play)?
@@ -2193,7 +2178,7 @@ impl Session {
         }
         if self.kwg.is_some() {
             let (mut replay, mut rng) = self.dealt(game)?;
-            let graphs = self.vocab()?;
+            let walk = self.walk_vocab()?;
             for (i, turn) in game.turns.iter().enumerate() {
                 let held = replay.ready_rack(self.game_config, turn)?;
                 let board = &mut replay.state;
@@ -2211,14 +2196,12 @@ impl Session {
                     None => write!(
                         out,
                         "{}",
-                        turn.play.fmt(&movegen::BoardSnapshot {
-                            board_tiles: &board.board_tiles,
-                            game_config: self.game_config,
-                            vocab: graphs,
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: self.klv,
-                        })?
+                        turn.play.fmt(&movegen::BoardSnapshot::new(
+                            &board.board_tiles,
+                            self.game_config,
+                            walk,
+                            self.klv
+                        ))?
                     )?,
                 }
                 if turn.withdrawn() {
@@ -2326,15 +2309,12 @@ impl Session {
             return Err("no game: new first".into());
         }
         let vocab = self.vocab()?;
-        let arm_tables = self.arm_tables()?;
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &self.state.board_tiles,
-            game_config: self.game_config,
+        let board_snapshot = &movegen::BoardSnapshot::new(
+            &self.state.board_tiles,
+            self.game_config,
             vocab,
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: self.klv,
-        };
+            self.klv,
+        );
         self.move_generator
             .gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot,
@@ -2368,15 +2348,12 @@ impl Session {
         }
         let kept = self.kept_leaves()?;
         let vocab = self.vocab()?;
-        let arm_tables = self.arm_tables()?;
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &self.state.board_tiles,
-            game_config: self.game_config,
+        let board_snapshot = &movegen::BoardSnapshot::new(
+            &self.state.board_tiles,
+            self.game_config,
             vocab,
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: self.klv,
-        };
+            self.klv,
+        );
         let rack = &self.state.current_player().rack;
         self.move_generator
             .gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -2435,7 +2412,6 @@ impl Session {
         if self.final_scores.is_some() {
             return Err("the game is over".into());
         }
-        let arm_tables = self.arm_tables()?;
         // with the bag empty, both racks are known (a given seat's rack is all
         // the unseen tiles, once they fit in it), so solve rather than sim; the
         // solve reads no kept leaves, so none are inferred before it
@@ -2467,14 +2443,12 @@ impl Session {
             Some(_) => self.kept_leaves()?,
             None => Vec::new(),
         };
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &self.state.board_tiles,
-            game_config: self.game_config,
-            vocab: self.vocab()?,
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: self.klv,
-        };
+        let board_snapshot = &movegen::BoardSnapshot::new(
+            &self.state.board_tiles,
+            self.game_config,
+            self.vocab()?,
+            self.klv,
+        );
         let rack = &self.state.current_player().rack;
         let Some(ms) = sim_ms else {
             move_picker::MovePicker::<kwg::Node24, kwg::Node24>::Hasty.pick_a_move(
@@ -2500,7 +2474,6 @@ impl Session {
         let mut simmer = move_picker::Simmer::<_, _, false>::new(
             self.game_config,
             self.vocab()?,
-            arm_tables,
             self.klv,
             move_picker::SimmerParams {
                 num_sim_iters: (ms as u64).max(16),
@@ -2596,7 +2569,7 @@ impl Session {
         };
         let (mover, last_at) = (last.seat, self.moves_shown.len() - 1);
         let watcher_seat = self.state.turn as usize;
-        let vocab = self.vocab()?;
+        let walk = self.walk_vocab()?;
         let tables = infer_tables_for(&mut self.infer_tables, self.game_config, self.klv)?;
         let mut leaves = infer::PackedLeaves::new();
         let (mut carried, mut next) = (infer::Carried::default(), infer::Carried::default());
@@ -2604,7 +2577,6 @@ impl Session {
         // move, and whether they are known (an exchange no one saw is not)
         let mut put_back = Vec::new();
         let mut known = true;
-        let graphs = vocab;
         for (at, shown) in self.moves_shown.iter().enumerate() {
             if shown.seat != mover {
                 if let movegen::Play::Exchange { tiles } = &shown.play
@@ -2630,14 +2602,7 @@ impl Session {
             infer::kept_leaves_carried_into(
                 tables,
                 &mut self.infer_generator,
-                &movegen::BoardSnapshot {
-                    board_tiles: &shown.board_before,
-                    game_config: self.game_config,
-                    vocab: graphs,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: self.klv,
-                },
+                &movegen::BoardSnapshot::new(&shown.board_before, self.game_config, walk, self.klv),
                 watcher,
                 (&shown.play, held),
                 infer::InferOptions {
@@ -2668,21 +2633,18 @@ impl Session {
                 return Err("the game is over".into());
             }
             let kwg = self.kwg()?;
-            let arm_tables = self.arm_tables()?;
             let leaves = self.kept_leaves()?;
             let mut move_generator = (self.sim_generator.take())
                 .unwrap_or_else(|| movegen::KurniaMoveGenerator::new(self.game_config));
             move_picker::gen_simmer_candidates(
                 &mut move_filter::GenMoves::Unfiltered,
                 &mut move_generator,
-                &movegen::BoardSnapshot {
-                    board_tiles: &self.state.board_tiles,
-                    game_config: self.game_config,
-                    vocab: self.vocab()?,
-                    anagrams: arm_tables.anagrams(),
-                    rack_lengths: arm_tables.rack_lengths(),
-                    klv: self.klv,
-                },
+                &movegen::BoardSnapshot::new(
+                    &self.state.board_tiles,
+                    self.game_config,
+                    self.vocab()?,
+                    self.klv,
+                ),
                 &self.state.current_player().rack,
                 self.state.current_player().num_exchanges,
                 move_picker::SIMMER_FIELD,
@@ -2691,7 +2653,7 @@ impl Session {
             let made_for = [
                 std::ptr::from_ref(self.game_config).addr(),
                 std::ptr::from_ref(kwg).addr(),
-                std::ptr::from_ref(arm_tables).addr(),
+                std::ptr::from_ref(self.vocab()?).addr(),
                 std::ptr::from_ref(self.klv).addr(),
             ];
             let mut simmer = match self.sim_driver.take() {
@@ -2699,7 +2661,6 @@ impl Session {
                 _ => move_picker::Simmer::<_, _, true>::new(
                     self.game_config,
                     self.vocab()?,
-                    arm_tables,
                     self.klv,
                     move_picker::SimmerParams {
                         num_sim_iters: u64::MAX / 2,
@@ -2759,20 +2720,13 @@ impl Session {
     // and one that is out (dropped, or retired by the sim) comes back with what
     // it had; one already in stays as it is
     fn sim_add(&mut self, play: movegen::Play) -> error::Returns<()> {
-        let vocab = self.vocab()?;
+        let walk = self.walk_vocab()?;
         let score = match &play {
             movegen::Play::Place { score, .. } => *score,
             movegen::Play::Exchange { .. } => equity::Equity::ZERO,
         };
         let equity = self.play_scorer.compute_equity(
-            &movegen::BoardSnapshot {
-                board_tiles: &self.state.board_tiles,
-                game_config: self.game_config,
-                vocab,
-                anagrams: None,
-                rack_lengths: None,
-                klv: self.klv,
-            },
+            &movegen::BoardSnapshot::new(&self.state.board_tiles, self.game_config, walk, self.klv),
             &self.state,
             &play,
             move_filter::LEAVE_SCALE_DENOM,
@@ -2815,14 +2769,12 @@ impl Session {
     // is still in
     fn sim_show(&self, n: usize) -> error::Returns<()> {
         let sim = self.sim.as_ref().ok_or("no sim: sim first")?;
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &self.state.board_tiles,
-            game_config: self.game_config,
-            vocab: self.vocab()?,
-            anagrams: None,
-            rack_lengths: None,
-            klv: self.klv,
-        };
+        let board_snapshot = &movegen::BoardSnapshot::new(
+            &self.state.board_tiles,
+            self.game_config,
+            self.walk_vocab()?,
+            self.klv,
+        );
         let active = sim.simmer.active_stream_ids().collect::<Vec<_>>();
         let mut out = std::io::stdout();
         for (rank, (index, _objective, equity, win_rate)) in
@@ -3313,11 +3265,10 @@ impl Session {
     ) -> error::Returns<Vec<String>> {
         let mut line = Vec::new();
         solver.collect_pv(state.turn, &mut line)?;
-        let vocab = self.vocab()?;
         let mut state = state.clone();
         let mut rng = GameRng::seed_from_u64(0);
         let mut text = Vec::new();
-        let graphs = vocab;
+        let walk = self.walk_vocab()?;
         for (i, (_, play)) in line.iter().enumerate() {
             let mover = state.turn as usize;
             text.push(format!(
@@ -3325,14 +3276,12 @@ impl Session {
                 i + 1,
                 mover + 1,
                 self.rack_text(mover, &state.players[mover].rack),
-                play.fmt(&movegen::BoardSnapshot {
-                    board_tiles: &state.board_tiles,
-                    game_config: self.game_config,
-                    vocab: graphs,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: self.klv,
-                })?
+                play.fmt(&movegen::BoardSnapshot::new(
+                    &state.board_tiles,
+                    self.game_config,
+                    walk,
+                    self.klv
+                ))?
             ));
             state.play(self.game_config, &mut rng, play)?;
             state.next_turn()?;
@@ -3412,11 +3361,10 @@ impl Session {
         let Some(game) = &self.game else {
             return Ok(());
         };
-        let vocab = self.vocab()?;
         let alphabet = self.game_config.alphabet();
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut words = play_scorer::PlayScorer::new();
-        let graphs = vocab;
+        let walk = self.walk_vocab()?;
         for (number, turn) in (1..).zip(&game.turns[..game.at]) {
             let held = replay.ready_rack(self.game_config, turn)?;
             let (nickname, _) = self.gcg_name(replay.state.turn as usize);
@@ -3424,14 +3372,12 @@ impl Session {
             let mut kind = "main";
             let mut written = Ok(());
             words.words_all(
-                &movegen::BoardSnapshot {
-                    board_tiles: &replay.state.board_tiles,
-                    game_config: self.game_config,
-                    vocab: graphs,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: self.klv,
-                },
+                &movegen::BoardSnapshot::new(
+                    &replay.state.board_tiles,
+                    self.game_config,
+                    walk,
+                    self.klv,
+                ),
                 &turn.play,
                 |word: &[u8]| {
                     let word = word
@@ -3480,14 +3426,12 @@ impl Session {
                 write!(
                     text,
                     "{}",
-                    play.fmt(&movegen::BoardSnapshot {
-                        board_tiles: &self.state.board_tiles,
-                        game_config: self.game_config,
-                        vocab: self.vocab()?,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: self.klv,
-                    })?
+                    play.fmt(&movegen::BoardSnapshot::new(
+                        &self.state.board_tiles,
+                        self.game_config,
+                        self.walk_vocab()?,
+                        self.klv
+                    ))?
                 )?;
                 if let Some(space) = text[at..].rfind(' ') {
                     text.truncate(at + space);
@@ -4270,13 +4214,13 @@ mod tests {
             }
         };
         ran(&mut session);
-        let arm_tables = session.arm_tables().unwrap();
+        let vocab = session.vocab().unwrap();
         let kept = session.kept_leaves().unwrap();
         let infer_at = std::ptr::from_ref(&session.infer_tables.as_ref().unwrap().1).addr();
         run(&mut session, "rules french").unwrap();
         run(&mut session, "rules english").unwrap();
         ran(&mut session);
-        assert!(std::ptr::eq(session.arm_tables().unwrap(), arm_tables));
+        assert!(std::ptr::eq(session.vocab().unwrap(), vocab));
         assert_eq!(session.kept_leaves().unwrap(), kept);
         assert_eq!(
             std::ptr::from_ref(&session.infer_tables.as_ref().unwrap().1).addr(),
@@ -4287,20 +4231,19 @@ mod tests {
         ran(&mut fresh);
         assert_eq!(fresh.kept_leaves().unwrap(), kept);
         let kwg = session.kwg().unwrap();
-        let built = anagrams::ArmTables::build(kwg, session.game_config, false).unwrap();
+        let built =
+            movegen::Vocab::new(session.game_config, kwg, movegen::Tables::Anagrams).unwrap();
         let rack = session.state.current_player().rack.clone();
-        let plays = |arm_tables: &anagrams::ArmTables| {
+        let plays = |vocab: &movegen::Vocab<'_, kwg::Node24>| {
             let mut move_generator = movegen::KurniaMoveGenerator::new(session.game_config);
             move_generator
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
-                    board_snapshot: &movegen::BoardSnapshot {
-                        board_tiles: &session.state.board_tiles,
-                        game_config: session.game_config,
-                        vocab: &movegen::Vocab::lean(kwg),
-                        anagrams: arm_tables.anagrams(),
-                        rack_lengths: arm_tables.rack_lengths(),
-                        klv: session.klv,
-                    },
+                    board_snapshot: &movegen::BoardSnapshot::new(
+                        &session.state.board_tiles,
+                        session.game_config,
+                        vocab,
+                        session.klv,
+                    ),
                     rack: &rack,
                     max_gen: usize::MAX,
                     num_exchanges_by_this_player: 0,
@@ -4312,7 +4255,7 @@ mod tests {
                 .map(|valued| (valued.play.clone(), valued.equity))
                 .collect::<Vec<_>>()
         };
-        let cached = plays(arm_tables);
+        let cached = plays(vocab);
         assert!(!cached.is_empty());
         assert!(cached == plays(&built));
     }
@@ -4812,14 +4755,12 @@ mod tests {
         run(&mut session, &format!("sim add {other_text}")).unwrap();
         let mut all = movegen::KurniaMoveGenerator::new(session.game_config);
         all.gen_moves_unfiltered(&movegen::GenMovesParams {
-            board_snapshot: &movegen::BoardSnapshot {
-                board_tiles: &session.state.board_tiles,
-                game_config: session.game_config,
-                vocab: &movegen::Vocab::lean(session.kwg().unwrap()),
-                anagrams: None,
-                rack_lengths: None,
-                klv: session.klv,
-            },
+            board_snapshot: &movegen::BoardSnapshot::new(
+                &session.state.board_tiles,
+                session.game_config,
+                &movegen::Vocab::bare(session.kwg().unwrap()),
+                session.klv,
+            ),
             rack: &session.state.current_player().rack,
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
@@ -6028,14 +5969,12 @@ mod tests {
                 infer::kept_leaves_carried_into(
                     &mut tables,
                     &mut move_generator,
-                    &movegen::BoardSnapshot {
-                        board_tiles: &shown.board_before,
+                    &movegen::BoardSnapshot::new(
+                        &shown.board_before,
                         game_config,
-                        vocab: &movegen::Vocab::lean(kwg),
-                        anagrams: None,
-                        rack_lengths: None,
+                        &movegen::Vocab::bare(kwg),
                         klv,
-                    },
+                    ),
                     watcher,
                     (&shown.play, held),
                     infer::InferOptions {
@@ -6532,14 +6471,12 @@ mod tests {
             score: equity::Equity::ZERO,
         };
         let score = first.play_scorer.compute_score(
-            &movegen::BoardSnapshot {
-                board_tiles: &first.state.board_tiles,
-                game_config: first.game_config,
-                vocab: &movegen::Vocab::lean(first.kwg().unwrap()),
-                anagrams: None,
-                rack_lengths: None,
-                klv: first.klv,
-            },
+            &movegen::BoardSnapshot::new(
+                &first.state.board_tiles,
+                first.game_config,
+                &movegen::Vocab::bare(first.kwg().unwrap()),
+                first.klv,
+            ),
             &play,
         );
         assert_eq!(score, equity::Points::new(68).scaled().raw());

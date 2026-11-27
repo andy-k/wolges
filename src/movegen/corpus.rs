@@ -25,10 +25,9 @@ enum Call {
     Lean,
 }
 
-struct Arm<'a> {
+struct Arm {
     name: &'static str,
-    anagrams: Option<&'a anagrams::Anagrams>,
-    rack_lengths: Option<&'a anagrams::RackLengths>,
+    tables: Option<std::sync::Arc<anagrams::ArmTables>>,
     call: Call,
 }
 
@@ -412,9 +411,9 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
         }
     });
     let run_letter_bits = kwg.compute_letter_bits().letter_bits;
-    let detected = anagrams::ArmTables::build(&kwg, gc, false).unwrap();
-    let by_layout = anagrams::ArmTables::build_by_layout(&kwg, gc).unwrap();
-    let lean = anagrams::ArmTables::build(&kwg, gc, true).unwrap();
+    let detected = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, gc, false).unwrap());
+    let by_layout = std::sync::Arc::new(anagrams::ArmTables::build_by_layout(&kwg, gc).unwrap());
+    let lean = std::sync::Arc::new(anagrams::ArmTables::build(&kwg, gc, true).unwrap());
     let mut arms = Vec::new();
     if let Some(anagrams) = detected.anagrams() {
         arms.push(Arm {
@@ -423,40 +422,35 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
             } else {
                 "layout"
             },
-            anagrams: Some(anagrams),
-            rack_lengths: None,
+            tables: Some(std::sync::Arc::clone(&detected)),
             call: Call::Tables,
         });
     }
-    if let Some(anagrams) = by_layout.anagrams()
+    if by_layout.anagrams().is_some()
         && detected
             .anagrams()
             .is_some_and(|a| a.nibble_side().is_some())
     {
         arms.push(Arm {
             name: "layout",
-            anagrams: Some(anagrams),
-            rack_lengths: None,
+            tables: Some(std::sync::Arc::clone(&by_layout)),
             call: Call::Tables,
         });
     }
     arms.push(Arm {
         name: "lean",
-        anagrams: None,
-        rack_lengths: lean.rack_lengths(),
+        tables: Some(std::sync::Arc::clone(&lean)),
         call: Call::Lean,
     });
     arms.push(Arm {
         name: "lean bare",
-        anagrams: None,
-        rack_lengths: None,
+        tables: None,
         call: Call::Lean,
     });
     // the tables' call with no tables hands the turn to the lean arm
     arms.push(Arm {
         name: "handed back",
-        anagrams: None,
-        rack_lengths: lean.rack_lengths(),
+        tables: Some(std::sync::Arc::clone(&lean)),
         call: Call::Tables,
     });
     let dim = gc.board_layout().dim();
@@ -589,19 +583,19 @@ struct CasePosition<'a> {
     game: bool,
 }
 
-struct CaseArms<'a, 'b> {
+struct CaseArms<'a> {
     kwg: &'a std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: &'a klv::Klv<kwg::Node24>,
-    arms: &'a [Arm<'b>],
+    arms: &'a [Arm],
 }
 
 // a case on every arm, every pass policy, exchanges allowed or used up; the
 // best place move of the first arm, a pass only when forced, exchanges allowed
 #[inline]
-fn run_case<'a>(
+fn run_case(
     config: &Config<'_>,
     picks: &[Pick],
-    CaseArms { kwg, klv, arms }: CaseArms<'_, 'a>,
+    CaseArms { kwg, klv, arms }: CaseArms<'_>,
     kept: &mut Kept,
     CasePosition {
         board_tiles,
@@ -619,7 +613,9 @@ fn run_case<'a>(
         ("forced", PassPolicy::OnlyWhenForced),
         ("candidate", PassPolicy::AsACandidate),
     ] {
-        let graphs = &crate::movegen::Vocab::lean(kwg);
+        let vocabs = (arms.iter())
+            .map(|arm| crate::movegen::Vocab::bare(kwg).with_tables(arm.tables.clone()))
+            .collect::<Vec<_>>();
         for num_exchanges_by_this_player in [0, gc.exchanges_allowed_per_player()] {
             let at = format!("{case} {policy_name} {num_exchanges_by_this_player}");
             let picked = picks.iter().filter(|p| p.case == at).collect::<Vec<_>>();
@@ -627,16 +623,9 @@ fn run_case<'a>(
             if picked.is_empty() && !leads {
                 continue;
             }
-            let snapshot = |arm: &Arm<'a>| BoardSnapshot {
-                board_tiles,
-                game_config: gc,
-                vocab: graphs,
-                anagrams: arm.anagrams,
-                rack_lengths: arm.rack_lengths,
-                klv,
-            };
+            let snapshot = |i: usize| BoardSnapshot::new(board_tiles, gc, &vocabs[i], klv);
             // the first arm's list, by a new generator, is the expected one
-            let first = snapshot(&arms[0]);
+            let first = snapshot(0);
             let mut fresh = KurniaMoveGenerator::new(gc);
             let params = GenMovesParams {
                 board_snapshot: &first,
@@ -675,7 +664,7 @@ fn run_case<'a>(
                     panic!("{at}: no arm {}", pick.arm);
                 };
                 let arm = &arms[i];
-                let board_snapshot = snapshot(arm);
+                let board_snapshot = snapshot(i);
                 let ask = Ask {
                     rack,
                     pass_policy: pass_policy.clone(),

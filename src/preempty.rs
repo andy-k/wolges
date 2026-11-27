@@ -440,7 +440,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> Progress<'a, N, L> {
         }
         order.sort_by_key(|candidate| (std::cmp::Reverse(candidate.draw_upper), candidate.index));
         Ok(Self {
-            before: movegen::BoardSnapshot { ..*snap },
+            before: movegen::BoardSnapshot::new(
+                snap.board_tiles,
+                snap.game_config,
+                snap.vocab,
+                snap.klv,
+            ),
             board: snap.board_tiles.to_vec(),
             opening: snap.board_tiles.iter().all(|&tile| tile == 0),
             plays: std::mem::take(plays),
@@ -602,10 +607,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> Progress<'a, N, L> {
             let count = (self.draws.each.len() - active.next_draw).min(budget);
             let job = Job {
                 before: &self.before,
-                after: movegen::BoardSnapshot {
-                    board_tiles: &self.board,
-                    ..self.before
-                },
+                after: movegen::BoardSnapshot::new(
+                    &self.board,
+                    self.before.game_config,
+                    self.before.vocab,
+                    self.before.klv,
+                ),
                 candidate,
                 static_value: i128::from(self.plays[candidate.index].equity.raw()),
                 lanes: active.lanes,
@@ -834,21 +841,14 @@ mod tests {
         }
 
         fn vocab(&self) -> movegen::Vocab<'_, kwg::Node24> {
-            movegen::Vocab::lean(&self.kwg)
+            movegen::Vocab::bare(&self.kwg)
         }
 
         fn snap<'a>(
             &'a self,
             vocab: &'a movegen::Vocab<'a, kwg::Node24>,
         ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
-            movegen::BoardSnapshot {
-                board_tiles: &self.board,
-                game_config: &self.gc,
-                vocab,
-                anagrams: None,
-                rack_lengths: None,
-                klv: &self.klv,
-            }
+            movegen::BoardSnapshot::new(&self.board, &self.gc, vocab, &self.klv)
         }
 
         fn tally(&self, tiles: &[u8]) -> Vec<u8> {
@@ -902,10 +902,7 @@ mod tests {
                     board[strider.at_in_lane(at)] = t;
                 }
             }
-            let after = movegen::BoardSnapshot {
-                board_tiles: &board,
-                ..snap
-            };
+            let after = movegen::BoardSnapshot::new(&board, snap.game_config, snap.vocab, snap.klv);
             let mut sum = 0i128;
             for (d, w) in &each {
                 let mut tally = unseen.to_vec();
@@ -1021,10 +1018,7 @@ mod tests {
                     board[strider.at_in_lane(at)] = t;
                 }
             }
-            let after = movegen::BoardSnapshot {
-                board_tiles: &board,
-                ..snap
-            };
+            let after = movegen::BoardSnapshot::new(&board, snap.game_config, snap.vocab, snap.klv);
             let mut leave = rack.to_vec();
             crate::game_state::use_tiles(&mut leave, placed(word)).unwrap();
             let candidate = Candidate {
@@ -1107,13 +1101,11 @@ mod tests {
             let star = dim.across(layout.star_row());
             f.board[star.at_in_lane(layout.star_col())] = 1 | 0x80;
             f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
-            let tables = crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap();
-            let vocab = f.vocab();
-            let before = movegen::BoardSnapshot {
-                anagrams: tables.anagrams(),
-                rack_lengths: tables.rack_lengths(),
-                ..f.snap(&vocab)
-            };
+            let tables = std::sync::Arc::new(
+                crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap(),
+            );
+            let vocab = f.vocab().with_tables(Some(std::sync::Arc::clone(&tables)));
+            let before = f.snap(&vocab);
             let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
             gen_all(&mut mg, &before, &[0, 1, 2, 5, 20], 0).unwrap();
             let plays = std::mem::take(&mut mg.plays);
@@ -1138,10 +1130,12 @@ mod tests {
                             board[dim.lane(*down, *lane).at_in_lane(at)] = tile;
                         }
                     }
-                    let after = movegen::BoardSnapshot {
-                        board_tiles: &board,
-                        ..before
-                    };
+                    let after = movegen::BoardSnapshot::new(
+                        &board,
+                        before.game_config,
+                        before.vocab,
+                        before.klv,
+                    );
                     let lanes = zone::place_lanes(dim, &f.board, (*down, *lane, *idx, word));
                     let mut got = threats.outside(lanes);
                     mg.gen_outs(&after, theirs, lanes, |_, _, score| {
@@ -1370,14 +1364,8 @@ mod tests {
         let kwg = Arc::new(kwg);
         let klv = Arc::new(klv);
         let tables = Arc::new(anagrams::ArmTables::None);
-        let snap = movegen::BoardSnapshot {
-            board_tiles: &board,
-            game_config: &gc,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let snap = movegen::BoardSnapshot::new(&board, &gc, &vocab_view, &klv);
         let mut state = game_state::GameState::new(&gc);
         state.players[0].rack = vec![1, 2];
         state.players[1].rack = vec![2, 3];
@@ -1404,11 +1392,11 @@ mod tests {
             min_keep: 0,
             take_kept: false,
         };
-        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let vocab = crate::movegen::Vocab::bare(&kwg);
+        let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&tables)));
         let simmer = move_picker::Simmer::new(
             &gc,
-            &vocab,
-            &tables,
+            &tabled,
             &klv,
             move_picker::SimmerParams {
                 num_sim_iters: 0,
@@ -1503,7 +1491,9 @@ mod tests {
             let mut f = Fixture::new(gc, &WORDS);
             let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
             let pool = [0, 0, 1, 2, 5, 20];
-            let tables = crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap();
+            let tables = std::sync::Arc::new(
+                crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap(),
+            );
             for opening in [true, false] {
                 if !opening {
                     let layout = f.gc.board_layout();
@@ -1511,11 +1501,8 @@ mod tests {
                     f.board[star.at_in_lane(layout.star_col())] = 1;
                     f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
                 }
-                let vocab = f.vocab();
-                let snap = movegen::BoardSnapshot {
-                    anagrams: tables.anagrams(),
-                    ..f.snap(&vocab)
-                };
+                let vocab = f.vocab().with_tables(Some(std::sync::Arc::clone(&tables)));
+                let snap = f.snap(&vocab);
                 for rack_size in 1..=usize::from(f.gc.rack_size()).min(pool.len()) {
                     let sheet = ReplyPool::new(&mut mg, &snap, &pool, rack_size).unwrap();
                     let draws = Draws::new(
@@ -1555,7 +1542,8 @@ mod tests {
         let mut words = WORDS.to_vec();
         words.push(&[1]);
         let mut f = Fixture::new(game_config::make_english_game_config(), &words);
-        let tables = crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap();
+        let tables =
+            std::sync::Arc::new(crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap());
         assert!(tables.anagrams().is_some());
         let pool = [0, 0, 1, 2, 5, 20];
         let unseen = f.tally(&pool);
@@ -1569,10 +1557,9 @@ mod tests {
             }
             let vocab = f.vocab();
             let walk = f.snap(&vocab);
-            let window = movegen::BoardSnapshot {
-                anagrams: tables.anagrams(),
-                ..walk
-            };
+            let tabled = vocab.with_tables(Some(std::sync::Arc::clone(&tables)));
+            let window =
+                movegen::BoardSnapshot::new(walk.board_tiles, walk.game_config, &tabled, walk.klv);
             for kept in 1..=usize::from(f.gc.rack_size()).min(pool.len()) {
                 let draws = Draws::new(f.gc.alphabet(), &unseen, (pool.len() - kept) as u8);
                 for rack in &draws.theirs {
@@ -1588,7 +1575,7 @@ mod tests {
 
     #[test]
     fn a_simmer_copies_its_preempty_rollout_policy_to_workers() {
-        use crate::{anagrams, game_state, move_filter, simmer};
+        use crate::{game_state, move_filter, simmer};
         let f = picker_fixture(&[&[1, 2], &[2, 3], &[3, 1, 2]]);
         let mut state = game_state::GameState::new(&f.gc);
         state.players[0].rack = vec![1, 2];
@@ -1613,8 +1600,7 @@ mod tests {
         worker
             .simulate(
                 &f.gc,
-                &crate::movegen::Vocab::lean(&f.kwg),
-                &anagrams::ArmTables::None,
+                &crate::movegen::Vocab::bare(&f.kwg).with_tables(None),
                 &f.klv,
                 &movegen::Play::Exchange {
                     tiles: [].as_slice().into(),

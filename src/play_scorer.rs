@@ -761,14 +761,9 @@ mod tests {
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut game_state = game_state::GameState::new(&game_config);
         game_state.players[0].rack = vec![1, 20];
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&game_state.board_tiles, &game_config, &vocab_view, &klv);
         let at = |idx: i8| movegen::Play::Place {
             down: false,
             lane: 7,
@@ -818,14 +813,9 @@ mod tests {
         let mut board_tiles = vec![0u8; 49];
         board_tiles[2 * 7 + 3] = 4;
         board_tiles[4 * 7 + 3] = 2;
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kad),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kad).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let mut play_scorer = PlayScorer::new();
         let mut cases = 0;
         let mut valid = 0;
@@ -934,14 +924,9 @@ mod tests {
         let mut board_tiles = vec![0u8; 49];
         board_tiles[2 * 7 + 3] = 1;
         board_tiles[4 * 7 + 3] = 2;
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &crate::movegen::Vocab::lean(&kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv,
-        };
+        let vocab_view = crate::movegen::Vocab::bare(&kwg).with_tables(None);
+        let board_snapshot =
+            movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab_view, &klv);
         let mut play_scorer = PlayScorer::new();
         let mut cases = 0;
         let mut strings = vec![Vec::new()];

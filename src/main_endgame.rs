@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, anagrams, bites, build, display, endgame, equity, error, game_config, game_state,
-    klv, kwg, movegen, notation, parallelism, play_scorer, text,
+    alphabet, bites, build, display, endgame, equity, error, game_config, game_state, klv, kwg,
+    movegen, notation, parallelism, play_scorer, text,
 };
 
 mod endgame_watch;
@@ -117,7 +117,7 @@ impl Question {
         let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), _> {
             racks_alphabet_reader.set_word(rack, v)
         };
-        let graphs = &wolges::movegen::Vocab::lean(&empty_kwg);
+        let graphs = &wolges::movegen::Vocab::bare(&empty_kwg);
         for (line_number, line) in (1usize..).zip(text::lines(gcg)) {
             if !line.starts_with('>') {
                 continue;
@@ -251,14 +251,12 @@ impl Question {
                 });
             }
             if let Some(play) = move_to_play {
-                let board_snapshot = &movegen::BoardSnapshot {
-                    board_tiles: &game_state.board_tiles,
+                let board_snapshot = &movegen::BoardSnapshot::new(
+                    &game_state.board_tiles,
                     game_config,
-                    vocab: graphs,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &empty_klv,
-                };
+                    graphs,
+                    &empty_klv,
+                );
                 match ps.validate_play(board_snapshot, &game_state, &play) {
                     Err(err) => {
                         return Err(fmt_error!(format_args!(
@@ -396,7 +394,6 @@ fn reserve_table<const TWO_SEATS: bool>(egs: &mut AnySolver<'_, TWO_SEATS>, solv
 struct Line<'l> {
     game_config: &'l game_config::GameConfig,
     graphs: &'l wolges::movegen::Vocab<'l, kwg::Node24>,
-    arm_tables: &'l anagrams::ArmTables,
     run_letters: kwg::RunLetters<'l>,
     board_tiles: &'l [u8],
     racks: &'l [Vec<u8>],
@@ -413,7 +410,6 @@ fn solve_line<const TWO_SEATS: bool>(
     let mut egs = AnySolver::<TWO_SEATS>::with_generator(
         line.game_config,
         line.graphs,
-        line.arm_tables,
         line.run_letters,
         movegen::KurniaMoveGenerator::new(line.game_config),
     )?;
@@ -466,7 +462,7 @@ fn run_batch<N: kwg::Node>(
     let mut builder = build::Builder::default();
     let mut smaller_graph = build::GameGraph::default();
     let file_contents = std::fs::read_to_string(path)?;
-    let graphs = &wolges::movegen::Vocab::lean(&kwg);
+    let graphs = &wolges::movegen::Vocab::bare(&kwg);
     for (line_index, line) in text::lines(&file_contents).enumerate() {
         let t0 = std::time::Instant::now();
         let mut fields = line.split('\t');
@@ -523,28 +519,19 @@ fn run_batch<N: kwg::Node>(
 
         vec_of_words.clear();
         move_generator.gen_remaining_words(
-            &movegen::BoardSnapshot {
-                board_tiles: &board_tiles,
-                game_config: &game_config,
-                vocab: graphs,
-                anagrams: None,
-                rack_lengths: None,
-                klv: &empty_klv,
-            },
+            &movegen::BoardSnapshot::new(&board_tiles, &game_config, graphs, &empty_klv),
             |word: &[u8]| vec_of_words.push(word.into()),
         )?;
         builder.refill_graph_for_game(&mut smaller_graph, &game_config, &vec_of_words)?;
         let smaller_kwg = smaller_graph.kwg();
-        let arm_tables = solver_tables(smaller_kwg, &game_config, solving.lean)?;
 
         let line = Line {
             game_config: &game_config,
-            graphs: &if solving.lean {
-                wolges::movegen::Vocab::lean(smaller_kwg)
-            } else {
-                wolges::movegen::Vocab::new(&game_config, smaller_kwg)?
-            },
-            arm_tables: &arm_tables,
+            graphs: &wolges::movegen::Vocab::new(
+                &game_config,
+                smaller_kwg,
+                solver_tables(solving.lean),
+            )?,
             run_letters: smaller_graph.run_letters(),
             board_tiles: &board_tiles,
             racks: &racks,
@@ -1569,15 +1556,11 @@ fn say_where_a_limit_stopped(depth: i8) -> std::io::Result<()> {
 // the solver generates every move raw, which reads no anagram table, so the
 // default arm builds none; the lean arm adds the rack lengths' prune
 #[inline]
-fn solver_tables(
-    kwg: &kwg::Kwg<kwg::Node24>,
-    game_config: &game_config::GameConfig,
-    lean: bool,
-) -> error::Returns<anagrams::ArmTables> {
+fn solver_tables(lean: bool) -> wolges::movegen::Tables {
     if lean {
-        anagrams::ArmTables::build(kwg, game_config, true)
+        wolges::movegen::Tables::RackLengths
     } else {
-        Ok(anagrams::ArmTables::None)
+        wolges::movegen::Tables::None
     }
 }
 
@@ -1719,14 +1702,12 @@ fn solve_position<N: kwg::Node>(
     // these always allocate for now.
     let mut vec_of_words = Vec::<bites::Bites>::new();
     move_generator.gen_remaining_words(
-        &movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
+        &movegen::BoardSnapshot::new(
+            &board_tiles,
             game_config,
-            vocab: &wolges::movegen::Vocab::lean(kwg),
-            anagrams: None,
-            rack_lengths: None,
-            klv: &klv::Klv::<kwg::Node24>::empty()?,
-        },
+            &wolges::movegen::Vocab::bare(kwg),
+            &klv::Klv::<kwg::Node24>::empty()?,
+        ),
         |word: &[u8]| vec_of_words.push(word.into()),
     )?;
     writeln!(
@@ -1743,16 +1724,11 @@ fn solve_position<N: kwg::Node>(
     let smaller_kwg = std::sync::Arc::new(kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
         &smaller_kwg_bytes,
     )?);
-    let arm_tables = solver_tables(&smaller_kwg, game_config, solving.lean)?;
     move_generator.reset_for_another_kwg();
 
-    let vocab = if solving.lean {
-        wolges::movegen::Vocab::lean(&smaller_kwg)
-    } else {
-        wolges::movegen::Vocab::new(game_config, &smaller_kwg)?
-    };
-    let mut egs =
-        endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(game_config, &vocab, &arm_tables)?;
+    let vocab =
+        wolges::movegen::Vocab::new(game_config, &smaller_kwg, solver_tables(solving.lean))?;
+    let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(game_config, &vocab)?;
     reserve_table(&mut egs, solving);
     let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| -> error::Returns<()> {
         if bag_size != 0 {

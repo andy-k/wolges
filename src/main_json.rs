@@ -246,19 +246,20 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
         &kibitzer.board_tiles,
     )?;
 
-    let arm_tables =
-        std::sync::Arc::new(wolges::anagrams::ArmTables::build(kwg, game_config, lean)?);
-    let vocab = if lean {
-        movegen::Vocab::lean(kwg)
-    } else {
-        movegen::Vocab::new(game_config, kwg)?
-    };
+    let vocab = movegen::Vocab::new(
+        game_config,
+        kwg,
+        if lean {
+            movegen::Tables::RackLengths
+        } else {
+            movegen::Tables::Anagrams
+        },
+    )?;
 
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,
         &vocab,
-        &arm_tables,
         klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
@@ -282,14 +283,8 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
     game_state.bag.shuffle(&mut rng);
 
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let board_snapshot = &movegen::BoardSnapshot {
-        board_tiles: &kibitzer.board_tiles,
-        game_config,
-        vocab: &vocab,
-        anagrams: arm_tables.anagrams(),
-        rack_lengths: arm_tables.rack_lengths(),
-        klv,
-    };
+    let board_snapshot =
+        &movegen::BoardSnapshot::new(&kibitzer.board_tiles, game_config, &vocab, klv);
 
     if false {
         for &tile in &question.rack {
@@ -369,7 +364,7 @@ fn moves_json(plays: &[movegen::ValuedMove]) -> error::Returns<serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wolges::{anagrams, build};
+    use wolges::build;
 
     #[test]
     fn a_one_player_question_is_answered() {
@@ -427,20 +422,15 @@ mod tests {
             std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let game_config = game_config::make_english_game_config();
-        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let vocab =
+            wolges::movegen::Vocab::new(&game_config, &kwg, wolges::movegen::Tables::Anagrams)
+                .unwrap();
         let board_tiles = vec![
             0u8;
             game_config.board_layout().dim().rows as usize
                 * game_config.board_layout().dim().cols as usize
         ];
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &board_tiles,
-            game_config: &game_config,
-            vocab: &wolges::movegen::Vocab::lean(&kwg),
-            anagrams: arm_tables.anagrams(),
-            rack_lengths: arm_tables.rack_lengths(),
-            klv: &klv,
-        };
+        let board_snapshot = &movegen::BoardSnapshot::new(&board_tiles, &game_config, &vocab, &klv);
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
         move_generator
             .gen_moves_unfiltered(&movegen::GenMovesParams {

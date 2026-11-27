@@ -410,14 +410,12 @@ fn check(
     move_generator: &mut movegen::KurniaMoveGenerator,
     position: &Position<'_>,
 ) -> error::Returns<(usize, usize, usize, bool)> {
-    let board_snapshot = movegen::BoardSnapshot {
-        board_tiles: position.board_tiles,
-        game_config: position.gc,
-        vocab: position.vocab,
-        anagrams: None,
-        rack_lengths: None,
-        klv: position.klv,
-    };
+    let board_snapshot = movegen::BoardSnapshot::new(
+        position.board_tiles,
+        position.gc,
+        position.vocab,
+        position.klv,
+    );
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot: &board_snapshot,
         rack: position.rack,
@@ -512,8 +510,11 @@ fn main() -> error::Returns<()> {
             (true, true) => gc.jumbled_woadwage(),
         };
         let graph = if jumbled { &kad } else { &kwg };
-        let vocab =
-            wolges::movegen::Vocab::new(&rules(game_config::make_english_game_config()), graph)?;
+        let vocab = wolges::movegen::Vocab::new(
+            &rules(game_config::make_english_game_config()),
+            graph,
+            wolges::movegen::Tables::None,
+        )?;
         let lexicon = JoinedLexicon::new(&words, jumbled, joined);
         for (board, layout) in &layouts {
             let game_config::GameConfig::Static(mut english) =
@@ -573,14 +574,12 @@ fn main() -> error::Returns<()> {
             positions += 1;
             plays_seen += plays;
             move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                board_snapshot: &movegen::BoardSnapshot {
-                    board_tiles: &game_state.board_tiles,
-                    game_config: &gc,
-                    vocab: &vocab,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: &klv,
-                },
+                board_snapshot: &movegen::BoardSnapshot::new(
+                    &game_state.board_tiles,
+                    &gc,
+                    &vocab,
+                    &klv,
+                ),
                 rack: &rack,
                 max_gen: 1,
                 num_exchanges_by_this_player: num_exchanges,
