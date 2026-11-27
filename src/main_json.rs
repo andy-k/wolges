@@ -342,13 +342,91 @@ fn answer<N: kwg::Node + Send + Sync + 'static>(
         }
     }
 
-    let result = plays
-        .iter()
-        .map(|x| x.into())
-        .collect::<Vec<kibitzer::JsonPlayWithEquity>>();
-    let ret = serde_json::to_value(result)?;
+    let ret = moves_json(plays)?;
     writeln!(std::io::stdout(), "{ret}")?;
     writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&ret)?)?;
 
     Ok(())
+}
+
+#[inline]
+fn moves_json(plays: &[movegen::ValuedMove]) -> error::Returns<serde_json::Value> {
+    let result = plays
+        .iter()
+        .map(|x| x.into())
+        .collect::<Vec<kibitzer::JsonPlayWithEquity>>();
+    Ok(serde_json::to_value(result)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wolges::{anagrams, build};
+
+    #[test]
+    fn each_move_object_keeps_its_keys() {
+        const LETTERS: [u8; 3] = [1, 5, 20]; // A, E, T
+        let mut words = Vec::new();
+        for &a in &LETTERS {
+            for &b in &LETTERS {
+                words.push([a, b][..].into());
+            }
+        }
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let game_config = game_config::make_english_game_config();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let board_tiles = vec![
+            0u8;
+            game_config.board_layout().dim().rows as usize
+                * game_config.board_layout().dim().cols as usize
+        ];
+        let board_snapshot = &movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot,
+            rack: &[1, 5, 20, 1, 5, 20, 1],
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let ret = moves_json(&move_generator.plays).unwrap();
+        let moves = ret.as_array().unwrap();
+        let mut seen = [false; 2];
+        for one in moves {
+            let mut keys = one.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+            keys.sort_unstable();
+            match one["action"].as_str().unwrap() {
+                "play" => {
+                    seen[0] = true;
+                    assert_eq!(
+                        keys,
+                        ["action", "down", "equity", "idx", "lane", "score", "word"]
+                    );
+                }
+                "exchange" => {
+                    seen[1] = true;
+                    assert_eq!(keys, ["action", "equity", "tiles"]);
+                }
+                other => panic!("unknown action {other}"),
+            }
+        }
+        assert_eq!(seen, [true, true]);
+    }
 }
