@@ -698,7 +698,7 @@ impl RootMoves {
         state: &game_state::GameState,
         plays: Vec<movegen::Play>,
     ) -> error::Returns<Self> {
-        if plays.is_empty() || plays.len() > PASS_PLAY as usize {
+        if plays.is_empty() {
             return Err(format!("root_moves: expected 1 to {PASS_PLAY} plays").into());
         }
         use std::hash::BuildHasher;
@@ -739,9 +739,12 @@ impl RootMoves {
             }
             // only a play whose hash was seen before can equal an earlier one
             if !hashes.insert(hasher.hash_one(&play)) && checked.contains(&play) {
-                return Err(format!("root_moves[{i}]: duplicate play").into());
+                continue;
             }
             checked.push(play);
+        }
+        if checked.len() > PASS_PLAY as usize {
+            return Err(format!("root_moves: expected 1 to {PASS_PLAY} plays").into());
         }
         let key = hasher.hash_one(&checked).max(1);
         Ok(Self {
@@ -15197,7 +15200,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_first_moves_refuse_a_play_named_twice() {
+    fn selected_first_moves_take_a_play_named_twice_once() {
         let gc = game_config::make_english_game_config();
         let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
@@ -15226,17 +15229,13 @@ mod tests {
             rack_lengths: None,
             klv: &klv,
         };
-        assert!(super::RootMoves::checked(&snapshot, &state, plays.clone()).is_ok());
+        let once = super::RootMoves::checked(&snapshot, &state, plays.clone()).unwrap();
         for play in &plays {
             let mut named = plays.clone();
             named.push(play.clone());
-            let error = super::RootMoves::checked(&snapshot, &state, named)
-                .err()
-                .unwrap();
-            assert_eq!(
-                error.to_string(),
-                format!("root_moves[{}]: duplicate play", plays.len())
-            );
+            let twice = super::RootMoves::checked(&snapshot, &state, named).unwrap();
+            assert!(twice.plays == once.plays);
+            assert_eq!(twice.key, once.key);
         }
     }
 
