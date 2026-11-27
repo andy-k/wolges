@@ -69,7 +69,7 @@ pub struct SpellPool<'a> {
     pub phase: BoardPhase,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum BoardPhase {
     Opening,
     Midgame,
@@ -90,7 +90,7 @@ impl BoardPhase {
     }
 
     #[inline]
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
             BoardPhase::Opening => "opening",
             BoardPhase::Midgame => "midgame",
@@ -195,13 +195,14 @@ pub fn build_sheet_spell_once<
                 if failure.is_some() {
                     return;
                 }
-                let adjustment = match opening_adjustment(phase, game_config, down, idx, word) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        failure = Some(error);
-                        return;
-                    }
-                };
+                let adjustment =
+                    match opening_adjustment(phase.clone(), game_config, down, idx, word) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            failure = Some(error);
+                            return;
+                        }
+                    };
                 n_cand += 1;
                 let score = score + adjustment;
                 tally.fill(0);
@@ -239,13 +240,14 @@ pub fn build_sheet_spell_once<
                     return false;
                 }
                 n_cand += 1;
-                let adjustment = match opening_adjustment(phase, game_config, down, idx, word) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        failure = Some(error);
-                        return false;
-                    }
-                };
+                let adjustment =
+                    match opening_adjustment(phase.clone(), game_config, down, idx, word) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            failure = Some(error);
+                            return false;
+                        }
+                    };
                 let real_score = play_scorer::score_and_blank_deltas(
                     board_snapshot,
                     down,
@@ -1193,7 +1195,7 @@ impl PackedLeaves {
 // it is any rack the unseen tiles could make, or what the inference of the
 // mover's last move carried, with the tiles the watcher has put back in the
 // bag since (those it exchanged)
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Held<'a> {
     Any,
     Kept(&'a Carried, &'a [u8]),
@@ -2283,7 +2285,7 @@ fn kept_leaves_packed_impl<
 // reply (its score, with the opening's adjustment, and the leave it keeps; an
 // exchange only when the bag allows one, a pass only when nothing else is
 // legal), and the chance that their rack can play all its tiles
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Reply {
     pub mean: f64,
     pub variance: f64,
@@ -4701,7 +4703,8 @@ mod tests {
                                 unreachable!();
                             };
                             let score = scorer.compute_score(&board_snapshot, &play)
-                                + opening_adjustment(phase, &gc, *down, *idx, word).unwrap();
+                                + opening_adjustment(phase.clone(), &gc, *down, *idx, word)
+                                    .unwrap();
                             want = want.max(score);
                             played += 1;
                         }
@@ -4741,7 +4744,8 @@ mod tests {
                                     unreachable!();
                                 };
                                 let value = scorer.compute_score(&board_snapshot, &play)
-                                    + opening_adjustment(phase, &gc, *down, *idx, word).unwrap();
+                                    + opening_adjustment(phase.clone(), &gc, *down, *idx, word)
+                                        .unwrap();
                                 (value, play)
                             })
                             .max_by_key(|(value, _)| *value)

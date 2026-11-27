@@ -375,7 +375,7 @@ fn main() -> error::Returns<()> {
             "  # static  exact_reply  reply_ms  mean_reply  z      obj      obj_cv   worth_obj  net_obj  worth_spread  worth_win  no_reply"
         );
         for (c, candidate) in candidates.iter().enumerate() {
-            let Some(reply) = exact[c].0 else {
+            let Some(ref reply) = exact[c].0 else {
                 println!("{c:3} {} no exact reply", candidate.equity);
                 continue;
             };
@@ -429,7 +429,8 @@ fn main() -> error::Returns<()> {
                 let m = moments(d_obj, e);
                 let m_spread = moments(d_spread, e);
                 let m_win = moments(d_win, e);
-                let exact_e = exact[c].0.unwrap().mean - exact[best].0.unwrap().mean;
+                let exact_e =
+                    exact[c].0.as_ref().unwrap().mean - exact[best].0.as_ref().unwrap().mean;
                 println!(
                     "{c:3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3} {:8.3}",
                     m.mx,
