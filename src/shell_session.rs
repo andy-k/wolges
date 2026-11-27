@@ -59,7 +59,7 @@ enum After {
 // word challenged or per challenge (single is a bonus of none, shown as +0);
 // under triple, the game, which ends, lost by the challenger if the move stands
 // and by its player (who takes it back) if it does not
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum ChallengeRule {
     Double,
     Bonus { points: i32, per_word: bool },
@@ -252,7 +252,7 @@ impl Game {
 // computer, its racks dealt and hidden, playing the generator's best move or
 // the best of a sim of so many milliseconds (once the bag is empty, by solving
 // the endgame)
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Seat {
     Human,
     Given,
@@ -609,7 +609,7 @@ impl Session {
             sim: None,
             sim_generator: None,
             sim_driver: None,
-            seats: [Seat::Human; 2],
+            seats: [const { Seat::Human }; 2],
             racks_given: [false; 2],
             names: Default::default(),
             challenge_rule: ChallengeRule::Bonus {
@@ -1010,7 +1010,7 @@ impl Session {
                     && self.final_scores.is_none();
                 let made = self.game.as_ref().map_or(0, |game| game.at);
                 let seats = self.seats.len();
-                let loser = match (words_stand, self.challenge_rule) {
+                let loser = match (words_stand, self.challenge_rule.clone()) {
                     (Some(true), ChallengeRule::Triple) => Some(made % seats),
                     (Some(false), ChallengeRule::Triple) => Some((made + 1) % seats),
                     _ => None,
@@ -1019,7 +1019,7 @@ impl Session {
                     writeln!(
                         std::io::stdout(),
                         "{}",
-                        match (stands, self.challenge_rule) {
+                        match (stands, self.challenge_rule.clone()) {
                             (false, ChallengeRule::Triple) =>
                                 "a phony: taken back, and its player loses the game".to_string(),
                             (false, _) => "a phony: taken back".to_string(),
