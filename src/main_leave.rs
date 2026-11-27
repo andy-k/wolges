@@ -7043,7 +7043,8 @@ impl GamePairStats {
         end_reason: game_state::CheckGameEnded,
         divergent: bool,
     ) {
-        self.all.add_game(p0_final, p1_final, turns, end_reason);
+        self.all
+            .add_game(p0_final, p1_final, turns, end_reason.clone());
         if divergent {
             self.divergent
                 .add_game(p0_final, p1_final, turns, end_reason);
@@ -11427,7 +11428,10 @@ impl<N: kwg::Node, L: kwg::Node> HastyCompare<'_, N, L> {
             };
             if let Some((first, second, turns, end)) = result {
                 return Ok((
-                    [(first, second, turns, end), (second, first, turns, end)],
+                    [
+                        (first, second, turns, end.clone()),
+                        (second, first, turns, end),
+                    ],
                     false,
                 ));
             }
@@ -11746,7 +11750,7 @@ fn compare_seats<
 
                         let mut pair_diverged = false;
                         let mut pair_results =
-                            [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
+                            [const { (0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded) }; 2];
 
                         for game_in_pair in 0..2u8 {
                             if game_in_pair > 0 {
@@ -11911,8 +11915,8 @@ fn compare_seats<
                         }
                         (pair_results, pair_diverged)
                     };
-                    for &(p0_score, p1_score, num_turns, end_reason) in &pair_results {
-                        stats.add_game(p0_score, p1_score, num_turns, end_reason, pair_diverged);
+                    for &(p0_score, p1_score, num_turns, ref end_reason) in &pair_results {
+                        stats.add_game(p0_score, p1_score, num_turns, end_reason.clone(), pair_diverged);
                     }
 
                     if !quiet {
