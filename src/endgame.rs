@@ -14470,6 +14470,313 @@ mod tests {
         debug_assert!(checks > 0);
     }
 
+    type BagReferenceKey = (Vec<u8>, [Vec<u8>; 2], Vec<u8>, u8, u8, u8, bool, [i16; 2]);
+
+    fn exhaustive_bag_reference<N: kwg::Node, L: kwg::Node>(
+        fixed: &mut Reference<'_, N, L>,
+        known: &mut fash::MyHashMap<BagReferenceKey, f64>,
+        pos: &super::InBag,
+    ) -> f64 {
+        if pos.bag_len() == 0 {
+            return reference(
+                fixed,
+                &pos.board,
+                &pos.racks,
+                pos.mover as usize,
+                pos.passes,
+                pos.zeros,
+                pos.answering,
+            ) as f64;
+        }
+        let key = (
+            pos.board.clone(),
+            pos.racks.clone(),
+            pos.bag.clone(),
+            pos.mover,
+            pos.passes,
+            pos.zeros,
+            pos.answering,
+            pos.exchanges,
+        );
+        if let Some(&value) = known.get(&key) {
+            return value;
+        }
+        let mover = pos.mover as usize;
+        fixed
+            .mg
+            .gen_moves_raw_all_unsorted(
+                &movegen::BoardSnapshot {
+                    alphagrams: None,
+                    board_tiles: &pos.board,
+                    game_config: fixed.gc,
+                    kwg: fixed.kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: fixed.klv,
+                },
+                &pos.racks[mover],
+                0,
+                movegen::PassPolicy::AsACandidate,
+            )
+            .unwrap();
+        let mut moves = (fixed.mg.plays.iter())
+            .filter(|vm| matches!(vm.play, movegen::Play::Place { .. }))
+            .map(|vm| vm.play.clone())
+            .chain(std::iter::once(movegen::Play::Exchange {
+                tiles: [][..].into(),
+            }))
+            .collect::<Vec<_>>();
+        if super::exchange_legal(fixed.gc, pos.bag_len(), pos.exchanges[mover]) {
+            fn throws(rest: &[u8], thrown: &mut Vec<u8>, most: usize, out: &mut Vec<Vec<u8>>) {
+                if !thrown.is_empty() {
+                    out.push(thrown.clone());
+                }
+                if thrown.len() == most {
+                    return;
+                }
+                for (i, &tile) in rest.iter().enumerate() {
+                    if i > 0 && rest[i - 1] == tile {
+                        continue;
+                    }
+                    thrown.push(tile);
+                    throws(&rest[i + 1..], thrown, most, out);
+                    thrown.pop();
+                }
+            }
+            let mut thrown = Vec::new();
+            let rack = &pos.racks[mover];
+            throws(
+                rack,
+                &mut Vec::new(),
+                rack.len().min(pos.bag_len()),
+                &mut thrown,
+            );
+            moves.extend(thrown.into_iter().map(|tiles| movegen::Play::Exchange {
+                tiles: tiles[..].into(),
+            }));
+        }
+        let value = (moves.iter())
+            .map(|play| exhaustive_bag_reference_move(fixed, known, pos, play))
+            .fold(f64::NEG_INFINITY, f64::max);
+        known.insert(key, value);
+        value
+    }
+
+    fn exhaustive_bag_reference_move<N: kwg::Node, L: kwg::Node>(
+        fixed: &mut Reference<'_, N, L>,
+        known: &mut fash::MyHashMap<BagReferenceKey, f64>,
+        pos: &super::InBag,
+        play: &movegen::Play,
+    ) -> f64 {
+        let gc = fixed.gc;
+        let draws = |n: usize| {
+            let mut draws = Vec::new();
+            super::each_split(&pos.bag, n, &mut |drawn, _, ways| {
+                draws.push((drawn.to_vec(), ways))
+            });
+            draws
+        };
+        let (mut sum, mut total) = (0.0, 0u64);
+        match play {
+            movegen::Play::Place { word, score, .. } => {
+                let mut placed = pos.clone();
+                placed.place(gc, play);
+                let n = (word.iter().filter(|&&tile| tile != 0).count()).min(pos.bag_len());
+                for (drawn, ways) in draws(n) {
+                    let mut next = placed.clone();
+                    next.draw(&drawn);
+                    next.next_turn();
+                    sum += ways as f64 * exhaustive_bag_reference(fixed, known, &next);
+                    total += ways;
+                }
+                score.raw() as f64 - sum / total as f64
+            }
+            movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                if pos.a_pass_ends(gc) {
+                    return pos.racks_lost(gc);
+                }
+                let mut next = pos.clone();
+                next.pass();
+                next.next_turn();
+                -exhaustive_bag_reference(fixed, known, &next)
+            }
+            movegen::Play::Exchange { tiles } => {
+                let zeros = if gc.exchanges_are_zeros() {
+                    pos.zeros.saturating_add(1)
+                } else {
+                    0
+                };
+                let ends = super::scoreless_turns_end(gc, Some(&pos.board), 0, zeros);
+                let mut thrown = vec![0u8; gc.alphabet().len() as usize];
+                for &tile in tiles.iter() {
+                    thrown[tile as usize] += 1;
+                }
+                for (drawn, ways) in draws(tiles.len()) {
+                    let mut next = pos.clone();
+                    next.exchange(&drawn, &thrown, zeros);
+                    let value = if ends {
+                        next.racks_lost(gc)
+                    } else {
+                        next.next_turn();
+                        -exhaustive_bag_reference(fixed, known, &next)
+                    };
+                    sum += ways as f64 * value;
+                    total += ways;
+                }
+                sum / total as f64
+            }
+        }
+    }
+
+    #[test]
+    fn a_woadwage_bag_search_answers_as_an_exhaustive_search_at_every_bag() {
+        use crate::movegen::tests::{
+            jumbled_woadwage_toy, woadwage_rng, woadwage_toy, woadwage_toy_boards,
+            woadwage_toy_config, woadwage_toy_letters,
+        };
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let mut seed = 421u64;
+        let (mut checked, mut checked_one) = (0usize, 0usize);
+        for jumbled in [false, true] {
+            let side = 5i8;
+            let (mut gc, (kwg, explicit)) = if jumbled {
+                (
+                    woadwage_toy_config(side).jumbled_woadwage(),
+                    jumbled_woadwage_toy(),
+                )
+            } else {
+                (woadwage_toy_config(side), woadwage_toy())
+            };
+            let game_config::GameConfig::Static(toy) = &mut gc;
+            toy.rack_size = (1u8..)
+                .find(|&size| {
+                    (explicit.iter())
+                        .map(|word| word.len())
+                        .filter(|&len| len <= size as usize)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        > 1
+                })
+                .unwrap();
+            toy.exchange_tile_limit = toy.rack_size as i16;
+            let rack_size = gc.rack_size() as usize;
+            let boards = woadwage_toy_boards(side, &explicit, &mut seed, 1, rack_size);
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+            let mut fixed = Reference {
+                gc: &gc,
+                kwg: &kwg,
+                klv: &klv,
+                mg: &mut mg,
+                memo: Default::default(),
+            };
+            let mut known = fash::MyHashMap::default();
+            let toy_rack = |seed: &mut u64| {
+                let mut rack = (0..rack_size)
+                    .map(|_| (woadwage_rng(seed) % (woadwage_toy_letters() as u64 + 1)) as u8)
+                    .collect::<Vec<_>>();
+                rack.sort_unstable();
+                rack
+            };
+            for bag_size in 1..=rack_size {
+                let board = &boards[bag_size % boards.len()];
+                let mover_rack = toy_rack(&mut seed);
+                let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+                for tile in toy_rack(&mut seed)
+                    .into_iter()
+                    .chain(toy_rack(&mut seed).into_iter().take(bag_size))
+                {
+                    unseen_tally[tile as usize] += 1;
+                }
+                let what = format!(
+                    "[{jumbled} {side}] bag {bag_size} {board:?} {mover_rack:?} {unseen_tally:?}"
+                );
+                let position = bag_position(
+                    board,
+                    &mover_rack,
+                    &unseen_tally,
+                    bag_size,
+                    equity::Equity::ZERO,
+                );
+                let cut = (egs.solve_peg(position.clone(), &super::Limits::NONE, 1))
+                    .unwrap()
+                    .unwrap();
+                let whole = uncut_peg(&mut egs, position.clone()).unwrap().unwrap();
+                assert!(cut.exact && whole.exact, "{what}");
+                let progress =
+                    super::PegBagProgress::new(position, super::PegBagChoices::WHOLE).unwrap();
+                for (result, every) in [(&cut, false), (&whole, true)] {
+                    for super::PegBagMove {
+                        play,
+                        expected_margin,
+                        ..
+                    } in &result.moves
+                    {
+                        let Some(margin) = expected_margin else {
+                            assert!(!every, "{what}");
+                            continue;
+                        };
+                        let (mut sum, mut total) = (0.0, 0u64);
+                        for (opp_rack, bag, ways) in &progress.splits {
+                            let pos = super::InBag {
+                                board: board.clone(),
+                                racks: [mover_rack.clone(), opp_rack.clone()],
+                                bag: bag.clone(),
+                                ..Default::default()
+                            };
+                            sum += *ways as f64
+                                * exhaustive_bag_reference_move(&mut fixed, &mut known, &pos, play);
+                            total += ways;
+                        }
+                        let want = sum / total as f64;
+                        assert!(
+                            (f64::from(margin.raw()) - want).abs() <= 1.0,
+                            "{what}: {margin:?} against {want}"
+                        );
+                        checked += 1;
+                    }
+                }
+                if bag_size == 1 {
+                    let mut progress = super::PegProgress::new(
+                        0,
+                        board,
+                        &mover_rack,
+                        &unseen_tally,
+                        equity::Equity::ZERO,
+                        [0, 0],
+                    );
+                    let result = (egs.resume_peg_one_in_bag(&mut progress, &super::Limits::NONE))
+                        .unwrap()
+                        .unwrap();
+                    for m in solved(&progress, result).moves {
+                        let PegMove::Place(play) = &m.play else {
+                            continue;
+                        };
+                        for (tile, _, margin) in m.hypotheses {
+                            let mut opp_tally = unseen_tally.clone();
+                            opp_tally[tile as usize] -= 1;
+                            let mut bag = vec![0u8; unseen_tally.len()];
+                            bag[tile as usize] = 1;
+                            let pos = super::InBag {
+                                board: board.clone(),
+                                racks: [mover_rack.clone(), super::tiles_of(&opp_tally)],
+                                bag,
+                                ..Default::default()
+                            };
+                            let want =
+                                exhaustive_bag_reference_move(&mut fixed, &mut known, &pos, play);
+                            assert_eq!(margin, super::to_equity(want as f32), "{what} {tile}");
+                            checked_one += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0 && checked_one > 0, "{checked} {checked_one}");
+    }
+
     #[test]
     #[inline]
     fn a_woadwage_solve_answers_as_the_reference_does() {
