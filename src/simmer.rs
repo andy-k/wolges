@@ -1,8 +1,10 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{
-    anagrams, equity, error, game_config, game_state, infer, klv, kwg, movegen, win_pct, zone,
+    anagrams, endgame, equity, error, game_config, game_state, infer, klv, kwg, movegen, win_pct,
+    zone,
 };
+use endgame::Grow;
 use rand::prelude::*;
 
 // scores and leave values are millipoints; the sigmoid and its weightage are in
@@ -25,6 +27,17 @@ pub fn win_prob_unfinished(final_spread: i32, num_unseen_tiles: usize) -> f64 {
 #[inline(always)]
 pub fn sim_objective(sim_spread: i32, win_prob: f64, weightage: f64) -> f64 {
     spread_points(sim_spread) + win_prob * weightage
+}
+
+#[inline(always)]
+fn copy_within(room: &endgame::Room, to: &mut movegen::Play, from: &movegen::Play) {
+    if let Some(_copy) = room.take(endgame::play_bytes(from)) {
+        to.clone_from(from);
+    } else {
+        *to = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+    }
 }
 
 #[inline(always)]
@@ -179,6 +192,7 @@ pub struct Simmer<
     census_taken: Option<TakenCensus>,    // this simmer's, once taken
     spare_census: Option<TakenCensus>,    // one no other holds, for the next
     census_tiles: (Vec<u8>, Vec<u8>),     // the tiles off the board, and the pool
+    room: endgame::Room,                  // the request's limit, for its lists
 
     rng: R,
 }
@@ -283,9 +297,21 @@ impl<
             census_taken: None,
             spare_census: None,
             census_tiles: (Vec::new(), Vec::new()),
+            room: endgame::Room::default(),
 
             rng,
         }
+    }
+
+    #[inline(always)]
+    pub fn begin_within(&mut self, memory: Option<endgame::MemoryLimit>) {
+        self.room = endgame::Room::of(memory);
+        self.move_generator.begin_within(memory);
+    }
+
+    #[inline(always)]
+    pub fn out_of_memory(&self) -> bool {
+        self.room.refused() || self.move_generator.out_of_memory()
     }
 
     #[inline(always)]
@@ -801,7 +827,7 @@ impl<
             let generated = ply > 0
                 && !(self.opponents_pass && self.game_state.turn != self.initial_game_state.turn);
             if ply == 0 {
-                next_play.clone_from(candidate_play);
+                copy_within(&self.room, &mut next_play, candidate_play);
             } else if self.opponents_pass && self.game_state.turn != self.initial_game_state.turn {
                 next_play = movegen::Play::Exchange {
                     tiles: [][..].into(),
@@ -856,7 +882,11 @@ impl<
                         }
                     }
                 }
-                next_play.clone_from(&self.move_generator.plays[0].play);
+                copy_within(
+                    &self.room,
+                    &mut next_play,
+                    &self.move_generator.plays[0].play,
+                );
             }
             if census.is_some() {
                 let dim = game_config.board_layout().dim();
@@ -866,13 +896,17 @@ impl<
                 touched.1 |= cols;
             }
             if ply > 0 {
-                self.plies_played.push(match &next_play {
-                    movegen::Play::Exchange { .. } => PlyPlayed { score: 0, tiles: 0 },
-                    movegen::Play::Place { word, score, .. } => PlyPlayed {
-                        score: score.raw(),
-                        tiles: word.iter().filter(|&&tile| tile != 0).count() as u8,
+                self.plies_played.push_in(
+                    &self.room,
+                    match &next_play {
+                        movegen::Play::Exchange { .. } => PlyPlayed { score: 0, tiles: 0 },
+                        movegen::Play::Place { word, score, .. } => PlyPlayed {
+                            score: score.raw(),
+                            tiles: u8::try_from(word.iter().filter(|&&tile| tile != 0).count())
+                                .unwrap(),
+                        },
                     },
-                });
+                );
             }
             set_rack_tally_from_leave(
                 &mut self.rack_tally,
@@ -1009,8 +1043,16 @@ impl<
                     } else {
                         self.lane_rows_taken |= 1 << lane;
                     }
-                    self.lane_bests
-                        .push((self.move_generator.plays[0].clone(), down, lane));
+                    let best = &self.move_generator.plays[0];
+                    let copy = (self.lane_bests.room_for(&self.room, 1))
+                        .then(|| self.room.take(endgame::play_bytes(&best.play)))
+                        .flatten();
+                    if copy.is_none() {
+                        self.lanes_exhausted = true;
+                        break;
+                    }
+                    self.lane_bests.push((best.clone(), down, lane));
+                    drop(copy);
                     if !on(down, lane) {
                         off = Some(self.lane_bests.len() - 1);
                     }
@@ -1045,12 +1087,18 @@ impl<
         let masked = &self.move_generator.plays[0];
         let forced_pass =
             matches!(masked.play, movegen::Play::Exchange { ref tiles } if tiles.is_empty());
-        match off {
-            Some(i) if forced_pass || self.lane_bests[i].0 < *masked => {
-                self.lane_bests[i].0.clone()
-            }
-            _ => masked.clone(),
-        }
+        let chosen = match off {
+            Some(i) if forced_pass || self.lane_bests[i].0 < *masked => &self.lane_bests[i].0,
+            _ => masked,
+        };
+        let mut reply = movegen::ValuedMove {
+            equity: chosen.equity,
+            play: movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+        };
+        copy_within(&self.room, &mut reply.play, &chosen.play);
+        reply
     }
 
     // the plies the last rollout played after its candidate, in order: as many
