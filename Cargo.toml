@@ -125,6 +125,10 @@ path = "tests/stable_api.rs"
 crate-type = ["lib"]
 test = true
 
+[[test]]
+name = "nonascii_pipe"
+required-features = ["shell"]
+
 [[example]]
 name = "peg_draws"
 path = "tests/peg_draws.rs"
