@@ -2352,7 +2352,10 @@ impl<
     #[inline]
     pub fn absorb_block(&mut self, block: &SimBlock, rows: &SimRows) -> error::Returns<()> {
         let num_candidates = block.plays.len();
-        let size = (block.hi - block.lo) as usize * num_candidates;
+        let iterations = block.hi.checked_sub(block.lo).ok_or("reversed sim block")?;
+        let size = usize::try_from(iterations)?
+            .checked_mul(num_candidates)
+            .ok_or("too many sim rows")?;
         if block.lo != self.iters_done
             || !self
                 .candidates
