@@ -8,6 +8,7 @@ use wolges::{
 
 mod endgame_watch;
 mod game_args;
+mod run_line;
 
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -686,8 +687,12 @@ fn main() -> error::Returns<()> {
     };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
         (Some(batch_path), Some(kwg_path), None, None) => {
-            let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&kwg_path)?, cli.kbwg)?;
+            let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(&kwg_path)?, cli.kbwg)?;
             refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
+            eprintln!(
+                "{}",
+                run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+            );
             return run_batch(game_config, kwg, &batch_path, &cli.out, &solving);
         }
         (None, Some(kwg_path), Some(fen), Some(rack)) => {
@@ -1433,8 +1438,12 @@ fn run_cli(
     solving: &Solving,
 ) -> error::Returns<()> {
     let question = Question::from_fen(game_config, kwg_path, fen, rack)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(kwg_path)?, kbwg)?;
+    let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(kwg_path)?, kbwg)?;
     refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
+    eprintln!(
+        "{}",
+        run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
+    );
     solve_position(game_config, &kwg, &question, score_diff, solving)
 }
 

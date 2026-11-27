@@ -4,6 +4,7 @@ use wolges::{error, text};
 mod endgame_watch;
 mod game_args;
 mod rlhelper;
+mod run_line;
 mod shell_session;
 
 use std::io::{IsTerminal, Write};
