@@ -51,9 +51,21 @@ impl WinPctAccumulator {
     }
 
     #[inline(always)]
-    pub fn record(&mut self, bag: usize, my: usize, opp: usize, spread: i32, final_spread: i32) {
-        let key = (bag as u16, my as u8, opp as u8);
-        *self.cell(key, final_spread - spread) += 1;
+    pub fn record(
+        &mut self,
+        bag: usize,
+        my: usize,
+        opp: usize,
+        spread: i32,
+        final_spread: i32,
+    ) -> crate::error::Returns<()> {
+        let key = (u16::try_from(bag)?, u8::try_from(my)?, u8::try_from(opp)?);
+        let delta = final_spread
+            .checked_sub(spread)
+            .ok_or("win_pct: spread change overflows")?;
+        let count = self.cell(key, delta);
+        *count = count.checked_add(1).ok_or("win_pct: count overflows")?;
+        Ok(())
     }
 
     #[inline(always)]
@@ -209,18 +221,31 @@ pub struct WinPctTable {
 
 impl WinPctTable {
     #[inline(always)]
-    pub fn get(&self, spread: i32, bag: usize, my: usize, opp: usize) -> f32 {
-        self.get_opt(spread, bag, my, opp).unwrap_or(0.5)
+    pub fn get(
+        &self,
+        spread: i32,
+        bag: usize,
+        my: usize,
+        opp: usize,
+    ) -> crate::error::Returns<f32> {
+        Ok(self.get_opt(spread, bag, my, opp)?.unwrap_or(0.5))
     }
 
     #[inline(always)]
-    pub fn get_opt(&self, spread: i32, bag: usize, my: usize, opp: usize) -> Option<f32> {
-        match self.rows.get(&(bag as u16, my as u8, opp as u8)) {
+    pub fn get_opt(
+        &self,
+        spread: i32,
+        bag: usize,
+        my: usize,
+        opp: usize,
+    ) -> crate::error::Returns<Option<f32>> {
+        let key = (u16::try_from(bag)?, u8::try_from(my)?, u8::try_from(opp)?);
+        Ok(match self.rows.get(&key) {
             None => None,
             Some(row) if spread > row.cap => Some(1.0),
             Some(row) if spread < -row.cap => Some(0.0),
             Some(row) => Some(row.win[(spread + row.cap) as usize]),
-        }
+        })
     }
 
     pub fn from_csv<R: std::io::Read>(r: R) -> crate::error::Returns<WinPctTable> {
@@ -244,28 +269,36 @@ mod tests {
     #[inline]
     fn finalize_is_monotone_symmetric_and_half_at_zero() {
         let mut acc = WinPctAccumulator::new();
+        let bag = usize::from(u16::MAX) + 1;
+        let rack = usize::from(u8::MAX) + 1;
+        assert!(acc.record(bag, 0, 0, 0, 0).is_err());
+        assert!(acc.record(0, rack, 0, 0, 0).is_err());
+        assert!(acc.record(0, 0, rack, 0, 0).is_err());
         for &v in &[-30, -10, 10, 30] {
-            acc.record(50, 7, 7, 0, v);
+            acc.record(50, 7, 7, 0, v).unwrap();
         }
         let t = acc.finalize().unwrap();
+        assert!(t.get_opt(0, bag, 0, 0).is_err());
+        assert!(t.get_opt(0, 0, rack, 0).is_err());
+        assert!(t.get_opt(0, 0, 0, rack).is_err());
         assert!(
-            (t.get(0, 50, 7, 7) - 0.5).abs() < EPS,
+            (t.get(0, 50, 7, 7).unwrap() - 0.5).abs() < EPS,
             "got {}",
-            t.get(0, 50, 7, 7)
+            t.get(0, 50, 7, 7).unwrap()
         );
 
-        assert!((t.get(999, 50, 7, 7) - 1.0).abs() < EPS);
-        assert!((t.get(-999, 50, 7, 7) - 0.0).abs() < EPS);
+        assert!((t.get(999, 50, 7, 7).unwrap() - 1.0).abs() < EPS);
+        assert!((t.get(-999, 50, 7, 7).unwrap() - 0.0).abs() < EPS);
 
         let mut prev = -1.0f32;
         for s in -60..=60 {
-            let w = t.get(s, 50, 7, 7);
+            let w = t.get(s, 50, 7, 7).unwrap();
             assert!(w >= prev - EPS, "not monotone at s={s}: {w} < {prev}");
             prev = w;
         }
 
         for s in [7, 23, 41] {
-            assert!((t.get(s, 50, 7, 7) + t.get(-s, 50, 7, 7) - 1.0).abs() < EPS);
+            assert!((t.get(s, 50, 7, 7).unwrap() + t.get(-s, 50, 7, 7).unwrap() - 1.0).abs() < EPS);
         }
     }
 
@@ -273,27 +306,27 @@ mod tests {
     #[inline]
     fn cumulative_informs_all_leads() {
         let mut acc = WinPctAccumulator::new();
-        acc.record(60, 7, 7, 0, -45); // one game swung -45 from this state.
+        acc.record(60, 7, 7, 0, -45).unwrap(); // one game swung -45 from this state.
         let t = acc.finalize().unwrap();
 
         assert!(
-            (t.get(50, 60, 7, 7) - 1.0).abs() < EPS,
+            (t.get(50, 60, 7, 7).unwrap() - 1.0).abs() < EPS,
             "got {}",
-            t.get(50, 60, 7, 7)
+            t.get(50, 60, 7, 7).unwrap()
         );
 
-        assert!((t.get(46, 60, 7, 7) - 1.0).abs() < EPS);
+        assert!((t.get(46, 60, 7, 7).unwrap() - 1.0).abs() < EPS);
 
         assert!(
-            (t.get(45, 60, 7, 7) - 0.75).abs() < EPS,
+            (t.get(45, 60, 7, 7).unwrap() - 0.75).abs() < EPS,
             "got {}",
-            t.get(45, 60, 7, 7)
+            t.get(45, 60, 7, 7).unwrap()
         );
 
         assert!(
-            (t.get(40, 60, 7, 7) - 0.5).abs() < EPS,
+            (t.get(40, 60, 7, 7).unwrap() - 0.5).abs() < EPS,
             "got {}",
-            t.get(40, 60, 7, 7)
+            t.get(40, 60, 7, 7).unwrap()
         );
     }
 
@@ -302,16 +335,16 @@ mod tests {
     fn get_saturates_out_of_range() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-30, -10, 10, 30] {
-            acc.record(50, 7, 7, 0, v);
+            acc.record(50, 7, 7, 0, v).unwrap();
         }
         let t = acc.finalize().unwrap();
-        assert!((t.get(999_999, 50, 7, 7) - 1.0).abs() < EPS);
-        assert!((t.get(-999_999, 50, 7, 7) - 0.0).abs() < EPS);
+        assert!((t.get(999_999, 50, 7, 7).unwrap() - 1.0).abs() < EPS);
+        assert!((t.get(-999_999, 50, 7, 7).unwrap() - 0.0).abs() < EPS);
 
         assert!(
-            (t.get(30, 50, 7, 7) - 0.875).abs() < EPS,
+            (t.get(30, 50, 7, 7).unwrap() - 0.875).abs() < EPS,
             "got {}",
-            t.get(30, 50, 7, 7)
+            t.get(30, 50, 7, 7).unwrap()
         );
     }
 
@@ -319,10 +352,13 @@ mod tests {
     #[inline]
     fn absent_key_is_half() {
         let mut acc = WinPctAccumulator::new();
-        acc.record(50, 7, 7, 0, 10);
+        acc.record(50, 7, 7, 0, 10).unwrap();
         let t = acc.finalize().unwrap();
         for s in [-200, -1, 0, 1, 200] {
-            assert!((t.get(s, 7, 7, 7) - 0.5).abs() < EPS, "key (7,7,7) s={s}");
+            assert!(
+                (t.get(s, 7, 7, 7).unwrap() - 0.5).abs() < EPS,
+                "key (7,7,7) s={s}"
+            );
         }
     }
 
@@ -331,25 +367,25 @@ mod tests {
     fn recording_under_one_key_does_not_move_another() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-5, 5] {
-            acc.record(50, 7, 7, 0, v);
+            acc.record(50, 7, 7, 0, v).unwrap();
         }
         for &v in &[-100, 100] {
-            acc.record(50, 6, 7, 0, v);
+            acc.record(50, 6, 7, 0, v).unwrap();
         }
         let t = acc.finalize().unwrap();
         assert!(
-            (t.get(10, 50, 7, 7) - 1.0).abs() < EPS,
+            (t.get(10, 50, 7, 7).unwrap() - 1.0).abs() < EPS,
             "tight: {}",
-            t.get(10, 50, 7, 7)
+            t.get(10, 50, 7, 7).unwrap()
         );
         assert!(
-            (t.get(10, 50, 6, 7) - 0.5).abs() < EPS,
+            (t.get(10, 50, 6, 7).unwrap() - 0.5).abs() < EPS,
             "wide: {}",
-            t.get(10, 50, 6, 7)
+            t.get(10, 50, 6, 7).unwrap()
         );
 
-        assert!((t.get(0, 50, 7, 7) - 0.5).abs() < EPS);
-        assert!((t.get(0, 50, 6, 7) - 0.5).abs() < EPS);
+        assert!((t.get(0, 50, 7, 7).unwrap() - 0.5).abs() < EPS);
+        assert!((t.get(0, 50, 6, 7).unwrap() - 0.5).abs() < EPS);
     }
 
     #[test]
@@ -359,14 +395,14 @@ mod tests {
         let mut b = WinPctAccumulator::new();
         let mut both = WinPctAccumulator::new();
         for &v in &[-30, -10, 5] {
-            a.record(50, 7, 7, 0, v);
-            both.record(50, 7, 7, 0, v);
+            a.record(50, 7, 7, 0, v).unwrap();
+            both.record(50, 7, 7, 0, v).unwrap();
         }
         for &v in &[10, 25, 60] {
-            b.record(50, 7, 7, 0, v);
-            both.record(50, 7, 7, 0, v);
-            b.record(12, 3, 4, 0, v); // a key only b has
-            both.record(12, 3, 4, 0, v);
+            b.record(50, 7, 7, 0, v).unwrap();
+            both.record(50, 7, 7, 0, v).unwrap();
+            b.record(12, 3, 4, 0, v).unwrap(); // a key only b has
+            both.record(12, 3, 4, 0, v).unwrap();
         }
         a.merge(&b).unwrap();
         let ta = a.finalize().unwrap();
@@ -378,10 +414,10 @@ mod tests {
             (5, 12, 3, 4),
         ] {
             assert!(
-                (ta.get(s, bag, my, opp) - tb.get(s, bag, my, opp)).abs() < EPS,
+                (ta.get(s, bag, my, opp).unwrap() - tb.get(s, bag, my, opp).unwrap()).abs() < EPS,
                 "merge mismatch at ({s},{bag},{my},{opp}): {} vs {}",
-                ta.get(s, bag, my, opp),
-                tb.get(s, bag, my, opp)
+                ta.get(s, bag, my, opp).unwrap(),
+                tb.get(s, bag, my, opp).unwrap()
             );
         }
     }
@@ -391,10 +427,10 @@ mod tests {
     fn csv_raw_round_trip() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-120, -40, -5, 0, 5, 40, 120] {
-            acc.record(50, 7, 7, 0, v);
-            acc.record(80, 7, 6, 3, v / 2 + 3); // nonzero snapshot spread too.
+            acc.record(50, 7, 7, 0, v).unwrap();
+            acc.record(80, 7, 6, 3, v / 2 + 3).unwrap(); // nonzero snapshot spread too.
         }
-        acc.record(20, 3, 7, 0, 15); // a row shorter than the others.
+        acc.record(20, 3, 7, 0, 15).unwrap(); // a row shorter than the others.
         let acc2 = WinPctAccumulator::from_csv(&csv_of(&acc)[..]).unwrap();
         let t = acc.finalize().unwrap();
         let t2 = acc2.finalize().unwrap();
@@ -402,7 +438,7 @@ mod tests {
             for s in [-300, -50, -3, 0, 3, 50, 300] {
                 let (b, m, o) = (bag as usize, my as usize, opp as usize);
                 assert!(
-                    (t.get(s, b, m, o) - t2.get(s, b, m, o)).abs() < EPS,
+                    (t.get(s, b, m, o).unwrap() - t2.get(s, b, m, o).unwrap()).abs() < EPS,
                     "round-trip mismatch key ({bag},{my},{opp}) s={s}"
                 );
             }
@@ -412,7 +448,7 @@ mod tests {
     #[test]
     fn csv_has_no_header_row() {
         let mut acc = WinPctAccumulator::new();
-        acc.record(50, 7, 7, 0, 10);
+        acc.record(50, 7, 7, 0, 10).unwrap();
         let csv = String::from_utf8(csv_of(&acc)).unwrap();
         assert_eq!(csv.lines().next().unwrap(), "50,7,7,1,10:1");
     }
@@ -424,14 +460,14 @@ mod tests {
         let mut b = WinPctAccumulator::new();
         let mut both = WinPctAccumulator::new();
         for &v in &[-30, -10, 5, 40] {
-            a.record(50, 7, 7, 0, v);
-            both.record(50, 7, 7, 0, v);
+            a.record(50, 7, 7, 0, v).unwrap();
+            both.record(50, 7, 7, 0, v).unwrap();
         }
         for &v in &[10, 25, 60] {
-            b.record(50, 7, 7, 0, v);
-            both.record(50, 7, 7, 0, v);
-            b.record(12, 3, 4, 2, v); // a key only b has
-            both.record(12, 3, 4, 2, v);
+            b.record(50, 7, 7, 0, v).unwrap();
+            both.record(50, 7, 7, 0, v).unwrap();
+            b.record(12, 3, 4, 2, v).unwrap(); // a key only b has
+            both.record(12, 3, 4, 2, v).unwrap();
         }
         let mut acc = WinPctAccumulator::from_csv(&csv_of(&a)[..]).unwrap();
         acc.merge(&WinPctAccumulator::from_csv(&csv_of(&b)[..]).unwrap())
@@ -440,7 +476,7 @@ mod tests {
         let tb = both.finalize().unwrap();
         for &(s, bag, my, opp) in &[(0, 50, 7, 7), (15, 50, 7, 7), (2, 12, 3, 4)] {
             assert!(
-                (tc.get(s, bag, my, opp) - tb.get(s, bag, my, opp)).abs() < EPS,
+                (tc.get(s, bag, my, opp).unwrap() - tb.get(s, bag, my, opp).unwrap()).abs() < EPS,
                 "combine mismatch at ({s},{bag},{my},{opp})"
             );
         }

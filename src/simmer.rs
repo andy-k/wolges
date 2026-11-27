@@ -1274,8 +1274,8 @@ impl<
         game_ended: bool,
         final_spread: i32,
         table: Option<&win_pct::WinPctTable>,
-    ) -> f64 {
-        if game_ended {
+    ) -> error::Returns<f64> {
+        Ok(if game_ended {
             match final_spread.signum() {
                 1 => 1.0,
                 -1 => 0.0,
@@ -1300,12 +1300,12 @@ impl<
                     bag,
                     my,
                     opp,
-                ) {
-                    return f64::from(win_prob);
+                )? {
+                    return Ok(f64::from(win_prob));
                 }
             }
             win_prob_unfinished(final_spread, bag + racks_total)
-        }
+        })
     }
 
     #[inline(always)]
@@ -1568,18 +1568,22 @@ mod tests {
 
         let mut acc = win_pct::WinPctAccumulator::new();
         for &v in &[-5, 5] {
-            acc.record(bag, my, opp, 0, v);
+            acc.record(bag, my, opp, 0, v).unwrap();
         }
         let table = acc.finalize().unwrap();
-        let got = simmer.compute_win_prob(false, final_spread, Some(&table));
+        let got = simmer
+            .compute_win_prob(false, final_spread, Some(&table))
+            .unwrap();
         assert_eq!(got, 1.0, "table value should be used at the sampled key");
 
         let mut acc_other = win_pct::WinPctAccumulator::new();
         for &v in &[-5, 5] {
-            acc_other.record(bag + 1, my, opp, 0, v);
+            acc_other.record(bag + 1, my, opp, 0, v).unwrap();
         }
         let table_other = acc_other.finalize().unwrap();
-        let fell_back = simmer.compute_win_prob(false, final_spread, Some(&table_other));
+        let fell_back = simmer
+            .compute_win_prob(false, final_spread, Some(&table_other))
+            .unwrap();
         assert_eq!(
             fell_back, sigmoid,
             "absent key should fall back to the sigmoid"

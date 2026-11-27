@@ -6985,7 +6985,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                             - equity::Equity::new(final_scores[1 - mover])
                                 .descaled()
                                 .raw();
-                        acc.record(bag, my, opp, lead, mover_final);
+                        acc.record(bag, my, opp, lead, mover_final)?;
                     }
                     let done =
                         finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -7124,7 +7124,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             bag + my + opp,
                         );
                         let band = &mut bands[(bag / band_width).min(num_bands - 1)];
-                        let tab = match table.get_opt(lead, bag, my, opp) {
+                        let tab = match table.get_opt(lead, bag, my, opp)? {
                             Some(tab) => f64::from(tab),
                             None => {
                                 band.missing += 1;
@@ -13076,8 +13076,8 @@ WCMP_P1_SCORE 402.000000
 
         let mut acc = win_pct::WinPctAccumulator::new();
         for &v in &[-120, -40, -5, 0, 5, 40, 120] {
-            acc.record(50, 7, 7, 0, v);
-            acc.record(80, 7, 6, 3, v / 2 + 3);
+            acc.record(50, 7, 7, 0, v).unwrap();
+            acc.record(80, 7, 6, 3, v / 2 + 3).unwrap();
         }
         let mut csv = Vec::new();
         acc.to_csv(&mut csv).unwrap();
