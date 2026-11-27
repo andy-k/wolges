@@ -1238,6 +1238,7 @@ pub struct Scratch {
     used: Vec<u8>,
     lists: Lists,
     temps: Temps,
+    reach: Vec<u8>, // the positional term's reach map
 }
 
 impl Scratch {
@@ -1250,6 +1251,7 @@ impl Scratch {
             used: Vec::new(),
             lists: Lists::default(),
             temps: Temps::default(),
+            reach: Vec::new(),
         }
     }
 }
@@ -2049,21 +2051,48 @@ impl PositionalTerm {
             })
             .sum()
     }
+
+    #[inline]
+    fn add_to(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        plays: &mut [movegen::ValuedMove],
+        scratch: &mut Scratch,
+    ) -> error::Returns<()> {
+        let before = self.value_of(game_config, board_tiles, &mut scratch.reach);
+        for m in plays.iter_mut() {
+            if places_no_tiles(&m.play) {
+                continue;
+            }
+            glance::board_after(game_config, board_tiles, &m.play, &mut scratch.after);
+            let after = self.value_of(game_config, &scratch.after, &mut scratch.reach);
+            let Some(sum) = i32::try_from(m.equity.raw() as i64 + after - before)
+                .ok()
+                .map(equity::Equity::new)
+                .filter(|sum| sum.is_finite())
+            else {
+                return_error!("a move's equity with its positional term is out of range".into());
+            };
+            m.equity = sum;
+        }
+        plays.sort_by_key(|m| std::cmp::Reverse(m.equity));
+        Ok(())
+    }
 }
 
-// the deft picker: its window, and out in two's scratch, made at its first use
-// (and made again for a board or an alphabet of another size), with the
-// board's rows and columns and the alphabet's size it was made for
 pub struct Deft {
     window: i32,
+    positional: Option<PositionalTerm>,
     scratch: Option<((i8, i8, u8), Box<Scratch>)>,
 }
 
 impl Deft {
     #[inline(always)]
-    pub fn new(window: i32) -> Self {
+    pub fn new(window: i32, positional: Option<PositionalTerm>) -> Self {
         Self {
             window,
+            positional,
             scratch: None,
         }
     }
@@ -2074,7 +2103,10 @@ impl Deft {
     }
 
     #[inline]
-    fn scratch(&mut self, game_config: &game_config::GameConfig) -> &mut Scratch {
+    fn term_and_scratch(
+        &mut self,
+        game_config: &game_config::GameConfig,
+    ) -> (Option<&PositionalTerm>, &mut Scratch) {
         let dim = game_config.board_layout().dim();
         let made_for = (dim.rows, dim.cols, game_config.alphabet().len());
         if self
@@ -2087,7 +2119,7 @@ impl Deft {
         let (_, scratch) = self
             .scratch
             .get_or_insert_with(|| (made_for, Box::new(Scratch::new(game_config))));
-        scratch
+        (self.positional.as_ref(), scratch)
     }
 }
 
@@ -2109,11 +2141,6 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Hasty,
     Dynamic(klv::DynamicLeavesRef<'a>),
     Simmer(Box<Simmer<'a, N, L>>),
-    // of hasty's moves within this much equity of its best, the one leaving the
-    // board the fewest bingo lanes; but with the bag empty, the first move that
-    // goes out and wins, else out in two's move when it finds one; and with two
-    // to a rack's worth of tiles in the bag, when that one does not leave
-    // exactly one there, the first within DEFT_ONE_WINDOW of its best that does
     Deft(Deft),
 }
 
@@ -2921,7 +2948,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
             MovePicker::Deft(deft) => {
                 let game_config = board_snapshot.game_config;
                 let window = deft.window;
-                let scratch = deft.scratch(game_config);
+                let (positional, scratch) = deft.term_and_scratch(game_config);
                 let late = game_state.bag.len() <= game_config.rack_size() as usize;
                 filtered_movegen.gen_moves(
                     move_generator,
@@ -2931,6 +2958,14 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     if late { DEFT_LATE_FIELD } else { DEFT_FIELD },
                     None,
                 );
+                if let Some(term) = positional {
+                    term.add_to(
+                        game_config,
+                        &game_state.board_tiles,
+                        &mut move_generator.plays,
+                        scratch,
+                    )?;
+                }
                 let plays = &move_generator.plays;
                 let fewest = lane_pick(
                     game_config,
@@ -4889,7 +4924,7 @@ mod tests {
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
             let mut deft =
-                MovePicker::<kwg::Node24, kwg::Node24>::Deft(Deft::new(DEFAULT_DEFT_WINDOW));
+                MovePicker::<kwg::Node24, kwg::Node24>::Deft(Deft::new(DEFAULT_DEFT_WINDOW, None));
             deft.pick_a_move(
                 &mut filtered_movegen,
                 &mut move_generator,
@@ -4927,7 +4962,7 @@ mod tests {
             game_state.bag.set_from_iter(std::iter::repeat_n(5u8, bag));
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
             let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(Deft::new(0));
+            let mut deft = MovePicker::<kwg::Node24, kwg::Node24>::Deft(Deft::new(0, None));
             deft.pick_a_move(
                 &mut filtered_movegen,
                 &mut move_generator,
@@ -4983,9 +5018,22 @@ mod tests {
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
     ) -> String {
+        picks_of(
+            Deft::new(DEFAULT_DEFT_WINDOW, None),
+            board_snapshot,
+            game_state,
+        )
+    }
+
+    #[inline]
+    fn picks_of<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
+        deft: Deft,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        game_state: &game_state::GameState,
+    ) -> String {
         let mut move_generator = movegen::KurniaMoveGenerator::new(board_snapshot.game_config);
         let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-        let mut deft = MovePicker::<N, L>::Deft(Deft::new(DEFAULT_DEFT_WINDOW));
+        let mut deft = MovePicker::<N, L>::Deft(deft);
         deft.pick_a_move(
             &mut filtered_movegen,
             &mut move_generator,
@@ -5293,5 +5341,168 @@ mod tests {
         assert_eq!(term.value_of(&game_config, &board_tiles, &mut reach), -1500);
         board_tiles[dim.at_row_col(7, 7)] = 1;
         assert_eq!(term.value_of(&game_config, &board_tiles, &mut reach), -8000);
+    }
+
+    #[test]
+    #[inline]
+    fn a_positional_term_adds_to_each_moves_equity_and_orders_them_by_it() {
+        let game_config = game_config::make_english_game_config();
+        let dim = game_config.board_layout().dim();
+        let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let term = PositionalTerm::parse("2 1 1 -5\n").unwrap();
+        let exchange = movegen::ValuedMove {
+            equity: equity::Equity::new(12_000),
+            play: movegen::Play::Exchange {
+                tiles: [5u8][..].into(),
+            },
+        };
+        let mut plays = vec![
+            exchange.clone(),
+            place(10_000, false, 7, 7, &[1, 20], 4),
+            place(10_000, false, 7, 6, &[1, 20], 4),
+        ];
+        term.add_to(
+            &game_config,
+            &board_tiles,
+            &mut plays,
+            &mut Scratch::new(&game_config),
+        )
+        .unwrap();
+        assert!(plays[0] == place(15_000, false, 7, 7, &[1, 20], 4));
+        assert!(plays[1] == place(15_000, false, 7, 6, &[1, 20], 4));
+        assert!(plays[2] == exchange);
+        let huge = PositionalTerm::new(vec![((2, 1, 1), i32::MIN)]).unwrap();
+        assert!(
+            huge.add_to(
+                &game_config,
+                &board_tiles,
+                &mut plays,
+                &mut Scratch::new(&game_config),
+            )
+            .is_err()
+        );
+    }
+
+    #[inline]
+    fn care_positions(
+        game_config: &game_config::GameConfig,
+    ) -> (Vec<u8>, Vec<game_state::GameState>) {
+        let mut fen_parser =
+            display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
+        let board_tiles = fen_parser
+            .parse("15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15")
+            .unwrap()
+            .to_vec();
+        let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
+        let mut positions = Vec::new();
+        for rack in ["ACERST", "AENRST", "CENT", "EATS", "RACE", "STAR"] {
+            for bag in [0, 3, 20] {
+                let mut game_state = game_state::GameState::new(game_config);
+                game_state.board_tiles.copy_from_slice(&board_tiles);
+                game_state.bag.set_from_iter(std::iter::repeat_n(5u8, bag));
+                let mover = game_state.turn as usize;
+                rack_reader
+                    .set_word(rack, &mut game_state.players[mover].rack)
+                    .unwrap();
+                rack_reader
+                    .set_word("ET", &mut game_state.players[1 - mover].rack)
+                    .unwrap();
+                positions.push(game_state);
+            }
+        }
+        (board_tiles, positions)
+    }
+
+    #[test]
+    #[inline]
+    fn deft_with_a_zero_positional_term_plays_as_deft() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = end_words_kwg(&game_config);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let (board_tiles, positions) = care_positions(&game_config);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        for text in ["3 1 1 0\n2 1 1 0\n1 3 1 0\n1 2 1 0\n", ""] {
+            let zero = PositionalTerm::parse(text).unwrap();
+            for game_state in &positions {
+                for window in [0, DEFAULT_DEFT_WINDOW] {
+                    assert_eq!(
+                        picks_of(
+                            Deft::new(window, Some(zero.clone())),
+                            &board_snapshot,
+                            game_state
+                        ),
+                        picks_of(Deft::new(window, None), &board_snapshot, game_state),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn deft_takes_a_move_its_positional_term_values_most() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = end_words_kwg(&game_config);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let (board_tiles, positions) = care_positions(&game_config);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let term =
+            PositionalTerm::parse("3 1 1 -100\n2 1 1 -100\n1 3 1 -100\n1 2 1 -100\n").unwrap();
+        let (mut reach, mut after) = (Vec::new(), Vec::new());
+        let before = term.value_of(&game_config, &board_tiles, &mut reach);
+        let mut changed = 0;
+        for game_state in positions
+            .iter()
+            .filter(|game_state| game_state.bag.len() > game_config.rack_size() as usize)
+        {
+            let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+            move_filter::GenMoves::Unfiltered.gen_moves(
+                &mut move_generator,
+                &board_snapshot,
+                &game_state.players[game_state.turn as usize].rack,
+                0,
+                DEFT_FIELD,
+                None,
+            );
+            let sums = move_generator
+                .plays
+                .iter()
+                .map(|m| {
+                    glance::board_after(&game_config, &board_tiles, &m.play, &mut after);
+                    let added = term.value_of(&game_config, &after, &mut reach) - before;
+                    (
+                        m.equity.raw() as i64 + added,
+                        m.play.fmt(&board_snapshot).to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let most = sums.iter().map(|&(sum, _)| sum).max().unwrap();
+            let picked = picks_of(
+                Deft::new(0, Some(term.clone())),
+                &board_snapshot,
+                game_state,
+            );
+            assert!(
+                sums.iter()
+                    .any(|(sum, play)| *sum == most && *play == picked),
+                "{picked} of {sums:?}"
+            );
+            changed += (picked != sums[0].1) as usize;
+        }
+        assert!(changed > 0, "the term changed no pick");
     }
 }

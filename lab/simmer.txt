@@ -85,6 +85,15 @@ Once the bag is empty, a seat can hand over to another picker: --p0-endgame /
 games as deft does, or a deft seat as hasty does; without it, a seat keeps its
 own picker to the end.
 
+A deft seat can add a positional term to its moves' equity: --p0-positional /
+--p1-positional FILE read its values, a line each: a premium square's word
+multiplier, its letter multiplier, its reach (the fewest tiles a play must
+place to cover it), and the points one such square adds, summed over the board
+after a move less the board before it; # starts a comment. Deft then weighs its
+moves in the order of the sums, its own rules unchanged; with every value 0 it
+plays as plain deft. A seat that hands over to deft once the bag is empty
+(--p0-endgame deft) ends its games as plain deft.
+
 As with leave tables, each game pair starts from the same deal with the seats
 swapped, so first-move advantage cancels between the two halves of the pair.
 Each seat's simmer is reseeded before every single move from a mix of the run's
