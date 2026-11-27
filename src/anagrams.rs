@@ -324,7 +324,7 @@ impl std::hash::Hasher for KeyHasher {
 
 // a key as the tables keep it: a u128's bytes, so no record holding one is
 // padded to 16-byte alignment; equal, ordered and hashed as that u128
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct KeyBytes([u8; 16]);
 
 impl KeyBytes {
@@ -334,7 +334,7 @@ impl KeyBytes {
     }
 
     #[inline(always)]
-    fn key(self) -> u128 {
+    fn key(&self) -> u128 {
         u128::from_ne_bytes(self.0)
     }
 }
@@ -394,10 +394,10 @@ fn sort_blank_pairs(
     let (mut i, mut j) = (0, 0);
     while i < left.len() && j < right.len() {
         if compare_blank_pairs(&left[i], &right[j]).is_le() {
-            merge.push(left[i]);
+            merge.push(left[i].clone());
             i += 1;
         } else {
-            merge.push(right[j]);
+            merge.push(right[j].clone());
             j += 1;
         }
     }
@@ -511,7 +511,7 @@ impl Anagrams {
         pairs_of.clear();
         pairs_of.reserve_exact(lengths);
         pairs_of.resize(lengths, 0);
-        for group in keyed.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+        for group in keyed.chunk_by(|a, b| (a.0, &a.1) == (b.0, &b.1)) {
             keys_of[group[0].0 as usize] += 1;
             pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1.key(), last_tile).count();
         }
@@ -562,7 +562,7 @@ impl Anagrams {
                     }
                     // the group's words end at an END
                     letters += 1;
-                    table.insert(group[0].1, group_at);
+                    table.insert(group[0].1.clone(), group_at);
                     for tile in layout.tiles_in(key, last_tile) {
                         pairs.push((KeyBytes::of(key - layout.place_value(tile)), group_at, tile));
                     }
@@ -578,7 +578,7 @@ impl Anagrams {
             table.clear();
             table.reserve(blank_keys);
             for group in pairs.chunk_by(|a, b| a.0 == b.0) {
-                table.insert(group[0].0, u32::try_from(answer_ats.len()).ok()?);
+                table.insert(group[0].0.clone(), u32::try_from(answer_ats.len()).ok()?);
                 answer_ats.extend(group.iter().map(|&(_, at, _)| at));
                 answer_tiles.extend(group.iter().map(|&(_, _, tile)| tile));
                 if let Some(last) = answer_tiles.last_mut() {
@@ -700,7 +700,7 @@ impl Anagrams {
         filter.reserve_exact(blocks * FILTER_BLOCK_WORDS);
         filter.resize(blocks * FILTER_BLOCK_WORDS, 0);
         for table in groups {
-            for &key in table.keys() {
+            for key in table.keys() {
                 let h = filter_hash(key_part(key.key()));
                 let base = filter_block(h, blocks) * FILTER_BLOCK_WORDS;
                 let mut probe = h;
