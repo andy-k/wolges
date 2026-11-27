@@ -336,7 +336,7 @@ fn do_it(
         let mut has_last = false;
 
         loop {
-            timers.set_turn(game_state.turn as i8);
+            timers.set_turn(i8::try_from(game_state.turn)?)?;
             display::print_game_state(game_config, &game_state, Some(&timers))?;
 
             if false {
@@ -656,7 +656,7 @@ fn do_it(
                 )?;
             }
         }
-        timers.set_turn(-1);
+        timers.set_turn(-1)?;
 
         display::print_game_state(game_config, &game_state, Some(&timers))?;
         for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {

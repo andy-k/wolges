@@ -24,25 +24,33 @@ impl GameTimers {
     }
 
     #[inline(always)]
-    pub fn set_turn(&mut self, new_turn: i8) {
+    pub fn set_turn(&mut self, new_turn: i8) -> crate::error::Returns<()> {
         let new_instant = std::time::Instant::now();
-        if self.turn >= 0 && (self.turn as usize) < self.clocks_ms.len() {
-            self.clocks_ms[self.turn as usize] -= new_instant
-                .saturating_duration_since(self.instant)
-                .as_millis() as i64;
+        if let Ok(turn) = usize::try_from(self.turn)
+            && turn < self.clocks_ms.len()
+        {
+            self.clocks_ms[turn] = self.get_timer_as_at(new_instant, turn)?;
         }
         self.instant = new_instant;
         self.turn = new_turn;
+        Ok(())
     }
 
     #[inline(always)]
-    pub fn get_timer_as_at(&self, instant: std::time::Instant, turn: usize) -> i64 {
-        if turn < self.clocks_ms.len() {
-            self.clocks_ms[turn]
-                - (-i64::from(turn == self.turn as usize)
-                    & instant.saturating_duration_since(self.instant).as_millis() as i64)
+    pub fn get_timer_as_at(
+        &self,
+        instant: std::time::Instant,
+        turn: usize,
+    ) -> crate::error::Returns<i64> {
+        let clock = self.clocks_ms.get(turn).copied().unwrap_or(0);
+        if turn < self.clocks_ms.len() && usize::try_from(self.turn) == Ok(turn) {
+            let elapsed =
+                i64::try_from(instant.saturating_duration_since(self.instant).as_millis())?;
+            clock
+                .checked_sub(elapsed)
+                .ok_or_else(|| format!("player {} clock is out of range", turn + 1).into())
         } else {
-            0
+            Ok(clock)
         }
     }
 }
