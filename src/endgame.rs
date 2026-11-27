@@ -11023,6 +11023,33 @@ fn beats(v: f64, t: f64) -> f64 {
     }
 }
 
+#[inline(always)]
+fn empties_bag(play: &movegen::Play, bag_len: usize) -> bool {
+    match play {
+        movegen::Play::Place { word, .. } => {
+            word.iter().filter(|&&tile| tile != 0).count() >= bag_len
+        }
+        movegen::Play::Exchange { .. } => false,
+    }
+}
+
+#[inline(always)]
+fn ranks_above(
+    (win, value, i): (f64, f64, usize),
+    (best_win, best_value, best): (f64, f64, usize),
+) -> bool {
+    win > best_win || (win == best_win && (value > best_value || (value == best_value && i < best)))
+}
+
+fn least_margin_above(lead: f64, offset: f64, best: (f64, f64, usize), i: usize) -> Option<f64> {
+    let above = |m: f64| ranks_above((beats(lead + m, 0.0), m + offset, i), best);
+    let near = (best.1 - offset).floor();
+    [near - 1.0, near, near + 1.0, near + 2.0, -lead, 1.0 - lead]
+        .into_iter()
+        .filter(|&m| m.is_finite() && above(m))
+        .min_by(f64::total_cmp)
+}
+
 // the first draw of n tiles a pool (a count per tile) allows, in the order
 // each_split gives them (each tile's count rising, the first tile's slowest),
 // written into drawn; false if the pool holds fewer than n
@@ -12414,6 +12441,9 @@ impl<
         let hand_overs = self.hand_overs;
         let help = self.hand_over.take().map(|task| &hand_overs[task]);
         let num_asked = asked.len();
+        if let (None, [split], COMPLETE) = (help, splits, self.limits.depth.get()) {
+            return self.info_best_of_one(info, (moves, asked), split);
+        }
         if let Some(help) = help {
             let bytes = (info.board.len() + info.rack.len() + info.unseen.len())
                 + (asked.iter())
@@ -12480,6 +12510,61 @@ impl<
             }
         }
         Ok(best)
+    }
+
+    fn info_best_of_one(
+        &mut self,
+        info: &InfoSet,
+        (moves, asked): (&[movegen::Play], &[usize]),
+        (other, bag, ways): &Split,
+    ) -> error::Returns<(f64, f64, usize)> {
+        let total = *ways as f64;
+        let lead = f64::from(info.lead);
+        let mut best = (f64::NEG_INFINITY, f64::NEG_INFINITY, usize::MAX);
+        for &i in asked {
+            let play = &moves[i];
+            let from = (best.2 != usize::MAX && empties_bag(play, info.bag_len))
+                .then(|| least_margin_above(lead, 0.0, best, i))
+                .flatten();
+            let found = match from {
+                Some(from) => self.info_split_from(info, play, other, bag, from)?,
+                None => Some(self.info_split(info, play, other, bag)?),
+            };
+            let Some((w, m)) = found else {
+                continue;
+            };
+            let (win, margin) = (*ways as f64 * w / total, *ways as f64 * m / total);
+            if ranks_above((win, margin, i), best) {
+                best = (win, margin, i);
+            }
+        }
+        Ok(best)
+    }
+
+    fn info_split_from(
+        &mut self,
+        info: &InfoSet,
+        play: &movegen::Play,
+        other: &[u8],
+        bag: &[u8],
+        from: f64,
+    ) -> error::Returns<Option<(f64, f64)>> {
+        self.stop_at_a_limit()?;
+        let movegen::Play::Place { score, .. } = play else {
+            unreachable!("a placement empties the bag");
+        };
+        let mut next = self.arena.take_pos(self.ply);
+        info.at(self.limits, other, bag, &mut next)?;
+        next.place(self.gc, play);
+        next.draw(bag);
+        next.next_turn();
+        let score = f64::from(score.raw());
+        let below = self.endgame_below(&next, score - from + 1.0);
+        self.arena.give_pos(self.ply, next);
+        Ok(below?.map(|theirs| {
+            let margin = score - theirs;
+            (beats(f64::from(info.lead) + margin, 0.0), margin)
+        }))
     }
 
     // a move's chance to win at info over the splits weighed by their deals,
@@ -21985,8 +22070,13 @@ mod tests {
                         racks[info.mover as usize]
                             .extend(std::iter::repeat_n(tile, count as usize));
                     }
-                    r.own.init(&placed.board, [&racks[0], &racks[1]]);
-                    let ev = f64::from(r.own.solve(info.mover ^ 1).unwrap().raw());
+                    let ev = if racks[info.mover as usize].is_empty() {
+                        let theirs = &racks[(info.mover ^ 1) as usize];
+                        f64::from(-2 * gc.alphabet().scaled_rack_score(theirs).raw())
+                    } else {
+                        r.own.init(&placed.board, [&racks[0], &racks[1]]);
+                        f64::from(r.own.solve(info.mover ^ 1).unwrap().raw())
+                    };
                     let margin = f64::from(score.raw()) - ev;
                     return (super::beats(lead + margin, 0.0), margin);
                 }
@@ -22022,6 +22112,72 @@ mod tests {
             }
             movegen::Play::Exchange { .. } => unreachable!("too few in the bag to exchange"),
         }
+    }
+
+    #[test]
+    fn a_search_over_one_split_values_each_move_as_one_that_keeps_nothing() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let e = equity::Equity::new;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut checked = 0;
+        for (other, rack) in [
+            (&[1u8, 2, 8][..], &[1u8, 20, 8][..]),
+            (&[1, 1, 20], &[2, 1, 8]),
+            (&[2, 8, 20], &[1, 1, 8]),
+            (&[1, 2, 8], &[2, 8]),
+        ] {
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            for &tile in other {
+                unseen_tally[tile as usize] += 1;
+            }
+            for lead in [e(0), e(-3000), e(5000)] {
+                let mut position = bag_position(&board, rack, &unseen_tally, 0, lead);
+                position.model = super::PegModel::InfoSets;
+                let result = uncut_peg(&mut egs, position.clone()).unwrap().unwrap();
+                assert!(result.exact);
+                let mut reference = BagReference {
+                    gc: &gc,
+                    kwg: &kwg,
+                    arm_tables: &arm_tables,
+                    klv: &klv,
+                    mg: &mut mg,
+                    own: &mut own,
+                    known: fash::MyHashMap::default(),
+                };
+                let mut sorted = rack.to_vec();
+                sorted.sort_unstable();
+                let pos = super::InBag {
+                    board: board.clone(),
+                    racks: [sorted, other.to_vec()],
+                    bag: vec![0; gc.alphabet().len() as usize],
+                    mover: 0,
+                    passes: 0,
+                    zeros: 0,
+                    answering: false,
+                    exchanges: [0, 0],
+                };
+                let mut info = super::InfoSet::default();
+                let limits = super::BagLimits::new(&super::Limits::NONE, None);
+                info.of(&limits, &pos, lead.raw()).unwrap();
+                for row in &result.moves {
+                    let (w, m) =
+                        info_reference_split(&mut reference, &info, &row.play, other, &pos.bag);
+                    assert_eq!(row.win_pct, w);
+                    assert_eq!(row.expected_margin, Some(e(m as i32 + lead.raw())));
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0);
     }
 
     #[test]
