@@ -159,9 +159,12 @@ fn an_endgame_solve_refused_its_largest_growth_answers_as_before() {
     let board = endgame_board(&gc);
     let racks = ["AAHST", "ABHLT"].map(|rack| parse_test_rack(gc.alphabet(), rack));
     let solve = || {
-        let mut egs =
-            endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
-                .unwrap();
+        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
+            &gc,
+            wolges::movegen::KwgForMovegen::for_game(&gc, &kwg),
+            &arm_tables,
+        )
+        .unwrap();
         egs.init(&board, [&racks[0], &racks[1]]);
         let solved = egs.solve_within(0, &NO_MEMORY_LIMIT).unwrap();
         (solved.value, solved.exact, solved.out_of_memory)
@@ -185,9 +188,12 @@ fn a_one_in_bag_solve_refused_its_largest_growth_answers_as_before() {
         unseen[tile as usize] += 1;
     }
     let solve = || {
-        let mut egs =
-            endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables)
-                .unwrap();
+        let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
+            &gc,
+            wolges::movegen::KwgForMovegen::for_game(&gc, &kwg),
+            &arm_tables,
+        )
+        .unwrap();
         let score_diff = equity::Equity::new(0);
         let result = egs
             .solve_peg_one_in_bag(0, &board, &rack, &unseen, score_diff, &NO_MEMORY_LIMIT)
@@ -233,10 +239,9 @@ fn a_jumbled_generation_refused_its_largest_growth_says_so() {
     let dim = gc.board_layout().dim();
     let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
     let board_snapshot = movegen::BoardSnapshot {
-        alphagrams: None,
         board_tiles: &board_tiles,
         game_config: &gc,
-        kwg: &kwg,
+        graphs: wolges::movegen::KwgForMovegen::for_game(&gc, &kwg),
         anagrams: None,
         rack_lengths: None,
         klv: &klv,

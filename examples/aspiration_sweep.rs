@@ -73,10 +73,9 @@ fn autoplay(
             }
             generator.gen_moves_unfiltered(&GenMovesParams {
                 board_snapshot: &BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &game.board_tiles,
                     game_config: gc,
-                    kwg,
+                    graphs: wolges::movegen::KwgForMovegen::for_game(gc, kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -156,7 +155,7 @@ impl<'a> Search<'a> {
     fn measure(&self, pos: &Position, width: Option<NonZeroU32>) -> error::Returns<Measured> {
         let mut solver = EndgameSolver::<Node24, Node24>::with_generator(
             self.gc,
-            self.kwg,
+            wolges::movegen::KwgForMovegen::for_game(self.gc, self.kwg),
             &self.tables,
             self.run_letters.clone(),
             KurniaMoveGenerator::new(self.gc),

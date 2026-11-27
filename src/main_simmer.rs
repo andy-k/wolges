@@ -269,10 +269,9 @@ fn simulate(
     let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
     move_generator.gen_remaining_words(
         &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config,
-            kwg,
+            graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
             anagrams: None,
             rack_lengths: None,
             klv,
@@ -310,10 +309,9 @@ fn simulate(
     // ok, let's sim...
 
     let board_snapshot = &movegen::BoardSnapshot {
-        alphagrams: None,
         board_tiles: &game_state.board_tiles,
         game_config,
-        kwg: &smaller_kwg,
+        graphs: wolges::movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
         anagrams: arm_tables.anagrams(),
         rack_lengths: arm_tables.rack_lengths(),
         klv,

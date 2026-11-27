@@ -230,10 +230,9 @@ fn do_it(
         //game_state.bag.shuffle(&mut rng);
         display::print_game_state(game_config, &game_state, Some(&timers))?;
         let board_snapshot = &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &game_state.board_tiles,
             game_config,
-            kwg,
+            graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -279,7 +278,7 @@ fn do_it(
         move_generator.reset_for_another_kwg();
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
-                kwg: &smaller_kwg,
+                graphs: movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
                 anagrams: smaller_tables.anagrams(),
                 rack_lengths: smaller_tables.rack_lengths(),
                 ..*board_snapshot
@@ -332,6 +331,7 @@ fn do_it(
     let mut carried = vec![infer::Carried::default(); game_state.players.len()];
     let mut put_back = vec![Vec::new(); game_state.players.len()];
     let mut next_carried = infer::Carried::default();
+    let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         final_scores.iter_mut().for_each(|s| *s = 0);
@@ -391,10 +391,9 @@ fn do_it(
             };
 
             let board_snapshot = &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &game_state.board_tiles,
                 game_config,
-                kwg,
+                graphs,
                 anagrams: arm_tables.anagrams(),
                 rack_lengths: arm_tables.rack_lengths(),
                 klv,
@@ -448,7 +447,7 @@ fn do_it(
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
-                            kwg: &smaller_kwg,
+                            graphs: movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
                             anagrams: smaller_tables.anagrams(),
                             rack_lengths: smaller_tables.rack_lengths(),
                             ..*board_snapshot

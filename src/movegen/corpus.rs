@@ -619,6 +619,7 @@ fn run_case<'a>(
         ("forced", PassPolicy::OnlyWhenForced),
         ("candidate", PassPolicy::AsACandidate),
     ] {
+        let graphs = crate::movegen::KwgForMovegen::for_game(gc, kwg);
         for num_exchanges_by_this_player in [0, gc.exchanges_allowed_per_player()] {
             let at = format!("{case} {policy_name} {num_exchanges_by_this_player}");
             let picked = picks.iter().filter(|p| p.case == at).collect::<Vec<_>>();
@@ -627,10 +628,9 @@ fn run_case<'a>(
                 continue;
             }
             let snapshot = |arm: &Arm<'a>| BoardSnapshot {
-                alphagrams: None,
                 board_tiles,
                 game_config: gc,
-                kwg,
+                graphs,
                 anagrams: arm.anagrams,
                 rack_lengths: arm.rack_lengths,
                 klv,

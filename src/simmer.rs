@@ -489,7 +489,7 @@ impl<
     fn take_census<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
     ) -> TakenCensus {
@@ -499,7 +499,7 @@ impl<
         };
         // the spare is held here alone
         if let Some(census) = std::sync::Arc::get_mut(&mut taken)
-            && !self.take_census_into(game_config, kwg, arm_tables, klv, census)
+            && !self.take_census_into(game_config, graphs, arm_tables, klv, census)
         {
             *census = None;
         }
@@ -511,7 +511,7 @@ impl<
     fn take_census_into<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         census: &mut Option<movegen::LaneCensus>,
@@ -546,10 +546,9 @@ impl<
             std::iter::repeat_n(tile, off_board[tile as usize].min(rack_size) as usize)
         }));
         let board_snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.initial_game_state.board_tiles,
             game_config,
-            kwg,
+            graphs,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -735,12 +734,19 @@ impl<
     pub fn simulate<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> error::Returns<bool> {
-        self.simulate_impl::<false, _, _>(game_config, kwg, arm_tables, klv, candidate_play, false)
+        self.simulate_impl::<false, _, _>(
+            game_config,
+            graphs,
+            arm_tables,
+            klv,
+            candidate_play,
+            false,
+        )
     }
 
     // as simulate, its moves found by the move generator's lean arm, so that a
@@ -749,12 +755,19 @@ impl<
     pub fn simulate_lean<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> error::Returns<bool> {
-        self.simulate_impl::<true, _, _>(game_config, kwg, arm_tables, klv, candidate_play, false)
+        self.simulate_impl::<true, _, _>(
+            game_config,
+            graphs,
+            arm_tables,
+            klv,
+            candidate_play,
+            false,
+        )
     }
 
     // as simulate, its candidate a play challenged off the board: the tiles go
@@ -765,14 +778,14 @@ impl<
     pub fn simulate_challenged_off<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
     ) -> error::Returns<bool> {
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
-        self.simulate_impl::<false, _, _>(game_config, kwg, arm_tables, klv, &pass, true)
+        self.simulate_impl::<false, _, _>(game_config, graphs, arm_tables, klv, &pass, true)
     }
 
     // as simulate_challenged_off, by the move generator's lean arm
@@ -780,21 +793,21 @@ impl<
     pub fn simulate_lean_challenged_off<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
     ) -> error::Returns<bool> {
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
-        self.simulate_impl::<true, _, _>(game_config, kwg, arm_tables, klv, &pass, true)
+        self.simulate_impl::<true, _, _>(game_config, graphs, arm_tables, klv, &pass, true)
     }
 
     #[inline(always)]
     fn simulate_impl<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
@@ -848,7 +861,7 @@ impl<
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if taken.is_none() {
-                *taken = Some(self.take_census(game_config, kwg, arm_tables, klv));
+                *taken = Some(self.take_census(game_config, graphs, arm_tables, klv));
             }
             self.census_taken.clone_from(&taken);
         }
@@ -875,7 +888,7 @@ impl<
             } else if {
                 #[cfg(not(target_family = "wasm"))]
                 {
-                    self.pick_preempty(game_config, kwg, arm_tables, klv, ply, &mut next_play)?
+                    self.pick_preempty(game_config, graphs, arm_tables, klv, ply, &mut next_play)?
                 }
                 #[cfg(target_family = "wasm")]
                 {
@@ -885,7 +898,7 @@ impl<
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
                 let reply = self.reply_at_ply_one::<LEAN, _, _>(
                     game_config,
-                    kwg,
+                    graphs,
                     arm_tables,
                     klv,
                     candidate_play,
@@ -896,10 +909,9 @@ impl<
             } else {
                 let params = &movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &self.game_state.board_tiles,
                         game_config,
-                        kwg,
+                        graphs,
                         anagrams: arm_tables.anagrams(),
                         rack_lengths: arm_tables.rack_lengths(),
                         klv,
@@ -1021,7 +1033,7 @@ impl<
     fn pick_preempty<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         ply: usize,
@@ -1034,10 +1046,9 @@ impl<
             return Ok(false);
         }
         let snapshot = movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &self.game_state.board_tiles,
             game_config,
-            kwg,
+            graphs,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -1090,7 +1101,7 @@ impl<
     fn reply_at_ply_one<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
+        graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
@@ -1110,10 +1121,9 @@ impl<
         while off.is_none() && !self.lanes_exhausted {
             let params = &movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &self.initial_game_state.board_tiles,
                     game_config,
-                    kwg,
+                    graphs,
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv,
@@ -1174,10 +1184,9 @@ impl<
         }
         let params = &movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &self.game_state.board_tiles,
                 game_config,
-                kwg,
+                graphs,
                 anagrams: arm_tables.anagrams(),
                 rack_lengths: arm_tables.rack_lengths(),
                 klv,
@@ -1384,7 +1393,13 @@ mod tests {
         let shared_state = simmer.rng.clone();
 
         simmer
-            .simulate(&game_config, &kwg, &arm_tables, &klv, &candidate)
+            .simulate(
+                &game_config,
+                crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                &arm_tables,
+                &klv,
+                &candidate,
+            )
             .unwrap();
         let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
@@ -1393,7 +1408,13 @@ mod tests {
         assert_eq!(simmer.rng, shared_state);
 
         simmer
-            .simulate(&game_config, &kwg, &arm_tables, &klv, &candidate)
+            .simulate(
+                &game_config,
+                crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                &arm_tables,
+                &klv,
+                &candidate,
+            )
             .unwrap();
         let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
@@ -1751,7 +1772,13 @@ mod tests {
             tiles: [][..].into(),
         };
         let game_ended = simmer
-            .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+            .simulate(
+                &game_config,
+                crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                &arm_tables,
+                &klv,
+                &pass,
+            )
             .unwrap();
         assert!(game_ended);
         assert_eq!(simmer.game_state.zero_turns, 6);
@@ -1788,7 +1815,13 @@ mod tests {
                 .unwrap();
             simmer.prepare_iteration(None).unwrap();
             let game_ended = simmer
-                .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+                .simulate(
+                    &game_config,
+                    crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                    &arm_tables,
+                    &klv,
+                    &pass,
+                )
                 .unwrap();
             assert!(!game_ended, "{bag_len}");
             assert_eq!(simmer.plies_played().len(), played, "{bag_len}");
@@ -1836,7 +1869,13 @@ mod tests {
             .unwrap();
         simmer.prepare_iteration(None).unwrap();
         simmer
-            .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+            .simulate(
+                &game_config,
+                crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                &arm_tables,
+                &klv,
+                &pass,
+            )
             .unwrap();
         assert!(simmer.reply_equity().is_some());
         assert!(
@@ -1892,7 +1931,13 @@ mod tests {
             .unwrap();
         simmer.prepare_iteration(None).unwrap();
         let game_ended = simmer
-            .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+            .simulate(
+                &game_config,
+                crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                &arm_tables,
+                &klv,
+                &pass,
+            )
             .unwrap();
         assert!(game_ended);
         assert!(simmer.game_state.bag.is_empty());
@@ -1944,7 +1989,13 @@ mod tests {
                 .unwrap();
             simmer.prepare_iteration(None).unwrap();
             let game_ended = simmer
-                .simulate(game_config, &kwg, &arm_tables, &klv, &pass)
+                .simulate(
+                    game_config,
+                    crate::movegen::KwgForMovegen::for_game(game_config, &kwg),
+                    &arm_tables,
+                    &klv,
+                    &pass,
+                )
                 .unwrap();
             assert_eq!(game_ended, ended, "{case:?}");
             assert_eq!(simmer.plies_played().len(), played, "{case:?}");
@@ -2334,10 +2385,9 @@ mod tests {
         generator
             .gen_moves_unfiltered(&movegen::GenMovesParams {
                 board_snapshot: &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config,
-                    kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(game_config, kwg),
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv,
@@ -2394,10 +2444,9 @@ mod tests {
             field
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &initial.board_tiles,
                         game_config: &game_config,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         anagrams: arm_tables.anagrams(),
                         rack_lengths: arm_tables.rack_lengths(),
                         klv: &klv,
@@ -2437,7 +2486,7 @@ mod tests {
                 let reply = simmer
                     .reply_at_ply_one::<false, _, _>(
                         &game_config,
-                        &kwg,
+                        crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         &arm_tables,
                         &klv,
                         candidate,
@@ -2453,10 +2502,9 @@ mod tests {
                     &simmer.game_state,
                 );
                 let snapshot = movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &simmer.game_state.board_tiles,
                     game_config: &game_config,
-                    kwg: &kwg,
+                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -2515,10 +2563,9 @@ mod tests {
             field
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         anagrams: arm_tables.anagrams(),
                         rack_lengths: arm_tables.rack_lengths(),
                         klv: &klv,
@@ -2545,10 +2592,22 @@ mod tests {
                 }
                 for candidate in field.plays.iter().map(|m| &m.play) {
                     let ended = full
-                        .simulate(&game_config, &kwg, &arm_tables, &klv, candidate)
+                        .simulate(
+                            &game_config,
+                            crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                            &arm_tables,
+                            &klv,
+                            candidate,
+                        )
                         .unwrap();
                     let lean_ended = lean
-                        .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                        .simulate_lean(
+                            &game_config,
+                            crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                            &no_tables,
+                            &klv,
+                            candidate,
+                        )
                         .unwrap();
                     assert_eq!(ended, lean_ended, "seed {seed}");
                     assert_eq!(
@@ -2587,10 +2646,9 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -2611,7 +2669,13 @@ mod tests {
             let turn = game_state.turn as usize;
             for candidate in field.plays.iter().map(|m| &m.play) {
                 let ended = simmer
-                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .simulate_lean(
+                        &game_config,
+                        crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                        &no_tables,
+                        &klv,
+                        candidate,
+                    )
                     .unwrap();
                 if ended {
                     continue;
@@ -2665,10 +2729,9 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -2695,7 +2758,13 @@ mod tests {
                     simmer.reseed(seed);
                     simmer.prepare_iteration(None).unwrap();
                     simmer
-                        .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                        .simulate_lean(
+                            &game_config,
+                            crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                            &no_tables,
+                            &klv,
+                            candidate,
+                        )
                         .unwrap();
                     let plies = (simmer.plies_played().iter())
                         .map(|ply| (ply.score, ply.tiles))
@@ -2730,10 +2799,9 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -2760,7 +2828,13 @@ mod tests {
             simmer.prepare_iteration(None).unwrap();
             for candidate in field.plays.iter().map(|m| &m.play) {
                 simmer
-                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .simulate_lean(
+                        &game_config,
+                        crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                        &no_tables,
+                        &klv,
+                        candidate,
+                    )
                     .unwrap();
                 for (i, ply) in simmer.plies_played().iter().enumerate() {
                     if i % 2 == 0 {
@@ -2795,10 +2869,9 @@ mod tests {
             field
                 .gen_moves_unfiltered_lean(&movegen::GenMovesParams {
                     board_snapshot: &movegen::BoardSnapshot {
-                        alphagrams: None,
                         board_tiles: &game_state.board_tiles,
                         game_config: &game_config,
-                        kwg: &kwg,
+                        graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -2831,7 +2904,13 @@ mod tests {
                 }
                 prepare(&mut simmer, false);
                 simmer
-                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .simulate_lean(
+                        &game_config,
+                        crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                        &no_tables,
+                        &klv,
+                        candidate,
+                    )
                     .unwrap();
                 let reply = simmer.plies_played()[0];
                 assert_eq!(
@@ -2844,7 +2923,13 @@ mod tests {
                 }
                 prepare(&mut simmer, true);
                 simmer
-                    .simulate_lean(&game_config, &kwg, &no_tables, &klv, candidate)
+                    .simulate_lean(
+                        &game_config,
+                        crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                        &no_tables,
+                        &klv,
+                        candidate,
+                    )
                     .unwrap();
                 assert!(simmer.reply_equity().is_none(), "seed {seed}");
                 checked += 1;
@@ -2893,11 +2978,22 @@ mod tests {
                         simmer.prepare_iteration(None).unwrap();
                         if challenged_off {
                             simmer
-                                .simulate_lean_challenged_off(&game_config, &kwg, &no_tables, &klv)
+                                .simulate_lean_challenged_off(
+                                    &game_config,
+                                    crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                                    &no_tables,
+                                    &klv,
+                                )
                                 .unwrap();
                         } else {
                             simmer
-                                .simulate_lean(&game_config, &kwg, &no_tables, &klv, &pass)
+                                .simulate_lean(
+                                    &game_config,
+                                    crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                                    &no_tables,
+                                    &klv,
+                                    &pass,
+                                )
                                 .unwrap();
                         }
                         let state = &simmer.game_state;
@@ -2993,10 +3089,9 @@ mod tests {
                     field
                         .gen_moves_unfiltered(&movegen::GenMovesParams {
                             board_snapshot: &movegen::BoardSnapshot {
-                                alphagrams: None,
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &gc,
-                                kwg: &kwg,
+                                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: &klv,
@@ -3017,9 +3112,21 @@ mod tests {
                         for candidate in field.plays.iter().map(|m| &m.play) {
                             simmer.prepare_iteration(None).unwrap();
                             if lean {
-                                simmer.simulate_lean(&gc, &kwg, &no_tables, &klv, candidate)
+                                simmer.simulate_lean(
+                                    &gc,
+                                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                                    &no_tables,
+                                    &klv,
+                                    candidate,
+                                )
                             } else {
-                                simmer.simulate(&gc, &kwg, &no_tables, &klv, candidate)
+                                simmer.simulate(
+                                    &gc,
+                                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                                    &no_tables,
+                                    &klv,
+                                    candidate,
+                                )
                             }
                             .unwrap();
                             let after = &simmer.game_state.board_tiles;

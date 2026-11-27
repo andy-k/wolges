@@ -115,6 +115,7 @@ impl Question {
         let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), _> {
             racks_alphabet_reader.set_word(rack, v)
         };
+        let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, &empty_kwg);
         for (line_number, line) in (1usize..).zip(text::lines(gcg)) {
             if !line.starts_with('>') {
                 continue;
@@ -249,10 +250,9 @@ impl Question {
             }
             if let Some(play) = move_to_play {
                 let board_snapshot = &movegen::BoardSnapshot {
-                    alphagrams: None,
                     board_tiles: &game_state.board_tiles,
                     game_config,
-                    kwg: &empty_kwg,
+                    graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: &empty_klv,
@@ -395,7 +395,7 @@ fn reserve_table<const TWO_SEATS: bool>(egs: &mut AnySolver<'_, TWO_SEATS>, solv
 
 struct Line<'l> {
     game_config: &'l game_config::GameConfig,
-    kwg: &'l kwg::Kwg<kwg::Node24>,
+    graphs: wolges::movegen::KwgForMovegen<'l, kwg::Node24>,
     arm_tables: &'l anagrams::ArmTables,
     run_letters: kwg::RunLetters<'l>,
     board_tiles: &'l [u8],
@@ -412,7 +412,7 @@ fn solve_line<const TWO_SEATS: bool>(
     let line_index = line.line_index;
     let mut egs = AnySolver::<TWO_SEATS>::with_generator(
         line.game_config,
-        line.kwg,
+        line.graphs,
         line.arm_tables,
         line.run_letters,
         movegen::KurniaMoveGenerator::new(line.game_config),
@@ -465,6 +465,7 @@ fn run_batch<N: kwg::Node>(
     let mut builder = build::Builder::default();
     let mut smaller_graph = build::GameGraph::default();
     let file_contents = std::fs::read_to_string(path)?;
+    let graphs = wolges::movegen::KwgForMovegen::for_game(&game_config, &kwg);
     for (line_index, line) in text::lines(&file_contents).enumerate() {
         let t0 = std::time::Instant::now();
         let mut fields = line.split('\t');
@@ -522,10 +523,9 @@ fn run_batch<N: kwg::Node>(
         vec_of_words.clear();
         move_generator.gen_remaining_words(
             &movegen::BoardSnapshot {
-                alphagrams: None,
                 board_tiles: &board_tiles,
                 game_config: &game_config,
-                kwg: &kwg,
+                graphs,
                 anagrams: None,
                 rack_lengths: None,
                 klv: &empty_klv,
@@ -538,7 +538,7 @@ fn run_batch<N: kwg::Node>(
 
         let line = Line {
             game_config: &game_config,
-            kwg: smaller_kwg,
+            graphs: wolges::movegen::KwgForMovegen::for_game(&game_config, smaller_kwg),
             arm_tables: &arm_tables,
             run_letters: smaller_graph.run_letters(),
             board_tiles: &board_tiles,
@@ -1709,10 +1709,9 @@ fn solve_position<N: kwg::Node>(
     let mut vec_of_words = Vec::<bites::Bites>::new();
     move_generator.gen_remaining_words(
         &movegen::BoardSnapshot {
-            alphagrams: None,
             board_tiles: &board_tiles,
             game_config,
-            kwg,
+            graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv::Klv::<kwg::Node24>::empty()?,
@@ -1736,7 +1735,7 @@ fn solve_position<N: kwg::Node>(
 
     let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
         game_config,
-        &smaller_kwg,
+        wolges::movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
         &arm_tables,
     )?;
     reserve_table(&mut egs, solving);
