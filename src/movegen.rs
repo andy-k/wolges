@@ -7647,6 +7647,7 @@ fn gen_place_moves_lean<
                 params,
                 single_tile_plays,
                 None,
+                left_bounds,
             )
         }
     }
@@ -7664,6 +7665,7 @@ fn gen_jumbled_woadwage_place_moves<
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
     opening: Option<bool>,
+    left_bounds: &'a [i32],
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
@@ -7673,6 +7675,7 @@ fn gen_jumbled_woadwage_place_moves<
         opening: Option<bool>,
         tally: [u8; crate::census::MAX_LETTERS], // the letters of idx_left..idx, each one's count
         once_per_score: bool,
+        left_bounds: &'a [i32], // by left edge, the best span bound at it, then at or before it
     }
     #[derive(Clone)]
     struct Accumulator {
@@ -7715,6 +7718,11 @@ fn gen_jumbled_woadwage_place_moves<
         } else {
             0
         };
+        debug_assert!(
+            !LEAVES
+                || env.left_bounds.is_empty()
+                || score + leave_value <= env.left_bounds[env.idx_left as usize]
+        );
         if score + leave_value < env.params.threshold {
             return;
         }
@@ -7935,6 +7943,7 @@ fn gen_jumbled_woadwage_place_moves<
         opening,
         tally: [0u8; crate::census::MAX_LETTERS],
         once_per_score,
+        left_bounds,
     };
     let mut empties = 0u8;
     let mut idx_l = anchor;
@@ -7949,7 +7958,13 @@ fn gen_jumbled_woadwage_place_moves<
                 break;
             }
         }
-        if idx_l == leftmost || env.params.board_strip[idx_l as usize - 1] == 0 {
+        let bounds = env.left_bounds;
+        if !bounds.is_empty() && bounds[bounds.len() / 2 + idx_l as usize] < env.params.threshold {
+            break;
+        }
+        if (idx_l == leftmost || env.params.board_strip[idx_l as usize - 1] == 0)
+            && (bounds.is_empty() || bounds[idx_l as usize] >= env.params.threshold)
+        {
             env.idx_left = idx_l;
             extend::<LEAVES, BAG_TERM, _, _, _>(
                 &mut env,
@@ -12606,6 +12621,7 @@ fn walk_jumbled_woadwage_star_lanes<
             },
             !down,
             Some(down),
+            &[],
         );
     }
 }
