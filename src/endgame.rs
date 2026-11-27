@@ -2370,7 +2370,6 @@ fn grow_in<T>(memory: Option<&MemoryLimit>, list: &mut Vec<T>, more: usize) -> R
         .map_err(|_| Refused)
 }
 
-#[derive(Clone, Default)]
 pub struct Room {
     pub memory: Option<MemoryLimit>, // none: no limit
     refused: std::cell::Cell<bool>,
@@ -2382,6 +2381,14 @@ impl Room {
         Self {
             memory,
             refused: std::cell::Cell::new(false),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn copied(&self) -> Self {
+        Self {
+            memory: self.memory,
+            refused: std::cell::Cell::new(self.refused.get()),
         }
     }
 
@@ -9274,27 +9281,21 @@ impl PegCommitted {
             return PegBagStanding::Absent;
         }
         let listed = self.steered.iter().position(|(other, _)| *other == play);
-        let was = listed.map_or(PegBagStanding::Running, |k| self.steered[k].1);
-        let now = match (change, was) {
-            (PegBagChange::Add, PegBagStanding::Absent)
-            | (PegBagChange::Resume, PegBagStanding::Paused) => PegBagStanding::Running,
-            (PegBagChange::Remove, _) => PegBagStanding::Absent,
-            (PegBagChange::Pause, PegBagStanding::Running) => PegBagStanding::Paused,
-            _ => was,
-        };
-        match (listed, now) {
-            (_, _) if now == was => {}
-            (Some(k), PegBagStanding::Running) => {
+        let was = listed.map_or(0, |k| self.steered[k].1);
+        let now = stand_after(change, was);
+        match listed {
+            _ if now == was => {}
+            Some(k) if now == 0 => {
                 self.steered.remove(k);
             }
-            (Some(k), _) => self.steered[k].1 = now,
-            (None, _) => self.steered.push((play.clone(), now)),
+            Some(k) => self.steered[k].1 = now,
+            None => self.steered.push((play.clone(), now)),
         }
         if now != was && !self.moves.is_empty() {
             self.stand();
             self.steered_to(&play, now);
         }
-        was
+        standing_of(was)
     }
 
     fn stand(&mut self) {
@@ -9304,11 +9305,10 @@ impl PegCommitted {
         let steered = &self.steered;
         self.standing.clear();
         self.standing.extend(self.moves.iter().map(|play| {
-            match steered.iter().find(|(other, _)| other == play) {
-                Some((_, PegBagStanding::Paused)) => STAND_PAUSED,
-                Some((_, PegBagStanding::Absent)) => STAND_ABSENT,
-                _ => 0,
-            }
+            steered
+                .iter()
+                .find(|(other, _)| other == play)
+                .map_or(0, |&(_, s)| s)
         }));
         self.stale.resize(self.moves.len(), false);
     }
@@ -9318,17 +9318,17 @@ impl PegCommitted {
         self.standing.get(i).is_none_or(|&s| s & 3 == 0)
     }
 
-    fn steered_to(&mut self, play: &PegMove, now: PegBagStanding) {
+    fn steered_to(&mut self, play: &PegMove, now: u8) {
         let Some(i) = self.moves.iter().position(|other| other == play) else {
             return;
         };
-        if now == PegBagStanding::Absent {
+        if now == STAND_ABSENT {
             self.valued[i] = None;
             if let Some(value) = self.answered.get_mut(i) {
                 *value = None;
             }
         }
-        if now != PegBagStanding::Running {
+        if now != 0 {
             self.reached.retain(|&other| other != i);
         }
         if let Some((_, depth)) = self.answer {
@@ -9436,9 +9436,9 @@ struct PegCommitted {
     kept: PassKept,
     margins: Vec<equity::Equity>,
     answered_margins: Vec<equity::Equity>,
-    steered: Vec<(PegMove, PegBagStanding)>, // those not running
-    standing: Vec<u8>,                       // each move's (STAND_*), empty until one is steered
-    stale: Vec<bool>,                        // each answer value kept from an older pass
+    steered: Vec<(PegMove, u8)>, // those not running
+    standing: Vec<u8>,           // each move's (STAND_*), empty until one is steered
+    stale: Vec<bool>,            // each answer value kept from an older pass
 }
 
 // what valuing a move of the committed model refills for each tile, kept from
@@ -9692,7 +9692,7 @@ pub struct PegBagProgress {
     estimates: bool,
     root_moves: Option<RootMoves>,
     exact_pass: bool,
-    steered: Vec<(movegen::Play, PegBagStanding)>, // those not running
+    steered: Vec<(movegen::Play, u8)>, // those not running
     cuts: Option<bool>,
     state: PegBagState,
     endgames: u64,
@@ -9907,27 +9907,21 @@ impl PegBagProgress {
             return PegBagStanding::Absent;
         }
         let listed = self.steered.iter().position(|(other, _)| other == play);
-        let was = listed.map_or(PegBagStanding::Running, |k| self.steered[k].1);
-        let now = match (change, was) {
-            (PegBagChange::Add, PegBagStanding::Absent)
-            | (PegBagChange::Resume, PegBagStanding::Paused) => PegBagStanding::Running,
-            (PegBagChange::Remove, _) => PegBagStanding::Absent,
-            (PegBagChange::Pause, PegBagStanding::Running) => PegBagStanding::Paused,
-            _ => was,
-        };
-        match (listed, now) {
-            (_, _) if now == was => {}
-            (Some(k), PegBagStanding::Running) => {
+        let was = listed.map_or(0, |k| self.steered[k].1);
+        let now = stand_after(change, was);
+        match listed {
+            _ if now == was => {}
+            Some(k) if now == 0 => {
                 self.steered.remove(k);
             }
-            (Some(k), _) => self.steered[k].1 = now,
-            (None, _) => self.steered.push((play.clone(), now)),
+            Some(k) => self.steered[k].1 = now,
+            None => self.steered.push((play.clone(), now)),
         }
         if now != was && !self.state.moves.is_empty() {
             self.state.stand(&self.steered);
             self.state.steered(play, now);
         }
-        was
+        standing_of(was)
     }
 
     #[inline(always)]
@@ -9936,7 +9930,6 @@ impl PegBagProgress {
     }
 }
 
-#[derive(Clone, Copy)]
 pub enum PegBagChange {
     Add,
     Remove,
@@ -9944,11 +9937,28 @@ pub enum PegBagChange {
     Resume,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PegBagStanding {
     Absent,
     Running,
     Paused,
+}
+
+fn stand_after(change: PegBagChange, was: u8) -> u8 {
+    match change {
+        PegBagChange::Add if was == STAND_ABSENT => 0,
+        PegBagChange::Resume if was == STAND_PAUSED => 0,
+        PegBagChange::Remove => STAND_ABSENT,
+        PegBagChange::Pause if was == 0 => STAND_PAUSED,
+        _ => was,
+    }
+}
+
+fn standing_of(stand: u8) -> PegBagStanding {
+    match stand {
+        STAND_PAUSED => PegBagStanding::Paused,
+        STAND_ABSENT => PegBagStanding::Absent,
+        _ => PegBagStanding::Running,
+    }
 }
 
 struct AboveBest<'b> {
@@ -10330,17 +10340,16 @@ const MARK_REACHED: u8 = 4;
 const MARK_TAKEN: u8 = 8;
 
 impl PegBagState {
-    fn stand(&mut self, steered: &[(movegen::Play, PegBagStanding)]) {
+    fn stand(&mut self, steered: &[(movegen::Play, u8)]) {
         if steered.is_empty() && self.standing.is_empty() {
             return;
         }
         self.standing.clear();
         self.standing.extend(self.moves.iter().map(|play| {
-            match steered.iter().find(|(other, _)| other == play) {
-                Some((_, PegBagStanding::Paused)) => STAND_PAUSED,
-                Some((_, PegBagStanding::Absent)) => STAND_ABSENT,
-                _ => 0,
-            }
+            steered
+                .iter()
+                .find(|(other, _)| other == play)
+                .map_or(0, |&(_, s)| s)
         }));
         self.stale.resize(self.moves.len(), false);
     }
@@ -10350,17 +10359,17 @@ impl PegBagState {
         self.standing.get(i).is_none_or(|&s| s & 3 == 0)
     }
 
-    fn steered(&mut self, play: &movegen::Play, now: PegBagStanding) {
+    fn steered(&mut self, play: &movegen::Play, now: u8) {
         let Some(i) = self.moves.iter().position(|other| other == play) else {
             return;
         };
-        if now == PegBagStanding::Absent {
+        if now == STAND_ABSENT {
             self.valued[i] = None;
             if let Some(value) = self.answered.get_mut(i) {
                 *value = None;
             }
         }
-        if now != PegBagStanding::Running {
+        if now != 0 {
             self.best_splits_of = None;
             self.reached.retain(|&other| other != i);
             for values in [&mut self.valued, &mut self.answered] {
@@ -24361,8 +24370,8 @@ mod tests {
         assert!(full.exact && full.moves.len() >= 3);
         let (first, second) = (full.moves[0].play.clone(), full.moves[1].play.clone());
         let mut progress = fresh().unwrap();
-        assert_eq!(progress.change(&first, C::Pause), S::Running);
-        assert_eq!(progress.change(&first, C::Resume), S::Paused);
+        assert!(matches!(progress.change(&first, C::Pause), S::Running));
+        assert!(matches!(progress.change(&first, C::Resume), S::Paused));
         let same = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
         let same = same.unwrap().unwrap();
         assert!(same.best_move == full.best_move && rows(&same.moves) == rows(&full.moves));
@@ -24372,8 +24381,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!stopped.exact);
-        assert_eq!(progress.change(&first, C::Pause), S::Running);
-        assert_eq!(progress.change(&first, C::Pause), S::Paused);
+        assert!(matches!(progress.change(&first, C::Pause), S::Running));
+        assert!(matches!(progress.change(&first, C::Pause), S::Paused));
         let paused = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
         let paused = paused.unwrap().unwrap();
         assert!(paused.best_move.as_ref() == Some(&second));
@@ -24381,7 +24390,7 @@ mod tests {
         assert_eq!(Some(paused.expected_margin), full.moves[1].expected_margin);
         let at = paused.moves.iter().position(|m| m.play == first);
         assert!(at.is_none_or(|at| at + 1 == paused.moves.len()));
-        assert_eq!(progress.change(&first, C::Resume), S::Paused);
+        assert!(matches!(progress.change(&first, C::Resume), S::Paused));
         assert!(!progress.is_done());
         let resumed = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
         let resumed = resumed.unwrap().unwrap();
@@ -24396,12 +24405,12 @@ mod tests {
         let resumed = resumed.unwrap().unwrap();
         assert!(resumed.best_move == full.best_move);
         assert!(rows(&resumed.moves) == rows(&full.moves));
-        assert_eq!(progress.change(&second, C::Remove), S::Running);
-        assert_eq!(progress.change(&second, C::Pause), S::Absent);
+        assert!(matches!(progress.change(&second, C::Remove), S::Running));
+        assert!(matches!(progress.change(&second, C::Pause), S::Absent));
         let removed = progress.answer_moves(0..usize::MAX);
         assert!(removed.len() + 1 == full.moves.len());
         assert!(removed.iter().all(|m| m.play != second));
-        assert_eq!(progress.change(&second, C::Add), S::Absent);
+        assert!(matches!(progress.change(&second, C::Add), S::Absent));
         assert!(!progress.is_done());
         let added = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
         let added = added.unwrap().unwrap();
@@ -24413,7 +24422,7 @@ mod tests {
         let pass = movegen::Play::Exchange {
             tiles: [1u8; 7][..].into(),
         };
-        assert_eq!(progress.change(&pass, C::Add), S::Absent);
+        assert!(matches!(progress.change(&pass, C::Add), S::Absent));
         for m in &full.moves {
             progress.change(&m.play, C::Pause);
         }
@@ -24475,21 +24484,21 @@ mod tests {
         assert!(full.exact && full.moves.len() >= 3);
         let (first, second) = (play_of(&full.moves[0].play), play_of(&full.moves[1].play));
         let mut progress = fresh();
-        assert_eq!(progress.change(&first, C::Pause), S::Running);
-        assert_eq!(progress.change(&first, C::Resume), S::Paused);
+        assert!(matches!(progress.change(&first, C::Pause), S::Running));
+        assert!(matches!(progress.change(&first, C::Resume), S::Paused));
         let same = solve(&mut progress, &super::Limits::NONE);
         assert!(same.best_move == full.best_move && rows(&same.moves) == rows(&full.moves));
         let mut progress = fresh();
         assert!(!solve(&mut progress, &one_state).exact);
-        assert_eq!(progress.change(&first, C::Pause), S::Running);
-        assert_eq!(progress.change(&first, C::Pause), S::Paused);
+        assert!(matches!(progress.change(&first, C::Pause), S::Running));
+        assert!(matches!(progress.change(&first, C::Pause), S::Paused));
         let paused = solve(&mut progress, &super::Limits::NONE);
         assert!(paused.best_move.as_ref().map(play_of) == Some(second.clone()));
         assert_eq!(paused.win_pct, full.moves[1].win_pct);
         assert_eq!(paused.expected_margin, full.moves[1].expected_margin);
         let at = (paused.moves.iter()).position(|m| play_of(&m.play) == first);
         assert!(at.is_none_or(|at| at + 1 == paused.moves.len()));
-        assert_eq!(progress.change(&first, C::Resume), S::Paused);
+        assert!(matches!(progress.change(&first, C::Resume), S::Paused));
         assert!(!progress.is_done());
         let resumed = solve(&mut progress, &super::Limits::NONE);
         assert!(resumed.best_move == full.best_move);
@@ -24505,19 +24514,19 @@ mod tests {
         let resumed = solve(&mut progress, &super::Limits::NONE);
         assert!(resumed.best_move == full.best_move);
         assert!(rows(&resumed.moves) == rows(&full.moves));
-        assert_eq!(progress.change(&second, C::Remove), S::Running);
-        assert_eq!(progress.change(&second, C::Pause), S::Absent);
+        assert!(matches!(progress.change(&second, C::Remove), S::Running));
+        assert!(matches!(progress.change(&second, C::Pause), S::Absent));
         let removed = progress.answer_moves(0..usize::MAX);
         assert!(removed.len() + 1 == full.moves.len());
         assert!(removed.iter().all(|m| play_of(&m.play) != second));
-        assert_eq!(progress.change(&second, C::Add), S::Absent);
+        assert!(matches!(progress.change(&second, C::Add), S::Absent));
         assert!(!progress.is_done());
         let added = solve(&mut progress, &super::Limits::NONE);
         assert!(added.best_move == full.best_move && rows(&added.moves) == rows(&full.moves));
         let exchange = movegen::Play::Exchange {
             tiles: [1u8][..].into(),
         };
-        assert_eq!(progress.change(&exchange, C::Add), S::Absent);
+        assert!(matches!(progress.change(&exchange, C::Add), S::Absent));
         for m in &full.moves {
             progress.change(&play_of(&m.play), C::Pause);
         }
