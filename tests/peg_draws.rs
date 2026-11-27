@@ -168,7 +168,7 @@ fn peg_draw_outcomes() {
                 );
                 hypotheses.push((count, margin));
             }
-            let (win, _) = endgame::peg_aggregate(&hypotheses);
+            let (win, _) = endgame::peg_aggregate(&hypotheses).unwrap();
             assert_eq!(
                 win,
                 f64::from(candidate.win_deals) / f64::from(case.deals),
