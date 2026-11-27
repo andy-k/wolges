@@ -4,6 +4,7 @@ use super::{
     anagrams, endgame, equity, error, game_config, game_state, infer, klv, kwg, movegen, win_pct,
     zone,
 };
+use crate::move_picker::{PositionalTerm, TermBuffers};
 use endgame::Grow;
 use rand::prelude::*;
 
@@ -152,6 +153,70 @@ impl<'a> SimChoices<'a> {
     }
 }
 
+pub(crate) trait RolloutTerm {
+    const ANY: bool;
+
+    fn add_to_plays(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        plays: &mut [movegen::ValuedMove],
+        buffers: TermBuffers<'_>,
+    ) -> error::Returns<()>;
+
+    fn value_of(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        reach: &mut Vec<u8>,
+    ) -> i64;
+}
+
+impl RolloutTerm for () {
+    const ANY: bool = false;
+
+    #[inline(always)]
+    fn add_to_plays(
+        &self,
+        _: &game_config::GameConfig,
+        _: &[u8],
+        _: &mut [movegen::ValuedMove],
+        _: TermBuffers<'_>,
+    ) -> error::Returns<()> {
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn value_of(&self, _: &game_config::GameConfig, _: &[u8], _: &mut Vec<u8>) -> i64 {
+        0
+    }
+}
+
+impl RolloutTerm for PositionalTerm {
+    const ANY: bool = true;
+
+    #[inline(always)]
+    fn add_to_plays(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        plays: &mut [movegen::ValuedMove],
+        buffers: TermBuffers<'_>,
+    ) -> error::Returns<()> {
+        PositionalTerm::add_to_plays(self, game_config, board_tiles, plays, buffers)
+    }
+
+    #[inline(always)]
+    fn value_of(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        reach: &mut Vec<u8>,
+    ) -> i64 {
+        PositionalTerm::value_of(self, game_config, board_tiles, reach)
+    }
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
@@ -178,6 +243,9 @@ pub struct Simmer<
     reply_equity: Option<equity::Equity>, // the last rollout's ply-1 reply, as reply_to values it
     #[cfg(not(target_family = "wasm"))]
     preempty: Option<crate::move_filter::GenMoves<'static>>,
+    positional: Option<PositionalTerm>,
+    positional_most: i64,
+    positional_buffers: (Vec<u8>, Vec<u8>),
 
     move_generator: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     start_board: movegen::BoardState, // the generator's there, once it has been
@@ -285,6 +353,9 @@ impl<
             reply_equity: None,
             #[cfg(not(target_family = "wasm"))]
             preempty: None,
+            positional: None,
+            positional_most: 0,
+            positional_buffers: (Vec::new(), Vec::new()),
 
             move_generator,
             start_board: movegen::BoardState::default(),
@@ -333,6 +404,10 @@ impl<
         self.preempty.is_some()
     }
 
+    pub(crate) fn set_positional(&mut self, term: Option<PositionalTerm>) {
+        self.positional = term;
+    }
+
     // before the rollouts walk a graph other than the one they last walked
     #[inline(always)]
     pub fn reset_for_another_kwg(&mut self) {
@@ -362,6 +437,7 @@ impl<
         self.rng = R::seed_from_u64(0);
         #[cfg(not(target_family = "wasm"))]
         self.set_preempty(other.preempty.as_ref());
+        self.positional.clone_from(&other.positional);
         self.prepare_sharing(
             game_config,
             &other.initial_game_state,
@@ -430,6 +506,7 @@ impl<
         if game_state.turn >= players || usize::from(players) != self.final_scores.len() {
             crate::return_error!("invalid simulation players or turn".to_string());
         }
+        self.positional_most = (self.positional.as_ref()).map_or(0, |term| term.most(game_config));
         self.kept.clear();
         if !choices.kept_leaves.is_empty() {
             let next_seat = (game_state.turn + 1) % players;
@@ -813,6 +890,39 @@ impl<
         candidate_play: &movegen::Play,
         challenged_off: bool,
     ) -> error::Returns<bool> {
+        let positional = self.positional.take();
+        let rolled = match &positional {
+            None => self.roll_out::<LEAN, _, _, _>(
+                game_config,
+                graphs,
+                arm_tables,
+                klv,
+                (candidate_play, challenged_off),
+                &(),
+            ),
+            Some(term) => self.roll_out::<LEAN, _, _, _>(
+                game_config,
+                graphs,
+                arm_tables,
+                klv,
+                (candidate_play, challenged_off),
+                term,
+            ),
+        };
+        self.positional = positional;
+        rolled
+    }
+
+    #[inline(always)]
+    fn roll_out<const LEAN: bool, N: kwg::Node, L: kwg::Node, T: RolloutTerm>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        graphs: movegen::KwgForMovegen<'_, N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        (candidate_play, challenged_off): (&movegen::Play, bool),
+        term: &T,
+    ) -> error::Returns<bool> {
         self.game_state.clone_from(&self.initial_game_state);
         // the generator starts from its state on the start board, kept the
         // first time it generated there, so it brings up only the lanes this
@@ -888,7 +998,14 @@ impl<
             } else if {
                 #[cfg(not(target_family = "wasm"))]
                 {
-                    self.pick_preempty(game_config, graphs, arm_tables, klv, ply, &mut next_play)?
+                    self.pick_preempty(
+                        game_config,
+                        graphs,
+                        arm_tables,
+                        klv,
+                        (ply, term),
+                        &mut next_play,
+                    )?
                 }
                 #[cfg(target_family = "wasm")]
                 {
@@ -896,13 +1013,13 @@ impl<
                 }
             } {
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
-                let reply = self.reply_at_ply_one::<LEAN, _, _>(
+                let reply = self.reply_at_ply_one::<LEAN, _, _, _>(
                     game_config,
                     graphs,
                     arm_tables,
                     klv,
                     candidate_play,
-                    census,
+                    (census, term),
                 )?;
                 self.reply_equity = Some(reply.equity);
                 next_play = reply.play;
@@ -917,7 +1034,7 @@ impl<
                         klv,
                     },
                     rack: &self.game_state.current_player().rack,
-                    max_gen: 1,
+                    max_gen: if T::ANY { usize::MAX } else { 1 },
                     num_exchanges_by_this_player: if ply > self.num_sim_plies {
                         game_config.exchanges_allowed_per_player()
                     } else {
@@ -926,7 +1043,7 @@ impl<
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 };
-                match census {
+                match census.filter(|_| !T::ANY) {
                     Some(census) => self.move_generator.gen_moves_unfiltered_lanes_steered(
                         params,
                         !0,
@@ -945,6 +1062,13 @@ impl<
                         }
                     }
                 }
+                let (board_after, reach) = &mut self.positional_buffers;
+                term.add_to_plays(
+                    game_config,
+                    &self.game_state.board_tiles,
+                    &mut self.move_generator.plays,
+                    (board_after, reach),
+                )?;
                 copy_within(
                     &self.room,
                     &mut next_play,
@@ -1030,13 +1154,13 @@ impl<
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn pick_preempty<N: kwg::Node, L: kwg::Node>(
+    fn pick_preempty<N: kwg::Node, L: kwg::Node, T: RolloutTerm>(
         &mut self,
         game_config: &game_config::GameConfig,
         graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
-        ply: usize,
+        (ply, term): (usize, &T),
         next_play: &mut movegen::Play,
     ) -> error::Returns<bool> {
         let Some(filter) = &mut self.preempty else {
@@ -1072,6 +1196,13 @@ impl<
             usize::MAX,
             None,
         )?;
+        let (board_after, reach) = &mut self.positional_buffers;
+        term.add_to_plays(
+            game_config,
+            &self.game_state.board_tiles,
+            &mut self.move_generator.plays,
+            (board_after, reach),
+        )?;
         crate::preempty::pick_generated(
             &mut self.move_generator.plays,
             &snapshot,
@@ -1098,14 +1229,14 @@ impl<
     // keeps the smaller play whichever it finds first; a forced pass yields to
     // any play.
     #[inline]
-    fn reply_at_ply_one<const LEAN: bool, N: kwg::Node, L: kwg::Node>(
+    fn reply_at_ply_one<const LEAN: bool, N: kwg::Node, L: kwg::Node, T: RolloutTerm>(
         &mut self,
         game_config: &game_config::GameConfig,
         graphs: movegen::KwgForMovegen<'_, N>,
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
-        census: Option<&movegen::LaneCensus>,
+        (census, term): (Option<&movegen::LaneCensus>, &T),
     ) -> error::Returns<movegen::ValuedMove> {
         let dim = game_config.board_layout().dim();
         let (rows, cols) = zone::zone_lanes_on_board(
@@ -1182,6 +1313,16 @@ impl<
                 movegen::Play::Exchange { .. } => self.lanes_exhausted = true,
             }
         }
+        if T::ANY {
+            return self.termed_reply_at_ply_one::<LEAN, _, _, _>(
+                game_config,
+                graphs,
+                arm_tables,
+                klv,
+                off,
+                term,
+            );
+        }
         let params = &movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
                 board_tiles: &self.game_state.board_tiles,
@@ -1227,6 +1368,80 @@ impl<
             },
         };
         copy_within(&self.room, &mut reply.play, &chosen.play);
+        Ok(reply)
+    }
+
+    #[inline]
+    fn termed_reply_at_ply_one<const LEAN: bool, N: kwg::Node, L: kwg::Node, T: RolloutTerm>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        graphs: movegen::KwgForMovegen<'_, N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        off: Option<usize>,
+        term: &T,
+    ) -> error::Returns<movegen::ValuedMove> {
+        let (board_after, reach) = &mut self.positional_buffers;
+        let before = term.value_of(game_config, &self.game_state.board_tiles, reach);
+        let off_termed = match off {
+            Some(i) => {
+                let off = &self.lane_bests[i].0;
+                crate::glance::board_after(
+                    game_config,
+                    &self.game_state.board_tiles,
+                    &off.play,
+                    board_after,
+                );
+                let added = term.value_of(game_config, board_after, reach) - before;
+                Some(off.equity.raw() as i64 + added)
+            }
+            None => None,
+        };
+        let floor = match off_termed {
+            Some(termed) => {
+                i32::try_from(termed - (self.positional_most - before)).unwrap_or(i32::MIN)
+            }
+            None => i32::MIN,
+        };
+        let params = &movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &self.game_state.board_tiles,
+                game_config,
+                graphs,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
+                klv,
+            },
+            rack: &self.game_state.players[self.game_state.turn as usize].rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: if self.num_sim_plies == 0 {
+                game_config.exchanges_allowed_per_player()
+            } else {
+                self.game_state.players[self.game_state.turn as usize].num_exchanges
+            },
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        };
+        (self.move_generator).gen_moves_unfiltered_lanes_from(
+            params,
+            (!0, !0),
+            equity::Equity::new(floor),
+            LEAN,
+        )?;
+        term.add_to_plays(
+            game_config,
+            &self.game_state.board_tiles,
+            &mut self.move_generator.plays,
+            (board_after, reach),
+        )?;
+        let best = &self.move_generator.plays[0];
+        let mut reply = movegen::ValuedMove {
+            equity: best.equity,
+            play: movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+        };
+        copy_within(&self.room, &mut reply.play, &best.play);
         Ok(reply)
     }
 
@@ -2416,6 +2631,8 @@ mod tests {
         let mut whole = movegen::KurniaMoveGenerator::new(&game_config);
         let mut field = movegen::KurniaMoveGenerator::new(&game_config);
         let (mut checked, mut reused, mut from_lanes) = (0usize, 0usize, 0usize);
+        let term = PositionalTerm::parse("3 1 1 -40\n2 1 1 -25\n1 3 1 -10\n1 2 1 5\n").unwrap();
+        let (mut board_after, mut reach, mut termed_differs) = (Vec::new(), Vec::new(), 0usize);
         for seed in 0..16u64 {
             let mut game_state = game_state::GameState::new(&game_config);
             let mut deal_rng = DefaultRng::seed_from_u64(seed);
@@ -2440,6 +2657,7 @@ mod tests {
                 .prepare(&game_config, &game_state, &SimChoices::new(2, false, &[]))
                 .unwrap();
             simmer.prepare_iteration(None).unwrap();
+            simmer.positional_most = term.most(&game_config);
             let initial = simmer.initial_game_state.clone();
             field
                 .gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -2484,13 +2702,13 @@ mod tests {
                     continue;
                 }
                 let reply = simmer
-                    .reply_at_ply_one::<false, _, _>(
+                    .reply_at_ply_one::<false, _, _, _>(
                         &game_config,
                         crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
                         &arm_tables,
                         &klv,
                         candidate,
-                        None,
+                        (None, &()),
                     )
                     .unwrap();
                 let want = whole_reply(
@@ -2501,6 +2719,43 @@ mod tests {
                     &klv,
                     &simmer.game_state,
                 );
+                let termed = simmer
+                    .reply_at_ply_one::<false, _, _, _>(
+                        &game_config,
+                        crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                        &arm_tables,
+                        &klv,
+                        candidate,
+                        (None, &term),
+                    )
+                    .unwrap();
+                whole
+                    .gen_moves_unfiltered(&movegen::GenMovesParams {
+                        board_snapshot: &movegen::BoardSnapshot {
+                            board_tiles: &simmer.game_state.board_tiles,
+                            game_config: &game_config,
+                            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                            anagrams: arm_tables.anagrams(),
+                            rack_lengths: arm_tables.rack_lengths(),
+                            klv: &klv,
+                        },
+                        rack: &simmer.game_state.current_player().rack,
+                        max_gen: usize::MAX,
+                        num_exchanges_by_this_player: simmer
+                            .game_state
+                            .current_player()
+                            .num_exchanges,
+                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    })
+                    .unwrap();
+                term.add_to_plays(
+                    &game_config,
+                    &simmer.game_state.board_tiles,
+                    &mut whole.plays,
+                    (&mut board_after, &mut reach),
+                )
+                .unwrap();
                 let snapshot = movegen::BoardSnapshot {
                     board_tiles: &simmer.game_state.board_tiles,
                     game_config: &game_config,
@@ -2515,6 +2770,13 @@ mod tests {
                     reply.play.fmt(&snapshot).unwrap(),
                     want.play.fmt(&snapshot).unwrap()
                 );
+                assert!(
+                    termed == whole.plays[0],
+                    "seed {seed}: {} against {}",
+                    termed.play.fmt(&snapshot).unwrap(),
+                    whole.plays[0].play.fmt(&snapshot).unwrap()
+                );
+                termed_differs += (termed != reply) as usize;
                 checked += 1;
                 if simmer.lane_bests.iter().any(|(m, _, _)| *m == reply) {
                     reused += 1;
@@ -2525,6 +2787,7 @@ mod tests {
         assert!(checked > 500, "{checked} checked");
         assert!(reused > 50, "{reused} replies came from the lanes");
         assert!(from_lanes > 16, "{from_lanes} lane-bests found");
+        assert!(termed_differs > 0, "the term changed no reply");
     }
 
     #[test]

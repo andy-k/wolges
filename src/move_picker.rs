@@ -76,6 +76,7 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
         },
         field.nonplacing_quota,
         scratch,
+        None,
     )
 }
 
@@ -86,6 +87,7 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
     params: &movegen::GenMovesParams<'_, N, L>,
     nonplacing_quota: usize,
     scratch: &mut Vec<movegen::ValuedMove>,
+    positional: Option<(&PositionalTerm, TermBuffers<'_>)>,
 ) -> error::Returns<()> {
     let max_gen = params.max_gen;
     filtered_movegen.gen_moves(
@@ -93,9 +95,23 @@ fn gen_simmer_field<N: kwg::Node, L: kwg::Node>(
         params.board_snapshot,
         params.rack,
         params.num_exchanges_by_this_player,
-        max_gen,
+        if positional.is_some() {
+            usize::MAX
+        } else {
+            max_gen
+        },
         params.dynamic_leaves,
     )?;
+    if let Some((term, buffers)) = positional {
+        let board_snapshot = params.board_snapshot;
+        term.add_to_plays(
+            board_snapshot.game_config,
+            board_snapshot.board_tiles,
+            &mut move_generator.plays,
+            buffers,
+        )?;
+        move_generator.plays.truncate(max_gen);
+    }
     let quota = nonplacing_quota.min(max_gen);
     let mut held = move_generator
         .plays
@@ -482,6 +498,8 @@ pub struct Simmer<
     decision_seed: u64,
     candidate_scratch: Vec<movegen::ValuedMove>,
     dynamic_root: Option<klv::DynamicLeavesRef<'a>>,
+    positional: Option<PositionalTerm>,
+    positional_buffers: (Vec<u8>, Vec<u8>),
     turn_time: Option<std::time::Duration>,
     turn_clock: Option<(std::time::Instant, std::time::Duration)>,
     timed_decisions: u64,
@@ -748,6 +766,8 @@ impl<
             decision_seed,
             candidate_scratch: Vec::new(),
             dynamic_root: None,
+            positional: None,
+            positional_buffers: (Vec::new(), Vec::new()),
             turn_time: None,
             turn_clock: None,
             timed_decisions: 0,
@@ -780,6 +800,12 @@ impl<
     // the static leaves
     pub fn with_dynamic_root(mut self, dynamic_leaves: klv::DynamicLeavesRef<'a>) -> Self {
         self.dynamic_root = Some(dynamic_leaves);
+        self
+    }
+
+    pub fn with_positional(mut self, term: PositionalTerm) -> Self {
+        self.simmer.set_positional(Some(term.clone()));
+        self.positional = Some(term);
         self
     }
 
@@ -2020,6 +2046,8 @@ where
         .map_err(|e| error::new(format!("{field:?} in {line:?}: {e}")).into())
 }
 
+pub(crate) type TermBuffers<'b> = (&'b mut Vec<u8>, &'b mut Vec<u8>);
+
 // a premium square's word and letter multipliers and its reach, with a value
 // in millipoints
 pub type SquareValue = ((i8, i8, u8), i32);
@@ -2078,6 +2106,20 @@ impl PositionalTerm {
     }
 
     #[inline]
+    pub fn most(&self, game_config: &game_config::GameConfig) -> i64 {
+        let premiums = game_config.board_layout().premiums();
+        (premiums.iter())
+            .map(|premium| {
+                let kind = (premium.word_multiplier, premium.tile_multiplier);
+                (self.values.iter())
+                    .filter(|&&((word, letter, _), _)| (word, letter) == kind)
+                    .map(|&(_, value)| value as i64)
+                    .fold(0, i64::max)
+            })
+            .sum()
+    }
+
+    #[inline]
     pub fn value_of(
         &self,
         game_config: &game_config::GameConfig,
@@ -2102,13 +2144,29 @@ impl PositionalTerm {
         plays: &mut [movegen::ValuedMove],
         scratch: &mut Scratch,
     ) -> error::Returns<()> {
-        let before = self.value_of(game_config, board_tiles, &mut scratch.reach);
+        self.add_to_plays(
+            game_config,
+            board_tiles,
+            plays,
+            (&mut scratch.after, &mut scratch.reach),
+        )
+    }
+
+    #[inline]
+    pub(crate) fn add_to_plays(
+        &self,
+        game_config: &game_config::GameConfig,
+        board_tiles: &[u8],
+        plays: &mut [movegen::ValuedMove],
+        (board_after, reach): TermBuffers<'_>,
+    ) -> error::Returns<()> {
+        let before = self.value_of(game_config, board_tiles, reach);
         for m in plays.iter_mut() {
             if places_no_tiles(&m.play) {
                 continue;
             }
-            glance::board_after(game_config, board_tiles, &m.play, &mut scratch.after);
-            let after = self.value_of(game_config, &scratch.after, &mut scratch.reach);
+            glance::board_after(game_config, board_tiles, &m.play, board_after);
+            let after = self.value_of(game_config, board_after, reach);
             let Some(sum) = i32::try_from(m.equity.raw() as i64 + after - before)
                 .ok()
                 .map(equity::Equity::new)
@@ -2964,6 +3022,17 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     )?;
                 }
             }
+            if let MovePicker::Simmer(simmer) = self
+                && let Some(term) = &simmer.positional
+            {
+                let (board_after, reach) = &mut simmer.positional_buffers;
+                term.add_to_plays(
+                    game_config,
+                    &game_state.board_tiles,
+                    &mut move_generator.plays,
+                    (board_after, reach),
+                )?;
+            }
             if let MovePicker::Positional(positional) = self {
                 let Positional { term, scratch, .. } = &mut **positional;
                 term.add_to(
@@ -3054,6 +3123,10 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                     },
                     SIMMER_FIELD.nonplacing_quota,
                     &mut scratch,
+                    simmer.positional.as_ref().map(|term| {
+                        let (board_after, reach) = &mut simmer.positional_buffers;
+                        (term, (board_after, reach))
+                    }),
                 )?;
                 simmer.candidate_scratch = scratch;
                 // the leaves inferred from the last move, packed and shared
@@ -5832,6 +5905,73 @@ mod tests {
         let num_letters = game_config.alphabet().len() as usize;
         let other = klv.revalued(num_letters, |tally, leave| leave + 1000 * tally[1] as i32);
         assert_ne!(decide(Some(std::sync::Arc::new(other))), untold);
+    }
+
+    #[test]
+    #[inline]
+    fn a_sim_with_a_positional_term_ranks_its_field_and_rollouts_by_it() {
+        let game_config = std::sync::Arc::new(game_config::make_english_game_config());
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_lexicon().to_vec(), false).unwrap(),
+        );
+        let klv =
+            std::sync::Arc::new(klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap());
+        let arm_tables =
+            std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, false).unwrap());
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 20, 5, 5, 0, 1, 20]);
+        let rack = game_state.current_player().rack.clone();
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let decide = |term: Option<PositionalTerm>| {
+            let params = SimmerParams {
+                num_sim_iters: 8,
+                num_sim_plies: 2,
+                sim_threads: 1,
+                win_pct_table: None,
+                quiet: true,
+                memory: None,
+            };
+            let mut simmer =
+                Simmer::<_, _, false>::new(&game_config, &kwg, &arm_tables, &klv, params).unwrap();
+            if let Some(term) = term {
+                simmer = simmer.with_positional(term);
+            }
+            simmer.reseed(3);
+            let mut picker = MovePicker::Simmer(Box::new(simmer));
+            let mut picked = movegen::KurniaMoveGenerator::new(&game_config);
+            picker
+                .pick_a_move_after(
+                    &mut move_filter::GenMoves::Unfiltered,
+                    &mut picked,
+                    &board_snapshot,
+                    &game_state,
+                    &rack,
+                    (None, &mut infer::Carried::default()),
+                )
+                .unwrap();
+            let MovePicker::Simmer(simmer) = &picker else {
+                unreachable!()
+            };
+            (simmer.candidates.iter())
+                .map(|candidate| (candidate.play_index, candidate.stats.mean()))
+                .collect::<Vec<_>>()
+        };
+        let untold = decide(None);
+        assert!(untold.len() >= 2);
+        let zero = PositionalTerm::parse("3 1 1 0\n2 1 1 0\n1 3 1 0\n1 2 1 0\n").unwrap();
+        assert_eq!(decide(Some(zero)), untold);
+        let term =
+            PositionalTerm::parse("3 1 1 -100\n2 1 1 -100\n1 3 1 -100\n1 2 1 -100\n").unwrap();
+        assert_ne!(decide(Some(term)), untold);
     }
 
     fn picks_by<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
