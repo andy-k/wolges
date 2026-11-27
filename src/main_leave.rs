@@ -2478,10 +2478,10 @@ fn generate_autoplay_logs<
                                 } => {
                                     let alphabet = game_config.alphabet();
                                     if *down {
-                                        write!(play_fmt, "{}{} ", display::column(*lane), idx + 1)
+                                        write!(play_fmt, "{}{} ", display::column(*lane).map_err(fail)?, idx + 1)
                                             .unwrap();
                                     } else {
-                                        write!(play_fmt, "{}{} ", lane + 1, display::column(*idx))
+                                        write!(play_fmt, "{}{} ", lane + 1, display::column(*idx).map_err(fail)?)
                                             .unwrap();
                                     }
                                     for &tile in word.iter() {
@@ -7961,9 +7961,9 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
                         ..
                     } => {
                         if *down {
-                            write!(shown, "{}{} ", display::column(*lane), idx + 1).unwrap();
+                            write!(shown, "{}{} ", display::column(*lane)?, idx + 1).unwrap();
                         } else {
-                            write!(shown, "{}{} ", lane + 1, display::column(*idx)).unwrap();
+                            write!(shown, "{}{} ", lane + 1, display::column(*idx)?).unwrap();
                         }
                         for &tile in word.iter() {
                             if tile == 0 {
@@ -8108,7 +8108,7 @@ fn parse_infer_play<N: kwg::Node, L: kwg::Node>(
                 } else {
                     (lane, at as i8)
                 };
-                let on_board = board_tiles[dim.at_row_col(r, c)];
+                let on_board = board_tiles[dim.at_row_col(r, c)?];
                 if wb[ix] == b'.' {
                     if on_board == 0 {
                         wolges::return_error!(format!(
@@ -8146,17 +8146,18 @@ fn parse_infer_play<N: kwg::Node, L: kwg::Node>(
                     "{s:?}: write a one-tile move along the word it makes"
                 ));
             }
-            let square = |at: isize| {
-                let at = at as i8;
-                board_tiles[if down {
-                    dim.at_row_col(at, lane)
+            let square = |at: isize| -> error::Returns<u8> {
+                let at = i8::try_from(at)?;
+                let index = if down {
+                    dim.at_row_col(at, lane)?
                 } else {
-                    dim.at_row_col(lane, at)
-                }]
+                    dim.at_row_col(lane, at)?
+                };
+                Ok(board_tiles[index])
             };
             let before = idx as isize - 1;
             let after = idx as isize + word.len() as isize;
-            if (before >= 0 && square(before) != 0) || (after < lane_len && square(after) != 0) {
+            if (before >= 0 && square(before)? != 0) || (after < lane_len && square(after)? != 0) {
                 wolges::return_error!(format!("{s:?} leaves out a tile its word runs into"));
             }
             let mut play = movegen::Play::Place {
@@ -8225,7 +8226,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     };
     let play = parse_infer_play(&board_snapshot, &params.play)?;
     let mut placed = vec![0u8; num_letters];
-    let (exchanged, move_value) = move_tiles_and_value(&board_snapshot, &play, &mut placed);
+    let (exchanged, move_value) = move_tiles_and_value(&board_snapshot, &play, &mut placed)?;
     let num_placed: usize = placed.iter().map(|&c| c as usize).sum();
     if num_placed > rack_size {
         wolges::return_error!(format!(
@@ -8310,7 +8311,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         movegen::Play::Exchange { tiles } => format!("exch {}", tiles.len()),
         movegen::Play::Place { .. } => format!(
             "{}, value {:.3}",
-            play.fmt(&board_snapshot),
+            play.fmt(&board_snapshot)?,
             equity::Equity::new(move_value).as_f64()
         ),
     };
@@ -8635,7 +8636,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                             game_config.tiles_off_board_into(&game_state.board_tiles, &mut pool)?;
                             game_config.take_rack(&mut pool, &game_state.players[1].rack)?;
                             let (exchanged, move_value) =
-                                move_tiles_and_value(&board_snapshot, play, &mut placed);
+                                move_tiles_and_value(&board_snapshot, play, &mut placed)?;
                             let can_exchange = game_state.bag.len()
                                 >= game_config.exchange_tile_limit() as usize;
                             infer_sheet_for(
@@ -10303,7 +10304,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
     rack: &[u8],
     num_moves: usize,
     dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
-) -> std::io::Result<()> {
+) -> error::Returns<()> {
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
         rack,
@@ -10317,7 +10318,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
             boxed_stdout_or_stderr(),
             "  {:>9.3}  {}",
             f64::from(play.equity.raw()) / f64::from(equity::SCALE),
-            play.play.fmt(board_snapshot),
+            play.play.fmt(board_snapshot)?,
         )?;
     }
     Ok(())
@@ -10447,19 +10448,21 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             let mut i = 0;
             while i < strider.len() {
                 let start = i;
-                while i < strider.len() && board_tiles[strider.at(i)] != 0 {
+                while i < strider.len() && board_tiles[strider.at(i)?] != 0 {
                     i += 1;
                 }
                 if i - start >= 2 {
                     num_words += 1;
                     word.clear();
-                    word.extend((start..i).map(|j| board_tiles[strider.at(j)] & 0x7f));
+                    for j in start..i {
+                        word.push(board_tiles[strider.at(j)?] & 0x7f);
+                    }
                     if !lexicon_holds(&kwg, jumbled, &mut word) {
-                        not_words.push(
-                            (start..i)
-                                .map(|j| alphabet.of_board(board_tiles[strider.at(j)]).unwrap())
-                                .collect(),
-                        );
+                        let mut label = String::new();
+                        for j in start..i {
+                            label.push_str(alphabet.of_board(board_tiles[strider.at(j)?]).unwrap());
+                        }
+                        not_words.push(label);
                     }
                 }
                 i += 1;
@@ -12343,8 +12346,8 @@ WCMP_P1_SCORE 402.000000
         let dim = game_config.board_layout().dim();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
         // QI across row 8 from column H
-        board_tiles[dim.at_row_col(7, 7)] = 17;
-        board_tiles[dim.at_row_col(7, 8)] = 9;
+        board_tiles[dim.at_row_col(7, 7).unwrap()] = 17;
+        board_tiles[dim.at_row_col(7, 8).unwrap()] = 9;
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
@@ -12516,7 +12519,7 @@ WCMP_P1_SCORE 402.000000
         let game_config = game_config::make_english_game_config();
         let dim = game_config.board_layout().dim();
         let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
-        board_tiles[dim.at_row_col(7, 8)] = 9;
+        board_tiles[dim.at_row_col(7, 8).unwrap()] = 9;
         let mut after = Vec::new();
         board_after(
             &game_config,
@@ -12532,9 +12535,9 @@ WCMP_P1_SCORE 402.000000
         );
         assert_eq!(
             (
-                after[dim.at_row_col(7, 7)],
-                after[dim.at_row_col(7, 8)],
-                after[dim.at_row_col(7, 9)]
+                after[dim.at_row_col(7, 7).unwrap()],
+                after[dim.at_row_col(7, 8).unwrap()],
+                after[dim.at_row_col(7, 9).unwrap()]
             ),
             (17, 9, 19)
         );

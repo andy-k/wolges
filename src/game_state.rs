@@ -233,7 +233,9 @@ impl GameState {
                 word,
                 score,
             } => {
-                let strider = game_config.board_layout().dim().lane(*down, *lane);
+                let dim = game_config.board_layout().dim();
+                dim.check_span(*down, *lane, *idx, word.len())?;
+                let strider = dim.lane(*down, *lane);
 
                 // every check before any change, so a refused play changes
                 // nothing but the rack's order
@@ -256,7 +258,7 @@ impl GameState {
                 // place the tiles
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     if tile != 0 {
-                        self.board_tiles[strider.at(i)] = tile;
+                        self.board_tiles[strider.at_in_lane(i)] = tile;
                     }
                 }
 

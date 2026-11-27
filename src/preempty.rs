@@ -547,7 +547,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Progress<'a, N, L> {
         let strider = dim.lane(*down, *lane);
         for (at, &tile) in (*idx..).zip(word.iter()) {
             if tile != 0 {
-                self.board[strider.at(at)] = tile;
+                self.board[strider.at_in_lane(at)] = tile;
             }
         }
         Ok(Some(Active {
@@ -889,7 +889,7 @@ mod tests {
             let strider = f.gc.board_layout().dim().lane(*down, *lane);
             for (at, &t) in (*idx..).zip(word.iter()) {
                 if t != 0 {
-                    board[strider.at(at)] = t;
+                    board[strider.at_in_lane(at)] = t;
                 }
             }
             let after = movegen::BoardSnapshot {
@@ -1006,7 +1006,7 @@ mod tests {
             let strider = f.gc.board_layout().dim().lane(*down, *lane);
             for (at, &t) in (*idx..).zip(word.iter()) {
                 if t != 0 {
-                    board[strider.at(at)] = t;
+                    board[strider.at_in_lane(at)] = t;
                 }
             }
             let after = movegen::BoardSnapshot {
@@ -1092,8 +1092,8 @@ mod tests {
             let layout = f.gc.board_layout();
             let dim = layout.dim();
             let star = dim.across(layout.star_row());
-            f.board[star.at(layout.star_col())] = 1 | 0x80;
-            f.board[star.at(layout.star_col() + 1)] = 20;
+            f.board[star.at_in_lane(layout.star_col())] = 1 | 0x80;
+            f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
             let tables = crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap();
             let before = movegen::BoardSnapshot {
                 anagrams: tables.anagrams(),
@@ -1121,7 +1121,7 @@ mod tests {
                     let mut board = f.board.clone();
                     for (at, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
-                            board[dim.lane(*down, *lane).at(at)] = tile;
+                            board[dim.lane(*down, *lane).at_in_lane(at)] = tile;
                         }
                     }
                     let after = movegen::BoardSnapshot {
@@ -1481,8 +1481,8 @@ mod tests {
                 if !opening {
                     let layout = f.gc.board_layout();
                     let star = layout.dim().across(layout.star_row());
-                    f.board[star.at(layout.star_col())] = 1;
-                    f.board[star.at(layout.star_col() + 1)] = 20;
+                    f.board[star.at_in_lane(layout.star_col())] = 1;
+                    f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
                 }
                 let snap = movegen::BoardSnapshot {
                     anagrams: tables.anagrams(),
@@ -1536,8 +1536,8 @@ mod tests {
             if !opening {
                 let layout = f.gc.board_layout();
                 let star = layout.dim().across(layout.star_row());
-                f.board[star.at(layout.star_col())] = 1;
-                f.board[star.at(layout.star_col() + 1)] = 20;
+                f.board[star.at_in_lane(layout.star_col())] = 1;
+                f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
             }
             let walk = f.snap();
             let window = movegen::BoardSnapshot {

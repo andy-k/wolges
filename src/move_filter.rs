@@ -34,7 +34,7 @@ impl LimitedVocabChecker {
             let placed_tile = if tile != 0 {
                 tile
             } else {
-                board_snapshot.board_tiles[strider.at(i)]
+                board_snapshot.board_tiles[strider.at_in_lane(i)]
             };
             self.word_check_buf.push(placed_tile & 0x7f);
         }
@@ -45,13 +45,15 @@ impl LimitedVocabChecker {
             if tile != 0 {
                 let perpendicular_strider = dim.lane(!down, i);
                 let mut j = lane;
-                while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0 {
+                while j > 0
+                    && board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j - 1)] != 0
+                {
                     j -= 1;
                 }
                 let perpendicular_strider_len = perpendicular_strider.len();
                 if j == lane
                     && if j + 1 < perpendicular_strider_len {
-                        board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                        board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j + 1)] == 0
                     } else {
                         true
                     }
@@ -64,7 +66,7 @@ impl LimitedVocabChecker {
                     let placed_tile = if j == lane {
                         tile
                     } else {
-                        board_snapshot.board_tiles[perpendicular_strider.at(j)]
+                        board_snapshot.board_tiles[perpendicular_strider.at_in_lane(j)]
                     };
                     if placed_tile == 0 {
                         break;

@@ -445,7 +445,7 @@ fn run(
                     list,
                     "  {:.3} {}",
                     play.equity,
-                    play.play.fmt(&board_snapshot)
+                    play.play.fmt(&board_snapshot)?
                 )
                 .unwrap();
             }
@@ -489,7 +489,7 @@ fn run(
                 rack_lengths,
                 klv,
             };
-            let digest = |g: &movegen::KurniaMoveGenerator, head: usize| {
+            let digest = |g: &movegen::KurniaMoveGenerator, head: usize| -> error::Returns<_> {
                 use std::hash::{Hash, Hasher};
                 let mut ordered = fash::MyHasher::default();
                 let mut head_ordered = fash::MyHasher::default();
@@ -497,7 +497,7 @@ fn run(
                 let mut line = String::new();
                 for (i, p) in g.plays.iter().enumerate() {
                     line.clear();
-                    write!(line, "{}", p.play.fmt(&board_snapshot)).unwrap();
+                    write!(line, "{}", p.play.fmt(&board_snapshot)?).unwrap();
                     let mut one = fash::MyHasher::default();
                     line.hash(&mut one);
                     unordered = unordered.wrapping_add(one.finish());
@@ -506,12 +506,12 @@ fn run(
                         (p.equity.raw(), &line).hash(&mut head_ordered);
                     }
                 }
-                (
+                Ok((
                     g.plays.len(),
                     ordered.finish(),
                     unordered,
                     head_ordered.finish(),
-                )
+                ))
             };
             let generate = |g: &mut movegen::KurniaMoveGenerator, max_gen: usize| {
                 let params = movegen::GenMovesParams {
@@ -529,8 +529,10 @@ fn run(
                 }
                 digest(g, case.max_gen)
             };
-            let all = every_way.then(|| generate(&mut move_generator, usize::MAX));
-            let capped = generate(&mut move_generator, case.max_gen);
+            let all = every_way
+                .then(|| generate(&mut move_generator, usize::MAX))
+                .transpose()?;
+            let capped = generate(&mut move_generator, case.max_gen)?;
             let mut differs = Vec::new();
             if let Some(all) = &all {
                 if tables {
@@ -548,7 +550,7 @@ fn run(
                         case.pass_policy,
                     );
                 }
-                let raw = digest(&move_generator, 0);
+                let raw = digest(&move_generator, 0)?;
                 if (capped.0, capped.1) != (case.max_gen.min(all.0), all.3) {
                     differs.push("capped is not the head of all");
                 }

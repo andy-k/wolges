@@ -5,11 +5,29 @@ use std::io::Write;
 use std::str::FromStr;
 
 #[inline(always)]
-pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -> &'static str {
+pub fn empty_label(
+    board_layout: &board_layout::BoardLayout,
+    row: i8,
+    col: i8,
+) -> error::Returns<&'static str> {
+    let index = board_layout.dim().at_row_col(row, col)?;
+    if index >= board_layout.premiums().len() {
+        crate::return_error!("coordinate is outside the board".to_string());
+    }
+    Ok(empty_label_at(board_layout, row, col, index))
+}
+
+#[inline(always)]
+fn empty_label_at(
+    board_layout: &board_layout::BoardLayout,
+    row: i8,
+    col: i8,
+    index: usize,
+) -> &'static str {
     if row == board_layout.star_row() && col == board_layout.star_col() {
         return "*";
     }
-    let premium = &board_layout.premiums()[board_layout.dim().at_row_col(row, col)];
+    let premium = &board_layout.premiums()[index];
     match premium.word_multiplier {
         4 => "~",
         3 => "=",
@@ -36,10 +54,16 @@ pub fn board_label<'a>(
     board_tiles: &'a [u8],
     row: i8,
     col: i8,
-) -> &'a str {
-    alphabet
-        .of_board(board_tiles[board_layout.dim().at_row_col(row, col)])
-        .unwrap_or_else(|| empty_label(board_layout, row, col))
+) -> error::Returns<&'a str> {
+    let index = board_layout.dim().at_row_col(row, col)?;
+    let tile = *board_tiles
+        .get(index)
+        .ok_or("coordinate is outside the board tiles")?;
+    if let Some(label) = alphabet.of_board(tile) {
+        Ok(label)
+    } else {
+        empty_label(board_layout, row, col)
+    }
 }
 
 thread_local! {
@@ -86,8 +110,8 @@ impl ColumnStr {
 
 // Negative numbers not handled.
 #[inline(always)]
-pub fn column(col: i8) -> ColumnStr {
-    ColumnStr(col as usize)
+pub fn column(col: i8) -> crate::error::Returns<ColumnStr> {
+    Ok(ColumnStr(usize::try_from(col)?))
 }
 
 // Parses ColumnStr strings (passed as str.as_bytes()).
@@ -161,8 +185,8 @@ impl BoardPrinter<'_> {
         let max_tile_width = self.alphabet.widest_label_len();
         let w = max_col_label_width.max(max_tile_width);
         write!(f, "{:max_row_num_width$}", "")?;
-        for c in 0..ncols {
-            write!(f, " {:^w$}", column(c))?;
+        for (index, _) in (0..ncols).enumerate() {
+            write!(f, " {:^w$}", ColumnStr(index))?;
         }
         writeln!(f)?;
         write!(f, "{:max_row_num_width$}+", "")?;
@@ -182,7 +206,14 @@ impl BoardPrinter<'_> {
                 write!(
                     f,
                     "{:^w$}",
-                    board_label(self.alphabet, self.board_layout, self.board_tiles, r, c)
+                    self.alphabet
+                        .of_board(self.board_tiles[self.board_layout.dim().at_on_board(r, c)])
+                        .unwrap_or_else(|| empty_label_at(
+                            self.board_layout,
+                            r,
+                            c,
+                            self.board_layout.dim().at_on_board(r, c)
+                        ))
                 )?;
             }
             writeln!(f, "|{}", r + 1)?;
@@ -196,8 +227,8 @@ impl BoardPrinter<'_> {
         }
         writeln!(f, "+")?;
         write!(f, "{:max_row_num_width$}", "")?;
-        for c in 0..ncols {
-            write!(f, " {:^w$}", column(c))?;
+        for (index, _) in (0..ncols).enumerate() {
+            write!(f, " {:^w$}", ColumnStr(index))?;
         }
         writeln!(f)?;
         Ok(())
@@ -520,8 +551,12 @@ mod tests {
     #[test]
     #[inline]
     fn every_column_name_reads_back() {
+        assert!(column(-1).is_err());
+        let dim = matrix::Dim { rows: 1, cols: 1 };
+        assert!(dim.at_row_col(0, -1).is_err());
+        assert!(dim.across(0).at(-1).is_err());
         for col in 0..i8::MAX {
-            let name = column(col).to_string();
+            let name = column(col).unwrap().to_string();
             assert_eq!(
                 str_to_column_usize(name.as_bytes()),
                 Some(col as usize),
@@ -533,9 +568,9 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(column(25).to_string(), "Z");
-        assert_eq!(column(26).to_string(), "AA");
-        assert_eq!(column(i8::MAX - 1).to_string(), "DW");
+        assert_eq!(column(25).unwrap().to_string(), "Z");
+        assert_eq!(column(26).unwrap().to_string(), "AA");
+        assert_eq!(column(i8::MAX - 1).unwrap().to_string(), "DW");
     }
 
     #[test]
@@ -559,10 +594,10 @@ mod tests {
         );
         let dim = board_layout.dim();
         let mut board_tiles = vec![0u8; area];
-        board_tiles[dim.at_row_col(0, 0)] = 1;
-        board_tiles[dim.at_row_col(0, 26)] = 5;
-        board_tiles[dim.at_row_col(1, 99)] = 0x80 | 19;
-        board_tiles[dim.at_row_col(2, cols - 1)] = 20;
+        board_tiles[dim.at_row_col(0, 0).unwrap()] = 1;
+        board_tiles[dim.at_row_col(0, 26).unwrap()] = 5;
+        board_tiles[dim.at_row_col(1, 99).unwrap()] = 0x80 | 19;
+        board_tiles[dim.at_row_col(2, cols - 1).unwrap()] = 20;
         let fen = BoardFenner::new(&alphabet, &board_layout, &board_tiles).to_string();
         assert_eq!(fen, "A25E100/99s27/126T");
         let mut fen_parser = BoardFenParser::new(&alphabet, &board_layout);
@@ -623,8 +658,8 @@ mod tests {
     #[test]
     #[inline]
     fn a_padded_display_pads_the_text_it_writes() {
-        assert_eq!(format!("[{:^6}]", column(27)), "[  AB  ]");
-        assert_eq!(format!("[{:>4.1}]", column(27)), "[   A]");
+        assert_eq!(format!("[{:^6}]", column(27).unwrap()), "[  AB  ]");
+        assert_eq!(format!("[{:>4.1}]", column(27).unwrap()), "[   A]");
         assert_eq!(
             format!("[{:*<12}]", MsPrinter { ms: -61_001 }),
             "[-01:01.001**]"

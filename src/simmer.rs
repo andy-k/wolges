@@ -939,8 +939,8 @@ impl<
             }
             if census.is_some() {
                 let dim = game_config.board_layout().dim();
-                let footprint = zone::footprint(dim, &self.game_state.board_tiles, &next_play);
-                let (rows, cols) = zone::zone_lanes(dim, &footprint.zone);
+                let footprint = zone::footprint(dim, &self.game_state.board_tiles, &next_play)?;
+                let (rows, cols) = zone::zone_lanes(dim, &footprint.zone)?;
                 touched.0 |= rows;
                 touched.1 |= cols;
             }
@@ -1094,9 +1094,10 @@ impl<
         census: Option<&movegen::LaneCensus>,
     ) -> movegen::ValuedMove {
         let dim = game_config.board_layout().dim();
-        let (rows, cols) = zone::zone_lanes(
+        let (rows, cols) = zone::zone_lanes_on_board(
             dim,
-            &zone::footprint(dim, &self.initial_game_state.board_tiles, candidate_play).zone,
+            &zone::footprint_on_board(dim, &self.initial_game_state.board_tiles, candidate_play)
+                .zone,
         );
         let on = |down: bool, lane: i8| ((if down { cols } else { rows }) >> lane) & 1 != 0;
         let mut off = self
@@ -1859,7 +1860,7 @@ mod tests {
         let bag = unseen.split_off(unseen.len() - rack_size);
         let mut squares = (0..dim.rows)
             .step_by(2)
-            .flat_map(|row| (0..dim.cols).map(move |col| dim.at_row_col(row, col)));
+            .flat_map(|row| (0..dim.cols).map(move |col| dim.at_on_board(row, col)));
         for tile in unseen {
             game_state.board_tiles[squares.next().unwrap()] = if tile == 0 { 0x81 } else { tile };
         }
@@ -2441,8 +2442,8 @@ mod tests {
                 assert!(
                     reply == want,
                     "seed {seed}: {} against {}",
-                    reply.play.fmt(&snapshot),
-                    want.play.fmt(&snapshot)
+                    reply.play.fmt(&snapshot).unwrap(),
+                    want.play.fmt(&snapshot).unwrap()
                 );
                 checked += 1;
                 if simmer.lane_bests.iter().any(|(m, _, _)| *m == reply) {

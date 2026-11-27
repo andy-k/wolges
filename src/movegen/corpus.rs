@@ -48,7 +48,7 @@ fn listed<N: kwg::Node, L: kwg::Node>(
     plays
         .iter()
         .map(|p| {
-            let play = format!("{}", p.play.fmt(board_snapshot));
+            let play = format!("{}", p.play.fmt(board_snapshot).unwrap());
             Listed {
                 line: format!("{} {play}", p.equity.raw()),
                 play,
@@ -125,7 +125,7 @@ fn assert_same_set<N: kwg::Node, L: kwg::Node>(
         let at = at();
         let text = |set: &[&Play]| {
             set.iter()
-                .map(|p| format!("{}", p.fmt(board_snapshot)))
+                .map(|p| format!("{}", p.fmt(board_snapshot).unwrap()))
                 .collect::<Vec<_>>()
         };
         assert_eq!(text(got), text(want), "{at}");
@@ -548,7 +548,7 @@ fn run_config(config: &Config<'_>, picks: &[Pick], out: &mut String) {
             let strider = dim.lane(down, lane);
             for (i, &tile) in (idx..).zip(word.iter()) {
                 if tile != 0 {
-                    board_tiles[strider.at(i)] = tile;
+                    board_tiles[strider.at_in_lane(i)] = tile;
                     let played = tile & !((tile as i8) >> 7) as u8;
                     let at = rack.iter().position(|&t| t == played).unwrap();
                     rack.remove(at);

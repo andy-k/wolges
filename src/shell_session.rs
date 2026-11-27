@@ -2077,7 +2077,7 @@ impl Session {
                             anagrams: None,
                             rack_lengths: None,
                             klv: self.klv,
-                        })
+                        })?
                     )?,
                 }
                 if turn.withdrawn() {
@@ -2210,7 +2210,7 @@ impl Session {
                 "{:>3}. {:>8.3} {}",
                 i + 1,
                 valued.equity.as_f64(),
-                valued.play.fmt(board_snapshot),
+                valued.play.fmt(board_snapshot)?,
             )?;
         }
         Ok(())
@@ -2250,7 +2250,7 @@ impl Session {
         let mut out = std::io::stdout();
         for (i, valued) in self.move_generator.plays.iter().enumerate() {
             let equity = valued.equity.as_f64();
-            let shown = valued.play.fmt(board_snapshot).to_string();
+            let shown = valued.play.fmt(board_snapshot)?.to_string();
             match infer::reply_to(
                 tables,
                 &mut self.infer_generator,
@@ -2697,7 +2697,7 @@ impl Session {
                 rank + 1,
                 sim.move_generator.plays[index]
                     .play
-                    .fmt(board_snapshot)
+                    .fmt(board_snapshot)?
                     .to_string(),
                 100.0 * win_rate,
                 equity,
@@ -3023,9 +3023,9 @@ impl Session {
                     score,
                 } => {
                     let mut text = if *down {
-                        format!("{}{} ", display::column(*lane), idx + 1)
+                        format!("{}{} ", display::column(*lane)?, idx + 1)
                     } else {
-                        format!("{}{} ", lane + 1, display::column(*idx))
+                        format!("{}{} ", lane + 1, display::column(*idx)?)
                     };
                     for &tile in word.iter() {
                         text.push_str(if tile == 0 {
@@ -3193,7 +3193,7 @@ impl Session {
                     anagrams: None,
                     rack_lengths: None,
                     klv: self.klv,
-                })
+                })?
             ));
             state.play(self.game_config, &mut rng, play)?;
             state.next_turn()?;
@@ -3347,7 +3347,7 @@ impl Session {
                         anagrams: None,
                         rack_lengths: None,
                         klv: self.klv,
-                    })
+                    })?
                 )?;
                 if let Some(space) = text[at..].rfind(' ') {
                     text.truncate(at + space);
