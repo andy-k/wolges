@@ -130,7 +130,11 @@ pub fn build_sheet_spell_once<
     // jumbled, a multiset's arrangements on a span differ only in score and in
     // the opening's adjustment, which the walk weighs too, so each span offers
     // each multiset (and blank designation) once, at its best
-    if let game_config::GameRules::Jumbled = game_config.game_rules() {
+    let jumbled = match game_config.game_rules() {
+        game_config::GameRules::Classic => false,
+        game_config::GameRules::Jumbled => true,
+    };
+    if jumbled {
         movegen_rack.clear();
         for (t, &c) in unseen_tally.iter().enumerate() {
             for _ in 0..c {

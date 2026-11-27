@@ -492,8 +492,9 @@ impl<
         let Some(anagrams) = arm_tables.anagrams() else {
             return false;
         };
-        if !matches!(game_config.game_rules(), game_config::GameRules::Classic) {
-            return false;
+        match game_config.game_rules() {
+            game_config::GameRules::Classic => {}
+            game_config::GameRules::Jumbled => return false,
         }
         let alphabet = game_config.alphabet();
         let (off_board, pool) = &mut self.census_tiles;

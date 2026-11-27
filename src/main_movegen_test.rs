@@ -465,8 +465,10 @@ fn run(
                 disagreements += 1;
             }
         }
-        let every_way = !matches!(game_config.game_rules(), game_config::GameRules::Jumbled)
-            || rack.len() <= game_config.rack_size() as usize;
+        let every_way = match game_config.game_rules() {
+            game_config::GameRules::Classic => true,
+            game_config::GameRules::Jumbled => false,
+        } || rack.len() <= game_config.rack_size() as usize;
         if !every_way {
             writeln!(
                 boxed_stdout_or_stderr(),
