@@ -1110,8 +1110,8 @@ impl Session {
                     return Err(format!("player 1 to {}", self.seats.len()).into());
                 }
                 let points = points.parse::<i32>().map_err(|_| USAGE)?;
-                if points <= 0 {
-                    return Err("time N POINTS: POINTS above 0".into());
+                if points < 0 {
+                    return Err("time N POINTS: POINTS 0 or more".into());
                 }
                 if self.final_scores.is_none() {
                     return Err("a time penalty comes only once the game is over".into());
@@ -1119,6 +1119,9 @@ impl Session {
                 self.change(|game| {
                     let game = game.as_mut().ok_or("no game: new first")?;
                     let last = game.at.checked_sub(1).ok_or("no move before")?;
+                    if points == 0 {
+                        return Ok(());
+                    }
                     game.cut();
                     let turn = &mut game.turns[last];
                     turn.time()[n - 1]
@@ -1136,17 +1139,18 @@ impl Session {
                     return Err(USAGE.into());
                 };
                 let points = points.parse::<i32>().map_err(|_| USAGE)?;
-                if points == 0 {
-                    return Err("adjust POINTS: POINTS not 0".into());
-                }
                 self.change(|game| {
                     let game = game.as_mut().ok_or("no game: new first")?;
                     let last = game.at.checked_sub(1).ok_or("no move before")?;
-                    game.cut();
-                    let turn = &mut game.turns[last];
+                    let turn = &game.turns[last];
                     if !matches!(turn.play, movegen::Play::Place { .. }) || turn.withdrawn() {
                         return Err("only a move on the board can be misscored".into());
                     }
+                    if points == 0 {
+                        return Ok(());
+                    }
+                    game.cut();
+                    let turn = &mut game.turns[last];
                     turn.adjust().checked_add(points).ok_or("too many points")?;
                     turn.after.push(After::Adjust(points));
                     Ok(())
@@ -5378,7 +5382,9 @@ mod tests {
             run(&mut first, line).unwrap();
         }
         // AT through the star makes 4; its player was given 5
-        assert!(run(&mut first, "adjust 0").is_err());
+        let unadjusted = snapshot(&first);
+        run(&mut first, "adjust 0").unwrap();
+        assert_eq!(snapshot(&first), unadjusted);
         run(&mut first, "adjust 1").unwrap();
         assert_eq!(
             first.state.players[0].score,
@@ -5629,7 +5635,10 @@ mod tests {
         }
         let before = first.final_scores.clone().unwrap();
         run(&mut first, "time 2 10").unwrap();
-        for bad in ["time 3 10", "time 1 0", "time 1"] {
+        let timed = first.final_scores.clone();
+        run(&mut first, "time 1 0").unwrap();
+        assert_eq!(first.final_scores, timed);
+        for bad in ["time 3 10", "time 1 -1", "time 1"] {
             assert!(run(&mut first, bad).is_err(), "{bad}");
         }
         let after = first.final_scores.clone().unwrap();
