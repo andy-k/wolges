@@ -20393,6 +20393,39 @@ mod tests {
     }
 
     #[test]
+    fn a_bag_search_of_an_empty_bag_is_the_endgame() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let mut unseen_tally = vec![0; gc.alphabet().len() as usize];
+        for tile in [5, 8, 19] {
+            unseen_tally[tile] += 1;
+        }
+        let mover_rack = [1, 20];
+        let position = bag_position(&board, &mover_rack, &unseen_tally, 0, equity::Equity::ZERO);
+        let peg = uncut_peg(&mut egs, position).unwrap().unwrap();
+        egs.init(&board, [&mover_rack[..], &[5, 8, 19][..]]);
+        let value = egs
+            .evaluate(0, &super::Limits::NONE)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(peg.expected_margin, value);
+        assert_eq!(
+            peg.win_pct,
+            match value.raw().signum() {
+                1 => 1.0,
+                0 => 0.5,
+                _ => 0.0,
+            }
+        );
+    }
+
+    #[test]
     fn a_bag_search_with_cuts_answers_the_same() {
         let gc = game_config::make_english_game_config();
         let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
