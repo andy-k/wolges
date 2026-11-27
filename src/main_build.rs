@@ -1469,7 +1469,7 @@ mod tests {
         assert_eq!(leave_value("QU", "-3.5").unwrap(), -3.5);
         let held = |v: f32| {
             let milli = (f64::from(v) * equity::SCALE as f64).round();
-            milli as i32 as i64 == milli as i64
+            i32::try_from(milli as i64).is_ok()
         };
         for (value, ok) in [
             ("-2147483.648", false),

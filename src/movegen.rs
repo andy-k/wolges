@@ -453,17 +453,17 @@ struct Taken(u64);
 impl Taken {
     #[inline(always)]
     fn new(multiplier: i32, idx: u8) -> Self {
-        Self((multiplier as u32 as u64) << 32 | idx as u64)
+        Self(u64::from(multiplier.cast_unsigned()) << u32::BITS | u64::from(idx))
     }
 
     #[inline(always)]
     fn multiplier(self) -> i32 {
-        (self.0 >> 32) as u32 as i32
+        ((self.0 >> u32::BITS) as u32).cast_signed()
     }
 
     #[inline(always)]
     fn idx(self) -> usize {
-        self.0 as u8 as usize
+        (self.0 & u64::from(u8::MAX)) as usize
     }
 }
 

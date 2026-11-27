@@ -55,6 +55,16 @@ const EXCHANGES_MADE: u64 = 6 << 32;
 const INFO_SETS: u64 = 7 << 32;
 const INFO_LEAD: u64 = 8 << 32;
 
+#[inline(always)]
+fn exchanges_made_key(player: usize, made: i16) -> u64 {
+    zobrist(EXCHANGES_MADE | ((player as u64) << u16::BITS) | u64::from(made.cast_unsigned()))
+}
+
+#[inline(always)]
+fn info_lead_key(lead: i32) -> u64 {
+    zobrist(INFO_LEAD | u64::from(lead.cast_unsigned()))
+}
+
 // the scoreless turns before a node, as a pass there sees them: either the
 // counts the config checks (the position's own until the line places tiles;
 // none from then on) or that the line's move before was a pass. A pass
@@ -238,6 +248,8 @@ const EMPTY_PIECE: usize = 1 << 12;
 const MOVE_PIECE: usize = 1 << 10;
 
 impl Table {
+    const DEPTH_SHIFT: u32 = u32::BITS + u16::BITS;
+
     // a bucket to start with; the table grows as the search fills it
     #[inline(always)]
     fn new() -> Self {
@@ -310,9 +322,9 @@ impl Table {
 
     #[inline(always)]
     fn word(&self, entry: Entry) -> u64 {
-        entry.value.raw() as u32 as u64
-            | (entry.play as u64) << 32
-            | (entry.depth as u8 as u64) << 48
+        u64::from(entry.value.raw().cast_unsigned())
+            | u64::from(entry.play) << u32::BITS
+            | u64::from(entry.depth.cast_unsigned()) << Self::DEPTH_SHIFT
             | (match entry.bound {
                 Bound::Exact => 1,
                 Bound::Lower => 2,
@@ -330,11 +342,16 @@ impl Table {
             _ => return None,
         };
         Some(Entry {
-            value: equity::Equity::new(word as u32 as i32),
+            value: equity::Equity::new((word as u32).cast_signed()),
             play: (word >> 32) as u16,
-            depth: (word >> 48) as u8 as i8,
+            depth: Self::depth(word),
             bound,
         })
+    }
+
+    #[inline(always)]
+    fn depth(word: u64) -> i8 {
+        ((word >> Self::DEPTH_SHIFT) as u8).cast_signed()
     }
 
     // the position's entry, which becomes this solve's: what a solve reads is
@@ -375,7 +392,7 @@ impl Table {
                 self.held += 1;
                 return true;
             }
-            let depth = (old >> 48) as u8 as i8;
+            let depth = Self::depth(old);
             if bucket[2 * slot] == key {
                 if depth <= entry.depth || entry.bound == Bound::Exact {
                     bucket[2 * slot + 1] = word;
@@ -501,13 +518,13 @@ impl Table {
                 self.held += 1;
                 return;
             }
-            let depth = (old >> 48) as u8 as i8;
+            let depth = Self::depth(old);
             if depth < victim_depth {
                 victim = slot;
                 victim_depth = depth;
             }
         }
-        if (word >> 48) as u8 as i8 > victim_depth {
+        if Self::depth(word) > victim_depth {
             bucket[2 * victim] = key;
             bucket[2 * victim + 1] = word;
         }
@@ -1031,6 +1048,15 @@ fn within(rack: &[u8], pool: &[u8]) -> bool {
     })
 }
 
+#[inline(always)]
+fn move_key_head(score: i32, len: usize, idx: i8, lane: i8, down: bool) -> u64 {
+    (u64::from(score.cast_unsigned()) << u32::BITS)
+        | ((len as u64) << (3 * u8::BITS))
+        | (u64::from(idx.cast_unsigned()) << (2 * u8::BITS))
+        | (u64::from(lane.cast_unsigned()) << u8::BITS)
+        | u64::from(down)
+}
+
 // a move hashed into a list's key, eight bytes of it at a time, by FNV-1a's
 // step on 128 bits (as lane_key)
 #[inline(always)]
@@ -1046,11 +1072,7 @@ fn mix_move(key: u128, play: &movegen::Play) -> u128 {
         return key;
     };
     let mix = |key: u128, part: u64| (key ^ part as u128).wrapping_mul(FNV128_PRIME);
-    let head = (score.raw() as u32 as u64) << 32
-        | (word.len() as u64) << 24
-        | (*idx as u8 as u64) << 16
-        | (*lane as u8 as u64) << 8
-        | *down as u64;
+    let head = move_key_head(score.raw(), word.len(), *idx, *lane, *down);
     word.chunks(8).fold(mix(key, head), |key, chunk| {
         let mut bytes = [0u8; 8];
         bytes[..chunk.len()].copy_from_slice(chunk);
@@ -1582,11 +1604,17 @@ impl RackSlots {
 // square as movegen::cmp_play has them, then the move's place in the list
 #[inline(always)]
 fn order_key(valuation: i32, down: bool, lane: i8, idx: i8, found: usize) -> u128 {
-    ((!(valuation as u32 ^ 1 << 31)) as u128) << 64
-        | (down as u128) << 48
-        | (lane as u8 as u128) << 40
-        | (idx as u8 as u128) << 32
-        | found as u32 as u128
+    let by_valuation = !(valuation.cast_unsigned() ^ (1 << (i32::BITS - 1)));
+    (u128::from(by_valuation) << u64::BITS)
+        | (u128::from(down) << (u32::BITS + 2 * u8::BITS))
+        | (u128::from(lane.cast_unsigned()) << (u32::BITS + u8::BITS))
+        | (u128::from(idx.cast_unsigned()) << u32::BITS)
+        | u128::from(found as u32)
+}
+
+#[inline(always)]
+fn ordered_play_index(key: u128) -> usize {
+    (key & u128::from(u32::MAX)) as usize
 }
 
 // sort ordered (a key for each move of list, from order_key; list stays as
@@ -1605,13 +1633,16 @@ fn order(list: &mut [Candidate], ordered: &mut [u128], first_place: usize, table
                 .count();
         if end - start > 1 {
             ordered[start..end].sort_unstable_by(|&a, &b| {
-                movegen::cmp_play(&list[a as u32 as usize].play, &list[b as u32 as usize].play)
+                movegen::cmp_play(
+                    &list[ordered_play_index(a)].play,
+                    &list[ordered_play_index(b)].play,
+                )
             });
         }
         start = end;
     }
     for (place, &key) in (first_place..).zip(ordered.iter()) {
-        list[key as u32 as usize].index = if place < PASS_PLAY as usize {
+        list[ordered_play_index(key)].index = if place < PASS_PLAY as usize {
             place as u16
         } else {
             NO_PLAY
@@ -1632,8 +1663,8 @@ fn order_first(list: &mut [Candidate], ordered: &mut [u128]) {
     for i in 0..ordered.len() {
         if ordered[i] >> 32 == ordered[first] >> 32
             && movegen::cmp_play(
-                &list[ordered[i] as u32 as usize].play,
-                &list[ordered[first] as u32 as usize].play,
+                &list[ordered_play_index(ordered[i])].play,
+                &list[ordered_play_index(ordered[first])].play,
             )
             .is_lt()
         {
@@ -1641,7 +1672,7 @@ fn order_first(list: &mut [Candidate], ordered: &mut [u128]) {
         }
     }
     ordered.swap(0, first);
-    list[ordered[0] as u32 as usize].index = 0;
+    list[ordered_play_index(ordered[0])].index = 0;
 }
 
 // WorkBuffer contains reusable allocations.
@@ -4919,7 +4950,7 @@ impl<
                     self.split_verdicts(t, player_idx, depth);
                 }
                 let work_buffer = &mut self.work_buffer;
-                let found = work_buffer.orders[ply][i] as u32 as usize;
+                let found = ordered_play_index(work_buffer.orders[ply][i]);
                 let candidate = &work_buffer.lists[ply][found];
                 let (index, plays_out, score) =
                     (candidate.index, candidate.plays_out, candidate.valuation);
@@ -5084,7 +5115,7 @@ impl<
         let orders = &work_buffer.orders[ply];
         let moves = (1..orders.len())
             .filter_map(|i| {
-                let candidate = &work_buffer.lists[ply][orders[i] as u32 as usize];
+                let candidate = &work_buffer.lists[ply][ordered_play_index(orders[i])];
                 (!candidate.plays_out).then(|| (i, candidate.play.clone(), candidate.valuation))
             })
             .collect::<Vec<_>>();
@@ -5213,7 +5244,7 @@ impl<
                     NO_PLAY,
                 );
             }
-            let found = work_buffer.orders[ply][i] as u32 as usize;
+            let found = ordered_play_index(work_buffer.orders[ply][i]);
             let candidate = &work_buffer.lists[ply][found];
             let (index, plays_out, score) =
                 (candidate.index, candidate.plays_out, candidate.valuation);
@@ -5256,19 +5287,19 @@ impl<
             a >> 32 < b >> 32
                 || a >> 32 == b >> 32
                     && movegen::cmp_play(
-                        &list[a as u32 as usize].play,
-                        &list[b as u32 as usize].play,
+                        &list[ordered_play_index(a)].play,
+                        &list[ordered_play_index(b)].play,
                     )
                     .is_lt()
         };
         let mut best: Option<(equity::Equity, u128)> = None;
         for &key in &ordered[1..] {
-            let candidate = &list[key as u32 as usize];
+            let candidate = &list[ordered_play_index(key)];
             let value = if candidate.plays_out {
                 candidate.valuation
             } else {
                 frame.best.complete = false;
-                let after = self.both_pass_value_after(player_idx, ply, key as u32 as usize);
+                let after = self.both_pass_value_after(player_idx, ply, ordered_play_index(key));
                 candidate.valuation.finite_sub(after)
             };
             if best.is_none_or(|(v, b)| value > v || value == v && before(key, b)) {
@@ -5284,7 +5315,7 @@ impl<
         } else {
             NO_PLAY
         };
-        self.work_buffer.lists[ply][key as u32 as usize].index = index;
+        self.work_buffer.lists[ply][ordered_play_index(key)].index = index;
         frame.take_value(&mut self.work_buffer.proven, place, index, value);
     }
 
@@ -9729,7 +9760,7 @@ impl InBag {
         }
         for (player, &made) in self.exchanges.iter().enumerate() {
             if made != 0 {
-                key ^= zobrist(EXCHANGES_MADE | ((player as u64) << 16) | made as u16 as u64);
+                key ^= exchanges_made_key(player, made);
             }
         }
         key
@@ -10021,10 +10052,10 @@ impl InfoSet {
         }
         for (player, &made) in self.exchanges.iter().enumerate() {
             if made != 0 {
-                key ^= zobrist(EXCHANGES_MADE | ((player as u64) << 16) | made as u16 as u64);
+                key ^= exchanges_made_key(player, made);
             }
         }
-        key ^ zobrist(INFO_LEAD | self.lead as u32 as u64)
+        key ^ info_lead_key(self.lead)
     }
 
     // each split of what the mover cannot see into the other's rack (sorted)
@@ -12104,7 +12135,7 @@ impl<
 
 #[cfg(test)]
 mod tests {
-    use super::{EndgameSolver, PegMove, splitmix64};
+    use super::{EndgameSolver, PegMove, ordered_play_index, splitmix64};
     use crate::{alphabet, anagrams, bites, build, equity, fash, game_config, klv, kwg, movegen};
 
     // a one-in-bag answer with every row's hypotheses read out of the search's
@@ -14009,9 +14040,12 @@ mod tests {
                 let Some(&key) = keys.first() else {
                     continue;
                 };
-                let first = egs.work_buffer.lists[0][key as u32 as usize].play.clone();
+                let first = egs.work_buffer.lists[0][ordered_play_index(key)]
+                    .play
+                    .clone();
                 assert_eq!(
-                    egs.work_buffer.lists[0][key as u32 as usize].index, 0,
+                    egs.work_buffer.lists[0][ordered_play_index(key)].index,
+                    0,
                     "[{name}] the first move's index"
                 );
                 if keys.iter().filter(|&&k| k >> 32 == key >> 32).count() > 1 {
@@ -14020,7 +14054,7 @@ mod tests {
                 order_ply(&mut egs, 0, super::NO_PLAY);
                 let whole = egs.work_buffer.orders[0][0];
                 assert!(
-                    first == egs.work_buffer.lists[0][whole as u32 as usize].play,
+                    first == egs.work_buffer.lists[0][ordered_play_index(whole)].play,
                     "[{name}] order_first's first is order's first"
                 );
                 firsts += 1;
@@ -14053,7 +14087,7 @@ mod tests {
                 let ordered = std::mem::take(&mut egs.work_buffer.orders[0]);
                 let moves = ordered
                     .iter()
-                    .map(|&key| &list[key as u32 as usize])
+                    .map(|&key| &list[ordered_play_index(key)])
                     .collect::<Vec<_>>();
                 for (i, candidate) in moves.iter().enumerate() {
                     assert_eq!(
@@ -14103,7 +14137,7 @@ mod tests {
                     super::order(&mut again, &mut keys, 0, super::NO_PLAY);
                     assert!(
                         keys.iter()
-                            .map(|&key| &again[key as u32 as usize])
+                            .map(|&key| &again[ordered_play_index(key)])
                             .zip(&moves)
                             .all(|(a, b)| a.play == b.play && a.index == b.index),
                         "[{name}] the same order however generated"
@@ -14116,7 +14150,7 @@ mod tests {
                     let again = &egs.work_buffer.lists[0];
                     let first = egs.work_buffer.orders[0]
                         .iter()
-                        .map(|&key| &again[key as u32 as usize])
+                        .map(|&key| &again[ordered_play_index(key)])
                         .collect::<Vec<_>>();
                     assert!(
                         first[0].play == moves[table_play as usize].play,
@@ -14152,7 +14186,7 @@ mod tests {
         let in_order = |solver: &EndgameSolver<kwg::Node24, kwg::Node24>, ply: usize| {
             solver.work_buffer.orders[ply]
                 .iter()
-                .map(|&key| &solver.work_buffer.lists[ply][key as u32 as usize])
+                .map(|&key| &solver.work_buffer.lists[ply][ordered_play_index(key)])
                 .map(|c| (c.play.clone(), c.index, c.valuation, c.plays_out))
                 .collect::<Vec<_>>()
         };
@@ -14262,7 +14296,7 @@ mod tests {
         let in_order = |solver: &EndgameSolver<kwg::Node24, kwg::Node24>, ply: usize| {
             solver.work_buffer.orders[ply]
                 .iter()
-                .map(|&key| &solver.work_buffer.lists[ply][key as u32 as usize])
+                .map(|&key| &solver.work_buffer.lists[ply][ordered_play_index(key)])
                 .map(|c| (c.play.clone(), c.index, c.valuation, c.plays_out))
                 .collect::<Vec<_>>()
         };

@@ -794,6 +794,11 @@ impl StatesDefragger<'_> {
         order.sort_unstable();
     }
 
+    #[inline(always)]
+    fn ordered_state_index(key: u128) -> u32 {
+        key as u32
+    }
+
     // order and params are the builder's, emptied here
     #[inline]
     fn build_experimental(
@@ -810,7 +815,10 @@ impl StatesDefragger<'_> {
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
         for &key in order.iter() {
-            self.defrag_cache_friendly(params, top_indexes[key as u32 as usize]);
+            self.defrag_cache_friendly(
+                params,
+                top_indexes[Self::ordered_state_index(key) as usize],
+            );
         }
         self.num_written =
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
@@ -863,7 +871,7 @@ impl StatesDefragger<'_> {
         params.block_len.push(self.num_written as u8);
         params.blocks_with_len[self.num_written as usize].push(0u32);
         for &key in order.iter() {
-            self.defrag_cache_friendly(params, key as u32);
+            self.defrag_cache_friendly(params, Self::ordered_state_index(key));
             if self.refused {
                 return;
             }

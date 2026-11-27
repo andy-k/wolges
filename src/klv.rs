@@ -618,7 +618,8 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
     } else {
         // klv holds each value as an i16 counting 1/256 of a point.
         for i in 0..lv_len {
-            values.push(kwg::read_le_u16(value_bytes, i * 2) as i16 as f32 * (1.0 / 256.0));
+            let value = kwg::read_le_u16(value_bytes, i * 2).cast_signed();
+            values.push(f32::from(value) * (1.0 / 256.0));
         }
     }
     struct Env<'a, L: kwg::Node> {
