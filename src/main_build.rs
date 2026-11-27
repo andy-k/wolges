@@ -424,7 +424,7 @@ enum Words {
     PlainReversed,
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, clap::ValueEnum)]
 enum Layout {
     Wolges,
     Magpie,
@@ -435,7 +435,7 @@ enum Layout {
 
 impl Layout {
     #[inline(always)]
-    fn build_layout(self) -> build::BuildLayout {
+    fn build_layout(&self) -> build::BuildLayout {
         match self {
             Layout::Wolges => build::BuildLayout::Wolges,
             Layout::Magpie => build::BuildLayout::Magpie,
