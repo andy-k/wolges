@@ -175,7 +175,7 @@ fn an_endgame_solve_refused_its_largest_growth_answers_as_before() {
 }
 
 #[test]
-fn a_one_in_bag_solve_refused_its_largest_growth_answers_as_before() {
+fn a_bag_search_refused_its_largest_growth_answers_as_before() {
     let gc = game_config::make_english_game_config();
     let kwg = std::sync::Arc::new(test_kwg(&gc, build::BuildContent::Gaddawg, &ENDGAME_WORDS));
     let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
@@ -190,9 +190,22 @@ fn a_one_in_bag_solve_refused_its_largest_growth_answers_as_before() {
         let mut egs =
             endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
                 .unwrap();
-        let score_diff = equity::Equity::new(0);
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &rack, &unseen, score_diff, &NO_MEMORY_LIMIT)
+            .solve_peg(
+                endgame::PegBagPosition {
+                    mover: 0,
+                    board: board.clone(),
+                    mover_rack: rack.clone(),
+                    unseen_tally: unseen.clone(),
+                    bag_size: 1,
+                    score_diff: equity::Equity::ZERO,
+                    scoreless: [0, 0],
+                    exchanges: [0, 0],
+                    model: endgame::PegModel::RandomDraws,
+                },
+                &NO_MEMORY_LIMIT,
+                1,
+            )
             .unwrap()
             .ok()
             .unwrap();
