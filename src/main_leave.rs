@@ -90,6 +90,11 @@ fn census_snapshot_name(path: &str) -> Option<(String, usize)> {
 }
 
 #[inline]
+fn continued_seed(seed: Option<u64>, state_seed: u64) -> u64 {
+    seed.unwrap_or(state_seed)
+}
+
+#[inline]
 fn part_path(path: &str) -> String {
     format!("{path}.part")
 }
@@ -442,7 +447,7 @@ struct Census {
         long = "continue",
         value_name = "STATE",
         conflicts_with = "resume",
-        help = "run the generations given after those of the census that wrote this census-state-<stamp>.bin, with its seed and leaves, as if they had ended its own: continuing 3x256,2048 with 2x100 runs what 3x256,2048,2x100 runs"
+        help = "run the generations given after those of the census that wrote this census-state-<stamp>.bin, with its leaves and its seed unless one is given, as if they had ended its own: continuing 3x256,2048 with 2x100 runs what 3x256,2048,2x100 runs"
     )]
     continue_state: Option<String>,
     #[arg(
@@ -4184,16 +4189,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 wolges::return_error!(format!("{path} is a part file, not a census state"))
             }
             let st = census_state_from_bytes(&read_input(path)?, path)?;
-            if seed.is_some_and(|s| s != st.seed) {
-                return Err(format!("a continued census keeps its seed, {}", st.seed).into());
-            }
             writeln!(
                 boxed_stdout_or_stderr(),
                 "census: continuing {path}: {} {} done, {} more, seed {}",
                 st.gens,
                 plural(st.gens, "generation", "generations"),
                 board_counts.len(),
-                st.seed
+                continued_seed(seed, st.seed)
             )?;
             Some(st)
         }
@@ -4212,7 +4214,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             )?;
             counts.resize(resumed_gens, 0);
             counts.extend(board_counts);
-            (counts, Some(st.seed))
+            (counts, Some(continued_seed(seed, st.seed)))
         }
         None => (board_counts, seed),
     };
@@ -12805,6 +12807,74 @@ WCMP_P1_SCORE 402.000000
         assert!(
             known > 100 && unknown > 0,
             "{known} known, {unknown} unknown"
+        );
+    }
+
+    #[test]
+    fn a_continued_census_takes_another_seed() {
+        assert_eq!(continued_seed(None, 5), 5);
+        assert_eq!(continued_seed(Some(6), 5), 6);
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let game_config = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            rack_size: 2,
+            ..english
+        });
+        let alphabet = game_config.alphabet();
+        let lat = census::MultisetLattice::new(alphabet.len() as usize, 2).unwrap();
+        let state = CensusState {
+            num_letters: alphabet.len() as usize,
+            rack_size: 2,
+            freqs: (0..alphabet.len()).map(|t| alphabet.freq(t)).collect(),
+            seed: 5,
+            gens: 1,
+            leave: vec![0; lat.len()],
+            exact: vec![0.0; lat.len()],
+            ever: vec![false; lat.len()],
+        };
+        let dir = format!(
+            "{}/target/census_continue-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = format!("{dir}/census-state.bin");
+        std::fs::write(&path, census_state_bytes(&state)).unwrap();
+        let mut words: Vec<wolges::bites::Bites> = vec![[1u8, 20][..].into(), [20u8, 1][..].into()];
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let klv = std::sync::Arc::new(klv::Klv::<kwg::Node24>::empty().unwrap());
+        let continued = generate_census_leaves(
+            game_config,
+            kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+            klv.clone(),
+            klv,
+            CensusParams {
+                board_counts: Vec::new(),
+                seed: Some(6),
+                threads: 1,
+                resume: None,
+                min_boards: 0,
+                keep_state: false,
+                continue_state: Some(path.clone()),
+                full: false,
+                completion_weights: false,
+                per_board_centering: false,
+                quiet: true,
+            },
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(
+            !continued
+                .unwrap_err()
+                .to_string()
+                .contains("keeps its seed")
         );
     }
 
