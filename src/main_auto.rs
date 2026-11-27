@@ -237,7 +237,7 @@ fn do_it(
             set_of_words.insert(word.into());
             //println!("{:?}", word);
             //println!("{}", alphabet.fmt_rack(&word))
-        });
+        })?;
         writeln!(
             std::io::stdout(),
             "word_prune: {} words",
@@ -415,7 +415,7 @@ fn do_it(
                     let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
                     move_generator.gen_remaining_words(board_snapshot, |word: &[u8]| {
                         set_of_words.insert(word.into());
-                    });
+                    })?;
                     writeln!(
                         std::io::stdout(),
                         "word_prune: {} words",

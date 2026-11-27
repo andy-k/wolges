@@ -13679,17 +13679,19 @@ mod tests {
                     board.iter().any(|&t| t != 0) && woadwage_within_bag(&gc, board)
                 }) {
                     let mut kept = Vec::<Vec<u8>>::new();
-                    movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                        &movegen::BoardSnapshot {
-                            board_tiles: board,
-                            game_config: &gc,
-                            kwg: &whole,
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: &klv,
-                        },
-                        |word: &[u8]| kept.push(word.to_vec()),
-                    );
+                    movegen::KurniaMoveGenerator::new(&gc)
+                        .gen_remaining_words(
+                            &movegen::BoardSnapshot {
+                                board_tiles: board,
+                                game_config: &gc,
+                                kwg: &whole,
+                                anagrams: None,
+                                rack_lengths: None,
+                                klv: &klv,
+                            },
+                            |word: &[u8]| kept.push(word.to_vec()),
+                        )
+                        .unwrap();
                     let pruned = if jumbled {
                         crate::jumbled_woadwage::tests::kad_for(&kept)
                     } else {
@@ -14662,19 +14664,21 @@ mod tests {
             ] {
                 let board = late_board(&gc, racks);
                 let mut found = fash::MyHashSet::<bites::Bites>::default();
-                movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                    &movegen::BoardSnapshot {
-                        board_tiles: &board,
-                        game_config: &gc,
-                        kwg: &whole,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: &klv,
-                    },
-                    |word: &[u8]| {
-                        found.insert(word.into());
-                    },
-                );
+                movegen::KurniaMoveGenerator::new(&gc)
+                    .gen_remaining_words(
+                        &movegen::BoardSnapshot {
+                            board_tiles: &board,
+                            game_config: &gc,
+                            kwg: &whole,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        |word: &[u8]| {
+                            found.insert(word.into());
+                        },
+                    )
+                    .unwrap();
                 let mut found = found.into_iter().collect::<Vec<_>>();
                 found.sort_unstable();
                 let found = if jumbled {
@@ -14872,17 +14876,19 @@ mod tests {
                     board[empty[pick(empty.len(), &mut scatter)]] = tile;
                 }
                 let mut kept = Vec::<bites::Bites>::new();
-                movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                    &movegen::BoardSnapshot {
-                        board_tiles: &board,
-                        game_config: &gc,
-                        kwg: &kwg,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: &klv,
-                    },
-                    |word: &[u8]| kept.push(word.into()),
-                );
+                movegen::KurniaMoveGenerator::new(&gc)
+                    .gen_remaining_words(
+                        &movegen::BoardSnapshot {
+                            board_tiles: &board,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: &klv,
+                        },
+                        |word: &[u8]| kept.push(word.into()),
+                    )
+                    .unwrap();
                 assert!(kept.windows(2).all(|pair| pair[0] < pair[1]));
                 words_kept += kept.len();
                 for _ in 0..3 {
@@ -14949,17 +14955,19 @@ mod tests {
                     .collect::<Vec<_>>();
                 for _ in 0..12 {
                     let mut words = Vec::<bites::Bites>::new();
-                    movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                        &movegen::BoardSnapshot {
-                            board_tiles: &board,
-                            game_config: &gc,
-                            kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: &klv,
-                        },
-                        |word: &[u8]| words.push(word.into()),
-                    );
+                    movegen::KurniaMoveGenerator::new(&gc)
+                        .gen_remaining_words(
+                            &movegen::BoardSnapshot {
+                                board_tiles: &board,
+                                game_config: &gc,
+                                kwg: &kwg,
+                                anagrams: None,
+                                rack_lengths: None,
+                                klv: &klv,
+                            },
+                            |word: &[u8]| words.push(word.into()),
+                        )
+                        .unwrap();
                     let board_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
                         &build::build_for_game(&gc, &words).unwrap(),
                     )

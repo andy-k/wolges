@@ -130,13 +130,15 @@ fn peg_draw_outcomes() {
             };
             let after = after_play(draws.first_key_value().unwrap().0);
             let mut words = Vec::new();
-            movegen::KurniaMoveGenerator::new(&gc).gen_remaining_words(
-                &movegen::BoardSnapshot {
-                    board_tiles: &after.board_tiles,
-                    ..snapshot
-                },
-                |word| words.push(word.into()),
-            );
+            movegen::KurniaMoveGenerator::new(&gc)
+                .gen_remaining_words(
+                    &movegen::BoardSnapshot {
+                        board_tiles: &after.board_tiles,
+                        ..snapshot
+                    },
+                    |word| words.push(word.into()),
+                )
+                .unwrap();
             let pruned = build::graph_for_game(&gc, &words).unwrap();
             let mut solver =
                 endgame::EndgameSolver::<_, kwg::Node24>::new(&gc, pruned.kwg(), &arm_tables)
