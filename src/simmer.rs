@@ -176,6 +176,8 @@ pub struct Simmer<
     final_scores: Box<[i32]>,
     plies_played: Vec<PlyPlayed>, // the last rollout's, after its candidate
     reply_equity: Option<equity::Equity>, // the last rollout's ply-1 reply, as reply_to values it
+    #[cfg(not(target_family = "wasm"))]
+    preempty: Option<crate::move_filter::GenMoves<'static>>,
 
     move_generator: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
     start_board: movegen::BoardState, // the generator's there, once it has been
@@ -281,6 +283,8 @@ impl<
             final_scores: vec![0; game_config.num_players() as usize].into_boxed_slice(),
             plies_played: Vec::new(),
             reply_equity: None,
+            #[cfg(not(target_family = "wasm"))]
+            preempty: None,
 
             move_generator,
             start_board: movegen::BoardState::default(),
@@ -319,6 +323,16 @@ impl<
         self.rng = R::seed_from_u64(seed);
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn set_preempty(&mut self, filter: Option<&crate::move_filter::GenMoves<'_>>) {
+        self.preempty = filter.map(crate::move_filter::GenMoves::owned);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preempty_enabled(&self) -> bool {
+        self.preempty.is_some()
+    }
+
     // before the rollouts walk a graph other than the one they last walked
     #[inline(always)]
     pub fn reset_for_another_kwg(&mut self) {
@@ -342,6 +356,8 @@ impl<
     #[inline]
     pub fn prepare_as(&mut self, game_config: &game_config::GameConfig, other: &Self) {
         self.rng = R::seed_from_u64(0);
+        #[cfg(not(target_family = "wasm"))]
+        self.set_preempty(other.preempty.as_ref());
         self.prepare_sharing(
             game_config,
             &other.initial_game_state,
@@ -835,6 +851,16 @@ impl<
                 next_play = movegen::Play::Exchange {
                     tiles: [][..].into(),
                 };
+            } else if {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    self.pick_preempty(game_config, kwg, arm_tables, klv, ply, &mut next_play)?
+                }
+                #[cfg(target_family = "wasm")]
+                {
+                    false
+                }
+            } {
             } else if ply == 1 && infer::bag_size(&self.game_state.board_tiles, game_config) > 0 {
                 let reply = self.reply_at_ply_one::<LEAN, _, _>(
                     game_config,
@@ -967,6 +993,63 @@ impl<
             }
         }
         Ok(false)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn pick_preempty<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
+        klv: &klv::Klv<L>,
+        ply: usize,
+        next_play: &mut movegen::Play,
+    ) -> error::Returns<bool> {
+        let Some(filter) = &mut self.preempty else {
+            return Ok(false);
+        };
+        if !crate::preempty::applies(game_config, self.game_state.bag.len()) {
+            return Ok(false);
+        }
+        let snapshot = movegen::BoardSnapshot {
+            board_tiles: &self.game_state.board_tiles,
+            game_config,
+            kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv,
+        };
+        let player = self.game_state.current_player();
+        let exchanges = if ply > self.num_sim_plies {
+            game_config.exchanges_allowed_per_player()
+        } else {
+            player.num_exchanges
+        };
+        let filter = if self.game_state.turn == self.initial_game_state.turn {
+            filter
+        } else {
+            &mut crate::move_filter::GenMoves::Unfiltered
+        };
+        filter.gen_moves_with(
+            &mut self.move_generator,
+            &snapshot,
+            &player.rack,
+            exchanges,
+            usize::MAX,
+            None,
+        );
+        crate::preempty::pick_generated(
+            &mut self.move_generator.plays,
+            &snapshot,
+            &player.rack,
+            self.game_state.bag.len(),
+        )?;
+        let picked = &self.move_generator.plays[0];
+        if ply == 1 {
+            self.reply_equity = Some(picked.equity);
+        }
+        copy_within(&self.room, next_play, &picked.play);
+        Ok(true)
     }
 
     // the reply at ply 1, the opponent's move on the board after the candidate,

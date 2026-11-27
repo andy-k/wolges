@@ -574,6 +574,26 @@ struct Compare {
     p1_rollout_pool: bool,
     #[arg(
         long,
+        help = "seat p0 values each move that empties the bag over every draw, less the opponent's best out play then"
+    )]
+    p0_preempty: bool,
+    #[arg(
+        long,
+        help = "seat p1 values each move that empties the bag over every draw, less the opponent's best out play then"
+    )]
+    p1_preempty: bool,
+    #[arg(
+        long,
+        help = "use the pre-empty pick for seat p0's final simmer pick too"
+    )]
+    p0_preempty_final: bool,
+    #[arg(
+        long,
+        help = "use the pre-empty pick for seat p1's final simmer pick too"
+    )]
+    p1_preempty_final: bool,
+    #[arg(
+        long,
         value_name = "POINTS",
         help = "seat p0, when deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
     )]
@@ -1308,8 +1328,31 @@ fn run(
                     (std::sync::Arc::clone(&klv), klv)
                 }
             };
+            let preempty = [
+                (a.p0_preempty, a.p0_preempty_final),
+                (a.p1_preempty, a.p1_preempty_final),
+            ]
+            .map(|(enabled, final_pick)| {
+                if final_pick {
+                    move_picker::PreemptyMode::WithSimmerRoot
+                } else if enabled {
+                    move_picker::PreemptyMode::Static
+                } else {
+                    move_picker::PreemptyMode::Off
+                }
+            });
+            #[cfg(target_family = "wasm")]
+            if preempty
+                .iter()
+                .any(|mode| !matches!(mode, move_picker::PreemptyMode::Off))
+            {
+                wolges::return_error!("the pre-empty pick requires a native build".to_string());
+            }
             let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
-                && hasty_throughout(a.p1_picker, a.p1_endgame);
+                && hasty_throughout(a.p1_picker, a.p1_endgame)
+                && preempty
+                    .iter()
+                    .all(|mode| matches!(mode, move_picker::PreemptyMode::Off));
             let turn_times = [(a.p0_picker, a.p0_time_ms), (a.p1_picker, a.p1_time_ms)].map(
                 |(picker, time)| -> error::Returns<_> {
                     if time.is_some()
@@ -1355,6 +1398,7 @@ fn run(
                 turn_times: [p0_time?, p1_time?],
                 fuzz_by_bag: [a.p0_fuzz_by_bag, a.p1_fuzz_by_bag],
                 rollout_pool: [a.p0_rollout_pool, a.p1_rollout_pool],
+                preempty,
                 p0_window,
                 p1_window,
                 p0_endgame: a.p0_endgame,
@@ -10776,6 +10820,7 @@ struct CompareParams {
     turn_times: [Option<std::time::Duration>; 2],
     fuzz_by_bag: [bool; 2], // each seat's simmer infers with infer::fitted_fuzz
     rollout_pool: [bool; 2], // each seat's simmer values its rollouts' leaves from its decision's pool
+    preempty: [move_picker::PreemptyMode; 2], // by compare seat
     p0_window: i32,
     p1_window: i32,
     p0_endgame: Option<EndPicker>,
@@ -11048,6 +11093,7 @@ fn compare_seats<
         turn_times,
         fuzz_by_bag,
         rollout_pool,
+        preempty,
         p0_window,
         p1_window,
         p0_endgame,
@@ -11174,6 +11220,17 @@ fn compare_seats<
         ),
     )?;
 
+    for (seat, _) in preempty
+        .iter()
+        .enumerate()
+        .filter(|(_, mode)| !matches!(mode, move_picker::PreemptyMode::Off))
+    {
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "compare: p{seat} values each move that empties the bag over every draw",
+        )?;
+    }
+
     for (seat, time) in turn_times.into_iter().enumerate() {
         if let Some(time) = time {
             writeln!(
@@ -11207,6 +11264,8 @@ fn compare_seats<
             let reported_secs = &reported_secs;
             let hasty = hasty.as_ref();
             let positional = &positional;
+            #[cfg(not(target_family = "wasm"))]
+            let preempty = &preempty;
             thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
                 let mut generator = CompareMoveGenerator::<LEAN>::new(&game_config);
                 let mut paired = movegen::PairedHasty::default();
@@ -11373,27 +11432,48 @@ fn compare_seats<
                                     }
                                 }
                                 let seat = game_state.turn as usize;
-                                let play = if matches!(driver, move_picker::MovePicker::Hasty) {
+                                #[cfg(not(target_family = "wasm"))]
+                                let mode = &preempty[!is_p0_seat as usize];
+                                #[cfg(not(target_family = "wasm"))]
+                                let preempty_turn = !matches!(mode, move_picker::PreemptyMode::Off)
+                                    && wolges::preempty::applies(
+                                        &game_config,
+                                        game_state.bag.len(),
+                                    );
+                                #[cfg(target_family = "wasm")]
+                                let preempty_turn = false;
+                                let play = if matches!(driver, move_picker::MovePicker::Hasty)
+                                    && !preempty_turn
+                                {
                                     let params = compare_hasty_params(
                                         &board_snapshot,
                                         game_state.current_player(),
                                     );
                                     generator.best(&params)
                                 } else {
+                                    let last =
+                                        last_play.as_ref().map(|play| move_picker::LastMove {
+                                            board_before: &last_board,
+                                            play,
+                                            held: Held::Kept(&carried[seat], &put_back[seat]),
+                                        });
+                                    #[cfg(not(target_family = "wasm"))]
+                                    driver.pick_a_move_after_with_preempty(
+                                        &mut filtered_movegen,
+                                        &mut generator.general,
+                                        &board_snapshot,
+                                        &game_state,
+                                        &game_state.current_player().rack,
+                                        (last, &mut next_carried, mode),
+                                    )?;
+                                    #[cfg(target_family = "wasm")]
                                     driver.pick_a_move_after(
                                         &mut filtered_movegen,
                                         &mut generator.general,
                                         &board_snapshot,
                                         &game_state,
                                         &game_state.current_player().rack,
-                                        (
-                                            last_play.as_ref().map(|play| move_picker::LastMove {
-                                                board_before: &last_board,
-                                                play,
-                                                held: Held::Kept(&carried[seat], &put_back[seat]),
-                                            }),
-                                            &mut next_carried,
-                                        ),
+                                        (last, &mut next_carried),
                                     )?;
                                     std::mem::swap(&mut carried[seat], &mut next_carried);
                                     &generator.general.plays[0].play

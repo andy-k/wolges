@@ -74,38 +74,76 @@ pub fn footprint(dim: &matrix::Dim, board_tiles: &[u8], play: &movegen::Play) ->
     };
     fp.down = *down;
     fp.lane = *lane;
-    let strider = dim.lane(*down, *lane);
+    visit_place(
+        dim,
+        board_tiles,
+        (*down, *lane, *idx, word),
+        |square| fp.fills.set(square),
+        |square| fp.zone.set(square),
+    );
+    fp
+}
+
+#[inline]
+fn visit_place(
+    dim: &matrix::Dim,
+    board_tiles: &[u8],
+    (down, lane, idx, word): (bool, i8, i8, &[u8]),
+    mut fills: impl FnMut(usize),
+    mut zone: impl FnMut(usize),
+) {
+    let strider = dim.lane(down, lane);
     let len = word.len() as i8;
-    if *idx > 0 {
-        fp.zone.set(strider.at(idx - 1));
+    if idx > 0 {
+        zone(strider.at(idx - 1));
     }
     if idx + len < strider.len() {
-        fp.zone.set(strider.at(idx + len));
+        zone(strider.at(idx + len));
     }
-    for (pos, &tile) in (*idx..).zip(word.iter()) {
+    for (pos, &tile) in (idx..).zip(word.iter()) {
         if tile == 0 {
             continue;
         }
         let square = strider.at(pos);
-        fp.fills.set(square);
-        fp.zone.set(square);
-        let across = dim.lane(!*down, pos);
+        fills(square);
+        zone(square);
+        let across = dim.lane(!down, pos);
         let mut j = lane - 1;
         while j >= 0 && board_tiles[across.at(j)] != 0 {
             j -= 1;
         }
         if j >= 0 {
-            fp.zone.set(across.at(j));
+            zone(across.at(j));
         }
         let mut j = lane + 1;
         while j < across.len() && board_tiles[across.at(j)] != 0 {
             j += 1;
         }
         if j < across.len() {
-            fp.zone.set(across.at(j));
+            zone(across.at(j));
         }
     }
-    fp
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn place_lanes(
+    dim: &matrix::Dim,
+    board_tiles: &[u8],
+    place: (bool, i8, i8, &[u8]),
+) -> (u128, u128) {
+    let (mut rows, mut cols) = (0u128, 0u128);
+    let width = dim.cols as usize;
+    visit_place(
+        dim,
+        board_tiles,
+        place,
+        |_| {},
+        |square| {
+            rows |= 1 << (square / width);
+            cols |= 1 << (square % width);
+        },
+    );
+    (rows, cols)
 }
 
 // the rows and columns holding a square of a zone: the lanes whose plays a move
