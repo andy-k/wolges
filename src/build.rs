@@ -328,7 +328,7 @@ impl MachineWords for [bites::Bites] {
 
 // a packed word: where its tiles start in the words' tiles, how many there
 // are, and its first tiles as a number that orders as they do
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PackedWord {
     key: u64, // the first 8 tiles, big-endian, 0 past the last
     start: u32,
@@ -354,7 +354,7 @@ impl MachineWords for PackedWords {
 
     #[inline(always)]
     fn word(&self, index: usize) -> &[u8] {
-        let word = self.words[index];
+        let word = self.words[index].clone();
         &self.tiles[word.start as usize..(word.start + word.len) as usize]
     }
 
