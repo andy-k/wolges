@@ -2119,7 +2119,7 @@ impl PositionalTerm {
 pub struct Deft {
     window: i32,
     positional: Option<PositionalTerm>,
-    scratch: Option<((i8, i8, u8), Box<Scratch>)>,
+    scratch: ScratchSlot,
 }
 
 impl Deft {
@@ -2142,19 +2142,43 @@ impl Deft {
         &mut self,
         game_config: &game_config::GameConfig,
     ) -> (Option<&PositionalTerm>, &mut Scratch) {
-        let dim = game_config.board_layout().dim();
-        let made_for = (dim.rows, dim.cols, game_config.alphabet().len());
-        if self
-            .scratch
-            .as_ref()
-            .is_some_and(|(was, _)| *was != made_for)
-        {
-            self.scratch = None;
+        (
+            self.positional.as_ref(),
+            scratch_of(&mut self.scratch, game_config),
+        )
+    }
+}
+
+type ScratchSlot = Option<((i8, i8, u8), Box<Scratch>)>;
+
+#[inline]
+fn scratch_of<'s>(
+    slot: &'s mut ScratchSlot,
+    game_config: &game_config::GameConfig,
+) -> &'s mut Scratch {
+    let dim = game_config.board_layout().dim();
+    let made_for = (dim.rows, dim.cols, game_config.alphabet().len());
+    if slot.as_ref().is_some_and(|(was, _)| *was != made_for) {
+        *slot = None;
+    }
+    let (_, scratch) = slot.get_or_insert_with(|| (made_for, Box::new(Scratch::new(game_config))));
+    scratch
+}
+
+pub struct Positional<'a> {
+    dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
+    term: PositionalTerm,
+    scratch: ScratchSlot,
+}
+
+impl<'a> Positional<'a> {
+    #[inline(always)]
+    pub fn new(dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>, term: PositionalTerm) -> Self {
+        Self {
+            dynamic_leaves,
+            term,
+            scratch: None,
         }
-        let (_, scratch) = self
-            .scratch
-            .get_or_insert_with(|| (made_for, Box::new(Scratch::new(game_config))));
-        (self.positional.as_ref(), scratch)
     }
 }
 
@@ -2183,6 +2207,7 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Dynamic(klv::DynamicLeavesRef<'a>),
     Simmer(Box<Simmer<'a, N, L>>),
     Deft(Deft),
+    Positional(Box<Positional<'a>>),
 }
 
 impl<
@@ -2905,6 +2930,7 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
             let dynamic = match self {
                 MovePicker::Dynamic(leaves) => Some(*leaves),
                 MovePicker::Simmer(simmer) => simmer.dynamic_root,
+                MovePicker::Positional(positional) => positional.dynamic_leaves,
                 _ => None,
             };
             filtered_movegen.gen_moves(
@@ -2925,6 +2951,15 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                         scratch,
                     )?;
                 }
+            }
+            if let MovePicker::Positional(positional) = self {
+                let Positional { term, scratch, .. } = &mut **positional;
+                term.add_to(
+                    game_config,
+                    &game_state.board_tiles,
+                    &mut move_generator.plays,
+                    scratch_of(scratch, game_config),
+                )?;
             }
             return crate::preempty::pick_generated(
                 &mut move_generator.plays,
@@ -3117,6 +3152,29 @@ impl<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>
                         move_generator.plays.truncate(1);
                     }
                 }
+            }
+            MovePicker::Positional(positional) => {
+                let game_config = board_snapshot.game_config;
+                let Positional {
+                    dynamic_leaves,
+                    term,
+                    scratch,
+                } = &mut **positional;
+                filtered_movegen.gen_moves(
+                    move_generator,
+                    board_snapshot,
+                    rack,
+                    game_state.current_player().num_exchanges,
+                    usize::MAX,
+                    *dynamic_leaves,
+                )?;
+                term.add_to(
+                    game_config,
+                    &game_state.board_tiles,
+                    &mut move_generator.plays,
+                    scratch_of(scratch, game_config),
+                )?;
+                move_generator.plays.truncate(1);
             }
         }
         Ok(())
@@ -5787,5 +5845,123 @@ mod tests {
         let num_letters = game_config.alphabet().len() as usize;
         let other = klv.revalued(num_letters, |tally, leave| leave + 1000 * tally[1] as i32);
         assert_ne!(decide(Some(std::sync::Arc::new(other))), untold);
+    }
+
+    fn picks_by<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync + 'static>(
+        mut picker: MovePicker<'_, N, L>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        game_state: &game_state::GameState,
+    ) -> String {
+        let mut move_generator = movegen::KurniaMoveGenerator::new(board_snapshot.game_config);
+        picker
+            .pick_a_move(
+                &mut move_filter::GenMoves::Unfiltered,
+                &mut move_generator,
+                board_snapshot,
+                game_state,
+                &game_state.players[game_state.turn as usize].rack,
+            )
+            .unwrap();
+        assert_eq!(move_generator.plays.len(), 1);
+        move_generator.plays[0]
+            .play
+            .fmt(board_snapshot)
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    #[inline]
+    fn hasty_with_a_zero_positional_term_plays_as_hasty() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = end_words_kwg(&game_config);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let (board_tiles, positions) = care_positions(&game_config);
+        let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let zero = PositionalTerm::parse("3 1 1 0\n2 1 1 0\n1 3 1 0\n1 2 1 0\n").unwrap();
+        for game_state in &positions {
+            assert_eq!(
+                picks_by(
+                    MovePicker::Positional(Box::new(Positional::new(None, zero.clone()))),
+                    &board_snapshot,
+                    game_state
+                ),
+                picks_by(MovePicker::Hasty, &board_snapshot, game_state),
+            );
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn hasty_takes_the_move_its_positional_term_values_most_of_all_its_moves() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = end_words_kwg(&game_config);
+        let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
+        let (board_tiles, positions) = care_positions(&game_config);
+        let board_snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let term =
+            PositionalTerm::parse("3 1 1 -100\n2 1 1 -100\n1 3 1 -100\n1 2 1 -100\n").unwrap();
+        let (mut reach, mut after) = (Vec::new(), Vec::new());
+        let before = term.value_of(&game_config, &board_tiles, &mut reach);
+        let mut changed = 0;
+        for game_state in &positions {
+            let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+            move_filter::GenMoves::Unfiltered
+                .gen_moves(
+                    &mut move_generator,
+                    &board_snapshot,
+                    &game_state.players[game_state.turn as usize].rack,
+                    0,
+                    usize::MAX,
+                    None,
+                )
+                .unwrap();
+            let sums = move_generator
+                .plays
+                .iter()
+                .map(|m| {
+                    let added = if places_no_tiles(&m.play) {
+                        0
+                    } else {
+                        glance::board_after(&game_config, &board_tiles, &m.play, &mut after);
+                        term.value_of(&game_config, &after, &mut reach) - before
+                    };
+                    (
+                        m.equity.raw() as i64 + added,
+                        m.play.fmt(&board_snapshot).unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let most = sums.iter().map(|&(sum, _)| sum).max().unwrap();
+            let picked = picks_by(
+                MovePicker::Positional(Box::new(Positional::new(None, term.clone()))),
+                &board_snapshot,
+                game_state,
+            );
+            assert!(
+                sums.iter()
+                    .any(|(sum, play)| *sum == most && *play == picked),
+                "{picked} of {sums:?}"
+            );
+            changed +=
+                (picked != picks_by(MovePicker::Hasty, &board_snapshot, game_state)) as usize;
+        }
+        assert!(changed > 0, "the term changed no pick");
     }
 }
