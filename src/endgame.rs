@@ -3194,6 +3194,32 @@ impl<
         key ^ scoreless.key()
     }
 
+    fn placement_key(&self, key: u64, mover: u8, play: &movegen::Play, counts: &mut [u8]) -> u64 {
+        let movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            ..
+        } = play
+        else {
+            unreachable!();
+        };
+        let strider = self.game_config.board_layout().dim().lane(*down, *lane);
+        let mut key = key;
+        for (i, &tile) in (*idx..).zip(word.iter()).filter(|(_, tile)| **tile != 0) {
+            let held = held_tile(tile);
+            let count = &mut counts[usize::from(held)];
+            *count -= 1;
+            key ^= square_key(strider.at_in_lane(i), tile);
+            key ^= rack_step(mover, held, usize::from(*count));
+        }
+        for &tile in word.iter().filter(|&&tile| tile != 0) {
+            counts[usize::from(held_tile(tile))] += 1;
+        }
+        key
+    }
+
     // whether a pass at a node with these scoreless turns before it ends the
     // line, on the position searched
     #[inline(always)]
@@ -4966,10 +4992,102 @@ impl<
         if depth == 1 && !work_buffer.lists[ply].is_empty() {
             return Ok(Some(self.search_last_ply(node, root, key, table_first)));
         }
-        work_buffer
-            .frames
-            .push(Frame::new(node, root, key, table_first));
+        let mut frame = Frame::new(node, root, key, table_first);
+        if self.work_buffer.in_bag.is_none() && self.read_child_values(&mut frame) {
+            self.finish(&frame);
+            return Ok(Some(frame.best));
+        }
+        self.work_buffer.frames.push(frame);
         Ok(None)
+    }
+
+    fn read_child_values(&mut self, frame: &mut Frame) -> bool {
+        let Enter {
+            ply,
+            player_idx,
+            depth,
+            alpha,
+            beta,
+            scoreless,
+            ..
+        } = frame.node;
+        let mut key = frame.key ^ scoreless.key() ^ zobrist(SECOND_TO_MOVE);
+        if frame.root {
+            key ^= self.root_moves.map_or(0, |moves| moves.key);
+        }
+        let mut counts = [0; i8::MAX as usize + 1];
+        for &tile in &self.work_buffer.racks[usize::from(player_idx)] {
+            counts[usize::from(tile)] += 1;
+        }
+        let mut cutoff = None;
+        let mut first = None;
+        for (i, &ordered) in self.work_buffer.orders[ply].iter().enumerate() {
+            let found = ordered_play_index(ordered);
+            let candidate = &self.work_buffer.lists[ply][found];
+            if candidate.plays_out {
+                continue;
+            }
+            let child_key = self.placement_key(key, player_idx, &candidate.play, &mut counts);
+            let Some(entry) = self
+                .work_buffer
+                .table
+                .probe(child_key)
+                .filter(|entry| entry.depth >= depth - 1)
+            else {
+                continue;
+            };
+            let value = candidate.valuation.finite_sub(entry.value);
+            if entry.bound != Bound::Lower
+                && value >= beta
+                && cutoff.is_none()
+                && (!frame.root || i == 0)
+            {
+                cutoff = Some((Some(found), value, entry.depth == COMPLETE));
+            }
+            if i == 0
+                && (entry.bound == Bound::Exact || entry.bound == Bound::Lower && value <= alpha)
+            {
+                first = Some((candidate.index, value, entry.depth == COMPLETE));
+            }
+        }
+        if self.allows_pass(frame.root) && !self.pass_ends_the_line(scoreless) {
+            let forced = self.work_buffer.lists[ply].is_empty();
+            let child_depth = depth - i8::from(!forced);
+            if let Some(entry) = self
+                .work_buffer
+                .table
+                .probe(key ^ Scoreless::Answering.key())
+                && entry.depth >= child_depth
+                && entry.bound != Bound::Lower
+                && -entry.value >= beta
+                && cutoff.is_none()
+                && (!frame.root || forced)
+            {
+                cutoff = Some((None, -entry.value, entry.depth == COMPLETE));
+            }
+        }
+        let Some((found, value, complete)) = cutoff else {
+            if let Some((index, value, complete)) = first {
+                frame.best.complete = complete;
+                frame.first_is_best = frame.root && index == self.work_buffer.root_best;
+                frame.take_value(&mut self.work_buffer.proven, 0, index, value);
+                frame.next = 1;
+            }
+            return false;
+        };
+        let index = if let Some(found) = found {
+            let work_buffer = &mut self.work_buffer;
+            let list = &mut work_buffer.lists[ply];
+            if !frame.table_first && ordered_play_index(work_buffer.orders[ply][0]) != found {
+                order(list, &mut work_buffer.orders[ply][1..], 1, NO_PLAY);
+            }
+            list[found].index
+        } else {
+            PASS_PLAY
+        };
+        frame.best = Searched { value, complete };
+        frame.best_play = index;
+        true
     }
 
     // the top frame's next step: the next move or the pass to search below it,
@@ -12963,6 +13081,222 @@ mod tests {
         (all_positions().into_iter())
             .filter(|(name, _)| names.contains(&&name[..]))
             .collect()
+    }
+
+    #[test]
+    fn child_entries_cut_with_incremental_keys() {
+        use super::{
+            Bound, COMPLETE, Enter, Entry, Frame, NO_PLAY, SECOND_TO_MOVE, Scoreless, order_first,
+            zobrist,
+        };
+
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        let mut cuts = 0;
+        for (name, pos) in all_positions() {
+            for player_idx in 0..gc.num_players() {
+                solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+                solver.reset_position();
+                solver.generate(0, player_idx, false).unwrap();
+                let work = &mut solver.work_buffer;
+                order_first(&mut work.lists[0], &mut work.orders[0]);
+                let scoreless = Scoreless::Answering;
+                let key = solver.node_key(player_idx, scoreless);
+                let mut counts = [0; i8::MAX as usize + 1];
+                for &tile in &solver.work_buffer.racks[usize::from(player_idx)] {
+                    counts[usize::from(tile)] += 1;
+                }
+                let child_scoreless = Scoreless::Counted {
+                    passes: 0,
+                    zeros: 0,
+                };
+                for found in 0..solver.work_buffer.lists[0].len() {
+                    let candidate = &solver.work_buffer.lists[0][found];
+                    if candidate.plays_out {
+                        continue;
+                    }
+                    let (play, beta) = (candidate.play.clone(), candidate.valuation);
+                    let child_key = solver.placement_key(
+                        key ^ scoreless.key() ^ zobrist(SECOND_TO_MOVE),
+                        player_idx,
+                        &play,
+                        &mut counts,
+                    );
+                    solver.place(player_idx, &play);
+                    assert_eq!(
+                        child_key,
+                        solver.node_key(player_idx ^ 1, child_scoreless),
+                        "{name}"
+                    );
+                    solver.unplace(player_idx, &play);
+                    solver.work_buffer.table.renew();
+                    solver.work_buffer.table.store(
+                        child_key,
+                        Entry {
+                            value: equity::Equity::ZERO,
+                            play: NO_PLAY,
+                            depth: COMPLETE,
+                            bound: Bound::Upper,
+                        },
+                    );
+                    let node = Enter {
+                        ply: 0,
+                        player_idx,
+                        depth: 2,
+                        alpha: equity::Equity::NEG_INFINITY,
+                        beta,
+                        scoreless,
+                    };
+                    let mut frame = Frame::new(node, false, key, false);
+                    assert!(solver.read_child_values(&mut frame), "{name}");
+                    assert_eq!(frame.best.value, beta, "{name}");
+                    assert!(frame.best.complete, "{name}");
+                    assert_eq!(frame.best_play, solver.work_buffer.lists[0][found].index);
+                    assert_ne!(frame.best_play, NO_PLAY, "{name}");
+                    cuts += 1;
+                }
+            }
+        }
+        assert!(cuts > 0);
+    }
+
+    #[test]
+    fn child_entry_gives_the_first_move_value() {
+        use super::{
+            Bound, COMPLETE, Enter, Entry, Frame, NO_PLAY, SECOND_TO_MOVE, Scoreless, order_first,
+            ordered_play_index, zobrist,
+        };
+
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        let scoreless = Scoreless::Counted {
+            passes: 0,
+            zeros: 0,
+        };
+        let mut reused = 0;
+        for (name, pos) in all_positions() {
+            for player_idx in 0..gc.num_players() {
+                solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+                solver.reset_position();
+                solver.generate(0, player_idx, false).unwrap();
+                let work = &mut solver.work_buffer;
+                order_first(&mut work.lists[0], &mut work.orders[0]);
+                let Some(&ordered) = solver.work_buffer.orders[0].first() else {
+                    continue;
+                };
+                let candidate = &solver.work_buffer.lists[0][ordered_play_index(ordered)];
+                if candidate.plays_out {
+                    continue;
+                }
+                let (play, index) = (candidate.play.clone(), candidate.index);
+                let valuation = candidate.valuation;
+                let key = solver.node_key(player_idx, scoreless);
+                let mut counts = [0; i8::MAX as usize + 1];
+                for &tile in &solver.work_buffer.racks[usize::from(player_idx)] {
+                    counts[usize::from(tile)] += 1;
+                }
+                let child_key = solver.placement_key(
+                    key ^ scoreless.key() ^ zobrist(SECOND_TO_MOVE),
+                    player_idx,
+                    &play,
+                    &mut counts,
+                );
+                solver.work_buffer.table.renew();
+                solver.work_buffer.table.store(
+                    child_key,
+                    Entry {
+                        value: equity::Equity::ZERO,
+                        play: NO_PLAY,
+                        depth: COMPLETE,
+                        bound: Bound::Exact,
+                    },
+                );
+                let node = Enter {
+                    ply: 0,
+                    player_idx,
+                    depth: 2,
+                    alpha: equity::Equity::NEG_INFINITY,
+                    beta: equity::Equity::INFINITY,
+                    scoreless,
+                };
+                let mut frame = Frame::new(node, false, key, false);
+                assert!(!solver.read_child_values(&mut frame), "{name}");
+                assert_eq!(frame.next, 1, "{name}");
+                assert_eq!(frame.best.value, valuation, "{name}");
+                assert!(frame.best.complete, "{name}");
+                assert_eq!(frame.best_play, index, "{name}");
+                reused += 1;
+            }
+        }
+        assert!(reused > 0);
+    }
+
+    #[test]
+    fn pass_entry_cuts() {
+        use super::{
+            Bound, COMPLETE, Enter, Entry, Frame, NO_PLAY, PASS_PLAY, SECOND_TO_MOVE, Scoreless,
+            order_first, zobrist,
+        };
+
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        let scoreless = Scoreless::Counted {
+            passes: 0,
+            zeros: 0,
+        };
+        let mut cuts = 0;
+        for (name, pos) in all_positions() {
+            for player_idx in 0..gc.num_players() {
+                solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+                solver.reset_position();
+                solver.generate(0, player_idx, false).unwrap();
+                let work = &mut solver.work_buffer;
+                order_first(&mut work.lists[0], &mut work.orders[0]);
+                let key = solver.node_key(player_idx, scoreless);
+                let pass_key = key ^ scoreless.key() ^ zobrist(SECOND_TO_MOVE);
+                let pass_key = pass_key ^ Scoreless::Answering.key();
+                assert_eq!(
+                    pass_key,
+                    solver.node_key(player_idx ^ 1, Scoreless::Answering),
+                    "{name}"
+                );
+                let value = equity::Equity::ZERO;
+                solver.work_buffer.table.renew();
+                solver.work_buffer.table.store(
+                    pass_key,
+                    Entry {
+                        value,
+                        play: NO_PLAY,
+                        depth: COMPLETE,
+                        bound: Bound::Upper,
+                    },
+                );
+                let node = Enter {
+                    ply: 0,
+                    player_idx,
+                    depth: 2,
+                    alpha: equity::Equity::NEG_INFINITY,
+                    beta: -value,
+                    scoreless,
+                };
+                let mut frame = Frame::new(node, false, key, false);
+                assert!(solver.read_child_values(&mut frame), "{name}");
+                assert_eq!(frame.best.value, -value, "{name}");
+                assert!(frame.best.complete, "{name}");
+                assert_eq!(frame.best_play, PASS_PLAY, "{name}");
+                cuts += 1;
+            }
+        }
+        assert!(cuts > 0);
     }
 
     #[test]
