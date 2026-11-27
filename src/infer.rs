@@ -4903,4 +4903,139 @@ mod tests {
         }
         assert!(placements > 0 && exchanges > 0, "{placements} {exchanges}");
     }
+
+    #[test]
+    #[inline]
+    fn an_inference_from_kept_tables_is_one_from_new_tables() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let klv = valued_klv();
+        let mid = mid_board(&game_config, 79);
+        let wide = mid_board(&game_config, 74);
+        let ta = movegen::Play::Place {
+            down: false,
+            lane: 7,
+            idx: 6,
+            word: [20, 0][..].into(),
+            score: equity::Equity::ZERO,
+        };
+        let cases: [(&[u8], &[u8], &movegen::Play, bool); 8] = [
+            (&mid, &[26], &ta, false),
+            (&wide, &[26], &ta, false),
+            (&mid, &[26], &exchange_of(2), true),
+            (&mid, &[26], &exchange_of(0), false),
+            (&wide, &[26], &exchange_of(3), false),
+            (&mid, &[26], &ta, true),
+            (&wide, &[26], &exchange_of(0), true),
+            (&mid, &[26], &exchange_of(2), false),
+        ];
+        let (mut generated, mut sheeted) = (false, false);
+        for &(board_tiles, watcher, play, _) in &cases {
+            let mut pool = game_config.tiles_off_board(board_tiles).unwrap();
+            game_config.take_rack(&mut pool, watcher).unwrap();
+            let mut placed = vec![0u8; pool.len()];
+            let (exchanged, _) = move_tiles_and_value(
+                &movegen::BoardSnapshot {
+                    board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                play,
+                &mut placed,
+            )
+            .unwrap();
+            let num_racks = match exchanged {
+                Some(_) => count_tallies_of_size(&pool, game_config.rack_size() as usize),
+                None => count_tallies_of_size(
+                    &less(&pool, &placed),
+                    game_config.rack_size() as usize
+                        - placed.iter().map(|&c| c as usize).sum::<usize>(),
+                ),
+            };
+            if num_racks <= GENERATE_EACH_RACK_UPTO_LEAN && board_tiles.iter().any(|&t| t != 0) {
+                generated = true;
+            } else {
+                sheeted = true;
+            }
+        }
+        assert!(generated && sheeted);
+        let infer =
+            |tables: &mut InferTables,
+             move_generator: &mut movegen::KurniaMoveGenerator,
+             (board_tiles, watcher, play, lean): (&[u8], &[u8], &movegen::Play, bool)| {
+                let board_snapshot = movegen::BoardSnapshot {
+                    board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                let options = InferOptions {
+                    fuzz: FUZZ,
+                    threads: 1,
+                    weigh_passes: true,
+                };
+                let mut carried = Carried::default();
+                let leaves = if lean {
+                    kept_leaves_packed_lean(
+                        tables,
+                        move_generator,
+                        &board_snapshot,
+                        watcher,
+                        play,
+                        options,
+                    )
+                    .unwrap()
+                } else {
+                    let mut leaves = PackedLeaves::new();
+                    kept_leaves_carried_into(
+                        tables,
+                        move_generator,
+                        &board_snapshot,
+                        watcher,
+                        (play, Held::Any),
+                        options,
+                        (&mut leaves, Some(&mut carried)),
+                    )
+                    .unwrap();
+                    leaves
+                };
+                (
+                    (0..leaves.len())
+                        .map(|i| (leaves.leave(i).to_vec(), leaves.weight(i).to_bits()))
+                        .collect::<Vec<_>>(),
+                    carried.pool,
+                    carried.size,
+                    carried
+                        .weights
+                        .iter()
+                        .map(|w| w.to_bits())
+                        .collect::<Vec<_>>(),
+                )
+            };
+        let mut kept_tables = InferTables::new(&game_config, &klv).unwrap();
+        kept_tables.set_prior_mix(FUZZ_PRIOR_MIX);
+        let mut kept_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        for _ in 0..2 {
+            for (i, &case) in cases.iter().enumerate() {
+                let mut tables = InferTables::new(&game_config, &klv).unwrap();
+                tables.set_prior_mix(FUZZ_PRIOR_MIX);
+                let fresh = infer(
+                    &mut tables,
+                    &mut movegen::KurniaMoveGenerator::new(&game_config),
+                    case,
+                );
+                assert!(!fresh.0.is_empty(), "{i}");
+                assert_eq!(
+                    infer(&mut kept_tables, &mut kept_generator, case),
+                    fresh,
+                    "{i}"
+                );
+            }
+        }
+    }
 }
