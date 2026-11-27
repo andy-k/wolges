@@ -1293,9 +1293,9 @@ impl Session {
                     [kind] if kind == "bot" => Seat::Bot(None),
                     [kind, sim, ms] if kind == "bot" && sim == "sim" => {
                         let ms = ms.parse::<f64>()?;
-                        let usable = ms.is_finite() && ms > 0.0;
+                        let usable = ms.is_finite() && ms >= 0.0;
                         if !usable {
-                            return Err("bot sim MS: MS above 0".into());
+                            return Err("bot sim MS: MS 0 or more".into());
                         }
                         Seat::Bot(Some(ms))
                     }
@@ -1385,9 +1385,9 @@ impl Session {
                     [] => None,
                     [sim, ms] if sim == "sim" => {
                         let ms = ms.parse::<f64>()?;
-                        let usable = ms.is_finite() && ms > 0.0;
+                        let usable = ms.is_finite() && ms >= 0.0;
                         if !usable {
-                            return Err("bot sim MS: MS above 0".into());
+                            return Err("bot sim MS: MS 0 or more".into());
                         }
                         Some(ms)
                     }
@@ -1407,9 +1407,9 @@ impl Session {
                     [seconds] => seconds.parse::<f64>()?,
                     _ => return Err("endgame [SECONDS]".into()),
                 };
-                let usable = seconds.is_finite() && seconds > 0.0;
+                let usable = seconds.is_finite() && seconds >= 0.0;
                 if !usable {
-                    return Err("endgame SECONDS: SECONDS above 0".into());
+                    return Err("endgame SECONDS: SECONDS 0 or more".into());
                 }
                 if self.game.is_none() {
                     return Err("no game: new first".into());
@@ -4711,7 +4711,9 @@ mod tests {
             run(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&first), snapshot(&second));
-        assert!(run(&mut first, "bot sim 0").is_err());
+        run(&mut first, "bot sim 0").unwrap();
+        assert!(log_of(&first).last().unwrap().starts_with("play "));
+        assert!(run(&mut first, "bot sim -1").is_err());
         assert!(run(&mut first, "bot think").is_err());
     }
 
@@ -5758,6 +5760,7 @@ mod tests {
         state.players[0].rack = vec![1, 20];
         state.players[1].rack = vec![5];
         session.state = state;
+        run(&mut session, "endgame 0").unwrap();
         run(&mut session, "endgame 5").unwrap();
         let state = session.state.clone();
         let mut solver = session.take_endgame_solver(&state).unwrap();
