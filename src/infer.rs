@@ -4791,4 +4791,116 @@ mod tests {
         assert!(racks_checked > 0, "{racks_checked}");
         assert!(played > 0, "{played}");
     }
+
+    #[inline]
+    fn mid_board(game_config: &game_config::GameConfig, on_board: usize) -> Vec<u8> {
+        let mut board_tiles = board_of(game_config, on_board);
+        board_tiles[7 * 15 + 7] = board_tiles[2];
+        board_tiles.copy_within(3..on_board, 2);
+        board_tiles[on_board - 1] = 0;
+        board_tiles
+    }
+
+    #[inline]
+    fn valued_klv() -> klv::Klv<kwg::Node24> {
+        klv::kbwg_from_bytes_alloc(klv::make_klv2(&[
+            (&[0], 25.0),
+            (&[1], 1.5),
+            (&[1, 5], 3.25),
+            (&[5], 2.0),
+            (&[19], 8.0),
+            (&[19, 19], 10.0),
+            (&[19, 20], 4.5),
+            (&[20], -0.5),
+            (&[20, 20], -3.0),
+            (&[21], -2.5),
+            (&[24], 1.25),
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    #[inline]
+    fn a_seen_move_is_valued_as_the_generator_values_it() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = tiny_kwg();
+        let klv = valued_klv();
+        let tables = InferTables::new(&game_config, &klv).unwrap();
+        let lat = &tables.lat;
+        let num_letters = game_config.alphabet().len() as usize;
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let empty = vec![0u8; 15 * 15];
+        let mid = mid_board(&game_config, 79);
+        let mut pool = game_config.tiles_off_board(&mid).unwrap();
+        game_config.take_rack(&mut pool, &[26]).unwrap();
+        let mut mid_racks = Vec::new();
+        let cap = (0..=num_letters)
+            .map(|t| pool[t..].iter().map(|&c| c as usize).sum())
+            .collect::<Vec<usize>>();
+        each_tally_of_size(
+            &pool,
+            &cap,
+            0,
+            game_config.rack_size() as usize,
+            &mut vec![0u8; num_letters],
+            &mut |tally| mid_racks.push(tiles_of(tally)),
+        );
+        let opening_racks = [
+            vec![0, 1, 5, 19, 20, 20, 21],
+            vec![0, 1, 1, 5, 5, 20, 20],
+            vec![1, 5, 19, 19, 20, 21, 24],
+        ];
+        let (mut placements, mut exchanges) = (0usize, 0usize);
+        for (board_tiles, racks) in [(&empty, &opening_racks[..]), (&mid, &mid_racks[..])] {
+            let board_snapshot = movegen::BoardSnapshot {
+                board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: &klv,
+            };
+            for rack in racks {
+                let rack_tally = tally_of(num_letters, rack);
+                for lean in [false, true] {
+                    let params = movegen::GenMovesParams {
+                        board_snapshot: &board_snapshot,
+                        rack,
+                        max_gen: usize::MAX,
+                        num_exchanges_by_this_player: 0,
+                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                        dynamic_leaves: None,
+                    };
+                    if lean {
+                        move_generator.gen_moves_unfiltered_lean(&params).unwrap();
+                    } else {
+                        move_generator.gen_moves_unfiltered(&params).unwrap();
+                    }
+                    for valued in &move_generator.plays {
+                        let mut placed = vec![0u8; num_letters];
+                        let (exchanged, value) =
+                            move_tiles_and_value(&board_snapshot, &valued.play, &mut placed)
+                                .unwrap();
+                        let kept = match (&valued.play, exchanged) {
+                            (movegen::Play::Exchange { tiles }, Some(_)) => {
+                                exchanges += 1;
+                                less(&rack_tally, &tally_of(num_letters, tiles))
+                            }
+                            (movegen::Play::Place { .. }, None) => {
+                                placements += 1;
+                                less(&rack_tally, &placed)
+                            }
+                            _ => continue,
+                        };
+                        assert_eq!(
+                            valued.equity.raw(),
+                            value + tables.leave[lat.rank(&kept).unwrap() as usize],
+                            "{lean} {rack:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(placements > 0 && exchanges > 0, "{placements} {exchanges}");
+    }
 }
