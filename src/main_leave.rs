@@ -9332,7 +9332,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         "{n} boards of {num_boards} read in {:?}; per board: line, unseen, best score, best equity, bingo%, anchors, premium anchors, word-premium anchors, bingo lanes, stretches, bingo stretches, word-premium stretches",
         t0.elapsed(),
     )?;
-    for &(i, o, g) in &found {
+    for &(i, ref o, ref g) in &found {
         writeln!(
             std::io::stdout(),
             "{}\t{}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
