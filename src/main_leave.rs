@@ -807,27 +807,6 @@ struct OpennessMoves {
 }
 
 #[derive(clap::Args)]
-struct PositionalFit {
-    #[arg(help = "the word graph (- for stdin)")]
-    kwg: String,
-    #[arg(help = "the leaves both players use (- for none)")]
-    klv: String,
-    #[arg(help = "the values file to write")]
-    out: String,
-    #[arg(help = "games a seed")]
-    games: u64,
-    #[arg(help = "the first seed; prints the one it picks if omitted")]
-    seed: Option<u64>,
-    #[arg(
-        long,
-        help = "the seeds, the first and those after it, each also fitted alone for the weights' errors"
-    )]
-    seeds: std::num::NonZeroU64,
-    #[arg(long, help = "print no progress")]
-    quiet: bool,
-}
-
-#[derive(clap::Args)]
 struct Position {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -1072,7 +1051,25 @@ enum Task {
     #[command(
         about = "play hasty games, play each of deft's moves out by hasty at every turn with tiles in the bag, and fit the positional term's values to how each did against its equity"
     )]
-    PositionalFit(PositionalFit),
+    PositionalFit {
+        #[arg(help = "the word graph (- for stdin)")]
+        kwg: String,
+        #[arg(help = "the leaves both players use (- for none)")]
+        klv: String,
+        #[arg(help = "the values file to write")]
+        out: String,
+        #[arg(help = "games a seed")]
+        games: u64,
+        #[arg(help = "the first seed; prints the one it picks if omitted")]
+        seed: Option<u64>,
+        #[arg(
+            long,
+            help = "the seeds, the first and those after it, each also fitted alone for the weights' errors"
+        )]
+        seeds: std::num::NonZeroU64,
+        #[arg(long, help = "print no progress")]
+        quiet: bool,
+    },
     #[command(
         about = "one board given as fen: the board, the tiles not on it, its words and its shape; with a rack, the rack's moves and dynamic leaves"
     )]
@@ -1579,20 +1576,28 @@ fn run(
                 },
             )
         }
-        Task::PositionalFit(a) => {
-            let kwg = read_kwg(&game_config, &a.kwg, kbwg)?;
-            let klv = read_klv(&game_config, &a.klv)?;
+        Task::PositionalFit {
+            kwg: kwg_path,
+            klv: klv_path,
+            out,
+            games,
+            seed,
+            seeds,
+            quiet,
+        } => {
+            let kwg = read_kwg(&game_config, &kwg_path, kbwg)?;
+            let klv = read_klv(&game_config, &klv_path)?;
             positional_fit(
                 game_config,
                 kwg,
                 klv,
                 PositionalFitParams {
-                    out: a.out,
-                    num_games: a.games,
-                    seed: a.seed,
-                    num_seeds: a.seeds.get(),
+                    out,
+                    num_games: games,
+                    seed,
+                    num_seeds: seeds.get(),
                     threads,
-                    quiet: a.quiet,
+                    quiet,
                 },
             )
         }
@@ -9694,7 +9699,6 @@ fn every_count_divides(field: usize) -> i64 {
     })
 }
 
-#[derive(Clone)]
 struct WithinSums {
     xx: Vec<i128>,
     xy: Vec<i128>,
@@ -9703,7 +9707,6 @@ struct WithinSums {
     positions: u64,
 }
 
-#[derive(Default)]
 struct WithinScratch {
     column_sums: Vec<i64>,
     nonzero: Vec<(usize, i128)>,
@@ -10095,9 +10098,12 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     xs: Vec::new(),
                     ys: Vec::new(),
                 };
-                let mut within = WithinScratch::default();
+                let mut within = WithinScratch {
+            column_sums: Vec::new(),
+            nonzero: Vec::new(),
+        };
                 let mut play = None::<movegen::Play>;
-                let mut sums = vec![WithinSums::new(columns.count()); parts];
+                let mut sums = (0..parts).map(|_| WithinSums::new(columns.count())).collect::<Vec<_>>();
                 let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
                 loop {
                     let job = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -10171,7 +10177,9 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 Ok(sums)
             }));
         }
-        let mut merged = vec![WithinSums::new(columns.count()); parts];
+        let mut merged = (0..parts)
+            .map(|_| WithinSums::new(columns.count()))
+            .collect::<Vec<_>>();
         for handle in thread_handles {
             let theirs = handle
                 .join()
@@ -10183,8 +10191,12 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         Ok(merged)
     })?;
     let n = columns.count();
-    let mut by_seed = vec![WithinSums::new(n); num_seeds as usize];
-    let mut by_band = vec![WithinSums::new(n); num_bands];
+    let mut by_seed = (0..num_seeds as usize)
+        .map(|_| WithinSums::new(n))
+        .collect::<Vec<_>>();
+    let mut by_band = (0..num_bands)
+        .map(|_| WithinSums::new(n))
+        .collect::<Vec<_>>();
     let mut pooled = WithinSums::new(n);
     for (i, part) in sums.iter().enumerate() {
         by_seed[i / num_bands].add(part);
@@ -13858,7 +13870,10 @@ WCMP_P1_SCORE 402.000000
     fn a_fit_within_positions_finds_the_weights_its_rows_were_made_with() {
         let scale = every_count_divides(move_picker::DEFT_FIELD);
         let mut sums = WithinSums::new(3);
-        let mut scratch = WithinScratch::default();
+        let mut scratch = WithinScratch {
+            column_sums: Vec::new(),
+            nonzero: Vec::new(),
+        };
         for position in 0..60i64 {
             let moves = 2 + position as usize % (move_picker::DEFT_FIELD - 1);
             let (mut xs, mut ys) = (Vec::new(), Vec::new());
