@@ -23817,6 +23817,66 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_bag_search_values_exchanging_its_last_tile() {
+        let mut english = game_config::make_english_game_config();
+        let game_config::GameConfig::Static(rules) = &mut english;
+        rules.exchange_tile_limit = 1;
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap(),
+        );
+        for gc in [english, game_config::make_spanish_game_config()] {
+            let alphabet = gc.alphabet();
+            let tile = |letter| {
+                (0..alphabet.len())
+                    .find(|&tile| alphabet.of_rack(tile) == Some(letter))
+                    .unwrap()
+            };
+            let (a, b, h) = (tile("A"), tile("B"), tile("H"));
+            let mut board = empty_board();
+            let center = board.len() / 2;
+            board[center] = a;
+            let mut unseen_tally = vec![0; alphabet.len() as usize];
+            unseen_tally[a as usize] = 1;
+            unseen_tally[b as usize] = 1;
+            let arm_tables = anagrams::ArmTables::None;
+            let vocab = movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+            for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+                let e = equity::Equity::new;
+                let mut position = bag_position(&board, &[h], &unseen_tally, 1, e(0));
+                position.model = model;
+                let end = u16::from(gc.num_zeros_to_end());
+                position.scoreless = [0, end - 1];
+                let (last, rows) = solve_peg_rows(&mut egs, position.clone());
+                assert!(last.exact);
+                assert!(
+                    matches!(last.best_move, Some(movegen::Play::Exchange { tiles }) if tiles[..] == [h])
+                );
+                assert_eq!((last.win_pct, last.expected_margin), (0.5, e(0)));
+                assert_eq!(last.moves.len(), 2);
+                let mut splits = rows[0].hypotheses.clone();
+                splits.sort_unstable();
+                assert_eq!(splits, [(vec![a], 1, e(2000)), (vec![b], 1, e(-2000))]);
+
+                position.scoreless = [0, end - 2];
+                let earlier = uncut_peg(&mut egs, position).unwrap().unwrap();
+                assert!(earlier.exact);
+                assert_eq!(earlier.moves.len(), 2);
+                match model {
+                    super::PegModel::RandomDraws => {
+                        assert_eq!((earlier.win_pct, earlier.expected_margin), (0.5, e(0)));
+                    }
+                    super::PegModel::InfoSets => {
+                        assert_eq!((earlier.win_pct, earlier.expected_margin), (0.25, e(-1250)));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
     fn a_bag_search_whose_passes_estimate_ends_as_one_that_does_not() {
         // with no limit, a search whose passes estimate deepens until every
         // line reaches the bag's end, and then answers exactly as one that does
