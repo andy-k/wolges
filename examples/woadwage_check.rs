@@ -398,7 +398,7 @@ fn play_points(
 
 struct Position<'a> {
     gc: &'a game_config::GameConfig,
-    graph: &'a std::sync::Arc<kwg::Kwg<kwg::Node24>>,
+    vocab: &'a wolges::movegen::Vocab<'a, kwg::Node24>,
     klv: &'a klv::Klv<kwg::Node24>,
     lexicon: &'a JoinedLexicon,
     board_tiles: &'a [u8],
@@ -413,7 +413,7 @@ fn check(
     let board_snapshot = movegen::BoardSnapshot {
         board_tiles: position.board_tiles,
         game_config: position.gc,
-        vocab: &wolges::movegen::Vocab::lean(position.graph),
+        vocab: position.vocab,
         anagrams: None,
         rack_lengths: None,
         klv: position.klv,
@@ -512,6 +512,8 @@ fn main() -> error::Returns<()> {
             (true, true) => gc.jumbled_woadwage(),
         };
         let graph = if jumbled { &kad } else { &kwg };
+        let vocab =
+            wolges::movegen::Vocab::new(&rules(game_config::make_english_game_config()), graph)?;
         let lexicon = JoinedLexicon::new(&words, jumbled, joined);
         for (board, layout) in &layouts {
             let game_config::GameConfig::Static(mut english) =
@@ -526,7 +528,7 @@ fn main() -> error::Returns<()> {
                 &mut move_generator,
                 &Position {
                     gc: &gc,
-                    graph,
+                    vocab: &vocab,
                     klv: &klv,
                     lexicon: &lexicon,
                     board_tiles: &game_state.board_tiles,
@@ -554,7 +556,7 @@ fn main() -> error::Returns<()> {
                 &mut move_generator,
                 &Position {
                     gc: &gc,
-                    graph,
+                    vocab: &vocab,
                     klv: &klv,
                     lexicon: &lexicon,
                     board_tiles: &game_state.board_tiles,
@@ -574,7 +576,7 @@ fn main() -> error::Returns<()> {
                 board_snapshot: &movegen::BoardSnapshot {
                     board_tiles: &game_state.board_tiles,
                     game_config: &gc,
-                    vocab: &wolges::movegen::Vocab::lean(graph),
+                    vocab: &vocab,
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
