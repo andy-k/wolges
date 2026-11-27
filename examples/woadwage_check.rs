@@ -398,7 +398,7 @@ fn play_points(
 
 struct Position<'a> {
     gc: &'a game_config::GameConfig,
-    graph: &'a kwg::Kwg<kwg::Node24>,
+    graph: &'a std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: &'a klv::Klv<kwg::Node24>,
     lexicon: &'a JoinedLexicon,
     board_tiles: &'a [u8],
@@ -413,7 +413,7 @@ fn check(
     let board_snapshot = movegen::BoardSnapshot {
         board_tiles: position.board_tiles,
         game_config: position.gc,
-        graphs: wolges::movegen::KwgForMovegen::for_game(position.gc, position.graph),
+        vocab: &wolges::movegen::Vocab::lean(position.graph),
         anagrams: None,
         rack_lengths: None,
         klv: position.klv,
@@ -487,11 +487,11 @@ fn main() -> error::Returns<()> {
     if args.len() != 4 {
         return Err("usage: woadwage_check <kwg> <klv> <seed>".into());
     }
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&args[1])?, false)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(std::fs::read(&args[1])?, false)?);
     let klv = klv::kbwg_from_bytes_alloc(std::fs::read(&args[2])?)?;
     let seed = args[3].parse::<u64>()?;
     let words = lexicon_words(&kwg)?;
-    let kad = kad_for(&words)?;
+    let kad = std::sync::Arc::new(kad_for(&words)?);
     let standard = board_layout::make_standard_board_layout();
     let dim = standard.dim();
     let layouts = [
@@ -574,7 +574,7 @@ fn main() -> error::Returns<()> {
                 board_snapshot: &movegen::BoardSnapshot {
                     board_tiles: &game_state.board_tiles,
                     game_config: &gc,
-                    graphs: wolges::movegen::KwgForMovegen::for_game(&gc, graph),
+                    vocab: &wolges::movegen::Vocab::lean(graph),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,

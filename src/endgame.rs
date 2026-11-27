@@ -2900,7 +2900,7 @@ impl KeptTable {
     // pruned to the words its own board can still take: a value kept is of a
     // position holding the old board's tiles, and one the new search finds
     // holds the new board's too, so either graph keeps every word it can play
-    pub fn for_another_graph<N: kwg::Node>(self, graphs: movegen::KwgForMovegen<'_, N>) -> Self {
+    pub fn for_another_graph<N: kwg::Node>(self, graphs: &'_ movegen::Vocab<'_, N>) -> Self {
         let [game_config, _, arm_tables] = self.made_with;
         Self {
             made_with: [
@@ -2963,7 +2963,7 @@ pub struct EndgameSolver<
     const TWO_SEATS: bool = true,
 > {
     game_config: &'a game_config::GameConfig,
-    graphs: movegen::KwgForMovegen<'a, N>,
+    graphs: &'a movegen::Vocab<'a, N>,
     arm_tables: &'a anagrams::ArmTables,
     run_letters: kwg::RunLetters<'a>, // the graph's, for its sub-solvers
     klv: Box<klv::Klv<L>>,
@@ -2985,7 +2985,7 @@ impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool, const TWO_SEATS: bool>
 {
     pub fn new(
         game_config: &'a game_config::GameConfig,
-        graphs: movegen::KwgForMovegen<'a, N>,
+        graphs: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a anagrams::ArmTables,
     ) -> error::Returns<Self> {
         // the lean arm's tables hold the graph's run letters; else they are
@@ -3022,7 +3022,7 @@ impl<
     // is made for each solve and each of a search's sub-solves
     pub fn with_generator(
         game_config: &'a game_config::GameConfig,
-        graphs: movegen::KwgForMovegen<'a, N>,
+        graphs: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a anagrams::ArmTables,
         run_letters: kwg::RunLetters<'a>,
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
@@ -3055,7 +3055,7 @@ impl<
 
     pub fn with_generator_within(
         game_config: &'a game_config::GameConfig,
-        graphs: movegen::KwgForMovegen<'a, N>,
+        graphs: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a anagrams::ArmTables,
         run_letters: kwg::RunLetters<'a>,
         movegen: movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
@@ -3119,7 +3119,7 @@ impl<
     #[inline]
     fn of_helper(
         game_config: &'a game_config::GameConfig,
-        graphs: movegen::KwgForMovegen<'a, N>,
+        graphs: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a anagrams::ArmTables,
         run_letters: &kwg::RunLetters<'a>,
         helper: Option<Helper<L, G, JUMPS, ANY_SIDE>>,
@@ -3190,7 +3190,7 @@ impl<
     #[inline]
     pub fn with_kept(
         game_config: &'a game_config::GameConfig,
-        graphs: movegen::KwgForMovegen<'a, N>,
+        graphs: &'a movegen::Vocab<'a, N>,
         arm_tables: &'a anagrams::ArmTables,
         run_letters: kwg::RunLetters<'a>,
         kept: KeptSolver<L, G, JUMPS, ANY_SIDE>,
@@ -3777,7 +3777,7 @@ impl<
             &movegen::BoardSnapshot {
                 board_tiles: &work.board_tiles,
                 game_config: self.game_config,
-                graphs: self.graphs,
+                vocab: self.graphs,
                 anagrams: self.arm_tables.anagrams(),
                 rack_lengths: self.arm_tables.rack_lengths(),
                 klv: &self.klv,
@@ -4118,7 +4118,7 @@ impl<
             &movegen::BoardSnapshot {
                 board_tiles: &work_buffer.board_tiles,
                 game_config: self.game_config,
-                graphs: self.graphs,
+                vocab: self.graphs,
                 anagrams: self.arm_tables.anagrams(),
                 rack_lengths: self.arm_tables.rack_lengths(),
                 klv: &self.klv,
@@ -4359,7 +4359,7 @@ impl<
                     &movegen::BoardSnapshot {
                         board_tiles: board,
                         game_config: self.game_config,
-                        graphs: self.graphs,
+                        vocab: self.graphs,
                         anagrams: self.arm_tables.anagrams(),
                         rack_lengths: self.arm_tables.rack_lengths(),
                         klv: &self.klv,
@@ -4393,7 +4393,7 @@ impl<
                 &movegen::BoardSnapshot {
                     board_tiles: &work_buffer.board_tiles,
                     game_config: self.game_config,
-                    graphs: self.graphs,
+                    vocab: self.graphs,
                     anagrams: self.arm_tables.anagrams(),
                     rack_lengths: self.arm_tables.rack_lengths(),
                     klv: &self.klv,
@@ -4548,7 +4548,7 @@ impl<
                 &movegen::BoardSnapshot {
                     board_tiles: &work_buffer.board_tiles,
                     game_config: self.game_config,
-                    graphs: self.graphs,
+                    vocab: self.graphs,
                     anagrams: self.arm_tables.anagrams(),
                     rack_lengths: self.arm_tables.rack_lengths(),
                     klv: &self.klv,
@@ -6569,7 +6569,7 @@ impl<
                 play.fmt(&movegen::BoardSnapshot {
                     board_tiles: &board_tiles,
                     game_config: self.game_config,
-                    graphs: self.graphs,
+                    vocab: self.graphs,
                     anagrams: self.arm_tables.anagrams(),
                     rack_lengths: self.arm_tables.rack_lengths(),
                     klv: &self.klv,
@@ -6995,7 +6995,7 @@ impl<
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
             game_config: search.gc,
-            graphs: search.graphs,
+            vocab: search.graphs,
             anagrams: search.arm_tables.anagrams(),
             rack_lengths: search.arm_tables.rack_lengths(),
             klv: search.klv,
@@ -7153,7 +7153,7 @@ impl<
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
             game_config: search.gc,
-            graphs: search.graphs,
+            vocab: search.graphs,
             anagrams: search.arm_tables.anagrams(),
             rack_lengths: search.arm_tables.rack_lengths(),
             klv: search.klv,
@@ -8764,7 +8764,7 @@ impl<
                     let snapshot = movegen::BoardSnapshot {
                         board_tiles: board,
                         game_config: gc,
-                        graphs,
+                        vocab: graphs,
                         anagrams: arm_tables.anagrams(),
                         rack_lengths: arm_tables.rack_lengths(),
                         klv,
@@ -10657,7 +10657,7 @@ struct OneInBag<
     const ANY_SIDE: bool,
 > {
     gc: &'s game_config::GameConfig,
-    graphs: movegen::KwgForMovegen<'s, N>,
+    graphs: &'s movegen::Vocab<'s, N>,
     arm_tables: &'s anagrams::ArmTables,
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>,
@@ -11304,7 +11304,7 @@ fn in_bag_moves<
     const ANY_SIDE: bool,
 >(
     gc: &game_config::GameConfig,
-    graphs: movegen::KwgForMovegen<'_, N>,
+    graphs: &'_ movegen::Vocab<'_, N>,
     arm_tables: &anagrams::ArmTables,
     klv: &klv::Klv<L>,
     mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
@@ -11318,7 +11318,7 @@ fn in_bag_moves<
         &movegen::BoardSnapshot {
             board_tiles: &pos.board,
             game_config: gc,
-            graphs,
+            vocab: graphs,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -11471,7 +11471,7 @@ fn root_moves<
     const ANY_SIDE: bool,
 >(
     gc: &game_config::GameConfig,
-    graphs: movegen::KwgForMovegen<'_, N>,
+    graphs: &'_ movegen::Vocab<'_, N>,
     arm_tables: &anagrams::ArmTables,
     klv: &klv::Klv<L>,
     mg: &mut movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>,
@@ -11497,7 +11497,7 @@ fn root_moves<
         &movegen::BoardSnapshot {
             board_tiles: &pos.board,
             game_config: gc,
-            graphs,
+            vocab: graphs,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -12176,7 +12176,7 @@ struct BagSearch<
     const ANY_SIDE: bool,
 > {
     gc: &'s game_config::GameConfig,
-    graphs: movegen::KwgForMovegen<'s, N>,
+    graphs: &'s movegen::Vocab<'s, N>,
     arm_tables: &'s anagrams::ArmTables,
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>,
@@ -12550,7 +12550,7 @@ impl<
                     &movegen::BoardSnapshot {
                         board_tiles: &pos.board,
                         game_config: self.gc,
-                        graphs: self.graphs,
+                        vocab: self.graphs,
                         anagrams: self.arm_tables.anagrams(),
                         rack_lengths: self.arm_tables.rack_lengths(),
                         klv: self.klv,
@@ -12952,7 +12952,7 @@ impl<
             &movegen::BoardSnapshot {
                 board_tiles: &info.board,
                 game_config: gc,
-                graphs,
+                vocab: graphs,
                 anagrams: arm_tables.anagrams(),
                 rack_lengths: arm_tables.rack_lengths(),
                 klv,
@@ -13532,7 +13532,7 @@ mod tests {
     // the pass lines many
     struct Reference<'s, N: kwg::Node, L: kwg::Node> {
         gc: &'s game_config::GameConfig,
-        kwg: &'s kwg::Kwg<N>,
+        kwg: &'s std::sync::Arc<kwg::Kwg<N>>,
         klv: &'s klv::Klv<L>,
         mg: &'s mut movegen::KurniaMoveGenerator,
         memo: super::fash::MyHashMap<ReferenceState, f32>,
@@ -13572,7 +13572,7 @@ mod tests {
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
             game_config: fixed.gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(fixed.gc, fixed.kwg),
+            vocab: &crate::movegen::Vocab::lean(fixed.kwg),
             anagrams: None,
             rack_lengths: None,
             klv: fixed.klv,
@@ -13669,7 +13669,7 @@ mod tests {
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
             game_config: fixed.gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(fixed.gc, fixed.kwg),
+            vocab: &crate::movegen::Vocab::lean(fixed.kwg),
             anagrams: None,
             rack_lengths: None,
             klv: fixed.klv,
@@ -13777,7 +13777,7 @@ mod tests {
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
             game_config: fixed.gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(fixed.gc, fixed.kwg),
+            vocab: &crate::movegen::Vocab::lean(fixed.kwg),
             anagrams: None,
             rack_lengths: None,
             klv: fixed.klv,
@@ -14101,14 +14101,13 @@ mod tests {
         };
 
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         let mut cuts = 0;
         for (name, pos) in all_positions() {
             for player_idx in 0..gc.num_players() {
@@ -14185,14 +14184,13 @@ mod tests {
         };
 
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         let scoreless = Scoreless::Counted {
             passes: 0,
             zeros: 0,
@@ -14263,14 +14261,13 @@ mod tests {
         };
 
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         let scoreless = Scoreless::Counted {
             passes: 0,
             zeros: 0,
@@ -14326,14 +14323,13 @@ mod tests {
         use super::{Enter, Frame, NO_PLAY, order};
 
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         let player_idx = 0;
         let child = 1;
         for (_, pos) in all_positions() {
@@ -14388,15 +14384,14 @@ mod tests {
         use std::num::NonZeroU32;
 
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let fresh = |pos: &Position| {
-            let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &tables,
-            )
-            .unwrap();
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
             solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
             solver
         };
@@ -14448,15 +14443,13 @@ mod tests {
     fn a_solve_on_threads_finds_one_threads_value() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let solved = |pos: &Position, mover: u8, threads: usize| {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let solved = egs
                 .solve_within_on_threads(mover, &super::Limits::NONE, threads)
@@ -14487,14 +14480,13 @@ mod tests {
     #[test]
     fn helper_tables_share_the_memory_left_to_reserve() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         solver.init(&[0; 225], [&[1, 1, 2, 8, 12, 20, 20], &[5, 6]]);
         assert!(solver.reserve_table(32 << 10));
         solver.reset_position();
@@ -14535,7 +14527,9 @@ mod tests {
     #[test]
     fn the_only_first_play_can_split_its_replies() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut split = [false; 2];
@@ -14548,17 +14542,14 @@ mod tests {
             let snapshot = movegen::BoardSnapshot {
                 board_tiles: &state.board_tiles,
                 game_config: &gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
             };
-            let mut choices = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut choices =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
             choices.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
             choices.reset_position();
             choices.generate_root(0, false).unwrap();
@@ -14573,13 +14564,11 @@ mod tests {
                 let Some(play) = play else { continue };
                 let root = super::RootMoves::checked(&snapshot, &state, vec![play]).unwrap();
                 let solve = |threads| {
-                    let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &tables,
-                    )
-                    .unwrap()
-                    .with_root_moves(Some(&root));
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables)
+                            .unwrap()
+                            .with_root_moves(Some(&root));
                     solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
                     let result = solver
                         .solve_within_on_threads(0, &super::Limits::NONE, threads)
@@ -14601,7 +14590,8 @@ mod tests {
     fn a_one_in_bag_solve_on_threads_finds_one_threads_answer() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let named = |play: &PegMove| match play {
             PegMove::Pass => None,
@@ -14615,12 +14605,9 @@ mod tests {
             PegMove::Place(movegen::Play::Exchange { .. }) => unreachable!("not a place"),
         };
         let solved = |board: &[u8], rack: &[u8], unseen_tally: &[u8], threads: usize| {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut progress =
                 super::PegProgress::new(0, board, rack, unseen_tally, equity::Equity::ZERO, [0, 0]);
             let result = egs
@@ -14679,7 +14666,8 @@ mod tests {
         // move as a cold one does
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut moves = 0usize;
         let mut checked = 0usize;
@@ -14691,20 +14679,16 @@ mod tests {
         {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
-                let mut cold = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut cold =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 cold.init(&pos.board, racks);
                 let cold_moves = cold.value_first_moves(mover, &super::Limits::NONE).unwrap();
-                let mut warm = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut warm =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 warm.init(&pos.board, racks);
                 let want = warm.solve(mover).unwrap();
                 let warm_moves = warm.value_first_moves(mover, &super::Limits::NONE).unwrap();
@@ -14765,12 +14749,10 @@ mod tests {
                     crate::glance::board_after(&gc, &pos.board, &first.play, &mut after);
                     let mut next = [racks[0].to_vec(), racks[1].to_vec()];
                     next[mover as usize] = left;
-                    let mut reply = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut reply =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     reply.init(&after, [&next[0][..], &next[1][..]]);
                     let replied = reply.solve(mover ^ 1).unwrap();
                     assert_eq!(
@@ -14785,12 +14767,10 @@ mod tests {
                 let passed = (cold_moves.iter())
                     .find(|first| matches!(first.play, movegen::Play::Exchange { .. }))
                     .unwrap();
-                let mut reply = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut reply =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 reply.init_after_scoreless_turns(&pos.board, racks, 1, 1);
                 let replied = reply.solve(mover ^ 1).unwrap();
                 assert_eq!(
@@ -14814,31 +14794,28 @@ mod tests {
         // stops a few stored positions on, and the last answers as one solve
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut resumed = 0u64;
         let mut stepped = 0usize;
         for (name, pos) in all_positions() {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
-                let mut whole = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut whole =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 whole.init(&pos.board, racks);
                 let want = whole.solve(mover).unwrap();
                 let mut table = None;
                 let mut finished = None;
                 for step in 0.. {
                     assert!(step < 100_000, "[{name}] mover {mover}: no end");
-                    let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     if let Some(table) = table.take() {
                         assert!(solver.give_table(table).is_ok());
                     }
@@ -14886,7 +14863,8 @@ mod tests {
     fn a_value_cut_short_is_no_bound_either_way() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let (mut below, mut above, mut equal) = ([0u64; 3], [0u64; 3], [0u64; 3]);
         for (_name, pos) in all_positions()
@@ -14897,13 +14875,11 @@ mod tests {
         {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
+                let vocab = crate::movegen::Vocab::lean(&kwg);
                 let new = || {
-                    let mut s = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let mut s =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     s.init(&pos.board, racks);
                     s
                 };
@@ -14954,7 +14930,9 @@ mod tests {
     #[test]
     #[inline]
     fn a_peg_value_cut_short_is_no_bound_either_way() {
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         let (mut below, mut above, mut equal) = ([0u64; 4], [0u64; 4], [0u64; 4]);
@@ -14977,13 +14955,10 @@ mod tests {
                 unseen_tally[t] += 1;
             }
             for rack in [[2u8, 8], [8, 20]] {
+                let vocab = crate::movegen::Vocab::lean(&kwg);
                 let new = || {
-                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap()
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap()
                 };
                 let solved = |limits| {
                     new()
@@ -15017,12 +14992,9 @@ mod tests {
         }
         let gc = game_config::make_english_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
         for tile in [1, 2, 8] {
             unseen_tally[tile] += 1;
@@ -15037,12 +15009,9 @@ mod tests {
                 states: Some(62),
                 ..super::Limits::NONE
             };
-            let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let got = solver.solve_peg(position, &limits, 1).unwrap().unwrap();
             if !got.exact && got.best_move.is_some() {
                 tally(
@@ -15139,7 +15108,9 @@ mod tests {
     #[test]
     #[inline]
     fn a_solve_skipping_by_plays_out_answers_as_the_reference_does() {
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut positions = all_positions();
         // AA across row 6 from column 9, AAT against BH
@@ -15200,12 +15171,10 @@ mod tests {
             let mut skipped = 0u64;
             for &mover in movers {
                 let what = format!("[{rules} {name}] mover {mover}");
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 egs.init(&board, racks);
                 let value = egs.solve(mover).unwrap();
                 let mut line = Vec::new();
@@ -15259,7 +15228,7 @@ mod tests {
                 &movegen::BoardSnapshot {
                     board_tiles: &pos.board,
                     game_config: fixed.gc,
-                    graphs: crate::movegen::KwgForMovegen::for_game(fixed.gc, fixed.kwg),
+                    vocab: &crate::movegen::Vocab::lean(fixed.kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: fixed.klv,
@@ -15412,12 +15381,9 @@ mod tests {
             let rack_size = gc.rack_size() as usize;
             let boards = woadwage_toy_boards(side, &explicit, &mut seed, 1, rack_size);
             let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut mg = movegen::KurniaMoveGenerator::new(&gc);
             let mut fixed = Reference {
                 gc: &gc,
@@ -15563,21 +15529,20 @@ mod tests {
                     let mover = (woadwage_rng(&mut seed) % gc.num_players() as u64) as u8;
                     let what = format!("[{jumbled} {side}] {board:?} {racks:?} mover {mover}");
                     let want = reference(&mut fixed, board, &racks, mover as usize, 0, 0, false);
-                    let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     egs.init(board, [&racks[0][..], &racks[1][..]]);
                     assert_eq!(egs.solve(mover).unwrap(), super::to_equity(want), "{what}");
                     let mut line = Vec::new();
                     egs.collect_pv(mover, &mut line).unwrap();
                     lines += line.len();
                     assert_a_best_line(&mut fixed, board, &racks, mover, &line, &what);
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
                     let mut lean = EndgameSolver::<kwg::Node24, kwg::Node24, true>::new(
                         &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                        &vocab,
                         &arm_tables,
                     )
                     .unwrap();
@@ -15614,7 +15579,7 @@ mod tests {
                             &movegen::BoardSnapshot {
                                 board_tiles: board,
                                 game_config: &gc,
-                                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &whole),
+                                vocab: &crate::movegen::Vocab::lean(&whole),
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: &klv,
@@ -15622,7 +15587,7 @@ mod tests {
                             |word: &[u8]| kept.push(word.to_vec()),
                         )
                         .unwrap();
-                    let pruned = if jumbled {
+                    let pruned = std::sync::Arc::new(if jumbled {
                         crate::jumbled_woadwage::tests::kad_for(&kept)
                     } else {
                         kwg::kbwg_from_bytes_alloc(
@@ -15639,7 +15604,7 @@ mod tests {
                             false,
                         )
                         .unwrap()
-                    };
+                    });
                     let racks = [
                         woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
                         woadwage_toy_rack(&mut seed, crate::movegen::tests::woadwage_toy_longest()),
@@ -15654,11 +15619,12 @@ mod tests {
                         continue;
                     }
                     let mover = (woadwage_rng(&mut seed) % gc.num_players() as u64) as u8;
-                    let solve = |kwg: &kwg::Kwg<kwg::Node24>| {
+                    let solve = |kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>| {
                         let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
+                        let vocab = crate::movegen::Vocab::lean(kwg);
                         let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                             &gc,
-                            crate::movegen::KwgForMovegen::for_game(&gc, kwg),
+                            &vocab,
                             &arm_tables,
                         )
                         .unwrap();
@@ -15682,7 +15648,8 @@ mod tests {
     fn a_solve_in_steps_skipping_by_plays_out_ends_as_one_unbroken_solve() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
@@ -15698,12 +15665,10 @@ mod tests {
             let racks = [&pos.racks[0][..], &pos.racks[1][..]];
             for mover in 0..2u8 {
                 let what = format!("[{name}] mover {mover}");
-                let mut whole = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut whole =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 whole.init(&pos.board, racks);
                 let want = whole.solve(mover).unwrap();
                 let mut want_line = Vec::new();
@@ -15712,12 +15677,10 @@ mod tests {
                 let mut finished = None;
                 for step in 0.. {
                     assert!(step < 100_000, "{what}: no end");
-                    let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     if let Some(table) = table.take() {
                         assert!(solver.give_table(table).is_ok());
                     }
@@ -15770,7 +15733,8 @@ mod tests {
         }
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let limits = super::Limits {
             time: Some(super::LOOK_EVERY * 16),
@@ -15782,12 +15746,10 @@ mod tests {
             for mover in 0..2u8 {
                 let mut table = None;
                 for step in 0..2 {
-                    let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     if let Some(table) = table.take() {
                         assert!(solver.give_table(table).is_ok());
                     }
@@ -15813,18 +15775,17 @@ mod tests {
         // default one does
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::None;
-        let mut wide = EndgameSolver::<kwg::Node24, kwg::Node24, true>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut wide =
+            EndgameSolver::<kwg::Node24, kwg::Node24, true>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let mut narrow =
             EndgameSolver::<kwg::Node24, kwg::Node24, true, u32, false, false>::with_generator(
                 &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                &vocab,
                 &arm_tables,
                 kwg.run_letters(),
                 movegen::KurniaMoveGenerator::try_new(&gc).unwrap(),
@@ -15849,20 +15810,19 @@ mod tests {
     #[test]
     fn selected_first_moves_keep_their_own_table_answer() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut state = crate::game_state::GameState::new(&gc);
         state.bag.set_from_iter([]);
         state.players[0].rack.extend([1, 2]); // AB
         state.players[1].rack.push(8); // H
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let make = || {
-            let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &tables,
-            )
-            .unwrap();
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
             solver.init(
                 &state.board_tiles,
                 [&state.players[0].rack, &state.players[1].rack],
@@ -15881,7 +15841,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles: &state.board_tiles,
                 game_config: &gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -15908,19 +15868,18 @@ mod tests {
     #[test]
     fn root_plays_are_the_first_moves() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut state = crate::game_state::GameState::new(&gc);
         state.bag.set_from_iter([]);
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         state.players[0].rack.extend([1, 2]); // AB
         state.players[1].rack.push(8); // H
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         solver.init(
             &state.board_tiles,
             [&state.players[0].rack, &state.players[1].rack],
@@ -15939,7 +15898,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles: &state.board_tiles,
                 game_config: &gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -15948,12 +15907,9 @@ mod tests {
             vec![plays[0].clone()],
         )
         .unwrap();
-        let mut restricted = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut restricted =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         restricted.init(
             &state.board_tiles,
             [&state.players[0].rack, &state.players[1].rack],
@@ -15965,19 +15921,18 @@ mod tests {
     #[test]
     fn selected_first_moves_take_a_play_named_twice_once() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut state = crate::game_state::GameState::new(&gc);
         state.bag.set_from_iter([]);
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         state.players[0].rack.extend([1, 2]); // AB
         state.players[1].rack.push(8); // H
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         solver.init(
             &state.board_tiles,
             [&state.players[0].rack, &state.players[1].rack],
@@ -15990,7 +15945,7 @@ mod tests {
         let snapshot = movegen::BoardSnapshot {
             board_tiles: &state.board_tiles,
             game_config: &gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+            vocab: &crate::movegen::Vocab::lean(&kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -16012,14 +15967,12 @@ mod tests {
         // gives it index 0
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut firsts = 0usize;
         let mut tied = 0usize;
         for (name, pos) in all_positions() {
@@ -16064,14 +16017,12 @@ mod tests {
         // their order
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut ties = 0usize;
         for (name, pos) in all_positions() {
             for mover in 0..2u8 {
@@ -16179,7 +16130,8 @@ mod tests {
         // arms
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         // deep enough for most lines to keep rack places to their end
         const DEPTH: usize = 12;
         let mut seed = 0u64;
@@ -16193,18 +16145,12 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                arm_tables,
-            )
-            .unwrap();
-            let mut afresh = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables).unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut afresh =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables).unwrap();
             for (name, pos) in all_positions() {
                 for mover in 0..2u8 {
                     for _ in 0..16 {
@@ -16291,7 +16237,8 @@ mod tests {
         // same
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let [(_, with_tables), (_, lean)] = both_arms(&kwg, &gc);
         let neither = anagrams::ArmTables::None;
         assert!(with_tables.anagrams().is_some() && lean.rack_lengths().is_some());
@@ -16319,13 +16266,11 @@ mod tests {
             ("neither", &neither),
         ] {
             for letters in [true, false] {
+                let vocab = crate::movegen::Vocab::lean(&kwg);
                 let new_solver = || {
-                    let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        arm_tables,
-                    )
-                    .unwrap();
+                    let mut solver =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables)
+                            .unwrap();
                     if !letters {
                         solver.work_buffer.run_letter_bits = None;
                     }
@@ -16452,22 +16397,17 @@ mod tests {
         // on both arms; for some the best is on the zone's lanes
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let mut checked = 0usize;
         let mut zoned = 0usize;
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                arm_tables,
-            )
-            .unwrap();
-            let mut afresh = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables).unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut afresh =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables).unwrap();
             for (name, pos) in all_positions() {
                 for mover in 0..2u8 {
                     egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
@@ -16551,21 +16491,17 @@ mod tests {
         }
 
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let mut checked = 0;
         for (lean, tables) in &both_arms(&kwg, &gc) {
-            let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                tables,
-            )
-            .unwrap();
-            let mut afresh = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, tables).unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut afresh =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, tables).unwrap();
             for (name, pos) in all_positions() {
                 for mover in 0..gc.num_players() {
                     solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
@@ -16604,15 +16540,14 @@ mod tests {
     #[test]
     fn a_two_tile_bound_can_exceed_equity() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let (_, pos) = named_positions(&["playout race (AB vs AT)"]).pop().unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &tables).unwrap();
         solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
         solver.reset_position();
         solver.generate(0, 1, false).unwrap();
@@ -16634,7 +16569,8 @@ mod tests {
     fn differential_reference_vs_solve() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let arms = both_arms(&kwg, &gc);
@@ -16662,12 +16598,10 @@ mod tests {
                 );
                 for (lean, arm_tables) in &arms {
                     total += 1;
-                    let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables)
+                            .unwrap();
                     egs.init_after_scoreless_turns(
                         &pos.board,
                         [&pos.racks[0][..], &pos.racks[1][..]],
@@ -16763,7 +16697,7 @@ mod tests {
             } else {
                 words
             };
-            let whole = graph(jumbled, &words);
+            let whole = std::sync::Arc::new(graph(jumbled, &words));
             let mut pruned_away = 0;
             // a blank, A B H S T, each rack sorted
             for racks in [
@@ -16781,7 +16715,7 @@ mod tests {
                         &movegen::BoardSnapshot {
                             board_tiles: &board,
                             game_config: &gc,
-                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &whole),
+                            vocab: &crate::movegen::Vocab::lean(&whole),
                             anagrams: None,
                             rack_lengths: None,
                             klv: &klv,
@@ -16801,15 +16735,13 @@ mod tests {
                 if found.len() < words.len() {
                     pruned_away += 1;
                 }
-                let pruned = graph(jumbled, &found);
-                let solve = |kwg: &kwg::Kwg<kwg::Node24>| {
+                let pruned = std::sync::Arc::new(graph(jumbled, &found));
+                let solve = |kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>| {
                     let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
-                    let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(kwg);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     egs.init(&board, racks);
                     egs.solve(0).unwrap()
                 };
@@ -16894,18 +16826,20 @@ mod tests {
         let alphabet = gc.alphabet();
         let dim = gc.board_layout().dim();
         let rack_size = gc.rack_size() as usize;
-        let kwg = kwg::kbwg_from_bytes_alloc(
-            build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &crossing_word_list(),
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(
+                build::build(
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
+                    build::BuildOrder::Sorted,
+                    &crossing_word_list(),
+                )
+                .unwrap()
+                .to_vec(),
+                false,
             )
-            .unwrap()
-            .to_vec(),
-            false,
-        )
-        .unwrap();
+            .unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let mut seed = 1u64;
@@ -16925,7 +16859,7 @@ mod tests {
                 board_snapshot: &movegen::BoardSnapshot {
                     board_tiles: board,
                     game_config: &gc,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -16997,7 +16931,7 @@ mod tests {
                         &movegen::BoardSnapshot {
                             board_tiles: &board,
                             game_config: &gc,
-                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                            vocab: &crate::movegen::Vocab::lean(&kwg),
                             anagrams: None,
                             rack_lengths: None,
                             klv: &klv,
@@ -17045,18 +16979,20 @@ mod tests {
         let alphabet = gc.alphabet();
         let dim = gc.board_layout().dim();
         let rack_size = gc.rack_size() as usize;
-        let kwg = kwg::kbwg_from_bytes_alloc(
-            build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &crossing_word_list(),
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(
+                build::build(
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
+                    build::BuildOrder::Sorted,
+                    &crossing_word_list(),
+                )
+                .unwrap()
+                .to_vec(),
+                false,
             )
-            .unwrap()
-            .to_vec(),
-            false,
-        )
-        .unwrap();
+            .unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut whole_generator = movegen::KurniaMoveGenerator::new(&gc);
         let mut board_generator = movegen::KurniaMoveGenerator::new(&gc);
@@ -17076,7 +17012,7 @@ mod tests {
                             &movegen::BoardSnapshot {
                                 board_tiles: &board,
                                 game_config: &gc,
-                                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                                vocab: &crate::movegen::Vocab::lean(&kwg),
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: &klv,
@@ -17084,10 +17020,12 @@ mod tests {
                             |word: &[u8]| words.push(word.into()),
                         )
                         .unwrap();
-                    let board_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
-                        &build::build_for_game(&gc, &words).unwrap(),
-                    )
-                    .unwrap();
+                    let board_kwg = std::sync::Arc::new(
+                        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+                            &build::build_for_game(&gc, &words).unwrap(),
+                        )
+                        .unwrap(),
+                    );
                     let board_tables = anagrams::ArmTables::build(&board_kwg, &gc, lean).unwrap();
                     board_generator.reset_for_another_kwg();
                     let mut moved = false;
@@ -17106,7 +17044,7 @@ mod tests {
                                     board_snapshot: &movegen::BoardSnapshot {
                                         board_tiles: &board,
                                         game_config: &gc,
-                                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, graph),
+                                        vocab: &crate::movegen::Vocab::lean(graph),
                                         anagrams: tables.anagrams(),
                                         rack_lengths: tables.rack_lengths(),
                                         klv: &klv,
@@ -17164,18 +17102,20 @@ mod tests {
     fn a_graph_whose_runs_descend_solves_as_the_one_built() {
         use kwg::Node;
         let gc = game_config::make_english_game_config();
-        let built = kwg::kbwg_from_bytes_alloc(
-            build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &tiny_word_list(),
+        let built = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(
+                build::build(
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
+                    build::BuildOrder::Sorted,
+                    &tiny_word_list(),
+                )
+                .unwrap()
+                .to_vec(),
+                false,
             )
-            .unwrap()
-            .to_vec(),
-            false,
-        )
-        .unwrap();
+            .unwrap(),
+        );
         assert!(built.runs_ascend());
         let mut entered = vec![false; built.0.len()];
         for node in built.0.iter() {
@@ -17205,7 +17145,7 @@ mod tests {
             }
         }
         assert!(turned > 0, "no run could be turned round");
-        let descending = kwg::Kwg(nodes);
+        let descending = std::sync::Arc::new(kwg::Kwg(nodes));
         assert!(!descending.runs_ascend());
         for racks in [
             [&[2u8, 8][..], &[1, 1, 19]],
@@ -17213,14 +17153,12 @@ mod tests {
             [&[0, 8], &[1, 2]],
         ] {
             let board = late_board(&gc, racks);
-            let solve = |kwg: &kwg::Kwg<kwg::Node24>| {
+            let solve = |kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>| {
                 let arm_tables = anagrams::ArmTables::build(kwg, &gc, false).unwrap();
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 egs.init(&board, racks);
                 egs.solve(0).unwrap()
             };
@@ -17233,18 +17171,16 @@ mod tests {
     fn a_solve_a_limit_stops_answers_from_a_finished_depth() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
 
         let mut cut = 0usize;
         let mut crowded = 0usize;
         for (name, pos) in all_positions() {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let full = egs.solve_within(0, &super::Limits::NONE).unwrap();
             assert!(full.exact, "[{name}] an unlimited solve is exact");
@@ -17253,12 +17189,9 @@ mod tests {
             // unlimited one skips some), with its value and table size; its
             // answer is the unlimited one's, at most a depth sooner
             let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let seen = finished.clone();
             let heard = move |p: &super::Progress| {
@@ -17293,12 +17226,9 @@ mod tests {
             }
 
             // no time at all: the first depth always finishes, and is the answer
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let limits = super::Limits {
                 time: Some(std::time::Duration::ZERO),
@@ -17319,12 +17249,9 @@ mod tests {
 
             // the time read on a given clock, never std's: on one that never
             // moves, however little time is given is never used up
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let limits = super::Limits {
                 time: Some(std::time::Duration::from_nanos(1)),
@@ -17345,12 +17272,9 @@ mod tests {
             );
 
             // the memory past its limit from the start: the same
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let limits = super::Limits {
                 time: None,
@@ -17376,12 +17300,9 @@ mod tests {
             );
 
             // a memory limit never reached changes nothing
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let limits = super::Limits {
                 time: None,
@@ -17402,12 +17323,9 @@ mod tests {
             // with nothing held and one byte allowed, the table cannot grow
             // past its first bucket, so its positions replace each other, and
             // the solve still runs to the end
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let limits = super::Limits {
                 time: None,
@@ -17429,12 +17347,9 @@ mod tests {
 
             // one state past the first depth's: the search stops within a later
             // pass, or after it, and answers a depth that finished
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let limits = super::Limits {
                 time: None,
@@ -17472,7 +17387,8 @@ mod tests {
     fn a_search_with_a_tile_in_the_bag_keeps_one_listener() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
 
         // every endgame of the search tells the one listener it was given, so
@@ -17488,12 +17404,9 @@ mod tests {
             })),
         );
         let positions = all_positions();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut exact = true;
         for (_, pos) in &positions {
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
@@ -17516,15 +17429,13 @@ mod tests {
     fn a_solve_times_its_movegens_only_while_something_listens() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let positions = all_positions();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut movegen = std::time::Duration::ZERO;
         for (_, pos) in &positions {
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
@@ -17554,18 +17465,17 @@ mod tests {
         // many plies as they hold
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         std::thread::scope(|s| {
             std::thread::Builder::new()
                 .stack_size(256 << 10)
                 .spawn_scoped(s, || {
-                    let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     let mut board = empty_board();
                     put_word(&mut board, 7, 6, &[1, 20]);
                     egs.init(&board, [&[1, 1, 2, 8, 20, 20, 1], &[1, 2, 1, 20, 8, 1, 20]]);
@@ -17591,20 +17501,15 @@ mod tests {
     fn a_key_made_move_by_move_is_the_key_made_afresh() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut afresh = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut afresh =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut moves = 0usize;
         for (name, pos) in all_positions() {
             for mover in 0..2u8 {
@@ -17666,20 +17571,15 @@ mod tests {
         // differ in one tile key apart
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut afresh = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut afresh =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         let seven_e = vec![5u8; 7];
@@ -17748,20 +17648,16 @@ mod tests {
     #[test]
     fn a_reserved_table_answers_as_a_grown_one() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut grown = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut reserved = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut grown =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut reserved =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let bucket = std::mem::size_of::<[u64; 8]>();
         assert!(reserved.reserve_table(bucket << 10));
         assert_eq!(reserved.work_buffer.table.room(), 4 << 10);
@@ -17784,14 +17680,13 @@ mod tests {
     #[test]
     fn a_table_too_big_to_hold_is_not_reserved() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         for bytes in [usize::MAX, isize::MAX as usize] {
             assert!(!egs.reserve_table(bytes), "{bytes}");
             assert_eq!(egs.work_buffer.table.room(), 4);
@@ -18117,7 +18012,9 @@ mod tests {
     #[inline]
     fn a_solve_in_steps_on_a_kept_table_never_answers_shallower() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         for memory in [
             None,
@@ -18129,24 +18026,20 @@ mod tests {
         ] {
             let mut stepped = 0;
             for (name, pos) in all_positions() {
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 let full = egs.solve(0).unwrap();
                 let mut kept = None;
                 let mut deepest = 0;
                 for step in 1.. {
                     assert!(step < 10000, "[{name}] the steps never ended");
-                    let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     if let Some(table) = kept.take() {
                         assert!(egs.give_table(table).is_ok());
                     }
@@ -18184,28 +18077,25 @@ mod tests {
     #[inline]
     fn a_solve_resumed_past_its_finished_depth_ends_as_one_solve() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut resumed = 0;
         for (name, pos) in all_positions() {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let full = egs.solve(0).unwrap();
             let mut kept = None;
             let mut finished = None;
             for step in 1.. {
                 assert!(step < 10000, "[{name}] the steps never ended");
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 if let Some(table) = kept.take() {
                     assert!(egs.give_table(table).is_ok());
                 }
@@ -18294,7 +18184,7 @@ mod tests {
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
             game_config: fixed.gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(fixed.gc, fixed.kwg),
+            vocab: &crate::movegen::Vocab::lean(fixed.kwg),
             anagrams: None,
             rack_lengths: None,
             klv: fixed.klv,
@@ -18356,7 +18246,8 @@ mod tests {
     #[inline]
     fn three_and_four_seats_solve_as_a_plain_search_values_them() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -18394,10 +18285,11 @@ mod tests {
                 mg: &mut mg,
                 memo: Default::default(),
             };
+            let vocab = crate::movegen::Vocab::lean(&kwg);
             let mut egs =
                 EndgameSolver::<kwg::Node24, kwg::Node24, false, u128, true, true, false>::new(
                     &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                    &vocab,
                     &arm_tables,
                 )
                 .unwrap();
@@ -18473,7 +18365,8 @@ mod tests {
     fn peg_one_in_bag_hand_checkable() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
 
         let board = empty_board();
         let mover_rack = [2u8]; // B
@@ -18482,12 +18375,9 @@ mod tests {
         unseen_tally[20] = 1; // T
 
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let result = egs
             .solve_peg_one_in_bag_full(
                 0,
@@ -18511,7 +18401,8 @@ mod tests {
     fn peg_one_in_bag_score_diff_shifts_the_outcome() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
 
         let board = empty_board();
         let mover_rack = [2u8]; // B
@@ -18520,12 +18411,9 @@ mod tests {
         unseen_tally[20] = 1; // T
 
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let result = egs
             .solve_peg_one_in_bag_full(
@@ -18572,7 +18460,8 @@ mod tests {
     #[inline]
     fn a_peg_solve_says_when_a_limit_cut_an_endgame_inside_it() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let no_time = super::Limits {
             time: Some(std::time::Duration::ZERO),
             states: None,
@@ -18606,12 +18495,9 @@ mod tests {
             game_config::make_exchange_test_game_config(),
         ] {
             let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             unseen_tally[8] = 1; // H
             unseen_tally[20] = 1; // T
@@ -18700,19 +18586,16 @@ mod tests {
     // searched
     fn peg_solve_counted(
         gc: &game_config::GameConfig,
-        kwg: &kwg::Kwg<kwg::Node24>,
+        kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
         arm_tables: &anagrams::ArmTables,
         board: &[u8],
         mover_rack: &[u8],
         unseen_tally: &[u8],
         limits: &super::Limits,
     ) -> (Solved, u64) {
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            gc,
-            crate::movegen::KwgForMovegen::for_game(gc, kwg),
-            arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(gc, &vocab, arm_tables).unwrap();
         let endgames = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let heard = endgames.clone();
         let listener = move |p: &super::Progress| {
@@ -18741,7 +18624,8 @@ mod tests {
     #[inline]
     fn a_deepening_peg_search_answers_as_an_unlimited_one() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         // limits that deepen the search but never stop it
         let deepening = [
             super::Limits {
@@ -18823,7 +18707,8 @@ mod tests {
     #[inline]
     fn a_peg_search_whose_lane_pool_has_no_room_answers_as_one_with_room() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let gc = game_config::make_english_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         // a limit no solve reaches, with room for the root's lists (a pass and
@@ -18935,7 +18820,8 @@ mod tests {
     #[inline]
     fn a_peg_search_out_of_time_values_one_move_and_answers_with_it() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let gc = game_config::make_english_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let no_time = super::Limits {
@@ -18984,7 +18870,8 @@ mod tests {
     #[inline]
     fn a_peg_search_a_state_limit_stops_answers_with_one_moves_values() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         let mut stopped = 0;
@@ -19072,7 +18959,9 @@ mod tests {
     #[inline]
     fn a_pass_line_resumed_values_as_one_search() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let tiles = [1u8, 2, 8, 20]; // A B H T
@@ -19087,9 +18976,10 @@ mod tests {
                     let value = |line: Option<&mut super::PassLine>,
                                  kept: Option<super::KeptTable>,
                                  states: Option<usize>| {
+                        let vocab = crate::movegen::Vocab::lean(&kwg);
                         let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                             &gc,
-                            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                            &vocab,
                             &arm_tables,
                         )
                         .unwrap();
@@ -19107,7 +18997,7 @@ mod tests {
                         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
                         let mut search = super::OneInBag {
                             gc: &gc,
-                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                            graphs: &crate::movegen::Vocab::lean(&kwg),
                             arm_tables: &arm_tables,
                             klv: &klv,
                             sub: &mut egs,
@@ -19166,7 +19056,9 @@ mod tests {
     #[test]
     #[inline]
     fn a_peg_search_resumed_in_steps_ends_as_one_solve() {
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let tiles = [1u8, 2, 8, 20]; // A B H T
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
@@ -19185,7 +19077,7 @@ mod tests {
                     let mover_rack = [x, y];
                     let full = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                         &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                        &crate::movegen::Vocab::lean(&kwg),
                         &arm_tables,
                     )
                     .unwrap()
@@ -19211,9 +19103,10 @@ mod tests {
                     let mut last: Option<Solved> = None;
                     for step in 1.. {
                         assert!(step < 10000, "the steps never ended");
+                        let vocab = crate::movegen::Vocab::lean(&kwg);
                         let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                             &gc,
-                            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                            &vocab,
                             &arm_tables,
                         )
                         .unwrap();
@@ -19335,17 +19228,16 @@ mod tests {
     #[test]
     #[inline]
     fn a_solve_counts_its_nodes() {
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let gc = game_config::make_english_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let heard = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let counter = heard.clone();
         let listener = move |p: &super::Progress| {
@@ -19373,7 +19265,9 @@ mod tests {
     #[test]
     #[inline]
     fn a_peg_search_counts_its_endgames_and_nodes_over_its_steps() {
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         for (gc, committed) in [
@@ -19399,12 +19293,10 @@ mod tests {
             let mut partway = false;
             for step in 1.. {
                 assert!(step < 10000, "the steps never ended");
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 if let Some(table) = kept.take() {
                     assert!(egs.give_table(table).is_ok());
                 }
@@ -19458,7 +19350,8 @@ mod tests {
     #[inline]
     fn the_endgames_of_a_search_with_a_tile_in_the_bag_share_the_solvers_table() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
         // the committed model, and the clairvoyant one where exchanges are
@@ -19468,12 +19361,9 @@ mod tests {
             game_config::make_exchange_test_game_config(),
         ] {
             let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let nodes = std::rc::Rc::new(std::cell::Cell::new(0u64));
             let heard = || {
                 let heard = nodes.clone();
@@ -19528,49 +19418,38 @@ mod tests {
         let gc = game_config::make_english_game_config();
         let other_gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
-        let other_kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
+        let other_kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let other_arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         egs.init(&board, [&[1, 2], &[8, 20]]); // A B, H T
         egs.solve(0).unwrap();
         let held = egs.work_buffer.table.held;
         assert!(held > 0, "the solve left nothing in the table");
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let other_vocab = crate::movegen::Vocab::lean(&other_kwg);
         for (name, mut other) in [
             (
                 "another game_config",
-                EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &other_gc,
-                    crate::movegen::KwgForMovegen::for_game(&other_gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap(),
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&other_gc, &vocab, &arm_tables)
+                    .unwrap(),
             ),
             (
                 "another kwg",
-                EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &other_kwg),
-                    &arm_tables,
-                )
-                .unwrap(),
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &other_vocab, &arm_tables)
+                    .unwrap(),
             ),
             (
                 "other arm_tables",
-                EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &other_arm_tables,
-                )
-                .unwrap(),
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &other_arm_tables)
+                    .unwrap(),
             ),
         ] {
             assert!(
@@ -19580,12 +19459,9 @@ mod tests {
             assert_eq!(egs.work_buffer.table.held, held, "{name}: the table moved");
             assert_eq!(other.work_buffer.table.held, 0, "{name}: the table moved");
         }
-        let mut same = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut same =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.swap_tables(&mut same).unwrap();
         assert_eq!(same.work_buffer.table.held, held);
         assert_eq!(egs.work_buffer.table.held, 0);
@@ -19602,16 +19478,15 @@ mod tests {
         let gc = game_config::make_english_game_config();
         let other_gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
-        let other_kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
+        let other_kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let other_arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         egs.init(&board, [&[1, 2], &[8, 20]]); // A B, H T
@@ -19625,7 +19500,7 @@ mod tests {
                 "another game_config",
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                     &other_gc,
-                    crate::movegen::KwgForMovegen::for_game(&other_gc, &kwg),
+                    &crate::movegen::Vocab::lean(&kwg),
                     &arm_tables,
                 )
                 .unwrap(),
@@ -19634,7 +19509,7 @@ mod tests {
                 "another kwg",
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                     &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &other_kwg),
+                    &crate::movegen::Vocab::lean(&other_kwg),
                     &arm_tables,
                 )
                 .unwrap(),
@@ -19643,7 +19518,7 @@ mod tests {
                 "other arm_tables",
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(
                     &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                    &crate::movegen::Vocab::lean(&kwg),
                     &other_arm_tables,
                 )
                 .unwrap(),
@@ -19656,12 +19531,9 @@ mod tests {
             );
             assert_eq!(kept.table.held, held, "{name}: the table came back short");
         }
-        let mut same = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut same =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         assert!(
             same.give_table(kept).is_ok(),
             "a solver of the same game was refused"
@@ -19676,7 +19548,8 @@ mod tests {
     fn a_principal_variation_plays_out_to_the_value_it_claims() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
 
         let mut ok = 0usize;
         let mut bad = 0usize;
@@ -19684,12 +19557,10 @@ mod tests {
         let positions = all_positions();
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
             for (name, pos) in &positions {
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables)
+                        .unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 let v = egs.solve(0).unwrap();
                 egs.collect_pv(0, &mut pv).unwrap();
@@ -19766,7 +19637,8 @@ mod tests {
     fn every_principal_variation_is_legal_and_its_value_bounded() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
@@ -19776,12 +19648,10 @@ mod tests {
         let positions = all_positions();
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
             for (name, pos) in &positions {
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables)
+                        .unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 let v = egs.solve(0).unwrap();
                 egs.collect_pv(0, &mut pv).unwrap();
@@ -19813,7 +19683,7 @@ mod tests {
                             let snapshot = movegen::BoardSnapshot {
                                 board_tiles: &board,
                                 game_config: &gc,
-                                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                                vocab: &crate::movegen::Vocab::lean(&kwg),
                                 anagrams: None,
                                 rack_lengths: None,
                                 klv: &klv,
@@ -19881,18 +19751,16 @@ mod tests {
     fn one_in_bag_forced_double_pass() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
 
         let board = empty_board();
         let racks = [vec![2u8, 2], vec![8u8, 20]];
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
 
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
 
         let v0 = egs.solve_one_in_bag(0, 2).unwrap();
@@ -19902,12 +19770,9 @@ mod tests {
             "p0 forced-pass leftover should be -1000"
         );
 
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let v1 = egs.solve_one_in_bag(1, 2).unwrap();
         assert_eq!(
@@ -19953,14 +19818,12 @@ mod tests {
     ) -> (equity::Equity, Vec<Vec<u8>>) {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.init_after_scoreless_turns(&empty_board(), racks, passes, zeros);
         let value = egs.solve(player_idx).unwrap();
         let mut pv = Vec::new();
@@ -20024,25 +19887,20 @@ mod tests {
         // first
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let racks: [&[u8]; 2] = [&[2, 2], &[26]]; // B B, Z
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.init(&board, racks);
         let whole = egs.solve(0).unwrap();
-        let mut fresh = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut fresh =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         fresh.init(&board, racks);
         let two = fresh
             .root_search(0, 2, equity::Equity::NEG_INFINITY, equity::Equity::INFINITY)
@@ -20065,7 +19923,8 @@ mod tests {
         // value
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         // limits never reached: memory alone, states, and time
         let memory = super::Limits {
@@ -20096,12 +19955,10 @@ mod tests {
                 let mut depths = Vec::new();
                 let mut values = Vec::new();
                 for limits in [&super::Limits::NONE, &memory, &states, &time] {
-                    let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                        &gc,
-                        crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                        &arm_tables,
-                    )
-                    .unwrap();
+                    let vocab = crate::movegen::Vocab::lean(&kwg);
+                    let mut egs =
+                        EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                            .unwrap();
                     let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                     let finished = heard.clone();
                     let listener = move |p: &super::Progress| {
@@ -20156,7 +20013,8 @@ mod tests {
         use std::sync::atomic::Ordering::Relaxed;
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let limits = super::Limits {
             time: None,
@@ -20182,12 +20040,9 @@ mod tests {
         let racks = [vec![1u8, 1, 2, 8, 20], vec![1u8, 2, 8, 19, 20]];
         let mut stopped_late = 0usize;
         for from in [1usize, 64] {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let finished = heard.clone();
             let listener = move |p: &super::Progress| {
@@ -20242,15 +20097,13 @@ mod tests {
         // two-ply values
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let fresh = |pos: &Position| {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             egs
         };
@@ -20436,7 +20289,8 @@ mod tests {
         // (the later move then fails high: a bound, not a value)
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         // the second pass, at two plies after a first, with the first pass's
         // best as given (or as found), in a window; what the pass recorded
@@ -20445,12 +20299,9 @@ mod tests {
                            best: Option<u16>,
                            alpha: equity::Equity,
                            beta: equity::Equity| {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             egs.root_search(
                 mover,
@@ -20481,12 +20332,10 @@ mod tests {
                 assert_ne!(later, found, "[{name}] a later move, not the first");
                 // the first move's two-ply value: a window around it keeps it
                 // exact and the later move above it failing high
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.root_search(
                     mover,
@@ -20627,18 +20476,17 @@ mod tests {
         // value
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let point = equity::Equity::new(equity::SCALE);
         let mut asked = 0usize;
         for (name, pos) in all_positions() {
             for mover in 0..2u8 {
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    &arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables)
+                        .unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 egs.reset_position();
                 egs.generate(0, mover, false).unwrap();
@@ -20679,16 +20527,14 @@ mod tests {
         // is a best one
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let point = equity::Equity::new(equity::SCALE);
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let fresh = |pos: &Position| {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             egs
         };
@@ -20780,7 +20626,8 @@ mod tests {
     fn a_one_in_bag_solve_agrees_with_the_reference_and_beats_passing() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
@@ -20809,12 +20656,9 @@ mod tests {
                     answering: passes > 0, // the game's last turn a pass
                 },
             );
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             egs.init_after_scoreless_turns(
                 &board,
                 [&racks[0][..], &racks[1][..]],
@@ -20848,19 +20692,17 @@ mod tests {
         // the T are 1, the H 4)
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let board = empty_board();
         let mover_rack = [20u8]; // T
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
         unseen_tally[1] = 2; // A, A
         unseen_tally[8] = 1; // H
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut solve = |passes, zeros| {
             let mut progress = super::PegProgress::new(
@@ -20906,7 +20748,8 @@ mod tests {
         let game_config::GameConfig::Static(rules) = &mut zeros_only;
         rules.num_passes_to_end = 0;
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let positions = all_positions();
         for (gc, name, mover, scoreless) in [
@@ -20936,12 +20779,9 @@ mod tests {
                     answering: scoreless > 0, // the game's last turn a pass
                 },
             );
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                gc,
-                crate::movegen::KwgForMovegen::for_game(gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(gc, &vocab, &arm_tables).unwrap();
             egs.init_after_scoreless_turns(
                 &pos.board,
                 [&pos.racks[0][..], &pos.racks[1][..]],
@@ -20962,19 +20802,17 @@ mod tests {
     fn one_in_bag_exchange_beats_passing() {
         let gc = game_config::make_exchange_test_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
 
         let board = empty_board();
         let racks = [vec![17u8], vec![1u8]]; // p0 = [Q], p1 = [A]
         let bag = 1u8; // one A in the bag
 
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let solvev = egs.solve_one_in_bag(0, bag).unwrap();
 
@@ -20998,14 +20836,13 @@ mod tests {
         let mut gc = game_config::make_exchange_test_game_config();
         let game_config::GameConfig::Static(rules) = &mut gc;
         rules.zeros_can_end_empty_board = true;
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut unseen = vec![0; gc.alphabet().len() as usize];
         for tile in [0, 8, 20] {
             // blank, H, and T
@@ -21041,7 +20878,8 @@ mod tests {
     #[inline]
     fn peg_one_in_bag_exchange_solved_or_declined() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
 
         let gc = game_config::make_exchange_test_game_config();
         let board = empty_board();
@@ -21050,12 +20888,9 @@ mod tests {
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let result = egs
             .solve_peg_one_in_bag_full(
                 0,
@@ -21071,12 +20906,9 @@ mod tests {
 
         let gc_en = game_config::make_english_game_config();
         let arm_tables_en = anagrams::ArmTables::build(&kwg, &gc_en, false).unwrap();
-        let mut egs_en = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc_en,
-            crate::movegen::KwgForMovegen::for_game(&gc_en, &kwg),
-            &arm_tables_en,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs_en =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc_en, &vocab, &arm_tables_en).unwrap();
         assert!(
             egs_en
                 .solve_peg_one_in_bag_full(
@@ -21093,12 +20925,10 @@ mod tests {
 
         let gc_bad = game_config::make_exchange_unsolvable_test_game_config();
         let arm_tables_bad = anagrams::ArmTables::build(&kwg, &gc_bad, false).unwrap();
-        let mut egs_bad = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc_bad,
-            crate::movegen::KwgForMovegen::for_game(&gc_bad, &kwg),
-            &arm_tables_bad,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs_bad =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc_bad, &vocab, &arm_tables_bad)
+                .unwrap();
         assert!(matches!(
             egs_bad
                 .solve_peg_one_in_bag_full(
@@ -21119,7 +20949,8 @@ mod tests {
     fn differential_peg_committed() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let kwg =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let a = gc.alphabet();
@@ -21137,7 +20968,7 @@ mod tests {
             let snap = movegen::BoardSnapshot {
                 board_tiles: board,
                 game_config: &gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -21241,12 +21072,10 @@ mod tests {
                 committed(board, mrack, &unseen, &mut fixed);
 
             for (lean, arm_tables) in &arms {
-                let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables)
+                        .unwrap();
                 let got = egs
                     .solve_peg_one_in_bag(
                         0,
@@ -21259,12 +21088,10 @@ mod tests {
                     .unwrap()
                     .expect("english one-in-bag is always solvable");
 
-                let mut egs2 = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                    &gc,
-                    crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                    arm_tables,
-                )
-                .unwrap();
+                let vocab = crate::movegen::Vocab::lean(&kwg);
+                let mut egs2 =
+                    EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, arm_tables)
+                        .unwrap();
                 let clair = egs2
                     .peg_clairvoyant_aggregate(
                         &mut super::PegProgress::new(
@@ -21394,14 +21221,13 @@ mod tests {
     #[test]
     fn a_bag_search_of_an_empty_bag_is_the_endgame() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0; gc.alphabet().len() as usize];
@@ -21431,14 +21257,13 @@ mod tests {
     #[test]
     fn a_bag_search_with_cuts_answers_the_same() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0; gc.alphabet().len() as usize];
@@ -21475,20 +21300,16 @@ mod tests {
     #[test]
     fn a_bag_search_with_an_empty_bag_answers_as_the_endgame() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut own = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
@@ -21517,14 +21338,13 @@ mod tests {
     #[test]
     fn a_bag_search_over_one_split_answers_the_same_with_cuts() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
@@ -21561,14 +21381,13 @@ mod tests {
     #[test]
     fn a_bag_search_over_many_splits_answers_the_same_with_cuts() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
@@ -21611,14 +21430,13 @@ mod tests {
     #[test]
     fn a_bag_search_marks_its_cut_rows_and_cuts_unless_told_not_to() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0; gc.alphabet().len() as usize];
@@ -21671,14 +21489,13 @@ mod tests {
     #[test]
     fn a_bag_search_can_restrict_only_its_first_play() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mover_rack = [1, 20]; // AT
@@ -21703,7 +21520,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles: &board,
                 game_config: &gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 klv: &klv,
                 anagrams: None,
                 rack_lengths: None,
@@ -21748,7 +21565,9 @@ mod tests {
     #[inline]
     fn a_bag_search_in_parts_merges_into_the_whole() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -21758,12 +21577,9 @@ mod tests {
         unseen_tally[19] = 1; // S
         unseen_tally[20] = 2; // T
         let solve = |part: Option<(usize, usize)>| {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let position = bag_position(&board, &[5, 20], &unseen_tally, 2, equity::Equity::ZERO);
             let choices = super::PegBagChoices {
                 part: part.unwrap_or((0, 1)),
@@ -21846,21 +21662,20 @@ mod tests {
         // rack every move the walk does, which a debug build checks lane by
         // lane, and a few thousand positions reach such racks
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         unseen_tally[1] = 2; // A
         unseen_tally[8] = 1; // H
         unseen_tally[19] = 1; // S
         unseen_tally[20] = 2; // T
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut position = bag_position(&board, &[2, 2], &unseen_tally, 2, equity::Equity::ZERO);
         position.model = super::PegModel::InfoSets;
         let few = super::Limits {
@@ -21884,7 +21699,9 @@ mod tests {
         // holds one tile, the bag the other seven) and the exchanges after it
         // must stop at the time
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -21900,12 +21717,9 @@ mod tests {
             clock: None,
         };
         for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut position = bag_position(&board, &rack, &unseen_tally, 7, equity::Equity::ZERO);
             position.model = model;
             let t0 = std::time::Instant::now();
@@ -21927,7 +21741,9 @@ mod tests {
         // search that waited for its first move's value before any limit could
         // stop it ran on past its time. It stops at the time, answering no move
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -21943,12 +21759,9 @@ mod tests {
             clock: None,
         };
         for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut position = bag_position(&board, &rack, &unseen_tally, 9, equity::Equity::ZERO);
             position.model = model;
             let t0 = std::time::Instant::now();
@@ -21987,7 +21800,9 @@ mod tests {
         }
         .make_game_config(&|_: &str| Err("no files".into()))
         .unwrap();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -22002,12 +21817,9 @@ mod tests {
             memory: None,
             clock: None,
         };
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let t0 = std::time::Instant::now();
         let result = egs
             .solve_peg_one_in_bag_full(
@@ -22035,14 +21847,13 @@ mod tests {
         // with tiles in the bag answers as the committed model does: the same
         // margin in each split, share of wins, mean margin, and move
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut at = empty_board();
         put_word(&mut at, 7, 6, &[1, 20]); // AT
@@ -22109,7 +21920,9 @@ mod tests {
     #[test]
     fn an_exact_bag_pass_can_stop_and_resume() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -22118,12 +21931,9 @@ mod tests {
             unseen[tile] += 1;
         }
         let position = bag_position(&board, &[1, 2], &unseen, 2, equity::Equity::ZERO);
-        let mut solver = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let whole = uncut_peg(&mut solver, position.clone()).unwrap().unwrap();
         assert!(whole.exact);
         for threads in [1, 2] {
@@ -22168,7 +21978,9 @@ mod tests {
     #[inline]
     fn a_bag_search_tells_its_listener_how_many_moves_it_has_valued() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -22176,13 +21988,10 @@ mod tests {
         for &tile in &[1u8, 2, 8] {
             unseen_tally[tile as usize] += 1; // A B H
         }
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let listened = || {
-            let egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let seen = heard.clone();
             let listener = move |p: &super::Progress| {
@@ -22308,21 +22117,20 @@ mod tests {
     #[inline]
     fn a_pass_answering_a_pass_inside_a_bag_search_ends_the_line() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
-        let mut sub = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut sub =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let valued = super::BagValued::new(1);
         let limits = super::BagLimits::new(&super::Limits::NONE, None);
         let mut search = super::BagSearch {
             gc: &gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+            graphs: &crate::movegen::Vocab::lean(&kwg),
             arm_tables: &arm_tables,
             klv: &klv,
             sub: &mut sub,
@@ -22431,14 +22239,13 @@ mod tests {
             reserved: None,
         });
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
@@ -22511,14 +22318,13 @@ mod tests {
             clock: None,
         };
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let (mut gave_up, mut checked, mut refused) = (0, 0, 0);
@@ -22621,12 +22427,9 @@ mod tests {
         let gc = game_config::make_exchange_test_game_config();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
-        let mut sub = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut sub =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let (mut gave_up, mut checked) = (0, 0);
         let (name, pos) = (embedded_positions().into_iter())
@@ -22639,7 +22442,7 @@ mod tests {
             let limits = super::BagLimits::new(limits, None);
             let mut search = super::OneInBag {
                 gc: &gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                graphs: &crate::movegen::Vocab::lean(&kwg),
                 arm_tables: &arm_tables,
                 klv: &klv,
                 sub: &mut sub,
@@ -22685,7 +22488,9 @@ mod tests {
         let mut one_pass = english.clone();
         let game_config::GameConfig::Static(rules) = &mut one_pass;
         rules.num_passes_to_end = 1;
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -22696,12 +22501,9 @@ mod tests {
         }
         for (gc, ends) in [(&one_pass, true), (&english, false)] {
             let arm_tables = anagrams::ArmTables::build(&kwg, gc, false).unwrap();
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                gc,
-                crate::movegen::KwgForMovegen::for_game(gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(gc, &vocab, &arm_tables).unwrap();
             // the bag empty, then holding the H: the Q (10 points) against the
             // other's A (1)
             egs.init(&board, [&[q][..], &[a][..]]);
@@ -22732,7 +22534,9 @@ mod tests {
     #[inline]
     fn a_pass_answering_the_games_last_pass_ends_it() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
@@ -22743,12 +22547,9 @@ mod tests {
             unseen_tally[tile as usize] += 1;
         }
         for (passes, ends) in [(1u16, true), (0, false)] {
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             // the bag empty, then holding the H: the Q (10 points) against the
             // other's A (1)
             egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], passes, 1);
@@ -22778,12 +22579,10 @@ mod tests {
         let game_config::GameConfig::Static(rules) = &mut four_passes;
         rules.num_passes_to_end = 4;
         let arm_tables = anagrams::ArmTables::build(&kwg, &four_passes, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &four_passes,
-            crate::movegen::KwgForMovegen::for_game(&four_passes, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&four_passes, &vocab, &arm_tables)
+                .unwrap();
         egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], 5, 5);
         assert_eq!(egs.solve(0).unwrap(), e(-9000));
         egs.init_after_scoreless_turns(&board, [&[q][..], &[a][..]], 5, 5);
@@ -22810,18 +22609,17 @@ mod tests {
         let game_config::GameConfig::Static(rules) = &mut gc;
         rules.num_passes_to_end = 0;
         rules.num_zeros_to_end = 6;
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let board = empty_board();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
         let racks = [vec![2u8, 20], vec![8u8]]; // B T, H
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         assert_eq!(
             egs.solve_one_in_bag(0, 1).unwrap(),
@@ -22857,14 +22655,13 @@ mod tests {
         // mover's B (3 points) against the opponent's one tile: A or T (1) loses
         // by 2, H (4) wins by 1, each split weighed by the deals that give it
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -22916,20 +22713,16 @@ mod tests {
         // value of the tile left, each solved on its own, weighed by the
         // deals; a bag holding a tile twice weighs its draws unequally
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut own = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -23053,7 +22846,7 @@ mod tests {
     // has valued, by key
     struct BagReference<'r, 's, N: kwg::Node, L: kwg::Node, V> {
         gc: &'s game_config::GameConfig,
-        kwg: &'s kwg::Kwg<N>,
+        kwg: &'s std::sync::Arc<kwg::Kwg<N>>,
         arm_tables: &'s anagrams::ArmTables,
         klv: &'s klv::Klv<L>,
         mg: &'r mut movegen::KurniaMoveGenerator,
@@ -23083,7 +22876,7 @@ mod tests {
         let mut lists = super::PlyLists::default();
         super::in_bag_moves::<false, _, _, _, true, true>(
             r.gc,
-            crate::movegen::KwgForMovegen::for_game(r.gc, r.kwg),
+            &crate::movegen::Vocab::lean(r.kwg),
             r.arm_tables,
             r.klv,
             r.mg,
@@ -23248,7 +23041,7 @@ mod tests {
         let mut lists = super::PlyLists::default();
         super::in_bag_moves::<false, _, _, _, true, true>(
             r.gc,
-            crate::movegen::KwgForMovegen::for_game(r.gc, r.kwg),
+            &crate::movegen::Vocab::lean(r.kwg),
             r.arm_tables,
             r.klv,
             r.mg,
@@ -23272,20 +23065,16 @@ mod tests {
         // unvalued never changes a value. Passes and one-tile placements leave
         // tiles in the bag to the next mover
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut own = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let e = equity::Equity::new;
@@ -23374,7 +23163,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles: &info.board,
                 game_config: r.gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(r.gc, r.kwg),
+                vocab: &crate::movegen::Vocab::lean(r.kwg),
                 anagrams: r.arm_tables.anagrams(),
                 rack_lengths: r.arm_tables.rack_lengths(),
                 klv: r.klv,
@@ -23511,20 +23300,16 @@ mod tests {
     #[test]
     fn a_search_over_one_split_values_each_move_as_one_that_keeps_nothing() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut own = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let e = equity::Equity::new;
@@ -23591,20 +23376,16 @@ mod tests {
         // moves it stops early change a value. A move that leaves tiles in the
         // bag hands the other a blind choice over splits of their own
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut own = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let e = equity::Equity::new;
@@ -23730,14 +23511,13 @@ mod tests {
         // has mean 0 and wins half the deals (ties half); the pass has mean
         // -11/6 and wins 1/12
         let gc = game_config::make_exchange_test_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -23782,14 +23562,13 @@ mod tests {
         // that stop it answer inexactly or, exact, alike; and a stopped search
         // resumed with no limit answers as one never stopped
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -23879,7 +23658,9 @@ mod tests {
         // stopped at each table size, and not stopped: each range of the
         // answer's moves is that slice of them all, best first
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -23897,12 +23678,9 @@ mod tests {
                 memory: None,
                 clock: None,
             };
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut progress =
                 super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
                     .unwrap()
@@ -23949,7 +23727,9 @@ mod tests {
         // stopped at each table size, and not stopped: each range of the
         // answer's moves is that slice of them all, best first
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -23966,12 +23746,9 @@ mod tests {
                 memory: None,
                 clock: None,
             };
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut progress = super::PegProgress::new(
                 0,
                 &board,
@@ -24045,14 +23822,13 @@ mod tests {
         // line reaches the bag's end, and then answers exactly as one that does
         // not estimate, under either model and on one thread or three
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -24109,7 +23885,9 @@ mod tests {
         // first pass values every move by its equity, exchanges too, and the
         // answer says it is not exact
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -24140,12 +23918,9 @@ mod tests {
                 unseen_tally[tile] = 1;
             }
             let threads = 1;
-            let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-                &gc,
-                crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-                &arm_tables,
-            )
-            .unwrap();
+            let vocab = crate::movegen::Vocab::lean(&kwg);
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
             let mut position =
                 bag_position(&board, &rack, &unseen_tally, bag_size, equity::Equity::ZERO);
             position.model = model;
@@ -24184,18 +23959,12 @@ mod tests {
         // with two in the bag, cut by a state limit after its second pass:
         // each move's value is the reference's to that depth, a placement that
         // empties the bag below the root valued by its endgame
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
-        let mut own = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut own =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
@@ -24261,7 +24030,9 @@ mod tests {
     #[test]
     fn a_bag_search_refused_memory_past_its_state_limit_is_not_out_of_memory() {
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -24279,12 +24050,9 @@ mod tests {
             }),
             ..super::Limits::NONE
         };
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let result = egs.solve_peg(position, &limits, 1).unwrap().unwrap();
         assert!(!result.out_of_memory);
     }
@@ -24293,14 +24061,13 @@ mod tests {
     fn a_bag_search_with_cuts_values_again_past_a_pause() {
         use super::PegBagChange as C;
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
@@ -24334,14 +24101,13 @@ mod tests {
     fn a_bag_search_takes_a_sims_changes_to_its_moves() {
         use super::{PegBagChange as C, PegBagStanding as S};
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
@@ -24434,14 +24200,13 @@ mod tests {
     fn a_one_tile_search_takes_a_sims_changes_to_its_moves() {
         use super::{PegBagChange as C, PegBagStanding as S};
         let gc = game_config::make_english_game_config();
-        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
-        let mut egs = EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-            &gc,
-            crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
-            &arm_tables,
-        )
-        .unwrap();
+        let vocab = crate::movegen::Vocab::lean(&kwg);
+        let mut egs =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];

@@ -96,8 +96,10 @@ impl Question {
         gcg: &str,
         rack: &str,
     ) -> Result<Question, error::MyError> {
-        let empty_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(kwg::EMPTY_KBWG_BYTES)
-            .map_err(|e| error::new(format!("{}", e)))?;
+        let empty_kwg = std::sync::Arc::new(
+            kwg::Kwg::<kwg::Node24>::from_bytes_alloc(kwg::EMPTY_KBWG_BYTES)
+                .map_err(|e| error::new(format!("{}", e)))?,
+        );
         let empty_klv =
             klv::Klv::<kwg::Node24>::empty().map_err(|e| error::new(format!("{}", e)))?;
         let mut ps = play_scorer::PlayScorer::new();
@@ -115,7 +117,7 @@ impl Question {
         let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), _> {
             racks_alphabet_reader.set_word(rack, v)
         };
-        let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, &empty_kwg);
+        let graphs = &wolges::movegen::Vocab::lean(&empty_kwg);
         for (line_number, line) in (1usize..).zip(text::lines(gcg)) {
             if !line.starts_with('>') {
                 continue;
@@ -252,7 +254,7 @@ impl Question {
                 let board_snapshot = &movegen::BoardSnapshot {
                     board_tiles: &game_state.board_tiles,
                     game_config,
-                    graphs,
+                    vocab: graphs,
                     anagrams: None,
                     rack_lengths: None,
                     klv: &empty_klv,
@@ -395,7 +397,7 @@ fn reserve_table<const TWO_SEATS: bool>(egs: &mut AnySolver<'_, TWO_SEATS>, solv
 
 struct Line<'l> {
     game_config: &'l game_config::GameConfig,
-    graphs: wolges::movegen::KwgForMovegen<'l, kwg::Node24>,
+    graphs: &'l wolges::movegen::Vocab<'l, kwg::Node24>,
     arm_tables: &'l anagrams::ArmTables,
     run_letters: kwg::RunLetters<'l>,
     board_tiles: &'l [u8],
@@ -450,6 +452,7 @@ fn run_batch<N: kwg::Node>(
     out_path: &str,
     solving: &Solving,
 ) -> error::Returns<()> {
+    let kwg = std::sync::Arc::new(kwg);
     let mut out = make_writer(out_path)?;
     let empty_klv = klv::Klv::<kwg::Node24>::empty()?;
     let alphabet = game_config.alphabet();
@@ -465,7 +468,7 @@ fn run_batch<N: kwg::Node>(
     let mut builder = build::Builder::default();
     let mut smaller_graph = build::GameGraph::default();
     let file_contents = std::fs::read_to_string(path)?;
-    let graphs = wolges::movegen::KwgForMovegen::for_game(&game_config, &kwg);
+    let graphs = &wolges::movegen::Vocab::lean(&kwg);
     for (line_index, line) in text::lines(&file_contents).enumerate() {
         let t0 = std::time::Instant::now();
         let mut fields = line.split('\t');
@@ -525,7 +528,7 @@ fn run_batch<N: kwg::Node>(
             &movegen::BoardSnapshot {
                 board_tiles: &board_tiles,
                 game_config: &game_config,
-                graphs,
+                vocab: graphs,
                 anagrams: None,
                 rack_lengths: None,
                 klv: &empty_klv,
@@ -538,7 +541,7 @@ fn run_batch<N: kwg::Node>(
 
         let line = Line {
             game_config: &game_config,
-            graphs: wolges::movegen::KwgForMovegen::for_game(&game_config, smaller_kwg),
+            graphs: &wolges::movegen::Vocab::lean(smaller_kwg),
             arm_tables: &arm_tables,
             run_letters: smaller_graph.run_letters(),
             board_tiles: &board_tiles,
@@ -1512,7 +1515,10 @@ fn run_cli(
     solving: &Solving,
 ) -> error::Returns<()> {
     let question = Question::from_fen(game_config, kwg_path, fen, rack)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(kwg_path)?, kbwg)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
+        run_line::read_input(kwg_path)?,
+        kbwg,
+    )?);
     refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
     eprintln!(
         "{}",
@@ -1582,7 +1588,10 @@ fn lexicon_kwg_path(lexicon: &str) -> String {
 fn solve_question(question: &Question, score_diff: i32, solving: &Solving) -> error::Returns<()> {
     // of course this should be cached
     let kwg_path = lexicon_kwg_path(&question.lexicon);
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(&kwg_path)?, false)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
+        std::fs::read(&kwg_path)?,
+        false,
+    )?);
     let game_config = game_config::make_english_game_config();
     refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
 
@@ -1592,7 +1601,7 @@ fn solve_question(question: &Question, score_diff: i32, solving: &Solving) -> er
 #[inline(always)]
 fn solve_position<N: kwg::Node>(
     game_config: &game_config::GameConfig,
-    kwg: &kwg::Kwg<N>,
+    kwg: &std::sync::Arc<kwg::Kwg<N>>,
     question: &Question,
     score_diff: i32,
     solving: &Solving,
@@ -1711,7 +1720,7 @@ fn solve_position<N: kwg::Node>(
         &movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config,
-            graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
+            vocab: &wolges::movegen::Vocab::lean(kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv::Klv::<kwg::Node24>::empty()?,
@@ -1729,15 +1738,15 @@ fn solve_position<N: kwg::Node>(
         "word_prune: {} bytes kwg",
         smaller_kwg_bytes.len()
     )?;
-    let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
+    let smaller_kwg = std::sync::Arc::new(kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+        &smaller_kwg_bytes,
+    )?);
     let arm_tables = solver_tables(&smaller_kwg, game_config, solving.lean)?;
     move_generator.reset_for_another_kwg();
 
-    let mut egs = endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(
-        game_config,
-        wolges::movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
-        &arm_tables,
-    )?;
+    let vocab = wolges::movegen::Vocab::lean(&smaller_kwg);
+    let mut egs =
+        endgame::EndgameSolver::<kwg::Node24, kwg::Node24>::new(game_config, &vocab, &arm_tables)?;
     reserve_table(&mut egs, solving);
     let solve = |egs: &mut endgame::EndgameSolver<kwg::Node24, kwg::Node24>| -> error::Returns<()> {
         if bag_size > 1 {

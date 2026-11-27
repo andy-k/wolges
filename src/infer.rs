@@ -57,7 +57,7 @@ pub fn bag_size(board_tiles: &[u8], game_config: &game_config::GameConfig) -> i6
 
 pub struct SpellTables<'a, N: kwg::Node, L: kwg::Node> {
     pub game_config: &'a game_config::GameConfig,
-    pub graphs: movegen::KwgForMovegen<'a, N>,
+    pub graphs: &'a movegen::Vocab<'a, N>,
     pub klv: &'a klv::Klv<L>,
     pub lat: &'a census::MultisetLattice,
 }
@@ -164,7 +164,7 @@ pub fn build_sheet_spell_once<
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles,
         game_config,
-        graphs,
+        vocab: graphs,
         anagrams: None,
         rack_lengths: None,
         klv,
@@ -2167,7 +2167,7 @@ fn kept_leaves_packed_impl<
             board_tiles,
             SpellTables {
                 game_config,
-                graphs: board_snapshot.graphs,
+                graphs: board_snapshot.vocab,
                 klv: board_snapshot.klv,
                 lat,
             },
@@ -2555,7 +2555,7 @@ pub fn reply_to<
         board_tiles,
         SpellTables {
             game_config,
-            graphs: board_snapshot.graphs,
+            graphs: board_snapshot.vocab,
             klv: board_snapshot.klv,
             lat,
         },
@@ -2666,7 +2666,7 @@ mod tests {
 
     // tiny_words as a graph
     #[inline]
-    fn tiny_kwg() -> kwg::Kwg<kwg::Node24> {
+    fn tiny_kwg() -> std::sync::Arc<kwg::Kwg<kwg::Node24>> {
         let bytes = build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
@@ -2674,7 +2674,7 @@ mod tests {
             &tiny_words(),
         )
         .unwrap();
-        kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap()
+        std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap())
     }
 
     // the leaves a move keeps, seen either on an empty board by a player
@@ -2697,7 +2697,7 @@ mod tests {
     #[inline]
     fn leaves_under(
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<kwg::Node24>,
+        kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
         on_board: usize,
         play: &movegen::Play,
         fuzz: f64,
@@ -2709,7 +2709,7 @@ mod tests {
     #[inline]
     fn leaves_mixed(
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg<kwg::Node24>,
+        kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
         on_board: usize,
         play: &movegen::Play,
         (fuzz, mix): (f64, f64),
@@ -2733,7 +2733,7 @@ mod tests {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config,
-            graphs: crate::movegen::KwgForMovegen::for_game(game_config, kwg),
+            vocab: &crate::movegen::Vocab::lean(kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -2818,7 +2818,8 @@ mod tests {
             &build::make_alphagrams(&tiny_words()).unwrap(),
         )
         .unwrap();
-        let alphagrams = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
+        let alphagrams =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap());
         let at = movegen::Play::Place {
             down: false,
             lane: 7,
@@ -2845,8 +2846,9 @@ mod tests {
             &build::make_alphagrams(&tiny_words()).unwrap(),
         )
         .unwrap();
-        let alphagrams = kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap();
-        let classic = tiny_kwg();
+        let alphagrams =
+            std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(bytes.to_vec(), false).unwrap());
+        let classic = std::sync::Arc::new(tiny_kwg());
         let mut board_tiles = vec![0u8; 15 * 15];
         // the empty board, then a midgame one
         for step in 0..2 {
@@ -2863,7 +2865,7 @@ mod tests {
                     &board_tiles,
                     SpellTables {
                         game_config,
-                        graphs: crate::movegen::KwgForMovegen::for_game(game_config, kwg),
+                        graphs: &crate::movegen::Vocab::lean(kwg),
                         klv: &klv,
                         lat: &lat,
                     },
@@ -2941,7 +2943,7 @@ mod tests {
     #[inline]
     fn a_pass_infers_nothing_unless_passes_are_weighed() {
         let game_config = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
@@ -2964,7 +2966,7 @@ mod tests {
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles: &board_tiles,
                 game_config: &game_config,
-                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -3000,7 +3002,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles: &[0u8; 15 * 15],
                 game_config: &game_config,
-                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -3080,7 +3082,7 @@ mod tests {
     #[inline]
     fn an_exchanges_keeps_summed_by_keep_are_its_keeps_listed() {
         let game_config = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let tables = InferTables::new(&game_config, &klv).unwrap();
         let (lat, leave) = (&tables.lat, &tables.leave);
@@ -3103,7 +3105,7 @@ mod tests {
             &board_tiles,
             SpellTables {
                 game_config: &game_config,
-                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                graphs: &crate::movegen::Vocab::lean(&kwg),
                 klv: &klv,
                 lat,
             },
@@ -3173,7 +3175,7 @@ mod tests {
                 &movegen::BoardSnapshot {
                     board_tiles: &board_tiles,
                     game_config: &game_config,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -3271,7 +3273,7 @@ mod tests {
         play: &movegen::Play,
         held: Held<'_>,
     ) -> (Vec<(Vec<u8>, f64)>, Carried) {
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut leaves = PackedLeaves::new();
         let mut carried = Carried::default();
@@ -3281,7 +3283,7 @@ mod tests {
             &movegen::BoardSnapshot {
                 board_tiles,
                 game_config,
-                graphs: crate::movegen::KwgForMovegen::for_game(game_config, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -3340,7 +3342,7 @@ mod tests {
     // the tiny words, the empty klv, their lattice and leave table, and a
     // generator, for the references below
     struct Tiny {
-        kwg: kwg::Kwg<kwg::Node24>,
+        kwg: std::sync::Arc<kwg::Kwg<kwg::Node24>>,
         klv: klv::Klv<kwg::Node24>,
         tables: InferTables,
         move_generator: movegen::KurniaMoveGenerator,
@@ -3374,7 +3376,7 @@ mod tests {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles,
             game_config,
-            graphs: crate::movegen::KwgForMovegen::for_game(game_config, &tiny.kwg),
+            vocab: &crate::movegen::Vocab::lean(&tiny.kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &tiny.klv,
@@ -3714,7 +3716,7 @@ mod tests {
     #[inline]
     fn a_carried_leave_of_nothing_weighs_each_rack_as_any_rack_does() {
         let english = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let racks_on = |on_board| {
             let mut pool = english
@@ -3749,7 +3751,7 @@ mod tests {
                     &movegen::BoardSnapshot {
                         board_tiles: &board_tiles,
                         game_config: &english,
-                        graphs: crate::movegen::KwgForMovegen::for_game(&english, &kwg),
+                        vocab: &crate::movegen::Vocab::lean(&kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -3782,7 +3784,7 @@ mod tests {
     #[inline]
     fn an_exchanges_carry_is_the_same_on_any_number_of_threads() {
         let english = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let board_tiles = board_of(&english, 70);
         let mut pool = english.tiles_off_board(&board_tiles).unwrap();
@@ -3797,7 +3799,7 @@ mod tests {
                 &movegen::BoardSnapshot {
                     board_tiles: &board_tiles,
                     game_config: &english,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&english, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -3833,7 +3835,7 @@ mod tests {
     #[inline]
     fn the_sheet_and_generating_each_rack_weigh_racks_alike() {
         let game_config = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let alphabet = game_config.alphabet();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; 15 * 15];
@@ -3854,7 +3856,7 @@ mod tests {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
-            graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+            vocab: &crate::movegen::Vocab::lean(&kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -3869,7 +3871,7 @@ mod tests {
             &board_tiles,
             SpellTables {
                 game_config: &game_config,
-                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                graphs: &crate::movegen::Vocab::lean(&kwg),
                 klv: &klv,
                 lat: &tables.lat,
             },
@@ -4400,7 +4402,7 @@ mod tests {
     #[inline]
     fn a_reply_is_every_racks_best_move_weighed_by_its_deals() {
         let game_config = game_config::make_english_game_config();
-        let kwg = reply_kwg();
+        let kwg = std::sync::Arc::new(reply_kwg());
         let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(&[
             (&[0], 25.0),
             (&[1], 1.5),
@@ -4491,7 +4493,7 @@ mod tests {
                 &movegen::BoardSnapshot {
                     board_tiles,
                     game_config: &game_config,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -4526,7 +4528,7 @@ mod tests {
                 &movegen::BoardSnapshot {
                     board_tiles: &after,
                     game_config: &game_config,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -4661,7 +4663,7 @@ mod tests {
                         &board_tiles,
                         SpellTables {
                             game_config: &gc,
-                            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                            graphs: &crate::movegen::Vocab::lean(&kwg),
                             klv: &klv,
                             lat: &lat,
                         },
@@ -4674,7 +4676,7 @@ mod tests {
                     let board_snapshot = movegen::BoardSnapshot {
                         board_tiles: &board_tiles,
                         game_config: &gc,
-                        graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+                        vocab: &crate::movegen::Vocab::lean(&kwg),
                         anagrams: None,
                         rack_lengths: None,
                         klv: &klv,
@@ -4823,7 +4825,7 @@ mod tests {
     #[inline]
     fn a_seen_move_is_valued_as_the_generator_values_it() {
         let game_config = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = valued_klv();
         let tables = InferTables::new(&game_config, &klv).unwrap();
         let lat = &tables.lat;
@@ -4855,7 +4857,7 @@ mod tests {
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
                 game_config: &game_config,
-                graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                vocab: &crate::movegen::Vocab::lean(&kwg),
                 anagrams: None,
                 rack_lengths: None,
                 klv: &klv,
@@ -4908,7 +4910,7 @@ mod tests {
     #[inline]
     fn an_inference_from_kept_tables_is_one_from_new_tables() {
         let game_config = game_config::make_english_game_config();
-        let kwg = tiny_kwg();
+        let kwg = std::sync::Arc::new(tiny_kwg());
         let klv = valued_klv();
         let mid = mid_board(&game_config, 79);
         let wide = mid_board(&game_config, 74);
@@ -4938,7 +4940,7 @@ mod tests {
                 &movegen::BoardSnapshot {
                     board_tiles,
                     game_config: &game_config,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -4969,7 +4971,7 @@ mod tests {
                 let board_snapshot = movegen::BoardSnapshot {
                     board_tiles,
                     game_config: &game_config,
-                    graphs: crate::movegen::KwgForMovegen::for_game(&game_config, &kwg),
+                    vocab: &crate::movegen::Vocab::lean(&kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,

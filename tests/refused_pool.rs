@@ -79,7 +79,10 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
-fn test_kad(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::Node24> {
+fn test_kad(
+    gc: &game_config::GameConfig,
+    test_words: &[&str],
+) -> std::sync::Arc<kwg::Kwg<kwg::Node24>> {
     let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
     let mut word_buf = Vec::new();
     let mut words = Vec::<bites::Bites>::with_capacity(test_words.len());
@@ -90,21 +93,23 @@ fn test_kad(gc: &game_config::GameConfig, test_words: &[&str]) -> kwg::Kwg<kwg::
     }
     words.sort_unstable();
     words.dedup();
-    kwg::kbwg_from_bytes_alloc(
-        build::build(
-            build::BuildContent::DawgOnly,
-            build::BuildLayout::Wolges,
-            build::BuildOrder::Sorted,
-            &words,
+    std::sync::Arc::new(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap()
+            .to_vec(),
+            false,
         )
-        .unwrap()
-        .to_vec(),
-        false,
+        .unwrap(),
     )
-    .unwrap()
 }
 
-fn test_kwg(test_words: &[&str]) -> kwg::Kwg<kwg::Node24> {
+fn test_kwg(test_words: &[&str]) -> std::sync::Arc<kwg::Kwg<kwg::Node24>> {
     let gc = game_config::make_english_game_config();
     let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
     let mut word_buf = Vec::new();
@@ -115,18 +120,20 @@ fn test_kwg(test_words: &[&str]) -> kwg::Kwg<kwg::Node24> {
     }
     words.sort_unstable();
     words.dedup();
-    kwg::kbwg_from_bytes_alloc(
-        build::build(
-            build::BuildContent::Gaddawg,
-            build::BuildLayout::Wolges,
-            build::BuildOrder::Sorted,
-            &words,
+    std::sync::Arc::new(
+        kwg::kbwg_from_bytes_alloc(
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap()
+            .to_vec(),
+            false,
         )
-        .unwrap()
-        .to_vec(),
-        false,
+        .unwrap(),
     )
-    .unwrap()
 }
 
 fn tiles(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
@@ -146,7 +153,7 @@ const WORDS: &[&str] = &["AT", "CAT", "CATS", "SCAT", "ACT", "ACTS", "TA", "TAS"
 
 fn a_pool_walk_with_no_room_answers_out_of_memory(
     gc: &game_config::GameConfig,
-    words: &kwg::Kwg<kwg::Node24>,
+    words: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
 ) {
     let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
     let dim = gc.board_layout().dim();
@@ -154,7 +161,7 @@ fn a_pool_walk_with_no_room_answers_out_of_memory(
     let board_snapshot = movegen::BoardSnapshot {
         board_tiles: &board_tiles,
         game_config: gc,
-        graphs: wolges::movegen::KwgForMovegen::for_game(gc, words),
+        vocab: &wolges::movegen::Vocab::lean(words),
         anagrams: None,
         rack_lengths: None,
         klv: &klv,
@@ -232,7 +239,7 @@ fn offered_every_way(
 
 fn a_generation_with_no_room_to_keep_stops_at_once(
     gc: &game_config::GameConfig,
-    words: &kwg::Kwg<kwg::Node24>,
+    words: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
 ) {
     let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
     let dim = gc.board_layout().dim();
@@ -240,7 +247,7 @@ fn a_generation_with_no_room_to_keep_stops_at_once(
     let board_snapshot = movegen::BoardSnapshot {
         board_tiles: &board_tiles,
         game_config: gc,
-        graphs: wolges::movegen::KwgForMovegen::for_game(gc, words),
+        vocab: &wolges::movegen::Vocab::lean(words),
         anagrams: None,
         rack_lengths: None,
         klv: &klv,

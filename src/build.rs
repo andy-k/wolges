@@ -1853,7 +1853,7 @@ pub struct GameGraph {
 
 impl GameGraph {
     #[inline(always)]
-    pub fn kwg(&self) -> &kwg::Kwg<kwg::Node24> {
+    pub fn kwg(&self) -> &std::sync::Arc<kwg::Kwg<kwg::Node24>> {
         self.graph.kwg()
     }
 

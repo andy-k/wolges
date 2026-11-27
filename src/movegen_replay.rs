@@ -59,9 +59,10 @@ struct Position {
 
 struct Engine {
     game: game_config::GameConfig,
-    kwg: kwg::Kwg<kwg::Node24>,
+    kwg: std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: klv::Klv<kwg::Node24>,
     tables: anagrams::ArmTables,
+    lean: bool,
 }
 
 impl Engine {
@@ -79,7 +80,7 @@ impl Engine {
             let klv = klv::kbwg_from_bytes_alloc(run_line::read_input(&args.klv)?)?;
             game.check_klv(&klv)?;
             let tables = anagrams::ArmTables::build(&kwg, &game, args.lean)?;
-            Ok((kwg, klv, tables))
+            Ok((std::sync::Arc::new(kwg), klv, tables))
         };
         let (kwg, klv, tables) = if let Some(path) = &args.racks {
             std::thread::scope(|scope| -> error::Returns<_> {
@@ -104,22 +105,27 @@ impl Engine {
             kwg,
             klv,
             tables,
+            lean: args.lean,
         })
     }
 
-    fn graphs(&self) -> movegen::KwgForMovegen<'_, kwg::Node24> {
-        movegen::KwgForMovegen::for_game(&self.game, &self.kwg)
+    fn graphs(&self) -> error::Returns<movegen::Vocab<'_, kwg::Node24>> {
+        if self.lean {
+            Ok(movegen::Vocab::lean(&self.kwg))
+        } else {
+            movegen::Vocab::new(&self.game, &self.kwg)
+        }
     }
 
     fn snapshot<'a>(
         &'a self,
-        graphs: movegen::KwgForMovegen<'a, kwg::Node24>,
+        graphs: &'a movegen::Vocab<'a, kwg::Node24>,
         board: &'a [u8],
     ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
         movegen::BoardSnapshot {
             board_tiles: board,
             game_config: &self.game,
-            graphs,
+            vocab: graphs,
             klv: &self.klv,
             anagrams: self.tables.anagrams(),
             rack_lengths: self.tables.rack_lengths(),
@@ -159,22 +165,23 @@ pub(crate) fn replay(
 ) -> error::Returns<()> {
     let started = Instant::now();
     let engine = Engine::load(options, kbwg, &args.engine)?;
+    let graphs = engine.graphs()?;
     let setup = started.elapsed();
     let dim = engine.game.board_layout().dim();
     match (dim.rows, dim.cols) {
-        (15, 15) => replay_using::<movegen::InlineStore<225>>(&engine, args, setup),
-        (21, 21) => replay_using::<movegen::InlineStore<441>>(&engine, args, setup),
-        _ => replay_using::<movegen::BoxStore>(&engine, args, setup),
+        (15, 15) => replay_using::<movegen::InlineStore<225>>(&engine, &graphs, args, setup),
+        (21, 21) => replay_using::<movegen::InlineStore<441>>(&engine, &graphs, args, setup),
+        _ => replay_using::<movegen::BoxStore>(&engine, &graphs, args, setup),
     }
 }
 
 fn replay_using<S: movegen::BoardStore>(
     engine: &Engine,
+    graphs: &movegen::Vocab<'_, kwg::Node24>,
     args: &ReplayArgs,
     setup: std::time::Duration,
 ) -> error::Returns<()> {
     let alphabet = engine.game.alphabet();
-    let graphs = engine.graphs();
     let mut parser = display::BoardFenParser::new(alphabet, engine.game.board_layout());
     let mut positions = Vec::new();
     let mut boards = Vec::new();
@@ -335,6 +342,7 @@ pub(crate) struct CaptureArgs {
 
 fn play_game<S: movegen::BoardStore>(
     engine: &Engine,
+    graphs: &movegen::Vocab<'_, kwg::Node24>,
     generator: &mut Generator<S>,
     state: &mut game_state::GameState,
     rng: &mut rand_xoshiro::Xoshiro256PlusPlus,
@@ -346,7 +354,6 @@ fn play_game<S: movegen::BoardStore>(
     ) -> error::Returns<()>,
 ) -> error::Returns<u32> {
     let gc = &engine.game;
-    let graphs = engine.graphs();
     state.reset_and_draw_tiles(gc, rng);
     let mut scores = vec![0; gc.num_players() as usize];
     for ply in 0.. {
@@ -377,16 +384,18 @@ pub(crate) fn capture(
     args: &CaptureArgs,
 ) -> error::Returns<()> {
     let engine = Engine::load(options, kbwg, &args.engine)?;
+    let graphs = engine.graphs()?;
     let dim = engine.game.board_layout().dim();
     match (dim.rows, dim.cols) {
-        (15, 15) => capture_using::<movegen::InlineStore<225>>(&engine, args),
-        (21, 21) => capture_using::<movegen::InlineStore<441>>(&engine, args),
-        _ => capture_using::<movegen::BoxStore>(&engine, args),
+        (15, 15) => capture_using::<movegen::InlineStore<225>>(&engine, &graphs, args),
+        (21, 21) => capture_using::<movegen::InlineStore<441>>(&engine, &graphs, args),
+        _ => capture_using::<movegen::BoxStore>(&engine, &graphs, args),
     }
 }
 
 fn capture_using<S: movegen::BoardStore>(
     engine: &Engine,
+    graphs: &movegen::Vocab<'_, kwg::Node24>,
     args: &CaptureArgs,
 ) -> error::Returns<()> {
     let gc = &engine.game;
@@ -399,6 +408,7 @@ fn capture_using<S: movegen::BoardStore>(
     for game in 0..args.games.get() {
         play_game(
             engine,
+            graphs,
             &mut generator,
             &mut state,
             &mut rng,
@@ -453,17 +463,19 @@ pub(crate) fn throughput(
 ) -> error::Returns<()> {
     let started = Instant::now();
     let engine = Engine::load(options, kbwg, &args.engine)?;
+    let graphs = engine.graphs()?;
     let setup = started.elapsed();
     let dim = engine.game.board_layout().dim();
     match (dim.rows, dim.cols) {
-        (15, 15) => throughput_using::<movegen::InlineStore<225>>(&engine, args, setup),
-        (21, 21) => throughput_using::<movegen::InlineStore<441>>(&engine, args, setup),
-        _ => throughput_using::<movegen::BoxStore>(&engine, args, setup),
+        (15, 15) => throughput_using::<movegen::InlineStore<225>>(&engine, &graphs, args, setup),
+        (21, 21) => throughput_using::<movegen::InlineStore<441>>(&engine, &graphs, args, setup),
+        _ => throughput_using::<movegen::BoxStore>(&engine, &graphs, args, setup),
     }
 }
 
 fn throughput_using<S: movegen::BoardStore>(
     engine: &Engine,
+    graphs: &movegen::Vocab<'_, kwg::Node24>,
     args: &ThroughputArgs,
     setup: std::time::Duration,
 ) -> error::Returns<()> {
@@ -490,6 +502,7 @@ fn throughput_using<S: movegen::BoardStore>(
                         );
                         turns += u64::from(play_game(
                             engine,
+                            graphs,
                             &mut generator,
                             &mut state,
                             &mut rng,

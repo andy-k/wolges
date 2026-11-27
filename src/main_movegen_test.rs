@@ -342,7 +342,7 @@ fn main() -> error::Returns<()> {
     let klv = klv::kbwg_from_bytes_alloc(klv_bytes.clone())?;
     let game_config = cli.game.make_game_config()?;
     game_config.check_klv(&klv)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.clone(), cli.kbwg)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(kwg_bytes.clone(), cli.kbwg)?);
     eprintln!(
         "{}",
         run_line::run_line(&std::env::args_os().collect::<Vec<_>>())
@@ -360,7 +360,7 @@ fn main() -> error::Returns<()> {
 
 #[inline(always)]
 fn run(
-    kwg: &kwg::Kwg<kwg::Node24>,
+    kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: &klv::Klv<kwg::Node24>,
     game_config: &game_config::GameConfig,
     check_mode: bool,
@@ -407,7 +407,7 @@ fn run(
         ("lean bare", None, None, false),
     ];
     let mut disagreements = 0usize;
-    let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
+    let graphs = &wolges::movegen::Vocab::lean(kwg);
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
         let rack = parse_rack(alphabet, case.rack)?;
@@ -417,7 +417,7 @@ fn run(
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
                 game_config,
-                graphs,
+                vocab: graphs,
                 anagrams: table,
                 rack_lengths: table.is_none().then_some(&rack_lengths),
                 klv,
@@ -485,7 +485,7 @@ fn run(
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
                 game_config,
-                graphs,
+                vocab: graphs,
                 anagrams,
                 rack_lengths,
                 klv,
@@ -597,7 +597,7 @@ fn run(
         let board_tiles = fen_parser.parse(case.fen)?.to_vec();
         cases.push((case, board_tiles, parse_rack(alphabet, case.rack)?));
     }
-    let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
+    let graphs = &wolges::movegen::Vocab::lean(kwg);
     for &(arm, anagrams, rack_lengths, tables) in &every_arm {
         let mut generator = movegen::KurniaMoveGenerator::new(game_config);
         let mut timed = std::time::Duration::ZERO;
@@ -607,7 +607,7 @@ fn run(
                 let board_snapshot = movegen::BoardSnapshot {
                     board_tiles,
                     game_config,
-                    graphs,
+                    vocab: graphs,
                     anagrams,
                     rack_lengths,
                     klv,

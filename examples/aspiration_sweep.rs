@@ -39,7 +39,7 @@ struct Position {
 
 fn autoplay(
     gc: &GameConfig,
-    kwg: &Kwg<Node24>,
+    kwg: &std::sync::Arc<Kwg<Node24>>,
     seed: &str,
     games: usize,
     out: &mut impl Write,
@@ -75,7 +75,7 @@ fn autoplay(
                 board_snapshot: &BoardSnapshot {
                     board_tiles: &game.board_tiles,
                     game_config: gc,
-                    graphs: wolges::movegen::KwgForMovegen::for_game(gc, kwg),
+                    vocab: &wolges::movegen::Vocab::lean(kwg),
                     anagrams: None,
                     rack_lengths: None,
                     klv: &klv,
@@ -132,13 +132,13 @@ struct Measured {
 
 struct Search<'a> {
     gc: &'a GameConfig,
-    kwg: &'a Kwg<Node24>,
+    kwg: &'a std::sync::Arc<Kwg<Node24>>,
     tables: ArmTables,
     run_letters: RunLetters<'a>,
 }
 
 impl<'a> Search<'a> {
-    fn new(gc: &'a GameConfig, kwg: &'a Kwg<Node24>) -> error::Returns<Self> {
+    fn new(gc: &'a GameConfig, kwg: &'a std::sync::Arc<Kwg<Node24>>) -> error::Returns<Self> {
         let tables = ArmTables::build(kwg, gc, false)?;
         let run_letters = match tables.rack_lengths() {
             Some(racks) => racks.run_letters().of(kwg)?,
@@ -153,9 +153,10 @@ impl<'a> Search<'a> {
     }
 
     fn measure(&self, pos: &Position, width: Option<NonZeroU32>) -> error::Returns<Measured> {
+        let vocab = wolges::movegen::Vocab::lean(self.kwg);
         let mut solver = EndgameSolver::<Node24, Node24>::with_generator(
             self.gc,
-            wolges::movegen::KwgForMovegen::for_game(self.gc, self.kwg),
+            &vocab,
             &self.tables,
             self.run_letters.clone(),
             KurniaMoveGenerator::new(self.gc),
@@ -283,7 +284,7 @@ fn run(args: &[String], out: &mut impl Write) -> error::Returns<()> {
         return Err(USAGE.into());
     };
     let gc = make_english_game_config();
-    let kwg = kwg::kbwg_from_bytes_alloc(std::fs::read(lexicon)?, false)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(std::fs::read(lexicon)?, false)?);
     if !kwg.fits_alphabet(gc.alphabet().len()) {
         return Err("the kwg has tiles outside the English alphabet".into());
     }

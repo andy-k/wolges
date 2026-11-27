@@ -807,7 +807,7 @@ mod tests {
 
     struct Fixture {
         gc: game_config::GameConfig,
-        kwg: kwg::Kwg<kwg::Node24>,
+        kwg: std::sync::Arc<kwg::Kwg<kwg::Node24>>,
         klv: klv::Klv<kwg::Node24>,
         board: Vec<u8>,
     }
@@ -816,10 +816,12 @@ mod tests {
         fn new(gc: game_config::GameConfig, words: &[&[u8]]) -> Self {
             let mut words: Vec<bites::Bites> = words.iter().map(|&w| w.into()).collect();
             words.sort();
-            let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
-                &build::build_for_game(&gc, &words).unwrap(),
-            )
-            .unwrap();
+            let kwg = std::sync::Arc::new(
+                kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+                    &build::build_for_game(&gc, &words).unwrap(),
+                )
+                .unwrap(),
+            );
             let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
             let dim = gc.board_layout().dim();
             let board = vec![0u8; dim.rows as usize * dim.cols as usize];
@@ -831,11 +833,18 @@ mod tests {
             }
         }
 
-        fn snap(&self) -> movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24> {
+        fn vocab(&self) -> movegen::Vocab<'_, kwg::Node24> {
+            movegen::Vocab::lean(&self.kwg)
+        }
+
+        fn snap<'a>(
+            &'a self,
+            vocab: &'a movegen::Vocab<'a, kwg::Node24>,
+        ) -> movegen::BoardSnapshot<'a, kwg::Node24, kwg::Node24> {
             movegen::BoardSnapshot {
                 board_tiles: &self.board,
                 game_config: &self.gc,
-                graphs: crate::movegen::KwgForMovegen::for_game(&self.gc, &self.kwg),
+                vocab,
                 anagrams: None,
                 rack_lengths: None,
                 klv: &self.klv,
@@ -859,7 +868,8 @@ mod tests {
         unseen: &[u8],
         bag_size: usize,
     ) -> (movegen::Play, Vec<i128>) {
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         gen_all(&mut mg, &snap, rack, 0).unwrap();
         let mut plays = std::mem::take(&mut mg.plays);
@@ -968,7 +978,8 @@ mod tests {
         ] {
             let unseen = f.tally(unseen);
             for bag in 1..=rack.len().min(unseen.iter().map(|&c| c as usize).sum()) {
-                let p = best_play(&mut mg, &f.snap(), rack, 0, &unseen, bag).unwrap();
+                let vocab = f.vocab();
+                let p = best_play(&mut mg, &f.snap(&vocab), rack, 0, &unseen, bag).unwrap();
                 let (want, _) = every_play_valued(&f, rack, &unseen, bag);
                 assert!(p == want, "rack {rack:?} bag {bag}");
             }
@@ -978,7 +989,8 @@ mod tests {
     #[test]
     fn a_play_is_charged_the_opponents_best_out_after_it() {
         let f = Fixture::new(game_config::make_english_game_config(), &WORDS);
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         let rack = [2u8, 5, 20, 1];
         let unseen = f.tally(&[1, 20, 20]);
@@ -1051,7 +1063,8 @@ mod tests {
     #[test]
     fn an_out_is_found_with_its_best_score() {
         let f = Fixture::new(game_config::make_english_game_config(), &WORDS);
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         for rack in [
             &[2u8, 1, 20, 5][..],
@@ -1095,10 +1108,11 @@ mod tests {
             f.board[star.at_in_lane(layout.star_col())] = 1 | 0x80;
             f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
             let tables = crate::anagrams::ArmTables::build(&f.kwg, &f.gc, false).unwrap();
+            let vocab = f.vocab();
             let before = movegen::BoardSnapshot {
                 anagrams: tables.anagrams(),
                 rack_lengths: tables.rack_lengths(),
-                ..f.snap()
+                ..f.snap(&vocab)
             };
             let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
             gen_all(&mut mg, &before, &[0, 1, 2, 5, 20], 0).unwrap();
@@ -1161,7 +1175,8 @@ mod tests {
         let rack = [1, 20];
         let bag = rack.len() + 1;
         let unseen = f.tally(&[1, 2, 5, 20]);
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         gen_all(&mut mg, &snap, &rack, 0).unwrap();
         mg.plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
@@ -1213,7 +1228,9 @@ mod tests {
         let optimum = *values.iter().max().unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         for parallel in [false, cfg!(not(target_family = "wasm"))] {
-            let mut progress = Progress::new(&mut mg, &f.snap(), &rack, 0, &unseen, bag).unwrap();
+            let vocab = f.vocab();
+            let mut progress =
+                Progress::new(&mut mg, &f.snap(&vocab), &rack, 0, &unseen, bag).unwrap();
             let mut previous_upper = progress.best().unwrap().best_upper;
             let mut previous_lower = progress.best().unwrap().play_lower;
             assert!(!progress.step(0).unwrap().exact);
@@ -1283,7 +1300,8 @@ mod tests {
         let mut filter = crate::move_filter::GenMoves::Tilt { tilt, bot_level: 0 };
         let mut values = Vec::new();
         for fixture in [&full, &limited] {
-            let snap = fixture.snap();
+            let vocab = fixture.vocab();
+            let snap = fixture.snap(&vocab);
             generator.reset_for_another_kwg();
             filter
                 .gen_moves(&mut generator, &snap, &rack, 0, usize::MAX, None)
@@ -1297,7 +1315,8 @@ mod tests {
         }
         assert!(values[0] < values[1], "{values:?}");
 
-        let snap = full.snap();
+        let vocab = full.vocab();
+        let snap = full.snap(&vocab);
         let mut tilt = crate::move_filter::Tilt::new(&full.gc, &full.kwg, &importance);
         tilt.tilt_to(crate::move_filter::TILT_DENOM, 0);
         let mut filter = crate::move_filter::GenMoves::Tilt { tilt, bot_level: 0 };
@@ -1314,7 +1333,8 @@ mod tests {
     fn a_single_pass_or_exchange_keeps_its_static_equity() {
         let f = picker_fixture(&[&[1, 2]]);
         let rack = [1, 2];
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         for tiles in [&rack[..0], &rack[..1]] {
             let play = movegen::Play::Exchange {
                 tiles: tiles.into(),
@@ -1353,7 +1373,7 @@ mod tests {
         let snap = movegen::BoardSnapshot {
             board_tiles: &board,
             game_config: &gc,
-            graphs: crate::movegen::KwgForMovegen::for_game(&gc, &kwg),
+            vocab: &crate::movegen::Vocab::lean(&kwg),
             anagrams: None,
             rack_lengths: None,
             klv: &klv,
@@ -1427,7 +1447,8 @@ mod tests {
     fn a_nonplacement_among_the_candidates_keeps_its_static_value() {
         let f = picker_fixture(&[&[1, 2], &[3, 1, 2]]);
         let rack = [1, 2];
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         let unseen = f.tally(&[1, 2, 3]);
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         mg.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -1489,9 +1510,10 @@ mod tests {
                     f.board[star.at_in_lane(layout.star_col())] = 1;
                     f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
                 }
+                let vocab = f.vocab();
                 let snap = movegen::BoardSnapshot {
                     anagrams: tables.anagrams(),
-                    ..f.snap()
+                    ..f.snap(&vocab)
                 };
                 for rack_size in 1..=usize::from(f.gc.rack_size()).min(pool.len()) {
                     let sheet = ReplyPool::new(&mut mg, &snap, &pool, rack_size).unwrap();
@@ -1544,7 +1566,8 @@ mod tests {
                 f.board[star.at_in_lane(layout.star_col())] = 1;
                 f.board[star.at_in_lane(layout.star_col() + 1)] = 20;
             }
-            let walk = f.snap();
+            let vocab = f.vocab();
+            let walk = f.snap(&vocab);
             let window = movegen::BoardSnapshot {
                 anagrams: tables.anagrams(),
                 ..walk
@@ -1580,7 +1603,8 @@ mod tests {
         worker.prepare_iteration(None).unwrap();
         let dealt = worker.prepared_state();
         let rack = &dealt.players[1].rack;
-        let snap = f.snap();
+        let vocab = f.vocab();
+        let snap = f.snap(&vocab);
         let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
         gen_all(&mut mg, &snap, rack, 0).unwrap();
         pick_generated(&mut mg.plays, &snap, rack, dealt.bag.len()).unwrap();
@@ -1588,7 +1612,7 @@ mod tests {
         worker
             .simulate(
                 &f.gc,
-                crate::movegen::KwgForMovegen::for_game(&f.gc, &f.kwg),
+                &crate::movegen::Vocab::lean(&f.kwg),
                 &anagrams::ArmTables::None,
                 &f.klv,
                 &movegen::Play::Exchange {
@@ -1608,11 +1632,13 @@ mod tests {
             let mut mg = movegen::KurniaMoveGenerator::new(&f.gc);
             let rack = [2u8, 1, 20];
             let unseen = f.tally(&[1, 1, 2, 5, 5, 20, 20, 20, 20, 20, 1, 1]);
-            gen_all(&mut mg, &f.snap(), &rack, 0).unwrap();
+            let vocab = f.vocab();
+            gen_all(&mut mg, &f.snap(&vocab), &rack, 0).unwrap();
             let mut plays = std::mem::take(&mut mg.plays);
             plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
             for bag in 0..=usize::from(rack_size) + 1 {
-                let p = best_play(&mut mg, &f.snap(), &rack, 0, &unseen, bag).unwrap();
+                let vocab = f.vocab();
+                let p = best_play(&mut mg, &f.snap(&vocab), &rack, 0, &unseen, bag).unwrap();
                 if bag == 0 || bag > usize::from(rack_size) {
                     assert!(p == plays[0].play, "rack size {rack_size} bag {bag}");
                 } else {
@@ -1630,11 +1656,13 @@ mod tests {
         let rack = [2u8, 1, 20, 5];
         // the opponent then holds only E's, which form no word
         let unseen = f.tally(&[5, 5, 5, 5, 5, 5, 5, 20]);
-        gen_all(&mut mg, &f.snap(), &rack, 0).unwrap();
+        let vocab = f.vocab();
+        gen_all(&mut mg, &f.snap(&vocab), &rack, 0).unwrap();
         let mut plays = std::mem::take(&mut mg.plays);
         plays.sort_by_key(|vm| std::cmp::Reverse(vm.equity));
         let (_, values) = every_play_valued(&f, &rack, &unseen, 1);
-        let p = best_play(&mut mg, &f.snap(), &rack, 0, &unseen, 1).unwrap();
+        let vocab = f.vocab();
+        let p = best_play(&mut mg, &f.snap(&vocab), &rack, 0, &unseen, 1).unwrap();
         assert!(p == plays[0].play);
         let ways = choose(8, 1) as i128;
         assert!(

@@ -232,7 +232,7 @@ fn do_it(
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config,
-            graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
+            vocab: &wolges::movegen::Vocab::lean(kwg),
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -263,7 +263,9 @@ fn do_it(
             smaller_kwg_bytes.len()
         )?;
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
-        let smaller_kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
+        let smaller_kwg = std::sync::Arc::new(kwg::Kwg::<kwg::Node24>::from_bytes_alloc(
+            &smaller_kwg_bytes,
+        )?);
         let smaller_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
         let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -278,7 +280,7 @@ fn do_it(
         move_generator.reset_for_another_kwg();
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
-                graphs: movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
+                vocab: &movegen::Vocab::lean(&smaller_kwg),
                 anagrams: smaller_tables.anagrams(),
                 rack_lengths: smaller_tables.rack_lengths(),
                 ..*board_snapshot
@@ -331,7 +333,7 @@ fn do_it(
     let mut carried = vec![infer::Carried::default(); game_state.players.len()];
     let mut put_back = vec![Vec::new(); game_state.players.len()];
     let mut next_carried = infer::Carried::default();
-    let graphs = wolges::movegen::KwgForMovegen::for_game(game_config, kwg);
+    let graphs = &wolges::movegen::Vocab::lean(kwg);
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         final_scores.iter_mut().for_each(|s| *s = 0);
@@ -393,7 +395,7 @@ fn do_it(
             let board_snapshot = &movegen::BoardSnapshot {
                 board_tiles: &game_state.board_tiles,
                 game_config,
-                graphs,
+                vocab: graphs,
                 anagrams: arm_tables.anagrams(),
                 rack_lengths: arm_tables.rack_lengths(),
                 klv,
@@ -440,14 +442,15 @@ fn do_it(
                         "word_prune: {} bytes kwg",
                         smaller_kwg_bytes.len()
                     )?;
-                    let smaller_kwg =
-                        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?;
+                    let smaller_kwg = std::sync::Arc::new(
+                        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&smaller_kwg_bytes)?,
+                    );
                     let smaller_tables =
                         anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
-                            graphs: movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
+                            vocab: &movegen::Vocab::lean(&smaller_kwg),
                             anagrams: smaller_tables.anagrams(),
                             rack_lengths: smaller_tables.rack_lengths(),
                             ..*board_snapshot

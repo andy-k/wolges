@@ -110,7 +110,10 @@ fn main() -> error::Returns<()> {
         klv::kbwg_from_bytes_alloc(run_line::read_input(&cli.klv)?)?
     });
     game_config.check_klv(&klv)?;
-    let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(&cli.kwg)?, cli.kbwg)?;
+    let kwg = std::sync::Arc::new(kwg::kbwg_from_bytes_alloc(
+        run_line::read_input(&cli.kwg)?,
+        cli.kbwg,
+    )?);
     refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
     eprintln!(
         "{}",
@@ -143,7 +146,7 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 
 #[inline(always)]
 fn simulate(
-    kwg: &kwg::Kwg<kwg::Node24>,
+    kwg: &std::sync::Arc<kwg::Kwg<kwg::Node24>>,
     klv: &std::sync::Arc<klv::Klv<kwg::Node24>>,
     game_config: &std::sync::Arc<game_config::GameConfig>,
     seed: Option<u64>,
@@ -271,7 +274,7 @@ fn simulate(
         &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config,
-            graphs: wolges::movegen::KwgForMovegen::for_game(game_config, kwg),
+            vocab: &wolges::movegen::Vocab::lean(kwg),
             anagrams: None,
             rack_lengths: None,
             klv,
@@ -311,7 +314,7 @@ fn simulate(
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
         game_config,
-        graphs: wolges::movegen::KwgForMovegen::for_game(game_config, &smaller_kwg),
+        vocab: &wolges::movegen::Vocab::lean(&smaller_kwg),
         anagrams: arm_tables.anagrams(),
         rack_lengths: arm_tables.rack_lengths(),
         klv,
