@@ -1461,7 +1461,7 @@ impl Session {
                         &endgame::Limits {
                             time: Some(std::time::Duration::from_secs_f64(seconds)),
                             states: None,
-                            memory: self.memory,
+                            memory: self.memory.clone(),
                             clock: None,
                         },
                         self.quiet,
@@ -1493,7 +1493,7 @@ impl Session {
                 let limits = endgame::Limits {
                     time: Some(std::time::Duration::from_secs_f64(seconds)),
                     states: None,
-                    memory: self.memory,
+                    memory: self.memory.clone(),
                     clock: None,
                 };
                 let (solved, line) = if state.players.len() == 2 {
@@ -2452,7 +2452,7 @@ impl Session {
                 let limits = endgame::Limits {
                     time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
                     states: None,
-                    memory: self.memory,
+                    memory: self.memory.clone(),
                     clock: None,
                 };
                 let play = if endgame_state.players.len() == 2 {
@@ -3381,7 +3381,7 @@ impl Session {
             .write(true)
             .create_new(true)
             .open(out)?;
-        let mut session = Session::new(true, self.memory, self.game_config)?;
+        let mut session = Session::new(true, self.memory.clone(), self.game_config)?;
         if let Some((path, kwg)) = &self.kwg {
             session.use_kwg(path, kwg);
         }

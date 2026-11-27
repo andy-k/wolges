@@ -13304,7 +13304,7 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
 
         let mut ordered =
             std::mem::replace(&mut working_buffer.ordered, ordered_join::Buffers::new());
-        let memory = working_buffer.room.memory;
+        let memory = working_buffer.room.memory.clone();
         let ordered_join = match params.board_snapshot.vocab.kad() {
             Some(graph) if JOIN => ordered_join::Search::new(
                 params,

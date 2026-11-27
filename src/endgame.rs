@@ -92,7 +92,7 @@ fn info_lead_key(lead: i32) -> u64 {
 // counts the config checks (the position's own until the line places tiles;
 // none from then on) or that the line's move before was a pass. A pass
 // answering a pass ends the line, worth the game's end here whatever the counts
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Scoreless {
     Counted { passes: u8, zeros: u8 },
     Answering,
@@ -102,8 +102,8 @@ impl Scoreless {
     // the key of the turns, which the position's key takes on; none for a
     // placement's state
     #[inline(always)]
-    fn key(self) -> u64 {
-        match self {
+    fn key(&self) -> u64 {
+        match *self {
             Scoreless::Counted {
                 passes: 0,
                 zeros: 0,
@@ -174,7 +174,7 @@ fn held_tile(tile: u8) -> u8 {
 }
 
 // how a stored value bounds its position's true value
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Bound {
     Exact, // ==
     Lower, // >=
@@ -197,7 +197,7 @@ const PASS_PLAY: u16 = u16::MAX - 1;
 const NO_PLAY: u16 = u16::MAX;
 
 // what the table knows of a position
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Entry {
     value: equity::Equity,
     play: u16,
@@ -401,7 +401,7 @@ impl Table {
     #[inline(always)]
     fn store(&mut self, key: u64, entry: Entry) -> bool {
         self.touch(key);
-        let word = self.word(entry);
+        let word = self.word(entry.clone());
         let generation = self.generation & 0x3f;
         let index = self.bucket(key);
         let bucket = &mut self.buckets[index];
@@ -562,7 +562,7 @@ struct Searched {
 }
 
 // a node to search: negamax_eval's arguments
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Enter {
     ply: usize,
     player_idx: u8,
@@ -596,7 +596,7 @@ impl Frame {
         // was the last finished pass's best, so that a later move with a higher
         // exact value outranks it at this depth
         Self {
-            node,
+            node: node.clone(),
             root,
             key,
             alpha_searched: node.alpha,
@@ -943,7 +943,7 @@ const OUT_SLOTS: usize = 4;
 // a play out by the opponent of a ply's mover, legal on that ply's position:
 // its score, its zone there (zone::footprint), and where it lies, to tell it
 // from another
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Out {
     score: equity::Equity,
     zone: zone::Squares,
@@ -971,12 +971,14 @@ impl Default for OutReplies {
             of: 0,
             floor: u64::MAX,
             len: 0,
-            slots: [Out {
-                score: equity::Equity::new(0),
-                zone: zone::Squares::NONE,
-                down: false,
-                lane: 0,
-                idx: 0,
+            slots: [const {
+                Out {
+                    score: equity::Equity::new(0),
+                    zone: zone::Squares::NONE,
+                    down: false,
+                    lane: 0,
+                    idx: 0,
+                }
             }; OUT_SLOTS],
         }
     }
@@ -2101,7 +2103,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             let now = self.table.buckets.len();
             let mut buckets = now.saturating_mul(2);
             let bucket = std::mem::size_of::<[u64; 8]>();
-            if let Some(limit) = self.memory_limit {
+            if let Some(ref limit) = self.memory_limit {
                 buckets = buckets.min(limit.room() / bucket);
             }
             let room = (buckets > now)
@@ -2133,8 +2135,8 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
 
     #[inline(always)]
     fn limit_memory(&mut self, memory: Option<MemoryLimit>) {
-        self.memory_limit = memory;
-        self.movegen.begin_within(memory);
+        self.memory_limit = memory.clone();
+        self.movegen.begin_within(memory.clone());
         if let Some((_, walker)) = &mut self.pool_walker {
             walker.begin_within(memory);
         }
@@ -2145,6 +2147,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
     #[inline(always)]
     fn memory_passed(&self) -> bool {
         self.memory_limit
+            .clone()
             .is_some_and(|limit| limit.passed(self.table.leaving()))
     }
 
@@ -2153,7 +2156,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
     // set by how long the nodes since the last took (LOOK_EVERY)
     fn time_or_memory_passed(&mut self) -> bool {
         let mut cadence = LIMIT_CADENCE;
-        if let (Some(limit), Some(t0)) = (self.time_limit, self.t0) {
+        if let (Some(limit), Some(t0)) = (self.time_limit, self.t0.clone()) {
             let now = t0.elapsed();
             if now >= limit {
                 return true;
@@ -2209,7 +2212,7 @@ fn cells_of<T: Clone>(n: Option<usize>, value: T) -> error::Returns<Vec<T>> {
     Ok(cells)
 }
 
-#[derive(Clone, Copy)] // each endgame of a search with a tile in the bag takes a copy
+#[derive(Clone)] // each endgame of a search with a tile in the bag takes a copy
 pub struct MemoryLimit {
     pub bytes: usize,
     pub held: fn() -> usize,
@@ -2383,7 +2386,7 @@ impl Room {
     #[inline(always)]
     pub(crate) fn copied(&self) -> Self {
         Self {
-            memory: self.memory,
+            memory: self.memory.clone(),
             refused: std::cell::Cell::new(self.refused.get()),
         }
     }
@@ -2398,7 +2401,7 @@ impl Room {
         if self.refused.get() {
             return None;
         }
-        let Some(memory) = self.memory else {
+        let Some(ref memory) = self.memory else {
             return Some(Reserved::NONE);
         };
         let taken = memory.reserve(bytes);
@@ -2466,7 +2469,7 @@ fn grow_for<T>(room: &Room, list: &mut Vec<T>, more: usize) -> bool {
 pub type Clock = fn() -> std::time::Duration;
 
 // when a solve started, on std's clock or on a given one
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Started {
     Std(std::time::Instant),
     Given(Clock, std::time::Duration),
@@ -2519,7 +2522,7 @@ impl BagLimits {
         Self {
             time: limits.time,
             states: limits.states,
-            memory: limits.memory,
+            memory: limits.memory.clone(),
             t0: Started::now(limits.clock),
             dur_movegen: Default::default(),
             endgames: Default::default(),
@@ -2546,8 +2549,8 @@ impl BagLimits {
         OnOneClock {
             time: self.time,
             states: self.states,
-            memory: self.memory,
-            t0: self.t0,
+            memory: self.memory.clone(),
+            t0: self.t0.clone(),
             depth: self.depth.get(),
             estimates: self.estimates,
         }
@@ -2580,7 +2583,7 @@ impl BagLimits {
     fn reserve(&self, bytes: usize) -> error::Returns<Reserved> {
         match self.memory {
             None => Ok(Reserved::NONE),
-            Some(memory) => memory.reserve(bytes).ok_or_else(|| self.stop_refused()),
+            Some(ref memory) => memory.reserve(bytes).ok_or_else(|| self.stop_refused()),
         }
     }
 
@@ -2627,7 +2630,9 @@ impl BagLimits {
         if self.other_passed(table) {
             return true;
         }
-        let memory = (self.memory).is_some_and(|memory| memory.passed(table.leaving()));
+        let memory = (self.memory)
+            .as_ref()
+            .is_some_and(|memory| memory.passed(table.leaving()));
         self.memory_stopped.set(self.memory_stopped.get() | memory);
         memory
     }
@@ -2636,7 +2641,7 @@ impl BagLimits {
 // the limits, the clock they run on, and the pass's depth, as a search with
 // tiles in the bag hands them to each thread it runs on (BagLimits holds them
 // in cells, which one thread alone may use)
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct OnOneClock {
     time: Option<std::time::Duration>,
     states: Option<usize>,
@@ -3116,7 +3121,8 @@ impl<
         (like, memory): (Option<&klv::Klv<L>>, Option<MemoryLimit>),
     ) -> error::Returns<Self> {
         let Some(helper) = helper else {
-            let Some(movegen) = movegen::KurniaMoveGenerator::new_within(game_config, memory)
+            let Some(movegen) =
+                movegen::KurniaMoveGenerator::new_within(game_config, memory.clone())
             else {
                 return Err(Box::new(MemoryRefused));
             };
@@ -3219,7 +3225,7 @@ impl<
             self.arm_tables,
             &self.run_letters,
             own,
-            (Some(&self.klv), limits.memory),
+            (Some(&self.klv), limits.memory.clone()),
         )
         .map_err(|e| {
             if e.is::<MemoryRefused>() {
@@ -3245,10 +3251,12 @@ impl<
     ) -> error::Returns<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>> {
         let mut mg = match self.kept_mg.take() {
             Some(mg) => mg,
-            None => movegen::KurniaMoveGenerator::new_within(self.game_config, limits.memory)
-                .ok_or_else(|| limits.stop_refused())?,
+            None => {
+                movegen::KurniaMoveGenerator::new_within(self.game_config, limits.memory.clone())
+                    .ok_or_else(|| limits.stop_refused())?
+            }
         };
-        mg.begin_within(limits.memory);
+        mg.begin_within(limits.memory.clone());
         Ok(mg)
     }
 
@@ -3785,10 +3793,10 @@ impl<
 
     fn bound_memory(&self) -> Option<movegen::HeldBytes> {
         let work = &self.work_buffer;
-        work.memory_limit.map(|memory| movegen::HeldBytes {
+        work.memory_limit.as_ref().map(|memory| movegen::HeldBytes {
             memory: MemoryLimit {
                 bytes: memory.bytes.saturating_add(work.table.leaving()),
-                ..memory
+                ..memory.clone()
             },
             kept: 0,
         })
@@ -3903,7 +3911,7 @@ impl<
                 let (rows, cols) = self.zone_lanes(play);
                 self.place(player_idx, play);
                 best = best.max(score + self.pass_spread(player_idx));
-                if best <= need && !self.pass_ends_the_line(start) {
+                if best <= need && !self.pass_ends_the_line(start.clone()) {
                     let left = self.work_buffer.racks[usize::from(player_idx)][0];
                     for other in plays() {
                         if let movegen::Play::Place {
@@ -4035,7 +4043,7 @@ impl<
             }
             let at = (outs.slots[..outs.len]).partition_point(|out| out.score >= *score);
             let end = outs.len.min(OUT_SLOTS - 1);
-            outs.slots.copy_within(at..end, at + 1);
+            outs.slots[at..=end].rotate_right(1);
             outs.slots[at] = Out {
                 score: *score,
                 zone,
@@ -4099,7 +4107,7 @@ impl<
         score: equity::Equity,
         cap: equity::Equity,
     ) -> error::Returns<bool> {
-        let out = self.work_buffer.outs[ply].slots[k];
+        let out = self.work_buffer.outs[ply].slots[k].clone();
         let other = player_idx ^ 1;
         let work_buffer = &mut self.work_buffer;
         gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
@@ -4201,13 +4209,16 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.begin_list(ply);
         let leaving = work_buffer.table.leaving();
-        let limit = work_buffer.memory_limit.map(|limit| movegen::HeldBytes {
-            memory: MemoryLimit {
-                bytes: limit.bytes.saturating_add(leaving),
-                ..limit
-            },
-            kept: work_buffer.held_kept,
-        });
+        let limit = work_buffer
+            .memory_limit
+            .as_ref()
+            .map(|limit| movegen::HeldBytes {
+                memory: MemoryLimit {
+                    bytes: limit.bytes.saturating_add(leaving),
+                    ..limit.clone()
+                },
+                kept: work_buffer.held_kept,
+            });
         let kept_from = ply >= 2 && work_buffer.keeps[ply - 2];
         work_buffer.keeps[ply] = keeps;
         let (rows, cols) = if kept_from {
@@ -4261,7 +4272,7 @@ impl<
             !lane_pool.deal.pool.is_empty()
                 && rack.len() <= self.game_config.rack_size() as usize
                 && within(rack, &lane_pool.deal.pool)
-                && lane_pool.sees_within(work_buffer.memory_limit)
+                && lane_pool.sees_within(work_buffer.memory_limit.clone())
         };
         let (mut rack_rows, mut rack_cols) = (0u128, 0u128);
         if pooled {
@@ -4332,7 +4343,7 @@ impl<
                     Some((made_for, walker)) if made_for == dense_most => walker,
                     Some((_, walker)) => walker.with_dense_most(dense_most),
                     None => {
-                        let memory = work_buffer.memory_limit;
+                        let memory = work_buffer.memory_limit.clone();
                         let Some(walker) =
                             movegen::KurniaMoveGenerator::new_within(self.game_config, memory)
                         else {
@@ -4365,7 +4376,8 @@ impl<
                 if let Some(t1) = t1 {
                     work_buffer.dur_movegen += t1.elapsed();
                 }
-                pooled = lane_pool.record(&walker.plays, work_buffer.memory_limit, num_rows);
+                pooled =
+                    lane_pool.record(&walker.plays, work_buffer.memory_limit.clone(), num_rows);
             }
         }
         // the lanes met once, walked with the rack
@@ -4624,7 +4636,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
-        work_buffer.limit_memory(limits.memory);
+        work_buffer.limit_memory(limits.memory.clone());
         work_buffer.can_grow = true;
         work_buffer.searched = 0;
         work_buffer.memory_cut = false;
@@ -4792,12 +4804,14 @@ impl<
     #[inline(always)]
     fn past_a_limit(&mut self) -> bool {
         let work_buffer = &mut self.work_buffer;
-        if work_buffer
-            .time_limit
-            .is_some_and(|limit| work_buffer.t0.is_some_and(|t0| t0.elapsed() >= limit))
-            || work_buffer
-                .state_limit
-                .is_some_and(|limit| work_buffer.table.held >= limit)
+        if work_buffer.time_limit.is_some_and(|limit| {
+            work_buffer
+                .t0
+                .as_ref()
+                .is_some_and(|t0| t0.elapsed() >= limit)
+        }) || work_buffer
+            .state_limit
+            .is_some_and(|limit| work_buffer.table.held >= limit)
         {
             return true;
         }
@@ -5060,7 +5074,7 @@ impl<
             states: limits
                 .states
                 .map(|states| states / whole as usize * part as usize),
-            memory: limits.memory,
+            memory: limits.memory.clone(),
             clock: limits.clock,
         };
         let mut winner = None;
@@ -5174,7 +5188,7 @@ impl<
         }
         let (valuation, after) = match play {
             movegen::Play::Exchange { .. } => {
-                if self.pass_ends_the_line(scoreless) {
+                if self.pass_ends_the_line(scoreless.clone()) {
                     return Ok(self.both_pass_value(player_idx) > margin);
                 }
                 (equity::Equity::ZERO, self.after_pass(scoreless))
@@ -5200,7 +5214,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
-        work_buffer.limit_memory(limits.memory);
+        work_buffer.limit_memory(limits.memory.clone());
         work_buffer.check_limits =
             limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         // the move wins when its reply is worth less than valuation - margin
@@ -5210,7 +5224,7 @@ impl<
         let mut wins = Ok(false);
         for depth in 1..COMPLETE {
             self.work_buffer.cut_short = false;
-            match self.negamax_eval(1, next, depth, alpha, beta, after) {
+            match self.negamax_eval(1, next, depth, alpha, beta, after.clone()) {
                 Ok(searched) if searched.complete => {
                     wins = Ok(self.after_reply(player_idx, valuation, searched.value) > margin);
                     break;
@@ -5342,7 +5356,7 @@ impl<
         let work_buffer = &mut self.work_buffer;
         work_buffer.time_limit = limits.time;
         work_buffer.state_limit = limits.states;
-        work_buffer.limit_memory(limits.memory);
+        work_buffer.limit_memory(limits.memory.clone());
         work_buffer.check_limits =
             limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         let mut found = Ok((None, false));
@@ -5354,7 +5368,7 @@ impl<
                 depth,
                 equity::Equity::NEG_INFINITY,
                 equity::Equity::INFINITY,
-                after,
+                after.clone(),
             ) {
                 Ok(searched) => {
                     let value =
@@ -5444,7 +5458,7 @@ impl<
             depth,
             alpha,
             beta,
-            scoreless,
+            ref scoreless,
         } = node;
         // a line cut short by the depth is valued as if both passed
         if depth == 0 {
@@ -5485,9 +5499,9 @@ impl<
         // does not narrow it, so what this search finds is bounded by the
         // window alone, and a full window always finds the exact value
         let key = if root {
-            self.root_key(player_idx, scoreless)
+            self.root_key(player_idx, scoreless.clone())
         } else {
-            self.node_key(player_idx, scoreless)
+            self.node_key(player_idx, scoreless.clone())
         };
         let mut table_play = NO_PLAY;
         if let Some(entry) = self.work_buffer.table.probe(key) {
@@ -5577,7 +5591,7 @@ impl<
             depth,
             alpha,
             beta,
-            scoreless,
+            ref scoreless,
             ..
         } = frame.node;
         let mut key = frame.key ^ scoreless.key() ^ zobrist(SECOND_TO_MOVE);
@@ -5619,7 +5633,7 @@ impl<
                 first = Some((candidate.index, value, entry.depth == COMPLETE));
             }
         }
-        if self.allows_pass(frame.root) && !self.pass_ends_the_line(scoreless) {
+        if self.allows_pass(frame.root) && !self.pass_ends_the_line(scoreless.clone()) {
             let forced = self.work_buffer.lists[ply].is_empty();
             let child_depth = depth - i8::from(!forced);
             if let Some(entry) = self
@@ -5869,9 +5883,12 @@ impl<
             frame.next = next;
             frame.child = Child::PassDone;
             if pass && frame.best.value < frame.node.beta {
-                let (scoreless, alpha, beta) =
-                    (frame.node.scoreless, frame.node.alpha, frame.node.beta);
-                if self.pass_ends_the_line(scoreless) {
+                let (scoreless, alpha, beta) = (
+                    frame.node.scoreless.clone(),
+                    frame.node.alpha,
+                    frame.node.beta,
+                );
+                if self.pass_ends_the_line(scoreless.clone()) {
                     let value = self.both_pass_value(player_idx);
                     self.take_pass_value(value);
                 } else {
@@ -5920,7 +5937,7 @@ impl<
         let limits = Limits {
             time: None,
             states: None,
-            memory: work_buffer.memory_limit,
+            memory: work_buffer.memory_limit.clone(),
             clock: None,
         };
         let room = work_buffer.table.buckets.len() * std::mem::size_of::<[u64; 8]>();
@@ -5930,6 +5947,7 @@ impl<
         helpers.resize_with(threads, || None);
         let room = limits
             .memory
+            .clone()
             .map_or(room, |limit| room.min(limit.room() / threads));
         let (gc, graphs, arm_tables) = (self.game_config, self.graphs, self.arm_tables);
         let (run_letters, like) = (&self.run_letters, &*self.klv);
@@ -5942,7 +5960,7 @@ impl<
         // each lane's solver, made at its first pass and kept for the next
         let lane = move |lane: usize, table: Option<KeptTable>, helper| {
             let mut found = Vec::new();
-            let fresh = (Some(like), limits.memory);
+            let fresh = (Some(like), limits.memory.clone());
             let Ok(mut own) = Self::of_helper(gc, graphs, arm_tables, run_letters, helper, fresh)
             else {
                 return Ok((lane, found, table, None));
@@ -6022,7 +6040,7 @@ impl<
         key: u64,
         table_first: bool,
     ) -> Searched {
-        let mut frame = Frame::new(node, root, key, table_first);
+        let mut frame = Frame::new(node.clone(), root, key, table_first);
         let Enter {
             ply, player_idx, ..
         } = node;
@@ -6060,7 +6078,7 @@ impl<
             }
         }
         if self.allows_pass(root) && frame.best.value < frame.node.beta {
-            let value = if self.pass_ends_the_line(frame.node.scoreless) {
+            let value = if self.pass_ends_the_line(frame.node.scoreless.clone()) {
                 self.both_pass_value(player_idx)
             } else {
                 self.work_buffer.zones[ply] = (0, 0);
@@ -6403,9 +6421,9 @@ impl<
         let mut restricted = self.root_moves.is_some();
         while depth > 0 {
             let key = if restricted {
-                self.root_key(player_idx, scoreless)
+                self.root_key(player_idx, scoreless.clone())
             } else {
-                self.node_key(player_idx, scoreless)
+                self.node_key(player_idx, scoreless.clone())
             };
             let fits = |entry: &Entry| {
                 entry.bound == Bound::Exact && entry.depth >= depth && entry.play != NO_PLAY
@@ -6431,7 +6449,7 @@ impl<
                             depth,
                             equity::Equity::NEG_INFINITY,
                             equity::Equity::INFINITY,
-                            scoreless,
+                            scoreless.clone(),
                         ) {
                             Ok(_) => {}
                             Err(e) if e.is::<LimitStopped>() => break,
@@ -6459,7 +6477,7 @@ impl<
                 ));
                 // a pass answering a pass, or bringing the scoreless turns to the
                 // config's count, ends the line
-                if self.pass_ends_the_line(scoreless) {
+                if self.pass_ends_the_line(scoreless.clone()) {
                     break;
                 }
                 if restricted {
@@ -6752,11 +6770,11 @@ impl<
         self.begin_search(&Limits {
             time: limits.time,
             states: limits.states,
-            memory: limits.memory,
+            memory: limits.memory.clone(),
             clock: None,
         });
         let work_buffer = &mut self.work_buffer;
-        work_buffer.t0 = Some(limits.t0);
+        work_buffer.t0 = Some(limits.t0.clone());
         work_buffer.dur_movegen = limits.dur_movegen.get();
         work_buffer.in_bag = Some(limits.endgames.get());
         work_buffer.in_bag_moves = limits.moves.get();
@@ -6968,7 +6986,7 @@ impl<
             threads
         };
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
-        sub.pool_lanes(rack, unseen, limits.memory, threads);
+        sub.pool_lanes(rack, unseen, limits.memory.clone(), threads);
         let result = Self::peg_bag_by(
             &mut sub,
             &self.klv,
@@ -7033,7 +7051,7 @@ impl<
         let position = &progress.position;
         let arenas = &mut progress.arenas;
         let (rack, unseen) = (&position.mover_rack, &position.unseen_tally);
-        sub.pool_lanes(rack, unseen, limits.memory, 1);
+        sub.pool_lanes(rack, unseen, limits.memory.clone(), 1);
         let scoreless = scoreless_counts(position.scoreless);
         let at = |limits: &BagLimits, opp_rack: &[u8], bag: &[u8], pos: &mut InBag| {
             position.after_split(limits, scoreless, opp_rack, bag, pos)
@@ -7066,7 +7084,7 @@ impl<
                 mg: &mut mg,
                 valued: &valued,
                 limits: &limits,
-                model: position.model,
+                model: position.model.clone(),
                 exact: true,
                 hand_overs: &[],
                 hand_over: None,
@@ -7277,7 +7295,7 @@ impl<
                         at: &at,
                         score_diff,
                         arenas: &mut *arenas,
-                        model: position.model,
+                        model: position.model.clone(),
                         cuts: *cuts,
                     },
                     limits,
@@ -7302,7 +7320,7 @@ impl<
                         mg: &mut *mg,
                         valued: &state.searched,
                         limits,
-                        model: position.model,
+                        model: position.model.clone(),
                         exact: true,
                         hand_overs: &[],
                         hand_over: None,
@@ -7431,7 +7449,7 @@ impl<
             state.next = 0;
             state.split_order.clear();
             state.pass_exact = true;
-            let (answered, copies) = state.searched.shared(limits.memory).unzip();
+            let (answered, copies) = state.searched.shared(limits.memory.clone()).unzip();
             state.answered_searched = answered;
             state.searched.deepen();
             drop(copies);
@@ -7704,7 +7722,7 @@ impl<
         };
         let valued = &state.searched;
         let hand_overs = &hand_overs[..];
-        let memory = limits.memory;
+        let memory = limits.memory.clone();
         let others = threads - 1;
         let pool = &sub.work_buffer.lane_pool.deal;
         let Ok(_others) = limits.reserve(
@@ -7734,8 +7752,9 @@ impl<
                 .zip(theirs.iter_mut()))
             .map(|(((table, lanes), helper), arena)| {
                 let work = &work;
+                let (memory, on_one_clock, model) = (&memory, &on_one_clock, &model);
                 s.spawn(move || {
-                    let fresh = (Some(klv), memory);
+                    let fresh = (Some(klv), memory.clone());
                     let own = Self::of_helper(gc, graphs, arm_tables, run_letters, helper, fresh);
                     let mut own = match own {
                         Ok(own) => own,
@@ -7749,7 +7768,7 @@ impl<
                     if !LEAN {
                         own.pool_lanes_as(deal);
                     }
-                    let limits = BagLimits::on_the_clock(on_one_clock);
+                    let limits = BagLimits::on_the_clock(on_one_clock.clone());
                     let mut mg = match own.take_mg(&limits) {
                         Ok(mg) => mg,
                         Err(e) => {
@@ -7767,7 +7786,7 @@ impl<
                         mg: &mut mg,
                         valued,
                         limits: &limits,
-                        model,
+                        model: model.clone(),
                         exact: true,
                         hand_overs,
                         hand_over: None,
@@ -7794,7 +7813,7 @@ impl<
                 mg,
                 valued,
                 limits,
-                model,
+                model: model.clone(),
                 exact: true,
                 hand_overs,
                 hand_over: None,
@@ -7938,7 +7957,7 @@ pub struct PegBagPosition {
 // strategies. RandomDraws, a fast approximation: only the first move is blind,
 // both racks then known, each draw averaged over every set of tiles it may
 // bring
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum PegModel {
     InfoSets,
     RandomDraws,
@@ -7972,7 +7991,7 @@ impl PegBagPosition {
 // part: (k, n) values only the splits whose index is k mod n; the n parts'
 // rows, merged by their deals, are the whole search's. estimates: passes
 // follow plies only to their depth, valuing a cut-short line by its score
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct PegBagChoices {
     pub part: (usize, usize),
     pub estimates: bool,
@@ -8289,7 +8308,7 @@ fn value_root_move<
 ) -> error::Returns<PegBagValue> {
     let depth = search.limits.depth.get();
     let above = above.filter(|_| kept.is_empty());
-    if let (Some(above), PegModel::InfoSets, COMPLETE) = (&above, search.model, depth)
+    if let (Some(above), PegModel::InfoSets, COMPLETE) = (&above, search.model.clone(), depth)
         && splits.len() > 1
         && let Some(value) =
             value_root_splits_above(search, splits, at, play, score_diff, above, found)?
@@ -8297,7 +8316,7 @@ fn value_root_move<
         return Ok(value);
     }
     if let (Some(AboveBest { best, i, .. }), [split], PegModel::InfoSets, COMPLETE) =
-        (above, splits, search.model, depth)
+        (above, splits, search.model.clone(), depth)
     {
         let bag_len = split.1.iter().map(|&count| count as usize).sum();
         let from = (empties_bag(play, bag_len))
@@ -9586,13 +9605,16 @@ fn moves_of<
 ) -> error::Returns<()> {
     let gc = snapshot.game_config;
     moves.clear();
-    if let Some(memory) = limits.memory {
+    if let Some(ref memory) = limits.memory {
         let cut = mg.gen_moves_raw_all_unsorted_held(
             snapshot,
             rack,
             made,
             movegen::PassPolicy::OnlyWhenForced,
-            movegen::HeldBytes { memory, kept: 0 },
+            movegen::HeldBytes {
+                memory: memory.clone(),
+                kept: 0,
+            },
         )?;
         if cut {
             return Err(limits.stop_refused());
@@ -9711,7 +9733,7 @@ fn root_moves<
     pos: &InBag,
     limits: &BagLimits,
 ) -> error::Returns<Vec<movegen::Play>> {
-    let Some(memory) = limits.memory else {
+    let Some(ref memory) = limits.memory else {
         let mut lists = PlyLists::default();
         in_bag_moves::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
             gc,
@@ -9738,7 +9760,10 @@ fn root_moves<
         rack,
         made,
         movegen::PassPolicy::OnlyWhenForced,
-        movegen::HeldBytes { memory, kept: 0 },
+        movegen::HeldBytes {
+            memory: memory.clone(),
+            kept: 0,
+        },
     )?;
     let mut plays = std::mem::take(&mut mg.plays);
     if cut {
@@ -11053,7 +11078,7 @@ impl<
         let exact = self.exact;
         self.exact = was_exact && exact;
         let entry = BagEntry::Valued(value, kept, exact);
-        let memory = self.limits.memory;
+        let memory = self.limits.memory.clone();
         (self.valued).write(key, |shard| {
             shard.nodes.keep(key, entry, memory, BagEntry::worth)
         });
@@ -11254,7 +11279,7 @@ impl<
     // first is one a shallower pass found not exact, then one not exact
     #[inline(always)]
     fn keep_endgame(&self, key: u64, value: f64, exact: bool) {
-        let memory = self.limits.memory;
+        let memory = self.limits.memory.clone();
         (self.valued).write(key, |shard| {
             (shard.endgames).keep(key, Some((value, exact)), memory, |endgame| {
                 endgame.map_or(0, |(_, exact)| 1 + u8::from(exact))
@@ -11666,7 +11691,7 @@ impl<
         let exact = self.exact;
         self.exact = was_exact && exact;
         let entry = BagEntry::Valued((win, margin), play, exact);
-        let memory = self.limits.memory;
+        let memory = self.limits.memory.clone();
         (self.valued).write(key, |shard| {
             shard.infos.keep(key, entry, memory, BagEntry::worth)
         });
@@ -12491,7 +12516,7 @@ mod tests {
                 let work = &mut solver.work_buffer;
                 order_first(&mut work.lists[0], &mut work.orders[0]);
                 let scoreless = Scoreless::Answering;
-                let key = solver.node_key(player_idx, scoreless);
+                let key = solver.node_key(player_idx, scoreless.clone());
                 let mut counts = [0; i8::MAX as usize + 1];
                 for &tile in &solver.work_buffer.racks[usize::from(player_idx)] {
                     counts[usize::from(tile)] += 1;
@@ -12515,7 +12540,7 @@ mod tests {
                     solver.place(player_idx, &play);
                     assert_eq!(
                         child_key,
-                        solver.node_key(player_idx ^ 1, child_scoreless),
+                        solver.node_key(player_idx ^ 1, child_scoreless.clone()),
                         "{name}"
                     );
                     solver.unplace(player_idx, &play);
@@ -12535,7 +12560,7 @@ mod tests {
                         depth: 2,
                         alpha: equity::Equity::NEG_INFINITY,
                         beta,
-                        scoreless,
+                        scoreless: scoreless.clone(),
                     };
                     let mut frame = Frame::new(node, false, key, false);
                     assert!(solver.read_child_values(&mut frame), "{name}");
@@ -12586,7 +12611,7 @@ mod tests {
                 }
                 let (play, index) = (candidate.play.clone(), candidate.index);
                 let valuation = candidate.valuation;
-                let key = solver.node_key(player_idx, scoreless);
+                let key = solver.node_key(player_idx, scoreless.clone());
                 let mut counts = [0; i8::MAX as usize + 1];
                 for &tile in &solver.work_buffer.racks[usize::from(player_idx)] {
                     counts[usize::from(tile)] += 1;
@@ -12613,7 +12638,7 @@ mod tests {
                     depth: 2,
                     alpha: equity::Equity::NEG_INFINITY,
                     beta: equity::Equity::INFINITY,
-                    scoreless,
+                    scoreless: scoreless.clone(),
                 };
                 let mut frame = Frame::new(node, false, key, false);
                 assert!(!solver.read_child_values(&mut frame), "{name}");
@@ -12654,7 +12679,7 @@ mod tests {
                 solver.generate(0, player_idx, false).unwrap();
                 let work = &mut solver.work_buffer;
                 order_first(&mut work.lists[0], &mut work.orders[0]);
-                let key = solver.node_key(player_idx, scoreless);
+                let key = solver.node_key(player_idx, scoreless.clone());
                 let pass_key = key ^ scoreless.key() ^ zobrist(SECOND_TO_MOVE);
                 let pass_key = pass_key ^ Scoreless::Answering.key();
                 assert_eq!(
@@ -12679,7 +12704,7 @@ mod tests {
                     depth: 2,
                     alpha: equity::Equity::NEG_INFINITY,
                     beta: -value,
-                    scoreless,
+                    scoreless: scoreless.clone(),
                 };
                 let mut frame = Frame::new(node, false, key, false);
                 assert!(solver.read_child_values(&mut frame), "{name}");
@@ -12729,14 +12754,24 @@ mod tests {
                 depth: 2,
                 alpha: equity::Equity::NEG_INFINITY,
                 beta,
-                scoreless,
+                scoreless: scoreless.clone(),
             };
-            let mut frame = Frame::new(node, false, solver.node_key(player_idx, scoreless), true);
+            let mut frame = Frame::new(
+                node.clone(),
+                false,
+                solver.node_key(player_idx, scoreless),
+                true,
+            );
             frame.best.value = beta;
             frame.best_play = index;
             solver.finish(&frame);
             solver.work_buffer.table.renew();
-            assert!(solver.enter_node(node, Some(false)).unwrap().is_none());
+            assert!(
+                solver
+                    .enter_node(node.clone(), Some(false))
+                    .unwrap()
+                    .is_none()
+            );
             let work = &solver.work_buffer;
             let first = &work.lists[child][ordered_play_index(work.orders[child][0])];
             assert!(first.play == play);
@@ -12877,14 +12912,15 @@ mod tests {
             },
         };
         let work = &mut solver.work_buffer;
-        work.frames.push(super::Frame::new(node, true, 0, false));
+        work.frames
+            .push(super::Frame::new(node.clone(), true, 0, false));
         work.threads = 4;
         let limit = super::MemoryLimit {
             bytes: 64 << 10,
             held: || 32 << 10,
             reserved: None,
         };
-        work.memory_limit = Some(limit);
+        work.memory_limit = Some(limit.clone());
         // depth zero below each helper move leaves its initial table size.
         solver.split_verdicts(0, 0, node.depth).unwrap();
         assert_eq!(solver.work_buffer.helper_tables.len(), 4);
@@ -16081,7 +16117,7 @@ mod tests {
         };
         let (mut stores, mut growing, mut small) = (0, 0, 0);
         while work_buffer.table.buckets.len() <= 2 * super::GROW_AT_ONCE && stores < 1 << 20 {
-            work_buffer.store(key(stores), entry);
+            work_buffer.store(key(stores), entry.clone());
             stores += 1;
             if work_buffer.table.growing() {
                 growing += 1;
@@ -16097,7 +16133,7 @@ mod tests {
         let pieces = 2 * super::GROW_AT_ONCE / empty + super::GROW_AT_ONCE / move_;
         assert_eq!(growing, pieces + 4 * super::GROW_AT_ONCE / empty + 1);
         while work_buffer.table.growing() {
-            work_buffer.store(key(stores), entry);
+            work_buffer.store(key(stores), entry.clone());
             stores += 1;
         }
         let held = work_buffer.table.held;
@@ -16149,13 +16185,13 @@ mod tests {
                      stores: &mut u64,
                      rest: usize| {
             work_buffer.memory_limit = Some(limit(counted(&work_buffer.table) + rest));
-            work_buffer.store(key(*stores), entry);
+            work_buffer.store(key(*stores), entry.clone());
             *stores += 1;
         };
         // whether a solve stops with this much held, as a bag search does
         let stops = |work_buffer: &mut super::WorkBuffer<u128, true, true>, held: usize| {
             let limit = limit(held);
-            work_buffer.memory_limit = Some(limit);
+            work_buffer.memory_limit = Some(limit.clone());
             let bag_limits = super::BagLimits::new(
                 &super::Limits {
                     time: None,
@@ -16286,7 +16322,7 @@ mod tests {
                     let limits = super::Limits {
                         time: None,
                         states: Some(egs.work_buffer.table.held + 30),
-                        memory,
+                        memory: memory.clone(),
                         clock: None,
                     };
                     let solved = egs.solve_within(0, &limits).unwrap();
@@ -18037,7 +18073,8 @@ mod tests {
                 };
                 let mut answers = Vec::new();
                 for (cuts, threads) in [(false, 1), (true, 1), (true, 3)] {
-                    let mut progress = super::PegBagProgress::new(position.clone(), choices);
+                    let mut progress =
+                        super::PegBagProgress::new(position.clone(), choices.clone());
                     if cuts {
                         progress = progress.unwrap().with_cuts();
                     }
@@ -18084,7 +18121,7 @@ mod tests {
             for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
                 for lead in [e(0), e(-3000), e(5000)] {
                     let mut position = bag_position(&board, rack, &unseen_tally, 0, lead);
-                    position.model = model;
+                    position.model = model.clone();
                     let result = uncut_peg(&mut egs, position).unwrap().unwrap();
                     assert!(result.exact);
                     assert_eq!(result.expected_margin, value + lead);
@@ -18923,7 +18960,7 @@ mod tests {
         });
         let mut table = super::BagTable::default();
         for key in 1..=6 {
-            table.keep(key, (key, 0), memory, worth);
+            table.keep(key, (key, 0), memory.clone(), worth);
         }
         assert!(table.entries.len() == 8 && table.held == 6);
         // eight entries' bytes alone: the program would hold all of them, so no
@@ -18936,14 +18973,14 @@ mod tests {
         });
         let mut table = super::BagTable::default();
         for (key, its_worth) in [(1, 2), (2, 0), (3, 1), (4, 2)] {
-            table.keep(key, (key, its_worth), memory, worth);
+            table.keep(key, (key, its_worth), memory.clone(), worth);
         }
         assert!(table.entries.len() == 4 && table.held == 3);
         assert_eq!(table.get(2), None);
         for key in [1, 3, 4] {
             assert!(table.get(key).is_some_and(|&(kept, _)| kept == key));
         }
-        table.keep(3, (5, 0), memory, worth);
+        table.keep(3, (5, 0), memory.clone(), worth);
         assert!(table.held == 3 && table.get(3) == Some(&(5, 0)));
         let last = 3 << 62 | 1;
         table.keep(last, (last, 2), memory, worth);
@@ -18986,7 +19023,7 @@ mod tests {
                 let limits = super::Limits {
                     time,
                     states: None,
-                    memory,
+                    memory: memory.clone(),
                     clock: None,
                 };
                 let mut progress =
@@ -19273,7 +19310,7 @@ mod tests {
                 (-lead, [i32::MIN, -lead + 1000], 0.0),
             ] {
                 let mut position = bag_position(&board, &[2], &unseen, 1, e(lead));
-                position.model = model;
+                position.model = model.clone();
                 let (result, rows) = solve_peg_rows(&mut egs, position);
                 assert!(result.exact);
                 assert_eq!(result.win_pct, win);
@@ -20436,7 +20473,7 @@ mod tests {
             for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
                 let e = equity::Equity::new;
                 let mut position = bag_position(&board, &[h], &unseen_tally, 1, e(0));
-                position.model = model;
+                position.model = model.clone();
                 let end = u16::from(gc.num_zeros_to_end());
                 position.scoreless = [0, end - 1];
                 let (last, rows) = solve_peg_rows(&mut egs, position.clone());
@@ -20649,10 +20686,10 @@ mod tests {
         let (random, info) = (super::PegModel::RandomDraws, super::PegModel::InfoSets);
         let mut refined = 0;
         for (unseen, bag_size, model, [x, y], threads) in [
-            (&[1u8, 2, 8][..], 2, random, [1u8, 8], 1), // AH
-            (&[1, 2, 8], 2, info, [1, 2], 3),           // AB
-            (&[1, 8, 20, 20], 3, random, [1, 20], 1),   // AT
-            (&[1, 8, 20, 20], 3, info, [2, 2], 1),      // BB
+            (&[1u8, 2, 8][..], 2, random.clone(), [1u8, 8], 1), // AH
+            (&[1, 2, 8], 2, info.clone(), [1, 2], 3),           // AB
+            (&[1, 8, 20, 20], 3, random, [1, 20], 1),           // AT
+            (&[1, 8, 20, 20], 3, info, [2, 2], 1),              // BB
         ] {
             let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
             for &tile in unseen {
@@ -20890,7 +20927,7 @@ mod tests {
         }
         let position = bag_position(&board, &[1, 1], &unseen_tally, 2, equity::Equity::ZERO);
         let choices = super::PegBagChoices::WHOLE;
-        let mut progress = super::PegBagProgress::new(position.clone(), choices).unwrap();
+        let mut progress = super::PegBagProgress::new(position.clone(), choices.clone()).unwrap();
         let full = egs.resume_peg(&mut progress, &super::Limits::NONE, 1);
         let full = full.unwrap().unwrap();
         let first = full.moves[0].play.clone();

@@ -652,7 +652,7 @@ impl<N: kwg::Node, L: kwg::Node> RowsOf<'_, '_, N, L> {
         if !rows.room_for::<OBSERVE>(self.memory.as_ref(), size) {
             return Err(out_of_memory());
         }
-        simmer.begin_within(self.memory);
+        simmer.begin_within(self.memory.clone());
         let late = self.late_graph.map(|(late, arm_tables, kad)| {
             (movegen::Vocab::with_kad(late, kad.clone()), arm_tables)
         });
@@ -2314,8 +2314,8 @@ impl<
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
         let start = self.iters_done;
-        let memory = self.memory;
-        self.simmer.begin_within(memory);
+        let memory = self.memory.clone();
+        self.simmer.begin_within(memory.clone());
         let late = self.late_graph.as_ref().map(|(late, arm_tables, kad)| {
             (movegen::Vocab::with_kad(late, kad.clone()), arm_tables)
         });
@@ -2459,7 +2459,7 @@ impl<
             win_pct_table: self.win_pct_table.map(|table| &**table),
             decision_seed: self.decision_seed,
             late_graph,
-            memory: self.memory,
+            memory: self.memory.clone(),
         }
     }
 
@@ -2653,7 +2653,7 @@ impl<
         let arm_tables = std::sync::Arc::clone(self.arm_tables);
         let klv = std::sync::Arc::clone(&self.rollout_klv);
         let win_pct_table = self.win_pct_table.cloned();
-        let memory = self.memory;
+        let memory = self.memory.clone();
         let (plays, late) = match shared {
             Some((.., plays, late)) => (std::sync::Arc::clone(plays), std::sync::Arc::clone(late)),
             None => Default::default(),
@@ -2676,7 +2676,7 @@ impl<
                         win_pct_table: win_pct_table.as_deref(),
                         decision_seed,
                         late_graph: late.as_ref(),
-                        memory,
+                        memory: memory.clone(),
                     };
                     rows_of.push_rows::<OBSERVE, R>(simmer, pristine, lo, hi, &plays, rows)
                 })();
@@ -2799,7 +2799,11 @@ impl<
             .filter(|&&tile| tile & 0x80 != 0)
             .count();
         // a decision with no room left under the memory limit is refused
-        if self.memory.is_some_and(|memory| !memory.has_room(1)) {
+        if self
+            .memory
+            .as_ref()
+            .is_some_and(|memory| !memory.has_room(1))
+        {
             return Err(out_of_memory());
         }
         // under a memory limit the late graph is pruned within it, and only

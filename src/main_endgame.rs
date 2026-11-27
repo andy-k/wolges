@@ -383,9 +383,11 @@ type AnySolver<'a, const TWO_SEATS: bool> =
     endgame::EndgameSolver<'a, kwg::Node24, kwg::Node24, false, u128, true, true, TWO_SEATS>;
 
 fn reserve_table<const TWO_SEATS: bool>(egs: &mut AnySolver<'_, TWO_SEATS>, solving: &Solving) {
-    let bytes = (solving.limits.memory).map_or(solving.reserve_table_bytes, |limit| {
-        solving.reserve_table_bytes.min(limit.bytes / 2)
-    });
+    let bytes = (solving.limits.memory)
+        .clone()
+        .map_or(solving.reserve_table_bytes, |limit| {
+            solving.reserve_table_bytes.min(limit.bytes / 2)
+        });
     if bytes != 0 {
         egs.reserve_table(bytes);
     }
@@ -1766,7 +1768,7 @@ fn solve_position<N: kwg::Node>(
                     score_diff: scaled_score_diff,
                     scoreless: solving.scoreless,
                     exchanges: [0, 0],
-                    model: solving.peg_model,
+                    model: solving.peg_model.clone(),
                 },
                 endgame::PegBagChoices {
                     estimates: solving.peg_estimates,
