@@ -11,6 +11,43 @@ use super::{census, equity, error, game_config, klv, kwg, movegen, play_scorer};
 // short of their best when it weighs the racks that could have made it
 pub const FUZZ: f64 = 3.105;
 
+// the fuzz fitted for a move made from a bag of 1, 2, and so on tiles, as many
+// as a game's bag starts with: a bag of another game is read at the same share
+// of its own starting bag, log-linearly between and held at the ends
+pub const FUZZ_BY_BAG: [f64; 86] = [
+    69.796, 40.518, 24.709, 16.851, 12.431, 9.759, 8.251, 7.282, 6.737, 6.317, 6.271, 6.161, 5.770,
+    5.425, 5.255, 5.083, 4.780, 4.417, 4.235, 4.104, 4.065, 3.986, 3.875, 3.772, 3.749, 3.717,
+    3.796, 4.023, 3.911, 3.678, 3.310, 3.108, 2.871, 2.600, 2.375, 2.429, 2.539, 2.468, 2.283,
+    2.098, 1.909, 1.909, 1.949, 2.047, 1.944, 1.798, 1.736, 1.727, 1.730, 1.783, 1.814, 1.772,
+    1.720, 1.763, 1.800, 1.843, 1.779, 1.654, 1.589, 1.603, 1.580, 1.591, 1.587, 1.608, 1.657,
+    1.639, 1.605, 1.610, 1.614, 1.596, 1.578, 1.524, 1.475, 1.444, 1.474, 1.524, 1.527, 1.492,
+    1.484, 1.469, 1.481, 1.508, 1.516, 1.516, 1.512, 1.507,
+];
+
+// the fuzz fitted for an exchange, from any bag
+pub const FUZZ_EXCHANGE: f64 = 3.334;
+
+// the share of an inference after a move but an exchange that weighs each rack
+// by its chance to be dealt alone
+pub const FUZZ_PRIOR_MIX: f64 = 0.021;
+
+// the fuzz and the prior mix fitted for a move made from a bag of bag_before
+// tiles, of start_bag at the game's start
+#[inline]
+pub fn fitted_fuzz(bag_before: usize, start_bag: usize, exchanged: bool) -> (f64, f64) {
+    if exchanged {
+        return (FUZZ_EXCHANGE, 0.0);
+    }
+    let n = FUZZ_BY_BAG.len();
+    let x = (bag_before as f64 * n as f64 / start_bag.max(1) as f64).clamp(1.0, n as f64);
+    let i = (x.floor() as usize).clamp(1, n - 1);
+    let t = x - i as f64;
+    (
+        FUZZ_BY_BAG[i - 1].powf(1.0 - t) * FUZZ_BY_BAG[i].powf(t),
+        FUZZ_PRIOR_MIX,
+    )
+}
+
 #[inline]
 pub fn bag_size(board_tiles: &[u8], game_config: &game_config::GameConfig) -> i64 {
     let on_board = board_tiles.iter().filter(|&&t| t != 0).count() as i64;
@@ -789,6 +826,42 @@ fn weights_by_leave(racks: &[(u32, i32, f64)], fuzz: f64, weighed: &mut Vec<(u32
     });
 }
 
+// a leave's rank, where its racks begin, and its weight
+type LeaveWeight = (u32, usize, f64);
+
+// two lists of leaves by rank (weights_by_leave's or weights_by_keep's), each
+// taken as a share of its own total, the second's mix of the whole
+#[inline]
+fn mix_weights((a, b): (&[LeaveWeight], &[LeaveWeight]), mix: f64, out: &mut Vec<LeaveWeight>) {
+    let total = |list: &[LeaveWeight]| list.iter().map(|&(_, _, w)| w).sum::<f64>();
+    let (ta, tb) = (total(a), total(b));
+    out.clear();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        let (rank, at, w) = match (a.get(i), b.get(j)) {
+            (Some(&(ra, at, wa)), Some(&(rb, _, wb))) if ra == rb => {
+                i += 1;
+                j += 1;
+                (ra, at, (1.0 - mix) * wa / ta + mix * wb / tb)
+            }
+            (Some(&(ra, at, wa)), Some(&(rb, _, _))) if ra < rb => {
+                i += 1;
+                (ra, at, (1.0 - mix) * wa / ta)
+            }
+            (Some(&(ra, at, wa)), None) => {
+                i += 1;
+                (ra, at, (1.0 - mix) * wa / ta)
+            }
+            (_, Some(&(rb, at, wb))) => {
+                j += 1;
+                (rb, at, mix * wb / tb)
+            }
+            (None, None) => unreachable!(),
+        };
+        out.push((rank, at, w));
+    }
+}
+
 // every keep of this many tiles the rack (a tally) holds, to f(rank of the
 // keep, its gap): the rack's best equity less what the keep is worth
 #[inline]
@@ -881,6 +954,8 @@ pub struct InferTables {
     avail: Vec<u8>,
     racks: Vec<(u32, i32, f64)>,
     weighed: Vec<(u32, usize, f64)>,
+    mix: f64, // the share of an inference weighed by the chance to be dealt alone
+    mixed: (Vec<LeaveWeight>, Vec<LeaveWeight>, Carried), // that weighing, both mixed, its carry
     kept: Vec<u8>,
     tiles: Vec<u8>,
     weigh: WeighScratch,
@@ -925,6 +1000,8 @@ impl InferTables {
             avail: Vec::new(),
             racks: Vec::new(),
             weighed: Vec::new(),
+            mix: 0.0,
+            mixed: Default::default(),
             kept: Vec::new(),
             tiles: Vec::new(),
             weigh: WeighScratch::new(),
@@ -933,6 +1010,12 @@ impl InferTables {
             held: HeldScratch::default(),
             carry: CarryScratch::default(),
         })
+    }
+
+    // 0 until set
+    #[inline]
+    pub fn set_prior_mix(&mut self, mix: f64) {
+        self.mix = mix;
     }
 }
 
@@ -1920,6 +2003,8 @@ fn kept_leaves_packed_impl<
         avail,
         racks,
         weighed,
+        mix,
+        mixed,
         kept,
         tiles: leave_tiles,
         weigh,
@@ -2053,6 +2138,23 @@ fn kept_leaves_packed_impl<
         Some(keep) => weights_by_keep(lat, leave, racks, (keep, g0, fuzz), keeps, weighed),
         None => weights_by_leave(racks, fuzz, weighed),
     }
+    let mix = *mix;
+    let (by_chance, both, carried_by_chance) = mixed;
+    if mix > 0.0 {
+        match keep {
+            Some(keep) => weights_by_keep(
+                lat,
+                leave,
+                racks,
+                (keep, g0, f64::INFINITY),
+                keeps,
+                by_chance,
+            ),
+            None => weights_by_leave(racks, f64::INFINITY, by_chance),
+        }
+        mix_weights((weighed, by_chance), mix, both);
+        std::mem::swap(weighed, both);
+    }
     kept.clear();
     kept.resize(num_letters, 0);
     for &(rank, _, weight) in weighed.iter() {
@@ -2088,15 +2190,31 @@ fn kept_leaves_packed_impl<
                     carried.weights[rank as usize - start] += weight / total;
                 }
             }
-            (Some(n), Some(keep)) if bag >= n => carry_exchange(
-                lat,
-                (leave, ln_binom),
-                racks,
-                (keep, g0, fuzz),
-                (pool, threads),
-                carry_scratch,
-                carried,
-            ),
+            (Some(n), Some(keep)) if bag >= n => {
+                carry_exchange(
+                    lat,
+                    (leave, ln_binom),
+                    racks,
+                    (keep, g0, fuzz),
+                    (pool, threads),
+                    carry_scratch,
+                    carried,
+                );
+                if mix > 0.0 {
+                    carry_exchange(
+                        lat,
+                        (leave, ln_binom),
+                        racks,
+                        (keep, g0, f64::INFINITY),
+                        (pool, threads),
+                        carry_scratch,
+                        carried_by_chance,
+                    );
+                    for (w, c) in carried.weights.iter_mut().zip(&carried_by_chance.weights) {
+                        *w = (1.0 - mix) * *w + mix * c;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2466,6 +2584,29 @@ mod tests {
         words
     }
 
+    #[test]
+    fn fitted_fuzz_reads_the_share_of_the_starting_bag() {
+        let mix = FUZZ_PRIOR_MIX;
+        for (bag, start, fuzz) in [
+            (86, 86, 1.507),
+            (200, 86, 1.507),
+            (43, 86, 1.949),
+            (1, 86, 69.796),
+            (0, 86, 69.796),
+            (186, 186, 1.507),
+            (93, 186, 1.949),
+        ] {
+            assert_eq!(
+                fitted_fuzz(bag, start, false),
+                (fuzz, mix),
+                "bag {bag} of {start}"
+            );
+        }
+        let between = fitted_fuzz(85, 172, false).0;
+        assert!(between > 1.909 && between < 1.949);
+        assert_eq!(fitted_fuzz(50, 86, true), (FUZZ_EXCHANGE, 0.0));
+    }
+
     // tiny_words as a graph
     #[inline]
     fn tiny_kwg() -> kwg::Kwg<kwg::Node24> {
@@ -2504,6 +2645,18 @@ mod tests {
         play: &movegen::Play,
         fuzz: f64,
     ) -> Vec<(Vec<u8>, f64)> {
+        leaves_mixed(game_config, kwg, on_board, play, (fuzz, 0.0))
+    }
+
+    // the same, this share weighed by the chance to be dealt alone
+    #[inline]
+    fn leaves_mixed(
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg<kwg::Node24>,
+        on_board: usize,
+        play: &movegen::Play,
+        (fuzz, mix): (f64, f64),
+    ) -> Vec<(Vec<u8>, f64)> {
         let alphabet = game_config.alphabet();
         let klv = klv::kbwg_from_bytes_alloc(klv::EMPTY_KLV_BYTES.to_vec()).unwrap();
         let mut board_tiles = vec![0u8; 15 * 15];
@@ -2529,6 +2682,7 @@ mod tests {
             klv: &klv,
         };
         let mut tables = InferTables::new(game_config, &klv).unwrap();
+        tables.set_prior_mix(mix);
         let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
         kept_leaves(
             &mut tables,
@@ -2542,8 +2696,51 @@ mod tests {
         .unwrap()
     }
 
-    // under jumbled rules, on the alphagrams of tiny_words (every order of each
-    // is a word), a move keeps what it keeps under the classic rules
+    // a prior mix gives each leave that share of its weight by the chance to be
+    // dealt alone and the rest of its weight at the fuzz, each a share of its
+    // own total
+    #[test]
+    fn a_prior_mix_blends_the_fuzz_with_the_chance_to_be_dealt() {
+        let english = game_config::make_english_game_config();
+        let share = |leaves: &[(Vec<u8>, f64)]| {
+            let total = leaves.iter().map(|(_, w)| w).sum::<f64>();
+            leaves
+                .iter()
+                .map(|(tiles, w)| (tiles.clone(), w / total))
+                .collect::<Vec<_>>()
+        };
+        for play in [
+            movegen::Play::Exchange {
+                tiles: [0u8; 3][..].into(),
+            },
+            movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+        ] {
+            for fuzz in [0.0, 3.0] {
+                let leaves =
+                    |weights| share(&leaves_mixed(&english, &tiny_kwg(), 79, &play, weights));
+                let by_fuzz = leaves((fuzz, 0.0));
+                let by_chance = leaves((f64::INFINITY, 0.0));
+                let mixed = leaves((fuzz, 0.25));
+                assert!(!by_fuzz.is_empty());
+                assert_eq!(mixed.len(), by_chance.len());
+                for (tiles, w) in &mixed {
+                    let of = |list: &[(Vec<u8>, f64)]| {
+                        list.iter()
+                            .find(|(t, _)| t == tiles)
+                            .map_or(0.0, |&(_, w)| w)
+                    };
+                    let want = 0.75 * of(&by_fuzz) + 0.25 * of(&by_chance);
+                    assert!(
+                        (w - want).abs() <= f64::EPSILON * 4.0,
+                        "{tiles:?}: {w} {want}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     #[inline]
     fn jumbled_rules_infer_as_classic_ones_on_words_whose_anagrams_are_words() {
