@@ -1192,10 +1192,17 @@ impl<
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         };
-        if LEAN {
-            (self.move_generator).gen_moves_unfiltered_lanes_lean(params, rows, cols)?;
-        } else {
-            (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols)?;
+        match off {
+            Some(i) => (self.move_generator).gen_moves_unfiltered_lanes_from(
+                params,
+                (rows, cols),
+                self.lane_bests[i].0.equity,
+                LEAN,
+            )?,
+            None if LEAN => {
+                (self.move_generator).gen_moves_unfiltered_lanes_lean(params, rows, cols)?
+            }
+            None => (self.move_generator).gen_moves_unfiltered_lanes(params, rows, cols)?,
         }
         let masked = &self.move_generator.plays[0];
         let forced_pass =

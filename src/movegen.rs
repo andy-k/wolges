@@ -12868,6 +12868,11 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         {
             threshold.set(floor);
         }
+        threshold.set(
+            threshold
+                .get()
+                .max(equity::Equity::new(working_buffer.jumbled.floor)),
+        );
 
         let mut selected = CappedMoves {
             kept: K::from_vec(std::mem::take(&mut self.plays)),
@@ -13347,6 +13352,24 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool, const BAG_TERM: bool,
         self.working_buffer.lane_rows = !G::from(0);
         self.working_buffer.lane_cols = !G::from(0);
         Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn gen_moves_unfiltered_lanes_from<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        (rows, cols): (u128, u128),
+        floor: equity::Equity,
+        lean: bool,
+    ) -> error::Returns<()> {
+        self.working_buffer.jumbled.floor = floor.raw();
+        let generated = if lean {
+            self.gen_moves_unfiltered_lanes_lean(params, rows, cols)
+        } else {
+            self.gen_moves_unfiltered_lanes(params, rows, cols)
+        };
+        self.working_buffer.jumbled.floor = i32::MIN;
+        generated
     }
 
     // as gen_moves_unfiltered_lanes, by the lean arm
@@ -19919,6 +19942,122 @@ pub(crate) mod tests {
             }
         }
         assert!(board_tiles.iter().filter(|&&t| t != 0).count() > 10);
+    }
+
+    #[inline]
+    #[test]
+    fn a_lane_generation_from_a_floor_keeps_the_best_it_can_reach() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let racks = ["AEINRST", "?EIORST", "AADEILN", "EEIRSTT", "ACEHORT"];
+        let racks = racks
+            .iter()
+            .map(|rack| parse_test_rack(gc.alphabet(), rack))
+            .collect::<Vec<_>>();
+        let mut leaves = Vec::new();
+        for rack in &racks {
+            for mask in 1u32..(1 << rack.len()) {
+                let mut leave = (0..rack.len())
+                    .filter(|&i| mask & (1 << i) != 0)
+                    .map(|i| rack[i])
+                    .collect::<Vec<_>>();
+                if leave.len() < rack.len() {
+                    leave.sort_unstable();
+                    leaves.push(leave);
+                }
+            }
+        }
+        leaves.sort_unstable();
+        leaves.dedup();
+        let valued = leaves
+            .iter()
+            .map(|leave| {
+                let v = leave
+                    .iter()
+                    .fold(7i32, |a, &t| (a * 31 + i32::from(t)) % 97);
+                (&leave[..], (v - 40) as f32 / 4.0)
+            })
+            .collect::<Vec<_>>();
+        let klv = klv::kbwg_from_bytes_alloc(klv::make_klv2(&valued)).unwrap();
+        let mut board_tiles = vec![0u8; 225];
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        let (mut reached, mut beyond) = (0usize, 0usize);
+        let mut cut = [0usize; 3];
+        for rack in &racks {
+            let mut best = None;
+            let arms = [(None, false), (Some(&held), false), (Some(&held), true)];
+            for (arm, (anagrams, lean)) in arms.into_iter().enumerate() {
+                let board_snapshot = BoardSnapshot {
+                    alphagrams: None,
+                    board_tiles: &board_tiles,
+                    game_config: &gc,
+                    kwg: &kwg,
+                    anagrams,
+                    rack_lengths: None,
+                    klv: &klv,
+                };
+                let params = GenMovesParams {
+                    board_snapshot: &board_snapshot,
+                    rack,
+                    max_gen: 1,
+                    num_exchanges_by_this_player: 0,
+                    pass_policy: PassPolicy::OnlyWhenForced,
+                    dynamic_leaves: None,
+                };
+                for lanes in [(!0, !0), (!0, 0), (0, !0)] {
+                    let lowest = equity::Equity::NEG_INFINITY;
+                    move_generator
+                        .gen_moves_unfiltered_lanes_from(&params, lanes, lowest, lean)
+                        .unwrap();
+                    let whole = move_generator.plays[0].clone();
+                    for step in [-1, 0, 1] {
+                        let floor = equity::Equity::new(whole.equity.raw() + step);
+                        move_generator
+                            .gen_moves_unfiltered_lanes_from(&params, lanes, floor, lean)
+                            .unwrap();
+                        let floored = &move_generator.plays[0];
+                        if floor <= whole.equity {
+                            assert!(*floored == whole, "lanes {lanes:?}, lean {lean}");
+                            reached += 1;
+                        } else {
+                            assert!(
+                                floored.equity < floor
+                                    || matches!(
+                                        floored.play,
+                                        Play::Exchange { ref tiles } if tiles.is_empty()
+                                    ),
+                                "lanes {lanes:?}, lean {lean}"
+                            );
+                            cut[arm] += usize::from(*floored != whole);
+                            beyond += 1;
+                        }
+                    }
+                    if lanes.0 == !0 {
+                        best = Some(whole.play);
+                    }
+                }
+            }
+            if let Some(Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                ..
+            }) = best
+            {
+                let strider = gc.board_layout().dim().lane(down, lane);
+                for (i, &tile) in (idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        board_tiles[strider.at_in_lane(i)] = tile;
+                    }
+                }
+            }
+        }
+        assert!(reached > 50 && beyond > 25, "{reached} {beyond}");
+        assert!(cut.iter().all(|&n| n > 0), "{cut:?}");
     }
 
     #[inline]
