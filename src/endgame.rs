@@ -18207,7 +18207,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn an_endgame_for_three_players_is_refused_at_setup() {
+    fn an_endgame_for_three_players_is_supported() {
         let gc = game_config::Options {
             preset: "english",
             tiles: None,
@@ -18224,7 +18224,7 @@ mod tests {
         }
         .make_game_config(&|_| Err("no files here".into()))
         .unwrap();
-        assert!(gc.supports(game_config::Op::Endgame).is_err());
+        assert!(gc.supports(game_config::Op::Endgame).is_ok());
     }
 
     #[test]

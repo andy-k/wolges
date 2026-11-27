@@ -913,7 +913,7 @@ impl GameConfig {
     #[inline]
     pub fn supports(&self, op: Op) -> error::Returns<()> {
         match op {
-            Op::Generation | Op::Sim => Ok(()),
+            Op::Generation | Op::Sim | Op::Endgame => Ok(()),
             Op::Inference => census::check_letters(self.alphabet().len() as usize),
             Op::Tables => {
                 if self.rack_size() > racks::MAX_RACK_SIZE {
@@ -921,14 +921,6 @@ impl GameConfig {
                         "a rack table holds racks of at most {} tiles",
                         racks::MAX_RACK_SIZE
                     ));
-                }
-                Ok(())
-            }
-            Op::Endgame => {
-                if self.num_players() != 2 {
-                    return_error!(
-                        "the endgame solver plays two seats, so it needs exactly 2 players".into()
-                    );
                 }
                 Ok(())
             }
@@ -1138,10 +1130,7 @@ mod tests {
         let mut three = make_english_game_config();
         let GameConfig::Static(rules) = &mut three;
         rules.num_players = 3;
-        assert_eq!(
-            three.supports(Op::Endgame).unwrap_err().to_string(),
-            "the endgame solver plays two seats, so it needs exactly 2 players"
-        );
+        assert!(three.supports(Op::Endgame).is_ok());
         let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
         assert_eq!(
             racks::RackTable::build(&klv, &make_hong_kong_english_game_config(), 1)
