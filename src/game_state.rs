@@ -25,6 +25,19 @@ pub fn use_tiles<II: IntoIterator<Item = u8>>(
     Ok(())
 }
 
+#[inline(always)]
+pub fn lead_over_best_opponent(seat: usize, scores: impl Iterator<Item = i64>) -> i64 {
+    let (mut mine, mut best) = (0, None);
+    for (i, score) in scores.enumerate() {
+        if i == seat {
+            mine = score;
+        } else {
+            best = best.max(Some(score));
+        }
+    }
+    best.map_or(mine, |best| mine - best)
+}
+
 pub struct GamePlayer {
     pub score: equity::Equity,
     pub rack: Vec<u8>,
@@ -351,6 +364,17 @@ pub enum CheckGameEnded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lead_is_over_the_best_opponent() {
+        let lead = |seat, scores: &[i64]| lead_over_best_opponent(seat, scores.iter().copied());
+        assert_eq!(lead(0, &[400, 350]), 50);
+        assert_eq!(lead(1, &[400, 350]), -50);
+        assert_eq!(lead(0, &[400, 350, 380]), 20);
+        assert_eq!(lead(0, &[400, 450, 380]), -50);
+        assert_eq!(lead(2, &[400, 450, 380]), -70);
+        assert_eq!(lead(0, &[400]), 400);
+    }
 
     // a play the rack cannot make is refused and changes nothing: no tile on
     // the board, no score, the rack's tiles all still there
