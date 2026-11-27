@@ -6931,7 +6931,7 @@ impl<
         N: Sync,
     {
         let gc = self.game_config;
-        if exchanges_without_forced_end(gc, progress.position.bag_size) {
+        if exchanges_without_forced_end(gc, &progress.position) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
         if gc.num_passes_to_end() == 0 && gc.num_zeros_to_end() == 0 {
@@ -7072,6 +7072,7 @@ impl<
                 hand_over: None,
                 ply: 0,
                 arena: &mut arenas[0],
+                heap: None,
             };
             let mut found = PegBagRows::default();
             for split in splits {
@@ -7307,6 +7308,7 @@ impl<
                         hand_over: None,
                         ply: 0,
                         arena: &mut *arena,
+                        heap: None,
                     };
                     let play = &state.moves[i];
                     let order = if beat.is_some() {
@@ -7771,6 +7773,7 @@ impl<
                         hand_over: None,
                         ply: 0,
                         arena,
+                        heap: None,
                     };
                     let share = work(&mut search, &limits);
                     other_endgames.fetch_add(limits.endgames.get(), Relaxed);
@@ -7797,6 +7800,7 @@ impl<
                 hand_over: None,
                 ply: 0,
                 arena: &mut mine[0],
+                heap: None,
             };
             let mine = work(&mut search, limits);
             let (mut shares, mut kept, mut pools, mut helpers) =
@@ -9807,8 +9811,36 @@ fn exchange_legal(gc: &game_config::GameConfig, bag_len: usize, made: i16) -> bo
 // ending the game, so that a search could never end: where the bag lets them
 // exchange and exchanges are not zeros the config ends on
 #[inline(always)]
-fn exchanges_without_forced_end(gc: &game_config::GameConfig, bag_len: usize) -> bool {
-    exchange_legal(gc, bag_len, 0) && !(gc.exchanges_are_zeros() && gc.num_zeros_to_end() != 0)
+fn exchanges_without_forced_end(gc: &game_config::GameConfig, position: &PegBagPosition) -> bool {
+    let board = Some(position.board.as_slice());
+    if gc.exchanges_allowed_per_player() != i16::MAX || exchanges_end_on_zeros(gc, board) {
+        return false;
+    }
+    let [a, b] = position
+        .exchanges
+        .map(|made| exchange_legal(gc, position.bag_size, made));
+    if scoreless_turns_end(gc, board, 1, 1) {
+        a && b
+    } else {
+        a || b
+    }
+}
+
+#[inline(always)]
+fn exchanges_end_on_zeros(gc: &game_config::GameConfig, board: Option<&[u8]>) -> bool {
+    gc.exchanges_are_zeros() && scoreless_turns_end(gc, board, 0, gc.num_zeros_to_end())
+}
+
+#[inline(always)]
+fn long_finite_exchanges(
+    gc: &game_config::GameConfig,
+    board: &[u8],
+    bag: usize,
+    made: [i16; 2],
+) -> bool {
+    gc.exchanges_allowed_per_player() != i16::MAX
+        && !exchanges_end_on_zeros(gc, Some(board))
+        && made.into_iter().any(|n| exchange_legal(gc, bag, n))
 }
 
 // the chance a final spread of v beats t, a tie counted half
@@ -10034,6 +10066,7 @@ struct BagValued {
     shards: Box<[std::sync::Mutex<std::sync::Arc<BagShard>>]>,
     under: Box<[std::sync::Arc<BagShard>]>,
     pauses: BagWork<BagDepth, Stopped>,
+    heap_pauses: BagWork<BagNeed, BagHeap>,
 }
 
 type BagDepth = (u64, i8, equity::Equity);
@@ -10356,6 +10389,7 @@ impl BagValued {
 
     fn clear_pauses(&mut self) {
         self.pauses.clear();
+        self.heap_pauses.clear();
     }
 
     // what read finds for key in the shard that holds it, else in the one
@@ -10466,6 +10500,115 @@ impl HandOver {
     }
 }
 
+enum BagNeed {
+    Node(u64, usize),
+    Win(u64, u64, usize),
+    Info(u64, usize),
+}
+
+impl BagNeed {
+    fn identity(&self) -> (std::mem::Discriminant<Self>, u64, usize, Option<u64>) {
+        let (pos, ply, threshold) = match *self {
+            Self::Node(pos, ply) | Self::Info(pos, ply) => (pos, ply, None),
+            Self::Win(pos, threshold, ply) => (pos, ply, Some(threshold)),
+        };
+        (std::mem::discriminant(self), pos, ply, threshold)
+    }
+}
+
+impl Clone for BagNeed {
+    fn clone(&self) -> Self {
+        match *self {
+            Self::Node(pos, ply) => Self::Node(pos, ply),
+            Self::Win(pos, threshold, ply) => Self::Win(pos, threshold, ply),
+            Self::Info(pos, ply) => Self::Info(pos, ply),
+        }
+    }
+}
+
+impl PartialEq for BagNeed {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Eq for BagNeed {}
+
+impl std::hash::Hash for BagNeed {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.identity(), state);
+    }
+}
+
+enum BagHeapInput {
+    Node(InBag),
+    Win(InBag, f64),
+    Info(InfoSet),
+}
+
+enum BagHeapValue {
+    Node(f64, movegen::Play),
+    Win(f64),
+    Info(f64, f64),
+}
+
+impl Clone for BagHeapValue {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Node(value, play) => Self::Node(*value, play.clone()),
+            &Self::Win(win) => Self::Win(win),
+            &Self::Info(win, margin) => Self::Info(win, margin),
+        }
+    }
+}
+
+struct BagHeapFrame {
+    key: BagNeed,
+    ply: usize,
+    input: BagHeapInput,
+    checked_splits: usize,
+}
+
+struct BagHeap {
+    ply: usize,
+    split_at: usize,
+    checked_splits: usize,
+    stack: Vec<BagHeapFrame>,
+    next: Option<BagHeapFrame>,
+    values: fash::MyHashMap<BagNeed, (BagHeapValue, bool)>,
+    arena: Option<BagArena>,
+}
+
+impl BagHeap {
+    fn new() -> Self {
+        Self {
+            ply: 0,
+            split_at: 0,
+            checked_splits: 0,
+            stack: Vec::new(),
+            next: None,
+            values: Default::default(),
+            arena: None,
+        }
+    }
+}
+
+struct NeedBagHeapValue;
+
+impl std::fmt::Debug for NeedBagHeapValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NeedBagHeapValue")
+    }
+}
+
+impl std::fmt::Display for NeedBagHeapValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("a bag search needs another position")
+    }
+}
+
+impl std::error::Error for NeedBagHeapValue {}
+
 // the search with tiles in the bag, under either model (PegModel): under
 // InfoSets each player to move chooses blind (info_value); under RandomDraws,
 // the fast approximation, both players know both racks; a draw is at random, so
@@ -10496,8 +10639,9 @@ struct BagSearch<
     exact: bool, // cleared by an endgame a limit cut short
     hand_overs: &'s [HandOver],
     hand_over: Option<usize>,
-    ply: usize, // the moves made from the root's position to the one valued
+    ply: usize, // the index into the arena's scratch
     arena: &'s mut BagArena,
+    heap: Option<BagHeap>,
 }
 
 impl<
@@ -10530,7 +10674,7 @@ impl<
     #[inline(always)]
     fn at_horizon(&self) -> bool {
         let depth = self.limits.depth.get();
-        self.limits.estimates && depth != COMPLETE && self.ply + 1 >= depth as usize
+        self.limits.estimates && depth != COMPLETE && self.logical_ply() + 1 >= depth as usize
     }
 
     // a move's equity to its mover, the line cut short there: what it scores
@@ -10559,6 +10703,180 @@ impl<
         let value = f(self);
         self.ply -= 1;
         value
+    }
+
+    #[inline(always)]
+    fn logical_ply(&self) -> usize {
+        self.heap.as_ref().map_or(0, |heap| heap.ply) + self.ply
+    }
+
+    #[inline(always)]
+    fn key_ply(&self) -> usize {
+        if self.limits.estimates {
+            self.logical_ply()
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    fn use_heap(&self, board: &[u8], bag: usize, made: [i16; 2]) -> bool {
+        self.heap.is_some() || long_finite_exchanges(self.gc, board, bag, made)
+    }
+
+    fn heap_in_bag(
+        &mut self,
+        pos: &InBag,
+        key: BagNeed,
+        threshold: Option<f64>,
+    ) -> error::Returns<BagHeapValue> {
+        let bytes = pos.board.len() + pos.bag.len() + pos.racks.iter().map(Vec::len).sum::<usize>();
+        self.heap_value(key, bytes, || match threshold {
+            Some(t) => BagHeapInput::Win(pos.clone(), t),
+            None => BagHeapInput::Node(pos.clone()),
+        })
+    }
+
+    fn heap_value(
+        &mut self,
+        key: BagNeed,
+        bytes: usize,
+        input: impl FnOnce() -> BagHeapInput,
+    ) -> error::Returns<BagHeapValue> {
+        let ply = self.logical_ply();
+        if let Some(heap) = self.heap.as_ref() {
+            if let Some((value, exact)) = heap.values.get(&key) {
+                let _copy = match value {
+                    BagHeapValue::Node(_, play) => Some(self.limits.reserve(play_bytes(play))?),
+                    _ => None,
+                };
+                self.exact &= *exact;
+                return Ok(value.clone());
+            }
+            self.stop_at_a_limit()?;
+            let _snapshot = self.limits.reserve(bytes)?;
+            self.heap.as_mut().unwrap().next = Some(BagHeapFrame {
+                key,
+                ply,
+                input: input(),
+                checked_splits: 0,
+            });
+            return Err(Box::new(NeedBagHeapValue));
+        }
+        self.stop_at_a_limit()?;
+        let (slot, resumed) = self.valued.heap_pauses.start(&key, self.limits)?;
+        let mut heap = resumed.unwrap_or_else(BagHeap::new);
+        let setup = (|| {
+            if heap.stack.is_empty() && heap.next.is_none() {
+                let _snapshot = self.limits.reserve(bytes)?;
+                heap.next = Some(BagHeapFrame {
+                    key: key.clone(),
+                    ply,
+                    input: input(),
+                    checked_splits: 0,
+                });
+            }
+            if let Some(arena) = heap.arena.take() {
+                return Ok(arena);
+            }
+            let tiles = self.arena.tiles;
+            let _scratch = self
+                .limits
+                .reserve(2 * (std::mem::size_of::<PlyRoom>() + 3 * tiles))?;
+            Ok(BagArena::new(tiles, 1))
+        })();
+        let inner = match setup {
+            Ok(ready) => ready,
+            Err(e) => {
+                self.valued.heap_pauses.finish(
+                    slot,
+                    key,
+                    (!heap.stack.is_empty() || heap.next.is_some()).then_some(heap),
+                );
+                return Err(e);
+            }
+        };
+        let prior = self.exact;
+        let arena_ply = self.ply;
+        let outer = std::mem::replace(self.arena, inner);
+        self.heap = Some(heap);
+        let result = self.run_bag_heap();
+        let mut heap = self.heap.take().unwrap();
+        heap.arena = Some(std::mem::replace(self.arena, outer));
+        self.ply = arena_ply;
+        self.exact &= prior;
+        let stopped = result.is_err() && self.limits.stopped.get();
+        self.valued
+            .heap_pauses
+            .finish(slot, key, stopped.then_some(heap));
+        result
+    }
+
+    fn run_bag_heap(&mut self) -> error::Returns<BagHeapValue> {
+        let limits = self.limits;
+        loop {
+            let heap = self.heap.as_mut().unwrap();
+            if heap.next.is_some() {
+                limits.room(&mut heap.stack, 1)?;
+                heap.stack.push(heap.next.take().unwrap());
+            }
+            let mut frame = heap.stack.pop().unwrap();
+            if !heap.stack.is_empty() && heap.values.len() == heap.values.capacity() {
+                let bytes = heap
+                    .values
+                    .capacity()
+                    .max(1)
+                    .saturating_add(1)
+                    .saturating_mul(2)
+                    .saturating_mul(
+                        std::mem::size_of::<(BagNeed, (BagHeapValue, bool))>()
+                            + std::mem::size_of::<u8>()
+                            + std::mem::align_of::<BagNeed>(),
+                    );
+                let reserved = limits.reserve(bytes);
+                let room = reserved.and_then(|_room| {
+                    heap.values
+                        .try_reserve(1)
+                        .map_err(|_| limits.stop_refused())
+                });
+                if let Err(e) = room {
+                    heap.stack.push(frame);
+                    return Err(e);
+                }
+            }
+            heap.ply = frame.ply;
+            heap.split_at = 0;
+            heap.checked_splits = frame.checked_splits;
+            self.ply = 0;
+            self.exact = true;
+            let value = match &mut frame.input {
+                BagHeapInput::Node(pos) => {
+                    let key = pos.key();
+                    self.node_searched(pos, key, None)
+                        .map(|(value, best)| BagHeapValue::Node(value, best))
+                }
+                BagHeapInput::Win(pos, t) => self.node_win_searched(pos, *t).map(BagHeapValue::Win),
+                BagHeapInput::Info(info) => self
+                    .info_searched(info, info.key(), None)
+                    .map(|(win, margin)| BagHeapValue::Info(win, margin)),
+            };
+            let heap = self.heap.as_mut().unwrap();
+            match value {
+                Ok(value) => {
+                    if heap.stack.is_empty() {
+                        return Ok(value);
+                    }
+                    heap.values.insert(frame.key, (value, self.exact));
+                }
+                Err(e) => {
+                    frame.checked_splits = heap.checked_splits;
+                    heap.stack.push(frame);
+                    if !e.is::<NeedBagHeapValue>() {
+                        return Err(e);
+                    }
+                }
+            }
+        }
     }
 
     // the tiles an exchange throws back, a count per tile, in this ply's room
@@ -10635,7 +10953,9 @@ impl<
         // read even where the position has its value: a node may visit a
         // great many valued ones, each exchange times each draw, between two
         // it searches
-        self.stop_at_a_limit()?;
+        if self.heap.is_none() {
+            self.stop_at_a_limit()?;
+        }
         let key = pos.key();
         let found = self.valued.read(key, |shard| {
             shard.nodes.get(key).map(|entry| match entry {
@@ -10651,6 +10971,14 @@ impl<
             Some(Err(play)) => Some(play),
             None => None,
         };
+        if self.use_heap(&pos.board, pos.bag_len(), pos.exchanges) {
+            let BagHeapValue::Node(value, _) =
+                self.heap_in_bag(pos, BagNeed::Node(key, self.key_ply()), None)?
+            else {
+                unreachable!("a node value");
+            };
+            return Ok(value);
+        }
         Ok(self.node_searched(pos, key, first)?.0)
     }
 
@@ -10672,6 +11000,14 @@ impl<
             Some((play, None)) => Some(play),
             None => None,
         };
+        if self.use_heap(&pos.board, pos.bag_len(), pos.exchanges) {
+            let BagHeapValue::Node(_, play) =
+                self.heap_in_bag(pos, BagNeed::Node(key, self.key_ply()), None)?
+            else {
+                unreachable!("a node play");
+            };
+            return Ok(play);
+        }
         Ok(self.node_searched(pos, key, first)?.1)
     }
 
@@ -10989,7 +11325,7 @@ impl<
     // alone: the root's draws are told (move_value_each), and a move valued by
     // its equity below it makes none
     fn each_draw_at_root(&mut self, pos: &mut InBag, n: usize, mut f: impl FnMut(&[u8], u64)) {
-        if self.ply == 0 {
+        if self.logical_ply() == 0 {
             // f makes no error
             let _ = self.each_draw(pos, n, |_, _, drawn, ways| {
                 f(drawn, ways);
@@ -11213,6 +11549,17 @@ impl<
     // the chance a position leaves its mover's final spread above t, each
     // player making the move node found best
     fn node_win(&mut self, pos: &mut InBag, t: f64) -> error::Returns<f64> {
+        if self.use_heap(&pos.board, pos.bag_len(), pos.exchanges) {
+            let key = BagNeed::Win(pos.key(), t.to_bits(), self.key_ply());
+            let BagHeapValue::Win(win) = self.heap_in_bag(pos, key, Some(t))? else {
+                unreachable!("a node's chance to win");
+            };
+            return Ok(win);
+        }
+        self.node_win_searched(pos, t)
+    }
+
+    fn node_win_searched(&mut self, pos: &mut InBag, t: f64) -> error::Returns<f64> {
         let play = self.node_play(pos)?;
         self.move_win(pos, &play, t)
     }
@@ -11228,7 +11575,9 @@ impl<
     // chance's search left unfound solved whole
     fn info_value(&mut self, info: &InfoSet) -> error::Returns<(f64, f64)> {
         // read even where the info set has its value, as node does
-        self.stop_at_a_limit()?;
+        if self.heap.is_none() {
+            self.stop_at_a_limit()?;
+        }
         let key = info.key();
         let found = self.valued.read(key, |shard| {
             shard.infos.get(key).map(|entry| match entry {
@@ -11244,6 +11593,25 @@ impl<
             Some(Err(play)) => Some(play),
             None => None,
         };
+        if self.use_heap(&info.board, info.bag_len, info.exchanges) {
+            let bytes = info.board.len() + info.rack.len() + info.unseen.len();
+            let need = BagNeed::Info(key, self.key_ply());
+            let BagHeapValue::Info(win, margin) =
+                self.heap_value(need, bytes, || BagHeapInput::Info(info.clone()))?
+            else {
+                unreachable!("an info set's value");
+            };
+            return Ok((win, margin));
+        }
+        self.info_searched(info, key, first)
+    }
+
+    fn info_searched(
+        &mut self,
+        info: &InfoSet,
+        key: u64,
+        first: Option<movegen::Play>,
+    ) -> error::Returns<(f64, f64)> {
         let was_exact = std::mem::replace(&mut self.exact, true);
         let made = info.exchanges[info.mover as usize];
         let (gc, graphs, arm_tables, klv) = (self.gc, self.graphs, self.arm_tables, self.klv);
@@ -11319,7 +11687,12 @@ impl<
         // left, who value them from the end into the shared table
         use std::sync::atomic::Ordering::Relaxed;
         let hand_overs = self.hand_overs;
-        let help = self.hand_over.take().map(|task| &hand_overs[task]);
+        // A heap frame visits the same splits in the same order on resuming.
+        let help = if self.heap.is_none() {
+            self.hand_over.take().map(|task| &hand_overs[task])
+        } else {
+            None
+        };
         let num_asked = asked.len();
         if let (None, [split], COMPLETE) = (help, splits, self.limits.depth.get()) {
             return self.info_best_of_one(info, (moves, asked), split);
@@ -11421,6 +11794,21 @@ impl<
         Ok(best)
     }
 
+    fn stop_at_a_split_limit(&mut self) -> error::Returns<()> {
+        if let Some(heap) = &mut self.heap
+            && heap.split_at < heap.checked_splits
+        {
+            heap.split_at += 1;
+            return Ok(());
+        }
+        self.stop_at_a_limit()?;
+        if let Some(heap) = &mut self.heap {
+            heap.split_at += 1;
+            heap.checked_splits = heap.split_at;
+        }
+        Ok(())
+    }
+
     fn info_split_from(
         &mut self,
         info: &InfoSet,
@@ -11429,7 +11817,7 @@ impl<
         bag: &[u8],
         from: f64,
     ) -> error::Returns<Option<(f64, f64)>> {
-        self.stop_at_a_limit()?;
+        self.stop_at_a_split_limit()?;
         let movegen::Play::Place { score, .. } = play else {
             unreachable!("a placement empties the bag");
         };
@@ -11500,7 +11888,7 @@ impl<
         bag: &[u8],
     ) -> error::Returns<(f64, Option<f64>)> {
         // read at each split, as info_split does
-        self.stop_at_a_limit()?;
+        self.stop_at_a_split_limit()?;
         if let movegen::Play::Place { word, score, .. } = play
             && word.iter().filter(|&&tile| tile != 0).count() >= info.bag_len
         {
@@ -11522,7 +11910,7 @@ impl<
                 None => (0.0, None),
             });
         }
-        let (win, margin) = self.info_split(info, play, other, bag)?;
+        let (win, margin) = self.info_split_value(info, play, other, bag)?;
         Ok((win, Some(margin)))
     }
 
@@ -11541,7 +11929,17 @@ impl<
         // read at each split: a blind choice values every move over every
         // split, and one that ends the game (an exchange with the scoreless
         // turns at the count, its draws averaged) visits no position at all
-        self.stop_at_a_limit()?;
+        self.stop_at_a_split_limit()?;
+        self.info_split_value(info, play, other, bag)
+    }
+
+    fn info_split_value(
+        &mut self,
+        info: &InfoSet,
+        play: &movegen::Play,
+        other: &[u8],
+        bag: &[u8],
+    ) -> error::Returns<(f64, f64)> {
         let lead = f64::from(info.lead);
         match play {
             movegen::Play::Place { word, score, .. } => {
@@ -18467,6 +18865,7 @@ mod tests {
             hand_over: None,
             ply: 0,
             arena: &mut super::BagArena::new(gc.alphabet().len() as usize, 2),
+            heap: None,
         };
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]); // AT
@@ -20064,6 +20463,169 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_bag_search_resumes_a_long_finite_exchange_line() {
+        fn held_depth(progress: &super::PegBagProgress) -> usize {
+            progress
+                .state
+                .searched
+                .heap_pauses
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|slot| match slot {
+                    super::BagWorkSlot::Paused(_, heap) => Some(heap.stack.len()),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+        }
+
+        let mut gc = game_config::make_exchange_test_game_config();
+        let game_config::GameConfig::Static(rules) = &mut gc;
+        rules.rack_size = 1;
+        rules.num_passes_to_end = 1;
+        rules.num_zeros_to_end = 1;
+        rules.exchanges_are_zeros = false;
+        rules.exchanges_allowed_per_player = i16::MAX - 1;
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap(),
+        );
+        let vocab = movegen::Vocab::lean(&kwg);
+        let arm_tables = anagrams::ArmTables::None;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 7, &[1]);
+        let mut unseen = vec![0; gc.alphabet().len() as usize];
+        unseen[1] = 2;
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let limits = super::Limits {
+            time: Some(std::time::Duration::from_millis(5)),
+            ..super::Limits::NONE
+        };
+        for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+            let mut position = bag_position(&board, &[1], &unseen, 1, equity::Equity::ZERO);
+            position.model = model;
+            let mut progress = super::PegBagProgress::new(position, super::PegBagChoices::WHOLE)
+                .unwrap()
+                .without_cuts()
+                .unwrap();
+            let mut depth = 1;
+            let mut advances = 0;
+            for _ in 0..12 {
+                let stopped = solver
+                    .resume_peg(&mut progress, &limits, 1)
+                    .unwrap()
+                    .unwrap();
+                assert!(!stopped.exact);
+                let reached = held_depth(&progress);
+                if reached > depth {
+                    depth = reached;
+                    advances += 1;
+                    if advances == 2 {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(advances, 2);
+            let full = solver
+                .resume_peg(&mut progress, &super::Limits::NONE, 1)
+                .unwrap()
+                .unwrap();
+            assert!(full.exact);
+            assert_eq!(full.win_pct, 0.5);
+            assert_eq!(full.expected_margin, equity::Equity::ZERO);
+            assert_eq!(full.moves.len(), 2);
+            let mut fresh =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+            let memory = super::Limits {
+                memory: Some(super::MemoryLimit {
+                    bytes: 1,
+                    held: || usize::MAX,
+                    reserved: None,
+                }),
+                ..super::Limits::NONE
+            };
+            let read = fresh
+                .resume_peg_best(&mut progress, &memory, 2)
+                .unwrap()
+                .unwrap();
+            assert!(read.exact && !read.out_of_memory);
+            assert_eq!(read.expected_margin, full.expected_margin);
+            assert_eq!(read.win_pct, full.win_pct);
+        }
+    }
+
+    #[test]
+    fn a_bag_search_takes_a_selected_exchange_with_a_finite_allowance() {
+        let mut gc = game_config::make_exchange_test_game_config();
+        let game_config::GameConfig::Static(rules) = &mut gc;
+        rules.exchanges_are_zeros = false;
+        rules.exchanges_allowed_per_player = 1;
+        let mut endless = gc.clone();
+        let game_config::GameConfig::Static(rules) = &mut endless;
+        rules.exchanges_allowed_per_player = i16::MAX;
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(b"\x00\x00\x40\x00".to_vec(), false).unwrap(),
+        );
+        let vocab = movegen::Vocab::lean(&kwg);
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let arm_tables = anagrams::ArmTables::None;
+        let mut state = crate::game_state::GameState::new(&gc);
+        let center = state.board_tiles.len() / 2;
+        state.board_tiles[center] = 1;
+        state.players[0].rack.push(8);
+        state.bag.set_from_iter([1]);
+        let exchange = movegen::Play::Exchange {
+            tiles: [8][..].into(),
+        };
+        let mut unseen = vec![0; gc.alphabet().len() as usize];
+        unseen[1] = 2;
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let mut endless_solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&endless, &vocab, &arm_tables).unwrap();
+        for model in [super::PegModel::RandomDraws, super::PegModel::InfoSets] {
+            let mut position = bag_position(
+                &state.board_tiles,
+                &state.players[0].rack,
+                &unseen,
+                state.bag.len(),
+                equity::Equity::ZERO,
+            );
+            position.model = model;
+            assert!(matches!(
+                endless_solver
+                    .solve_peg(position.clone(), &super::Limits::NONE, 1)
+                    .unwrap(),
+                Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
+            ));
+            let roots = super::RootMoves::checked(
+                &movegen::BoardSnapshot {
+                    board_tiles: &state.board_tiles,
+                    game_config: &gc,
+                    vocab: &vocab,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: &klv,
+                },
+                &state,
+                vec![exchange.clone()],
+            )
+            .unwrap();
+            let mut progress = super::PegBagProgress::new(position, super::PegBagChoices::WHOLE)
+                .unwrap()
+                .with_root_moves(Some(roots));
+            let result = solver
+                .resume_peg(&mut progress, &super::Limits::NONE, 1)
+                .unwrap()
+                .unwrap();
+            assert!(result.exact && result.best_move.as_ref() == Some(&exchange));
+            assert_eq!(result.moves.len(), 1);
         }
     }
 
