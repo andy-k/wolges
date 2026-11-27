@@ -1123,7 +1123,7 @@ impl Task {
     fn needs_two_players(&self) -> bool {
         matches!(
             self,
-            Task::Compare(_) | Task::Winpct(_) | Task::WinpctEval(_) | Task::InferFit(_)
+            Task::Compare(_) | Task::Winpct(_) | Task::WinpctEval(_)
         )
     }
 }
