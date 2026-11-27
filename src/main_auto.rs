@@ -155,6 +155,11 @@ fn do_it(
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(kwg, game_config, lean)?);
+    let vocab = if lean {
+        movegen::Vocab::lean(kwg)
+    } else {
+        movegen::Vocab::new(game_config, kwg)?
+    };
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
         tilt: move_filter::Tilt::new(game_config, kwg, move_filter::Tilt::length_importances()),
@@ -232,7 +237,7 @@ fn do_it(
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config,
-            vocab: &wolges::movegen::Vocab::lean(kwg),
+            vocab: &vocab,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv,
@@ -280,7 +285,11 @@ fn do_it(
         move_generator.reset_for_another_kwg();
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
-                vocab: &movegen::Vocab::lean(&smaller_kwg),
+                vocab: &if lean {
+                    movegen::Vocab::lean(&smaller_kwg)
+                } else {
+                    movegen::Vocab::new(game_config, &smaller_kwg)?
+                },
                 anagrams: smaller_tables.anagrams(),
                 rack_lengths: smaller_tables.rack_lengths(),
                 ..*board_snapshot
@@ -333,7 +342,7 @@ fn do_it(
     let mut carried = vec![infer::Carried::default(); game_state.players.len()];
     let mut put_back = vec![Vec::new(); game_state.players.len()];
     let mut next_carried = infer::Carried::default();
-    let graphs = &wolges::movegen::Vocab::lean(kwg);
+    let graphs = &vocab;
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         final_scores.iter_mut().for_each(|s| *s = 0);
@@ -450,7 +459,11 @@ fn do_it(
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
-                            vocab: &movegen::Vocab::lean(&smaller_kwg),
+                            vocab: &if lean {
+                                movegen::Vocab::lean(&smaller_kwg)
+                            } else {
+                                movegen::Vocab::new(game_config, &smaller_kwg)?
+                            },
                             anagrams: smaller_tables.anagrams(),
                             rack_lengths: smaller_tables.rack_lengths(),
                             ..*board_snapshot
