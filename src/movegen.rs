@@ -5663,7 +5663,7 @@ fn gen_classic_place_moves<
         e: &mut Extent,
         idx: usize,
         letters: u64,
-        places: impl alphagram::KeyPlaces,
+        places: &impl alphagram::KeyPlaces,
         params: &TableWalkParams<
             '_,
             impl FnMut(i8, &[u8], i32, i32) -> i32,
@@ -5772,7 +5772,7 @@ fn gen_classic_place_moves<
             blank_ok: 0,
         };
         for idx in leftmost..rightmost {
-            add_square(&mut walked, idx as usize, letters, env.places, env.params);
+            add_square(&mut walked, idx as usize, letters, &env.places, env.params);
         }
         debug_assert_eq!(walked.playthrough_key, e.playthrough_key);
         debug_assert_eq!(walked.base_main, e.base_main);

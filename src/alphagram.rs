@@ -184,15 +184,15 @@ impl KeyLayout {
 // key as they read it, whether a key holds no tile past its most, and a tile's
 // most: by a packed layout a table read, by nibbles a shift, whose counts, the
 // most of each tile, a caller gives
-pub trait KeyPlaces: Copy {
-    fn place_value(self, tile: u8) -> u128;
-    fn count_in(self, key: u128, tile: u8) -> u8;
-    fn holds(self, key: u128, counts: &[u8]) -> bool;
-    fn max_count(self, tile: u8, counts: &[u8]) -> u8;
+pub trait KeyPlaces: Clone {
+    fn place_value(&self, tile: u8) -> u128;
+    fn count_in(&self, key: u128, tile: u8) -> u8;
+    fn holds(&self, key: u128, counts: &[u8]) -> bool;
+    fn max_count(&self, tile: u8, counts: &[u8]) -> u8;
 }
 
 // four bits a tile, tile t's count at bit 4t
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Nibble;
 
 impl Nibble {
@@ -220,51 +220,51 @@ impl Nibble {
 
 impl KeyPlaces for Nibble {
     #[inline(always)]
-    fn place_value(self, tile: u8) -> u128 {
+    fn place_value(&self, tile: u8) -> u128 {
         1u128 << (tile << 2)
     }
 
     #[inline(always)]
-    fn count_in(self, key: u128, tile: u8) -> u8 {
+    fn count_in(&self, key: u128, tile: u8) -> u8 {
         (key >> (tile << 2)) as u8 & 0xf
     }
 
     // every nibble, a tile's or not, no more than its tile's most
     #[inline(always)]
-    fn holds(self, key: u128, counts: &[u8]) -> bool {
+    fn holds(&self, key: u128, counts: &[u8]) -> bool {
         (0..Nibble::TILES)
             .all(|tile| (key >> (tile << 2)) as u8 & 0xf <= counts.get(tile).copied().unwrap_or(0))
     }
 
     #[inline(always)]
-    fn max_count(self, tile: u8, counts: &[u8]) -> u8 {
+    fn max_count(&self, tile: u8, counts: &[u8]) -> u8 {
         counts[tile as usize]
     }
 }
 
 impl KeyPlaces for &KeyLayout {
     #[inline(always)]
-    fn place_value(self, tile: u8) -> u128 {
+    fn place_value(&self, tile: u8) -> u128 {
         KeyLayout::place_value(self, tile)
     }
 
     #[inline(always)]
-    fn count_in(self, key: u128, tile: u8) -> u8 {
+    fn count_in(&self, key: u128, tile: u8) -> u8 {
         KeyLayout::count_in(self, key, tile)
     }
 
     #[inline(always)]
-    fn holds(self, key: u128, _counts: &[u8]) -> bool {
+    fn holds(&self, key: u128, _counts: &[u8]) -> bool {
         KeyLayout::holds(self, key)
     }
 
     #[inline(always)]
-    fn max_count(self, tile: u8, _counts: &[u8]) -> u8 {
+    fn max_count(&self, tile: u8, _counts: &[u8]) -> u8 {
         KeyLayout::max_count(self, tile)
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Fitted(pub u128);
 
 impl Fitted {}

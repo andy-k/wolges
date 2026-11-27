@@ -262,7 +262,7 @@ impl KeyBuild for NibbleKeys {
 
     #[inline(always)]
     fn count_in(&self, key: u128, tile: u8) -> u8 {
-        alphagram::KeyPlaces::count_in(alphagram::Nibble, key, tile)
+        alphagram::KeyPlaces::count_in(&alphagram::Nibble, key, tile)
     }
 
     #[inline(always)]
@@ -272,7 +272,7 @@ impl KeyBuild for NibbleKeys {
 
     #[inline(always)]
     fn place_value(&self, tile: u8) -> u128 {
-        alphagram::KeyPlaces::place_value(alphagram::Nibble, tile)
+        alphagram::KeyPlaces::place_value(&alphagram::Nibble, tile)
     }
 
     #[inline(always)]
@@ -1377,7 +1377,7 @@ mod tests {
         let layout = test_layout();
         let key = alphagram::Fitted(layout.key_of(&[1, 2, 3]).unwrap());
         assert_eq!(
-            sorted(held.words(key, 3)),
+            sorted(held.words(key.clone(), 3)),
             vec![
                 vec![1u8, 2, 3],
                 vec![1, 3, 2],
@@ -1387,7 +1387,7 @@ mod tests {
                 vec![3, 2, 1],
             ],
         );
-        assert!(held.words(key, 4).is_none());
+        assert!(held.words(key.clone(), 4).is_none());
         assert!(held.words(key, 99).is_none());
     }
 
@@ -1427,7 +1427,7 @@ mod tests {
             for b in 1u8..=6 {
                 let key = alphagram::Fitted(layout.key_of(&[a, b]).unwrap());
                 let mut got = Vec::new();
-                held.blank_groups(key, 3, u64::MAX, |_, at| {
+                held.blank_groups(key.clone(), 3, u64::MAX, |_, at| {
                     got.push(sorted(Some(held.words_at(at))));
                 });
                 let mut want = Vec::new();
@@ -1499,7 +1499,7 @@ mod tests {
             let held = Anagrams::build(&g, layout.clone(), longest)
                 .unwrap()
                 .unwrap();
-            held.words(key, 16).is_some()
+            held.words(key.clone(), 16).is_some()
         };
         assert_eq!(longest_play(&gc), 15);
         assert!(!kept(15));
