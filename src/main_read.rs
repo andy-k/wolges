@@ -2080,15 +2080,15 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         orig_hash |= u64::from(alphabet.len());
                     }
                 }
-                let quotient = (orig_hash / u64::from(num_buckets)) as u32;
-                if quotient & 0x3fff != quotient {
+                let quotient = orig_hash / u64::from(num_buckets);
+                if quotient > 0x3fff {
                     return Err("quotient does not fit in 14 bits".into());
                 }
                 let bucket_num = (orig_hash % u64::from(num_buckets)) as u32;
-                values.push((bucket_num, quotient, val));
+                values.push((bucket_num, u32::try_from(quotient)?, val));
             }
             values.sort_unstable();
-            let num_values = values.len() as u32;
+            let num_values = u32::try_from(values.len())?;
             let mut ret = Vec::with_capacity(4 * (3 + num_buckets as usize + num_values as usize));
             ret.extend(&num_buckets.to_le_bytes());
             ret.extend(&num_values.to_le_bytes());
@@ -2151,7 +2151,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 3
             }); // version
             let min_word_len = 2;
-            let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
+            let mut max_word_len = u8::try_from(all_words.last().map_or(0, |x| x.len()))?;
             if allow_overflow {
                 max_word_len = max_word_len.max(15);
             }
@@ -2174,7 +2174,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     }
                 });
                 let target = 1u128 << 96;
-                next_prime(((biggest / target) as u32).saturating_add(1))
+                let lower = u32::try_from(biggest / target)?;
+                next_prime(lower.checked_add(1).ok_or("too many word map buckets")?)?
             } else {
                 0 // not used
             };
@@ -2295,12 +2296,21 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     bits[0] -= 1;
                 }
 
+                let word_count = u32::try_from(b0_bits.len())?;
+                let blank_count = u32::try_from(b1_bits.len())?;
+                let double_blank_count = u32::try_from(b2_bits.len())?;
                 let (num_word_buckets, num_blank_buckets, num_double_blank_buckets) = if is_v3_plus
                 {
                     (
-                        (b0_bits.len() as u32).next_power_of_two(),
-                        (b1_bits.len() as u32).next_power_of_two(),
-                        (b2_bits.len() as u32).next_power_of_two(),
+                        word_count
+                            .checked_next_power_of_two()
+                            .ok_or("too many word map buckets")?,
+                        blank_count
+                            .checked_next_power_of_two()
+                            .ok_or("too many word map buckets")?,
+                        double_blank_count
+                            .checked_next_power_of_two()
+                            .ok_or("too many word map buckets")?,
                     )
                 } else if allow_overflow {
                     // numbers of buckets in v1/v2.
@@ -2309,42 +2319,44 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     // (??ZYYXWW... with the ?s being valued as Z)
                     // even if there is a word like PIZZAZZ.
                     (
-                        next_prime(b0_bits.len() as u32).max(min_num_buckets),
-                        next_prime(b1_bits.len() as u32).max(min_num_buckets),
-                        next_prime(b2_bits.len() as u32).max(min_num_buckets),
+                        next_prime(word_count)?.max(min_num_buckets),
+                        next_prime(blank_count)?.max(min_num_buckets),
+                        next_prime(double_blank_count)?.max(min_num_buckets),
                     )
                 } else {
-                    let adjust_num_word_buckets = |len: u32, biggest: u128| {
-                        let guess = next_prime(len);
-                        let target = 1u128 << 96;
-                        if biggest / u128::from(guess) < target {
-                            // intentional floor division.
-                            guess
-                        } else {
-                            // intentional floor division.
-                            // this can still overflow if given 15 of everything!
-                            next_prime(((biggest / target) as u32).saturating_add(1))
-                        }
-                    };
+                    let adjust_num_word_buckets =
+                        |len: u32, biggest: u128| -> error::Returns<u32> {
+                            let guess = next_prime(len)?;
+                            let target = 1u128 << 96;
+                            if biggest / u128::from(guess) < target {
+                                // intentional floor division.
+                                Ok(guess)
+                            } else {
+                                // intentional floor division.
+                                // this can still overflow if given 15 of everything!
+                                let lower = u32::try_from(biggest / target)?;
+                                next_prime(lower.checked_add(1).ok_or("too many word map buckets")?)
+                            }
+                        };
                     (
                         adjust_num_word_buckets(
-                            b0_bits.len() as u32,
+                            word_count,
                             b0_bits
                                 .keys()
                                 .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
-                        ),
+                        )?,
                         adjust_num_word_buckets(
-                            b1_bits.len() as u32,
+                            blank_count,
                             b1_bits
                                 .keys()
                                 .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
-                        ),
+                        )?,
                         adjust_num_word_buckets(
-                            b2_bits.len() as u32,
+                            double_blank_count,
                             b2_bits
                                 .keys()
                                 .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
-                        ),
+                        )?,
                     )
                 };
 
@@ -2386,10 +2398,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 .position(|x| x.0 != this_rem)
                                 .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
                         };
-                        write_u32(&mut ret, bucket_max_idx as u32);
+                        write_u32(&mut ret, u32::try_from(bucket_max_idx)?);
                         bucket_min_idx = bucket_max_idx;
                     }
-                    write_u32(&mut ret, linearized_buckets.len() as u32);
+                    write_u32(&mut ret, u32::try_from(linearized_buckets.len())?);
                     // pretend it was already re-sorted according to remainder order.
                     let mut cum_start_idx = 0;
                     let inline_max = 16u32 / u32::from(this_len);
@@ -2471,10 +2483,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 .position(|x| x.0 != this_rem)
                                 .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
                         };
-                        write_u32(&mut ret, bucket_max_idx as u32);
+                        write_u32(&mut ret, u32::try_from(bucket_max_idx)?);
                         bucket_min_idx = bucket_max_idx;
                     }
-                    write_u32(&mut ret, linearized_buckets.len() as u32);
+                    write_u32(&mut ret, u32::try_from(linearized_buckets.len())?);
                     // pretend it was already re-sorted according to remainder order.
                     for (_remainder, quotient, bits) in linearized_buckets.iter() {
                         let blank_bits = b1_bits[*bits];
@@ -2516,7 +2528,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             );
                                         }
                                     }
-                                    let start_idx = b2_chars.len() as u32;
+                                    let start_idx = u32::try_from(b2_chars.len())?;
                                     let mut num_words_here = 0u32;
                                     let mut b1 = *b1;
                                     bits[0] -= 1;
@@ -2545,10 +2557,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     max_word_lookup_results_before_multiplying_len =
                                         max_word_lookup_results_before_multiplying_len
                                             .max(num_words_here);
-                                    let end_idx = b2_chars.len() as u32;
-                                    (remainder, quotient, start_idx, end_idx)
+                                    let end_idx = u32::try_from(b2_chars.len())?;
+                                    Ok((remainder, quotient, start_idx, end_idx))
                                 })
-                                .collect::<Box<_>>();
+                                .collect::<error::Returns<Box<[_]>>>()?;
                         written?;
                         linearized_buckets.sort_unstable();
                         write_u32(&mut ret, num_double_blank_buckets);
@@ -2561,10 +2573,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     .position(|x| x.0 != this_rem)
                                     .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
                             };
-                            write_u32(&mut ret, bucket_max_idx as u32);
+                            write_u32(&mut ret, u32::try_from(bucket_max_idx)?);
                             bucket_min_idx = bucket_max_idx;
                         }
-                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        write_u32(&mut ret, u32::try_from(linearized_buckets.len())?);
                         // pretend it was already re-sorted according to remainder order.
                         let mut cum_start_idx = 0;
                         let mut uninlined_len = 0u32;
@@ -2668,10 +2680,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     .position(|x| x.0 != this_rem)
                                     .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
                             };
-                            write_u32(&mut ret, bucket_max_idx as u32);
+                            write_u32(&mut ret, u32::try_from(bucket_max_idx)?);
                             bucket_min_idx = bucket_max_idx;
                         }
-                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        write_u32(&mut ret, u32::try_from(linearized_buckets.len())?);
                         // pretend it was already re-sorted according to remainder order.
                         for (_remainder, quotient, bits) in linearized_buckets.iter() {
                             let blank_bits = b2_bits[*bits];
@@ -2741,10 +2753,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 &mut |s: &str| {
                     let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                     let rounded_leave = (float_leave * 256.0).round();
+                    if !(f32::from(i16::MIN)..=f32::from(i16::MAX)).contains(&rounded_leave) {
+                        return Err(format!("leave for {s:?} does not fit in i16").into());
+                    }
                     let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
                     let slen = s.len();
                     ret.reserve(slen + 3);
-                    ret.push(slen as u8);
+                    ret.push(u8::try_from(slen)?);
                     ret.extend(s.bytes());
                     ret.extend(int_leave.to_le_bytes());
                     Ok(())
@@ -3010,25 +3025,27 @@ fn kwg_hitcheck(
 
 // naive algorithm.
 #[inline]
-fn next_prime(mut x: u32) -> u32 {
+fn next_prime(mut x: u32) -> error::Returns<u32> {
     if x <= 2 {
-        return 2;
+        return Ok(2);
     }
     if x & 1 == 0 {
         x += 1
     }
     if x <= 7 {
-        return x;
+        return Ok(x);
     }
     loop {
         let mut j = 3;
         while !x.is_multiple_of(j) {
             j += 2;
-            if j * j > x {
-                return x;
+            if j > x / j {
+                return Ok(x);
             }
         }
-        x += 2;
+        x = x
+            .checked_add(2)
+            .ok_or("no representable prime bucket count")?;
     }
 }
 
