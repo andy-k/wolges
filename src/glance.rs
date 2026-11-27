@@ -7,7 +7,7 @@ use super::{game_config, movegen};
 // could fill exactly: nothing just past either end, at least one empty square
 // and at most rack_size, two squares or more, and an anchor or a tile inside --
 // every (dir, idx, left, right) a placement sees, each counted.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Glance {
     pub anchors: u32,
     pub premium_anchors: u32,
