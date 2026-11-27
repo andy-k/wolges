@@ -19112,7 +19112,7 @@ pub(crate) mod tests {
                     .gen_moves_unfiltered(&GenMovesParams {
                         board_snapshot: &board_snapshot,
                         rack: &rack,
-                        max_gen: 100_000,
+                        max_gen: usize::MAX,
                         num_exchanges_by_this_player: 0,
                         pass_policy: PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
@@ -19242,7 +19242,7 @@ pub(crate) mod tests {
                             .gen_moves_unfiltered(&GenMovesParams {
                                 board_snapshot: &board_snapshot,
                                 rack: &rack,
-                                max_gen: 100_000,
+                                max_gen: usize::MAX,
                                 num_exchanges_by_this_player: 0,
                                 pass_policy: PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
