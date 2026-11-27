@@ -7,7 +7,7 @@ use super::{error, matrix, movegen};
 // a board's squares as bits, for a board of up to SQUARE_WORDS * 64 of them
 pub const SQUARE_WORDS: usize = 8;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Squares(pub [u64; SQUARE_WORDS]);
 
 impl Squares {

@@ -1743,7 +1743,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> OutInTwo<'a, N, L> {
         outs.clear();
         outs.extend(
             self.standing_outs(choice, rows, cols)
-                .map(|(s, fp)| (s, fp.zone)),
+                .map(|(s, fp)| (s, fp.zone.clone())),
         );
         gen_plays(generator, self.board_snapshot, after, kept, rows, cols);
         outs.extend(
@@ -4915,7 +4915,7 @@ mod tests {
         let stuck = -i64::from(equity::ENDGAME_PENALTY_BASE) - left_twice;
         let outs = first
             .standing_outs(choice, 0, 0)
-            .map(|(s, fp)| (s, fp.zone))
+            .map(|(s, fp)| (s, fp.zone.clone()))
             .collect::<Vec<_>>();
         let mut v = match outs.first() {
             Some(&(best, _)) => c + best,
