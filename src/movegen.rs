@@ -2,7 +2,7 @@
 
 use super::{
     alphabet, alphagram, anagrams, bites, display, endgame, equity, error, game_config, klv, kwg,
-    matrix, play_scorer, woadwage,
+    matrix, play_scorer, text, woadwage,
 };
 use alphagram::KeyPlaces as _;
 use endgame::Grow as _;
@@ -595,7 +595,7 @@ impl BagTerm {
     // "b value" lines, value in points (blank lines and # comments skipped)
     pub fn parse(text: &str) -> error::Returns<Self> {
         let mut pairs = Vec::new();
-        for line in text.lines() {
+        for line in text::lines(text) {
             let line = line.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
                 continue;
@@ -24511,6 +24511,10 @@ pub(crate) mod tests {
             assert!(BagTerm::parse("1 2 3\n").is_err());
             assert!(BagTerm::parse("x 2\n").is_err());
             assert!(BagTerm::parse("1 1e12\n").is_err());
+            for ending in ["\r\n", "\r"] {
+                let read = BagTerm::parse(&"-2 -1.5\n1 6.04\n".replace('\n', ending));
+                assert_eq!(read.unwrap(), term, "{ending:?}");
+            }
         }
     }
 }
