@@ -818,6 +818,49 @@ impl RefutingPlacement {
     }
 }
 
+struct TwoTilePlays<'a> {
+    before: &'a [Candidate],
+    changed: (u128, u128),
+    kept: [u8; 2],
+}
+
+impl TwoTilePlays<'_> {
+    fn unchanged(&self) -> impl Iterator<Item = &movegen::Play> {
+        self.before.iter().filter_map(|candidate| {
+            if usize::from(candidate.placed) > self.kept.len() {
+                return None;
+            }
+            let movegen::Play::Place {
+                down, lane, word, ..
+            } = &candidate.play
+            else {
+                return None;
+            };
+            let lanes = if *down {
+                self.changed.1
+            } else {
+                self.changed.0
+            };
+            if lanes >> lane & 1 != 0 {
+                return None;
+            }
+            let mut rack = self.kept;
+            let mut len = rack.len();
+            for tile in word
+                .iter()
+                .copied()
+                .filter(|&tile| tile != 0)
+                .map(held_tile)
+            {
+                let at = rack[..len].iter().position(|&held| held == tile)?;
+                len -= 1;
+                rack.swap(at, len);
+            }
+            Some(&candidate.play)
+        })
+    }
+}
+
 #[inline(always)]
 fn add_placement(
     list: &mut Vec<Candidate>,
@@ -1780,6 +1823,7 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     resumed: u64,            // the passes this solver went on with from a step before
     line: Option<Box<Line>>, // the line collect_pv read last
     refutations: Vec<Option<RefutingPlacement>>,
+    two_tile_plays: Vec<movegen::ValuedMove>,
     cadence: u64,   // the nodes between looks at the clock, 1 to LIMIT_CADENCE
     next_look: u64, // the nodes this pass searches before the next look
     last_look: std::time::Duration, // the time at the last look, from the solve's start
@@ -1852,6 +1896,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             resumed: 0,
             line: None,
             refutations: Vec::new(),
+            two_tile_plays: Vec::new(),
             cadence: 1,
             next_look: 1,
             last_look: std::time::Duration::ZERO,
@@ -1920,6 +1965,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             resumed,
             line,
             refutations,
+            two_tile_plays,
             cadence,
             next_look,
             last_look,
@@ -1962,6 +2008,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         *resumed = 0;
         *line = None;
         refutations.clear();
+        two_tile_plays.clear();
         *cadence = 1;
         *next_look = 1;
         *last_look = std::time::Duration::ZERO;
@@ -3430,32 +3477,210 @@ impl<
         if equity::Equity::new(best) > need {
             return Ok(equity::Equity::new(best));
         }
-        let t1 = (self.progress.is_some()).then(|| Started::now(work_buffer.clock));
-        gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
-            &mut work_buffer.movegen,
-            work_buffer.run_letter_bits.as_deref(),
+        self.generate_bound_plays(player_idx, rows, cols, None)?;
+        for valued in &self.work_buffer.movegen.plays {
+            if let movegen::Play::Place { score, .. } = &valued.play {
+                best = best.max(score.raw() + out_bonus);
+            }
+        }
+        Ok(equity::Equity::new(best))
+    }
+
+    fn generate_bound_plays(
+        &mut self,
+        player_idx: u8,
+        rows: u128,
+        cols: u128,
+        limit: Option<movegen::HeldBytes>,
+    ) -> error::Returns<bool> {
+        let work = &mut self.work_buffer;
+        let started = (self.progress.is_some()).then(|| Started::now(work.clock));
+        let stopped = gen_raw_lanes::<LEAN, _, _, _, JUMPS, ANY_SIDE>(
+            &mut work.movegen,
+            work.run_letter_bits.as_deref(),
             &movegen::BoardSnapshot {
-                board_tiles: &work_buffer.board_tiles,
+                board_tiles: &work.board_tiles,
                 game_config: self.game_config,
                 kwg: self.kwg,
                 anagrams: self.arm_tables.anagrams(),
                 rack_lengths: self.arm_tables.rack_lengths(),
                 klv: &self.klv,
             },
-            &work_buffer.racks[player_idx as usize],
+            &work.racks[usize::from(player_idx)],
             rows,
             cols,
-            None,
+            limit,
         )?;
-        if let Some(t1) = t1 {
-            work_buffer.dur_movegen += t1.elapsed();
+        if let Some(started) = started {
+            work.dur_movegen += started.elapsed();
         }
-        for valued in work_buffer.movegen.plays.iter() {
-            if let movegen::Play::Place { score, .. } = &valued.play {
-                best = best.max(score.raw() + out_bonus);
+        Ok(stopped)
+    }
+
+    fn bound_memory(&self) -> Option<movegen::HeldBytes> {
+        let work = &self.work_buffer;
+        work.memory_limit.map(|memory| movegen::HeldBytes {
+            memory: MemoryLimit {
+                bytes: memory.bytes.saturating_add(work.table.leaving()),
+                ..memory
+            },
+            kept: 0,
+        })
+    }
+
+    fn two_tiles_bound(
+        &mut self,
+        ply: usize,
+        player_idx: u8,
+        need: i64,
+    ) -> error::Returns<Option<i64>> {
+        let best = self.pass_spread(player_idx);
+        let start = Scoreless::Counted {
+            passes: 0,
+            zeros: 0,
+        };
+        if best > need || self.pass_ends_the_line(start) {
+            return Ok(Some(best));
+        }
+        let before = std::mem::take(&mut self.work_buffer.lists[ply]);
+        let rack = &self.work_buffer.racks[usize::from(player_idx)];
+        let changed = self.work_buffer.zones[ply];
+        let prior = TwoTilePlays {
+            before: &before,
+            changed,
+            kept: [rack[0], rack[1]],
+        };
+        let bounded = self.pair_against_passes(player_idx, &prior, best, need);
+        self.work_buffer.lists[ply] = before;
+        bounded
+    }
+
+    fn pass_spread(&self, player_idx: u8) -> i64 {
+        let scores = &self.work_buffer.rack_scores;
+        i64::from(scores[usize::from(player_idx ^ 1)]) - i64::from(scores[usize::from(player_idx)])
+    }
+
+    fn cap_with_spread(score: equity::Equity, spread: Option<i64>) -> equity::Equity {
+        spread
+            .and_then(|spread| i64::from(score.raw()).checked_add(spread))
+            .and_then(|total| i32::try_from(total).ok())
+            .map(equity::Equity::new)
+            .filter(|equity| equity.is_finite())
+            .unwrap_or(equity::Equity::INFINITY)
+    }
+
+    fn pair_against_passes(
+        &mut self,
+        player_idx: u8,
+        prior: &TwoTilePlays<'_>,
+        best: i64,
+        need: i64,
+    ) -> error::Returns<Option<i64>> {
+        let out = 2 * i64::from(self.work_buffer.rack_scores[usize::from(player_idx ^ 1)]);
+        let alphabet = self.game_config.alphabet();
+        for play in prior.unchanged() {
+            let movegen::Play::Place { word, score, .. } = play else {
+                unreachable!();
+            };
+            let mut tiles = word.iter().copied().filter(|&tile| tile != 0);
+            let first = tiles.next().unwrap();
+            let tail = if tiles.next().is_some() {
+                out
+            } else {
+                best + i64::from(alphabet.scaled_score(held_tile(first)).raw())
+            };
+            let spread = i64::from(score.raw()) + tail;
+            if spread > need {
+                return Ok(Some(spread));
             }
         }
-        Ok(equity::Equity::new(best))
+        let (rows, cols) = prior.changed;
+        if self.generate_bound_plays(player_idx, rows, cols, self.bound_memory())? {
+            return Ok(None);
+        }
+        let mut spare = std::mem::take(&mut self.work_buffer.two_tile_plays);
+        std::mem::swap(&mut spare, &mut self.work_buffer.movegen.plays);
+        let plays = || {
+            prior
+                .unchanged()
+                .chain(spare.iter().map(|placed| &placed.play))
+        };
+        let bounded = self.best_against_passes(player_idx, plays, best, need);
+        self.work_buffer.two_tile_plays = spare;
+        bounded
+    }
+
+    fn best_against_passes<'p, I: Iterator<Item = &'p movegen::Play>>(
+        &mut self,
+        player_idx: u8,
+        plays: impl Fn() -> I,
+        mut best: i64,
+        need: i64,
+    ) -> error::Returns<Option<i64>> {
+        let out = 2 * i64::from(self.work_buffer.rack_scores[usize::from(player_idx ^ 1)]);
+        let start = Scoreless::Counted {
+            passes: 0,
+            zeros: 0,
+        };
+        for play in plays() {
+            let movegen::Play::Place { word, score, .. } = play else {
+                continue;
+            };
+            let score = i64::from(score.raw());
+            let mut tiles = word.iter().copied().filter(|&tile| tile != 0);
+            if tiles.next().is_none() {
+                continue;
+            }
+            if tiles.next().is_some() {
+                best = best.max(score + out);
+            } else {
+                let (rows, cols) = self.zone_lanes(play);
+                self.place(player_idx, play);
+                best = best.max(score + self.pass_spread(player_idx));
+                if best <= need && !self.pass_ends_the_line(start) {
+                    let left = self.work_buffer.racks[usize::from(player_idx)][0];
+                    for other in plays() {
+                        if let movegen::Play::Place {
+                            down,
+                            lane,
+                            word,
+                            score: after,
+                            ..
+                        } = other
+                            && (if *down { cols } else { rows }) >> lane & 1 == 0
+                            && word
+                                .iter()
+                                .copied()
+                                .filter(|&tile| tile != 0)
+                                .map(held_tile)
+                                .eq([left])
+                        {
+                            best = best.max(score + i64::from(after.raw()) + out);
+                        }
+                    }
+                    if best <= need {
+                        match self.generate_bound_plays(player_idx, rows, cols, self.bound_memory())
+                        {
+                            Ok(false) => {}
+                            stopped => {
+                                self.unplace(player_idx, play);
+                                return stopped.map(|_| None);
+                            }
+                        }
+                        for after in &self.work_buffer.movegen.plays {
+                            if let movegen::Play::Place { score: after, .. } = &after.play {
+                                best = best.max(score + i64::from(after.raw()) + out);
+                            }
+                        }
+                    }
+                }
+                self.unplace(player_idx, play);
+            }
+            if best > need {
+                break;
+            }
+        }
+        Ok(Some(best))
     }
 
     // the rows and columns whose moves a move can change, on the position
@@ -5276,20 +5501,26 @@ impl<
                 }
                 let play = play.clone();
                 self.place(player_idx, &play);
-                let bound = if ply > 0
-                    && depth >= 2
-                    && self.work_buffer.racks[player_idx as usize].len() == 1
-                {
-                    match self.one_tile_bound(ply, player_idx, subtract_window_bound(alpha, score))
-                    {
-                        Ok(bound) => score + bound,
-                        Err(error) => {
-                            self.unplace(player_idx, &play);
-                            return Err(error);
-                        }
+                let bound = if skip_outs {
+                    let need = subtract_window_bound(alpha, score);
+                    match self.work_buffer.racks[usize::from(player_idx)].len() {
+                        1 => self
+                            .one_tile_bound(ply, player_idx, need)
+                            .map(|v| score + v),
+                        2 if self.work_buffer.in_bag.is_none() && need.is_finite() => self
+                            .two_tiles_bound(ply, player_idx, i64::from(need.raw()))
+                            .map(|spread| Self::cap_with_spread(score, spread)),
+                        _ => Ok(equity::Equity::INFINITY),
                     }
                 } else {
-                    equity::Equity::INFINITY
+                    Ok(equity::Equity::INFINITY)
+                };
+                let bound = match bound {
+                    Ok(bound) => bound,
+                    Err(error) => {
+                        self.unplace(player_idx, &play);
+                        return Err(error);
+                    }
                 };
                 if bound <= alpha {
                     self.unplace(player_idx, &play);
@@ -15146,6 +15377,107 @@ mod tests {
         }
         println!("one tile left: {checked} bounds, {zoned} with the best on the zone's lanes");
         assert!(checked > 0 && zoned > 0);
+    }
+
+    #[test]
+    fn two_tiles_bound_equals_full_pass_lines() {
+        fn through_passes(
+            solver: &mut EndgameSolver<'_, kwg::Node24, kwg::Node24>,
+            mover: u8,
+        ) -> equity::Equity {
+            use super::Scoreless;
+
+            let mut best = solver.both_pass_value(mover);
+            if solver.pass_ends_the_line(Scoreless::Counted {
+                passes: 0,
+                zeros: 0,
+            }) {
+                return best;
+            }
+            solver.generate(0, mover, false).unwrap();
+            let moves = solver.work_buffer.lists[0]
+                .iter()
+                .map(|c| (c.play.clone(), c.valuation, c.plays_out))
+                .collect::<Vec<_>>();
+            for (play, value, out) in moves {
+                let line = if out {
+                    value
+                } else {
+                    solver.place(mover, &play);
+                    let line = value + through_passes(solver, mover);
+                    solver.unplace(mover, &play);
+                    line
+                };
+                best = best.max(line);
+            }
+            best
+        }
+
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let mut checked = 0;
+        for (lean, tables) in &both_arms(&kwg, &gc) {
+            let mut solver =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, tables).unwrap();
+            let mut afresh =
+                EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, tables).unwrap();
+            for (name, pos) in all_positions() {
+                for mover in 0..gc.num_players() {
+                    solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+                    solver.reset_position();
+                    solver.generate(0, mover, false).unwrap();
+                    for found in 0..solver.work_buffer.lists[0].len() {
+                        let placement = &solver.work_buffer.lists[0][found];
+                        if usize::from(placement.placed) + 2 != pos.racks[usize::from(mover)].len()
+                        {
+                            continue;
+                        }
+                        let play = placement.play.clone();
+                        solver.work_buffer.zones[0] = solver.zone_lanes(&play);
+                        solver.place(mover, &play);
+                        afresh.init(
+                            &solver.work_buffer.board_tiles,
+                            [&solver.work_buffer.racks[0], &solver.work_buffer.racks[1]],
+                        );
+                        afresh.reset_position();
+                        let want = through_passes(&mut afresh, mover);
+                        let got = solver.two_tiles_bound(0, mover, i64::MAX).unwrap();
+                        assert_eq!(
+                            got,
+                            Some(i64::from(want.raw())),
+                            "{name}, lean={lean}, move {found}"
+                        );
+                        solver.unplace(mover, &play);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn a_two_tile_bound_can_exceed_equity() {
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let (_, pos) = named_positions(&["playout race (AB vs AT)"]).pop().unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+        solver.reset_position();
+        solver.generate(0, 1, false).unwrap();
+        solver.work_buffer.zones[0] = (!0, !0);
+        solver.work_buffer.rack_scores[0] = i32::MAX;
+        let spread = solver.two_tiles_bound(0, 1, i64::MAX).unwrap().unwrap();
+        assert!(spread > i64::from(i32::MAX));
+        assert_eq!(
+            EndgameSolver::<kwg::Node24, kwg::Node24>::cap_with_spread(
+                equity::Equity::ZERO,
+                Some(spread)
+            ),
+            equity::Equity::INFINITY,
+        );
     }
 
     #[test]
