@@ -54,6 +54,29 @@ const BAG_KEYS: u64 = 5 << 32;
 const EXCHANGES_MADE: u64 = 6 << 32;
 const INFO_SETS: u64 = 7 << 32;
 const INFO_LEAD: u64 = 8 << 32;
+const ROOT_SEAT: u64 = 9 << 32;
+const SEAT_GAINS: u64 = 10 << 32;
+
+#[inline(always)]
+fn seat_to_move_key(seat: u8) -> u64 {
+    if seat == 0 {
+        0
+    } else {
+        zobrist(SECOND_TO_MOVE | u64::from(seat - 1))
+    }
+}
+
+#[inline(always)]
+fn seat_gains_key(gains: &[i32], root: u8) -> u64 {
+    let mut key = 0;
+    for (seat, &gain) in gains.iter().enumerate() {
+        let lead = gain - gains[root as usize];
+        if lead != 0 {
+            key ^= zobrist((SEAT_GAINS + ((seat as u64) << 32)) | u64::from(lead.cast_unsigned()));
+        }
+    }
+    key
+}
 
 #[inline(always)]
 fn exchanges_made_key(player: usize, made: i16) -> u64 {
@@ -1765,6 +1788,42 @@ fn order_first(list: &mut [Candidate], ordered: &mut [u128]) {
     list[ordered_play_index(ordered[0])].index = 0;
 }
 
+#[inline(always)]
+fn seat_of<'s, const TWO_SEATS: bool, T>(two: &'s [T; 2], any: &'s [T], seat: u8) -> &'s T {
+    if TWO_SEATS {
+        &two[seat as usize]
+    } else {
+        &any[seat as usize]
+    }
+}
+
+#[inline(always)]
+fn seat_of_mut<'s, const TWO_SEATS: bool, T>(
+    two: &'s mut [T; 2],
+    any: &'s mut [T],
+    seat: u8,
+) -> &'s mut T {
+    if TWO_SEATS {
+        &mut two[seat as usize]
+    } else {
+        &mut any[seat as usize]
+    }
+}
+
+#[inline(always)]
+fn seats_of<'s, const TWO_SEATS: bool, T>(two: &'s [T; 2], any: &'s [T]) -> &'s [T] {
+    if TWO_SEATS { two } else { any }
+}
+
+#[inline(always)]
+fn out_bonus<const TWO_SEATS: bool>(two: &[i32; 2], any: &[i32], player_idx: u8) -> i32 {
+    if TWO_SEATS {
+        2 * two[player_idx as usize ^ 1]
+    } else {
+        any.iter().sum::<i32>() - any[player_idx as usize]
+    }
+}
+
 // WorkBuffer contains reusable allocations.
 // WorkBuffer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
@@ -1778,19 +1837,23 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     board_tiles: Vec<u8>,  // the position searched, made and unmade in place
     racks: [Vec<u8>; 2],   // its racks, each sorted
     rack_scores: [i32; 2], // what its racks' tiles score
-    key: u64,              // its board's and racks' keys
-    lists: Vec<Vec<Candidate>>, // the moves generated at each ply from the root
-    orders: Vec<Vec<u128>>, // each ply's sort keys (order_key)
-    zones: Vec<(u128, u128)>, // the rows and columns each ply's move can change
-    spent: Vec<u32>,       // the rack places (last slots) of each ply's move
-    keeps: Vec<bool>,      // whether each ply's list has rack places (uses)
-    generated: u64,        // the lists generated, each list's serial
-    serials: Vec<u64>,     // the serial of each ply's list
-    siblings: Vec<Siblings>, // each ply's moves its parent's replies so far share
+    seat_racks: Vec<Vec<u8>>,
+    seat_scores: Vec<i32>,
+    gains: Vec<i32>,
+    root_seat: u8,
+    key: u64,                      // its board's and racks' keys
+    lists: Vec<Vec<Candidate>>,    // the moves generated at each ply from the root
+    orders: Vec<Vec<u128>>,        // each ply's sort keys (order_key)
+    zones: Vec<(u128, u128)>,      // the rows and columns each ply's move can change
+    spent: Vec<u32>,               // the rack places (last slots) of each ply's move
+    keeps: Vec<bool>,              // whether each ply's list has rack places (uses)
+    generated: u64,                // the lists generated, each list's serial
+    serials: Vec<u64>,             // the serial of each ply's list
+    siblings: Vec<Siblings>,       // each ply's moves its parent's replies so far share
     singles: Vec<(u64, Vec<u32>)>, // each list's one-tile moves by place, and its serial
-    outs: Vec<OutReplies>, // each ply's plays out by the opponent
-    out_skips: u64,        // the moves skipped so (OutReplies), over the solver's life
-    out_checks: u32,       // the skips a debug build checked by a solve of the reply
+    outs: Vec<OutReplies>,         // each ply's plays out by the opponent
+    out_skips: u64,                // the moves skipped so (OutReplies), over the solver's life
+    out_checks: u32,               // the skips a debug build checked by a solve of the reply
     lane_pool: LanePool,
     pool_walker: Option<(u32, movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>)>, // LanePool's walks, with its leaves' table bound, kept from solve to solve
     next_deal: Deal, // where pool_lanes writes a search's deal, kept for the next
@@ -1851,6 +1914,10 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             rack_scores: [0, 0],
+            seat_racks: Vec::new(),
+            seat_scores: Vec::new(),
+            gains: Vec::new(),
+            root_seat: 0,
             key: 0,
             lists: Vec::new(),
             orders: Vec::new(),
@@ -2842,6 +2909,7 @@ struct Helper<L: kwg::Node, G: movegen::LaneBits, const JUMPS: bool, const ANY_S
     klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
+    seat_racks: Vec<Vec<u8>>,
     work_buffer: WorkBuffer<G, JUMPS, ANY_SIDE>,
     kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>,
     kept_sub: Box<Option<KeptSolver<L, G, JUMPS, ANY_SIDE>>>,
@@ -2881,6 +2949,7 @@ pub struct EndgameSolver<
     G: movegen::LaneBits = u128,
     const JUMPS: bool = true,
     const ANY_SIDE: bool = true,
+    const TWO_SEATS: bool = true,
 > {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
@@ -2889,6 +2958,7 @@ pub struct EndgameSolver<
     klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
+    seat_racks: Vec<Vec<u8>>,
     scoreless: [u8; 2], // the passes and the zeros before the position to solve
     root_moves: Option<&'a RootMoves>,
     root_priority: &'a [movegen::Play],
@@ -2899,7 +2969,9 @@ pub struct EndgameSolver<
     kept_mg: Option<movegen::KurniaMoveGenerator<G, JUMPS, ANY_SIDE>>, // and their generator
 }
 
-impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool> EndgameSolver<'a, N, L, LEAN> {
+impl<'a, N: kwg::Node, L: kwg::Node, const LEAN: bool, const TWO_SEATS: bool>
+    EndgameSolver<'a, N, L, LEAN, u128, true, true, TWO_SEATS>
+{
     pub fn new(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
@@ -2929,7 +3001,8 @@ impl<
     G: movegen::LaneBits,
     const JUMPS: bool,
     const ANY_SIDE: bool,
-> EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>
+    const TWO_SEATS: bool,
+> EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE, TWO_SEATS>
 {
     // as new, generating by the caller's move generator (the wasm's, in u32),
     // with the run letters found where the graph loaded
@@ -2957,6 +3030,7 @@ impl<
             klv: Box::new(klv::Klv::<L>::empty()?),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
+            seat_racks: Vec::new(),
             scoreless: [0, 0],
             root_moves: None,
             root_priority: &[],
@@ -2994,6 +3068,7 @@ impl<
         self.board_tiles.clear();
         self.racks[0].clear();
         self.racks[1].clear();
+        self.seat_racks.clear();
         self.scoreless = [0, 0];
         self.progress = None;
         self.work_buffer.renew();
@@ -3017,6 +3092,7 @@ impl<
             klv: self.klv,
             board_tiles: self.board_tiles,
             racks: self.racks,
+            seat_racks: self.seat_racks,
             work_buffer: self.work_buffer,
             kept_mg: self.kept_mg,
             kept_sub: self.kept_sub,
@@ -3062,6 +3138,7 @@ impl<
             klv: helper.klv,
             board_tiles: helper.board_tiles,
             racks: helper.racks,
+            seat_racks: helper.seat_racks,
             scoreless: [0, 0],
             root_moves: None,
             root_priority: &[],
@@ -3088,6 +3165,7 @@ impl<
                 klv: self.klv,
                 board_tiles: self.board_tiles,
                 racks: self.racks,
+                seat_racks: self.seat_racks,
                 work_buffer: self.work_buffer,
                 kept_mg: self.kept_mg,
                 kept_sub: self.kept_sub,
@@ -3191,26 +3269,46 @@ impl<
     // set the position to solve, with no scoreless turns before it; the table
     // keeps what it knows, which holds for any position of the same game and
     // lexicon
-    pub fn init(&mut self, board_tiles: &[u8], racks: [&[u8]; 2]) {
+    pub fn init<const SEATS: usize>(&mut self, board_tiles: &[u8], racks: [&[u8]; SEATS]) {
+        const { assert!(!TWO_SEATS || SEATS == 2) };
         self.init_after_scoreless_turns(board_tiles, racks, 0, 0);
     }
 
     // as init, after this many passes and this many scoreless turns (the zeros,
     // which count the passes too) as the game counts them: a line of the search
     // ends when they reach the config's counts
-    pub fn init_after_scoreless_turns(
+    pub fn init_after_scoreless_turns<const SEATS: usize>(
         &mut self,
         board_tiles: &[u8],
-        racks: [&[u8]; 2],
+        racks: [&[u8]; SEATS],
+        passes: u16,
+        zeros: u16,
+    ) {
+        const { assert!(!TWO_SEATS || SEATS == 2) };
+        self.init_seats_after_scoreless_turns(board_tiles, racks.into_iter(), passes, zeros);
+    }
+
+    pub fn init_seats_after_scoreless_turns<'r>(
+        &mut self,
+        board_tiles: &[u8],
+        racks: impl ExactSizeIterator<Item = &'r [u8]>,
         passes: u16,
         zeros: u16,
     ) {
         self.board_tiles.clear();
         self.board_tiles.extend_from_slice(board_tiles);
-        self.racks[0].clear();
-        self.racks[0].extend_from_slice(racks[0]);
-        self.racks[1].clear();
-        self.racks[1].extend_from_slice(racks[1]);
+        if !TWO_SEATS {
+            self.seat_racks.resize_with(racks.len(), Vec::new);
+        }
+        let held = if TWO_SEATS {
+            &mut self.racks[..]
+        } else {
+            &mut self.seat_racks[..]
+        };
+        for (rack, from) in held.iter_mut().zip(racks) {
+            rack.clear();
+            rack.extend_from_slice(from);
+        }
         self.scoreless = scoreless_counts([passes, zeros]);
         self.work_buffer.refutations.clear();
     }
@@ -3249,15 +3347,33 @@ impl<
                 work_buffer.key ^= square_key(square, tile);
             }
         }
-        for player in 0..2 {
-            let rack = &mut work_buffer.racks[player];
-            rack.clone_from(&self.racks[player]);
+        let seats = seats_of::<TWO_SEATS, _>(&self.racks, &self.seat_racks).len();
+        if !TWO_SEATS {
+            work_buffer.seat_racks.resize_with(seats, Vec::new);
+            work_buffer.seat_scores.resize(seats, 0);
+            work_buffer.gains.clear();
+            work_buffer.gains.resize(seats, 0);
+            work_buffer.key ^= zobrist(ROOT_SEAT | u64::from(work_buffer.root_seat));
+        }
+        for player in 0..seats {
+            let seat = player as u8;
+            let rack = seat_of_mut::<TWO_SEATS, _>(
+                &mut work_buffer.racks,
+                &mut work_buffer.seat_racks,
+                seat,
+            );
+            rack.clone_from(seat_of::<TWO_SEATS, _>(&self.racks, &self.seat_racks, seat));
             rack.sort_unstable();
             for (i, &tile) in rack.iter().enumerate() {
                 let count = rack[..i].iter().rev().take_while(|&&t| t == tile).count();
-                work_buffer.key ^= rack_step(player as u8, tile, count);
+                work_buffer.key ^= rack_step(seat, tile, count);
             }
-            work_buffer.rack_scores[player] = alphabet.scaled_rack_score(rack).raw();
+            let score = alphabet.scaled_rack_score(rack).raw();
+            *seat_of_mut::<TWO_SEATS, _>(
+                &mut work_buffer.rack_scores,
+                &mut work_buffer.seat_scores,
+                seat,
+            ) = score;
         }
         if !work_buffer.lane_pool.deal.pool.is_empty() {
             let dim = self.game_config.board_layout().dim();
@@ -3270,7 +3386,7 @@ impl<
     // mover's pass answers it, else the counts
     #[inline(always)]
     fn entering(&self) -> Scoreless {
-        if self.scoreless[0] > 0 {
+        if TWO_SEATS && self.scoreless[0] > 0 {
             Scoreless::Answering
         } else {
             Scoreless::Counted {
@@ -3284,6 +3400,9 @@ impl<
     // scoreless turns before it
     #[inline(always)]
     fn node_key(&self, player_idx: u8, scoreless: Scoreless) -> u64 {
+        if !TWO_SEATS {
+            return self.work_buffer.key ^ seat_to_move_key(player_idx) ^ scoreless.key();
+        }
         let mut key = self.work_buffer.key;
         if player_idx != 0 {
             key ^= zobrist(SECOND_TO_MOVE);
@@ -3321,7 +3440,127 @@ impl<
     // line, on the position searched
     #[inline(always)]
     fn pass_ends_the_line(&self, scoreless: Scoreless) -> bool {
-        scoreless.a_pass_ends(self.game_config, &self.work_buffer.board_tiles)
+        (!TWO_SEATS
+            && matches!(scoreless, Scoreless::Counted { passes, .. }
+                if usize::from(passes) + 1 >= self.seat_racks.len()))
+            || scoreless.a_pass_ends(self.game_config, &self.work_buffer.board_tiles)
+    }
+
+    #[inline(always)]
+    fn after_pass(&self, scoreless: Scoreless) -> Scoreless {
+        match scoreless {
+            _ if TWO_SEATS => Scoreless::Answering,
+            Scoreless::Counted { passes, zeros } => Scoreless::Counted {
+                passes: passes.saturating_add(1),
+                zeros: zeros.saturating_add(1),
+            },
+            Scoreless::Answering => Scoreless::Counted {
+                passes: 1,
+                zeros: 1,
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn next_seat(&self, player_idx: u8) -> u8 {
+        if TWO_SEATS {
+            player_idx ^ 1
+        } else {
+            ((player_idx as usize + 1) % self.seat_racks.len()) as u8
+        }
+    }
+
+    #[inline(always)]
+    fn side_changes(&self, player_idx: u8) -> bool {
+        let root = self.work_buffer.root_seat;
+        TWO_SEATS || (player_idx == root) != (self.next_seat(player_idx) == root)
+    }
+
+    #[inline(always)]
+    fn credit(valuation: equity::Equity) -> equity::Equity {
+        if TWO_SEATS {
+            valuation
+        } else {
+            equity::Equity::ZERO
+        }
+    }
+
+    #[inline(always)]
+    fn after_reply(
+        &self,
+        player_idx: u8,
+        credit: equity::Equity,
+        reply: equity::Equity,
+    ) -> equity::Equity {
+        if self.side_changes(player_idx) {
+            credit.finite_sub(reply)
+        } else {
+            reply
+        }
+    }
+
+    #[inline(always)]
+    fn reply_window(
+        &self,
+        player_idx: u8,
+        credit: equity::Equity,
+        alpha: equity::Equity,
+        beta: equity::Equity,
+    ) -> (equity::Equity, equity::Equity) {
+        if self.side_changes(player_idx) {
+            (
+                subtract_window_bound(credit, beta),
+                subtract_window_bound(credit, alpha),
+            )
+        } else {
+            (alpha, beta)
+        }
+    }
+
+    #[inline(always)]
+    fn seats_end_value(&self, player_idx: u8, out: Option<(u8, i32)>) -> equity::Equity {
+        let work_buffer = &self.work_buffer;
+        let root = work_buffer.root_seat as usize;
+        let scores = &work_buffer.seat_scores;
+        let racks: i32 = scores.iter().sum();
+        let end = |seat: usize| match out {
+            Some((out, score)) if out as usize == seat => {
+                work_buffer.gains[seat] + score + racks - scores[seat]
+            }
+            _ => work_buffer.gains[seat] - scores[seat],
+        };
+        let most = (0..work_buffer.gains.len())
+            .filter(|&seat| seat != root)
+            .map(end)
+            .max()
+            .unwrap_or(0);
+        let value = equity::Equity::new(end(root) - most);
+        if player_idx as usize == root {
+            value
+        } else {
+            -value
+        }
+    }
+
+    #[inline(always)]
+    fn out_value(&self, player_idx: u8, candidate: &Candidate) -> equity::Equity {
+        if TWO_SEATS {
+            return candidate.valuation;
+        }
+        let score = match &candidate.play {
+            movegen::Play::Place { score, .. } => score.raw(),
+            movegen::Play::Exchange { .. } => 0,
+        };
+        self.seats_end_value(player_idx, Some((player_idx, score)))
+    }
+
+    #[inline(always)]
+    fn add_gain(&mut self, player_idx: u8, points: i32) {
+        let work_buffer = &mut self.work_buffer;
+        let root = work_buffer.root_seat;
+        work_buffer.key ^= seat_gains_key(&work_buffer.gains, root);
+        work_buffer.gains[player_idx as usize] += points;
+        work_buffer.key ^= seat_gains_key(&work_buffer.gains, root);
     }
 
     // play player_idx's move on the position searched
@@ -3332,9 +3571,12 @@ impl<
             lane,
             idx,
             word,
-            ..
+            score,
         } = play
         {
+            if !TWO_SEATS {
+                self.add_gain(player_idx, score.raw());
+            }
             if !self.work_buffer.lane_pool.deal.pool.is_empty() {
                 let (rows, cols) = self.zone_lanes(play);
                 let num_rows = self.game_config.board_layout().dim().rows as usize;
@@ -3343,7 +3585,11 @@ impl<
             let strider = self.game_config.board_layout().dim().lane(*down, *lane);
             let alphabet = self.game_config.alphabet();
             let work_buffer = &mut self.work_buffer;
-            let rack = &mut work_buffer.racks[player_idx as usize];
+            let rack = seat_of_mut::<TWO_SEATS, _>(
+                &mut work_buffer.racks,
+                &mut work_buffer.seat_racks,
+                player_idx,
+            );
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
                     let square = strider.at_in_lane(i);
@@ -3354,8 +3600,11 @@ impl<
                     let count = rack[at..].iter().take_while(|&&t| t == held).count();
                     work_buffer.key ^= rack_step(player_idx, held, count - 1);
                     rack.remove(at);
-                    work_buffer.rack_scores[player_idx as usize] -=
-                        alphabet.scaled_score(held).raw();
+                    *seat_of_mut::<TWO_SEATS, _>(
+                        &mut work_buffer.rack_scores,
+                        &mut work_buffer.seat_scores,
+                        player_idx,
+                    ) -= alphabet.scaled_score(held).raw();
                 }
             }
         }
@@ -3369,13 +3618,20 @@ impl<
             lane,
             idx,
             word,
-            ..
+            score,
         } = play
         {
+            if !TWO_SEATS {
+                self.add_gain(player_idx, -score.raw());
+            }
             let strider = self.game_config.board_layout().dim().lane(*down, *lane);
             let alphabet = self.game_config.alphabet();
             let work_buffer = &mut self.work_buffer;
-            let rack = &mut work_buffer.racks[player_idx as usize];
+            let rack = seat_of_mut::<TWO_SEATS, _>(
+                &mut work_buffer.racks,
+                &mut work_buffer.seat_racks,
+                player_idx,
+            );
             for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile != 0 {
                     let square = strider.at_in_lane(i);
@@ -3386,8 +3642,11 @@ impl<
                     let count = rack[at..].iter().take_while(|&&t| t == held).count();
                     work_buffer.key ^= rack_step(player_idx, held, count);
                     rack.insert(at, held);
-                    work_buffer.rack_scores[player_idx as usize] +=
-                        alphabet.scaled_score(held).raw();
+                    *seat_of_mut::<TWO_SEATS, _>(
+                        &mut work_buffer.rack_scores,
+                        &mut work_buffer.seat_scores,
+                        player_idx,
+                    ) += alphabet.scaled_score(held).raw();
                 }
             }
             if !work_buffer.lane_pool.deal.pool.is_empty() {
@@ -3399,6 +3658,9 @@ impl<
     // the value for player_idx if both players pass now, each losing their rack
     #[inline(always)]
     fn both_pass_value(&self, player_idx: u8) -> equity::Equity {
+        if !TWO_SEATS {
+            return self.seats_end_value(player_idx, None);
+        }
         let rack_scores = &self.work_buffer.rack_scores;
         equity::Equity::new(rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize])
     }
@@ -3915,8 +4177,8 @@ impl<
             work.movegen_cut = true;
             return Ok(());
         }
-        let rack_len = work.racks[player_idx as usize].len();
-        let bonus = 2 * work.rack_scores[player_idx as usize ^ 1];
+        let rack_len = seat_of::<TWO_SEATS, _>(&work.racks, &work.seat_racks, player_idx).len();
+        let bonus = out_bonus::<TWO_SEATS>(&work.rack_scores, &work.seat_scores, player_idx);
         for play in &root.plays {
             if let movegen::Play::Place { word, .. } = play {
                 let placed = word.iter().filter(|&&tile| tile != 0).count();
@@ -3994,7 +4256,8 @@ impl<
         // rack, as outside one. The lean arm pools nothing, so its builds
         // carry no pool
         let mut pooled = !LEAN && walks && {
-            let rack = &work_buffer.racks[player_idx as usize];
+            let rack =
+                seat_of::<TWO_SEATS, _>(&work_buffer.racks, &work_buffer.seat_racks, player_idx);
             let lane_pool = &mut work_buffer.lane_pool;
             !lane_pool.deal.pool.is_empty()
                 && rack.len() <= self.game_config.rack_size() as usize
@@ -4128,7 +4391,7 @@ impl<
                     rack_lengths: self.arm_tables.rack_lengths(),
                     klv: &self.klv,
                 },
-                &work_buffer.racks[player_idx as usize],
+                seat_of::<TWO_SEATS, _>(&work_buffer.racks, &work_buffer.seat_racks, player_idx),
                 rack_walk_rows,
                 rack_walk_cols,
                 limit,
@@ -4140,9 +4403,13 @@ impl<
                 work_buffer.dur_movegen += t1.elapsed();
             }
         }
-        let rack = &work_buffer.racks[player_idx as usize];
+        let rack = seat_of::<TWO_SEATS, _>(&work_buffer.racks, &work_buffer.seat_racks, player_idx);
         let slots = keeps.then(|| RackSlots::of(rack));
-        let out_bonus = 2 * work_buffer.rack_scores[player_idx as usize ^ 1];
+        let out_bonus = out_bonus::<TWO_SEATS>(
+            &work_buffer.rack_scores,
+            &work_buffer.seat_scores,
+            player_idx,
+        );
         let (above, here) = work_buffer.lists.split_at_mut(ply);
         let list = &mut here[0];
         let ordered = &mut work_buffer.orders[ply];
@@ -4344,6 +4611,11 @@ impl<
     // so it counts as one tile
     #[inline(always)]
     fn longest_line(&self, player_idx: u8) -> usize {
+        if !TWO_SEATS {
+            let seats = self.seat_racks.len();
+            let tiles: usize = self.seat_racks.iter().map(Vec::len).sum();
+            return (seats * (tiles + 1)).min(COMPLETE as usize - 1);
+        }
         let mine = self.racks[player_idx as usize].len().max(1);
         let theirs = self.racks[player_idx as usize ^ 1].len().max(1);
         (2 * (mine + theirs) + usize::from(mine == 1) - 3).min(COMPLETE as usize - 1)
@@ -4560,6 +4832,7 @@ impl<
         alpha: equity::Equity,
         beta: equity::Equity,
     ) -> error::Returns<Searched> {
+        self.work_buffer.root_seat = player_idx;
         self.reset_position();
         if !self.work_buffer.resumable {
             self.work_buffer.verdicts.clear();
@@ -4909,6 +5182,7 @@ impl<
         margin: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<bool> {
+        self.work_buffer.root_seat = player_idx;
         self.reset_position();
         let scoreless = self.entering();
         // this list keeps no rack places, so two plies down generates whole
@@ -4921,7 +5195,7 @@ impl<
                 if self.pass_ends_the_line(scoreless) {
                     return Ok(self.both_pass_value(player_idx) > margin);
                 }
-                (equity::Equity::ZERO, Scoreless::Answering)
+                (equity::Equity::ZERO, self.after_pass(scoreless))
             }
             movegen::Play::Place { .. } => {
                 let Some(candidate) = self.work_buffer.lists[0]
@@ -4931,13 +5205,13 @@ impl<
                     return Ok(false);
                 };
                 if candidate.plays_out {
-                    return Ok(candidate.valuation > margin);
+                    return Ok(self.out_value(player_idx, candidate) > margin);
                 }
                 let counted = Scoreless::Counted {
                     passes: 0,
                     zeros: 0,
                 };
-                (candidate.valuation, counted)
+                (Self::credit(candidate.valuation), counted)
             }
         };
         self.place(player_idx, play);
@@ -4948,14 +5222,15 @@ impl<
         work_buffer.check_limits =
             limits.time.is_some() || limits.states.is_some() || limits.memory.is_some();
         // the move wins when its reply is worth less than valuation - margin
-        let beta = valuation - margin;
         let point = equity::Equity::new(equity::SCALE);
+        let (alpha, beta) = self.reply_window(player_idx, valuation, margin, margin + point);
+        let next = self.next_seat(player_idx);
         let mut wins = Ok(false);
         for depth in 1..COMPLETE {
             self.work_buffer.cut_short = false;
-            match self.negamax_eval(1, player_idx ^ 1, depth, beta - point, beta, after) {
+            match self.negamax_eval(1, next, depth, alpha, beta, after) {
                 Ok(searched) if searched.complete => {
-                    wins = Ok(searched.value < beta);
+                    wins = Ok(self.after_reply(player_idx, valuation, searched.value) > margin);
                     break;
                 }
                 Ok(_) => {}
@@ -4983,6 +5258,7 @@ impl<
         limits: &Limits,
     ) -> error::Returns<Vec<FirstMove>> {
         self.start_clock(limits);
+        self.work_buffer.root_seat = player_idx;
         self.reset_position();
         self.generate_root(player_idx, false)?;
         if self.work_buffer.movegen_cut {
@@ -4995,11 +5271,15 @@ impl<
             0,
             NO_PLAY,
         );
-        let mut plays = (work_buffer.lists[0].iter())
+        let mut plays = (self.work_buffer.lists[0].iter())
             .map(|candidate| {
                 (
                     candidate.play.clone(),
-                    candidate.valuation,
+                    if candidate.plays_out {
+                        self.out_value(player_idx, candidate)
+                    } else {
+                        candidate.valuation
+                    },
                     candidate.plays_out,
                 )
             })
@@ -5066,9 +5346,10 @@ impl<
         valuation: equity::Equity,
         limits: &Limits,
     ) -> error::Returns<(Option<equity::Equity>, bool)> {
+        self.work_buffer.root_seat = player_idx;
         self.reset_position();
         let after = match play {
-            movegen::Play::Exchange { .. } => Scoreless::Answering,
+            movegen::Play::Exchange { .. } => self.after_pass(self.entering()),
             movegen::Play::Place { .. } => Scoreless::Counted {
                 passes: 0,
                 zeros: 0,
@@ -5087,14 +5368,16 @@ impl<
             self.work_buffer.cut_short = false;
             match self.negamax_eval(
                 1,
-                player_idx ^ 1,
+                self.next_seat(player_idx),
                 depth,
                 equity::Equity::NEG_INFINITY,
                 equity::Equity::INFINITY,
                 after,
             ) {
                 Ok(searched) => {
-                    found = Ok((Some(valuation - searched.value), searched.complete));
+                    let value =
+                        self.after_reply(player_idx, Self::credit(valuation), searched.value);
+                    found = Ok((Some(value), searched.complete));
                     if searched.complete {
                         break;
                     }
@@ -5248,9 +5531,9 @@ impl<
         // reuse. Sort lazily: with a table move, all of them, that one first;
         // else the first only, and the rest once it has not cut off
         if root {
-            self.generate_root(player_idx, depth >= 3)?;
+            self.generate_root(player_idx, TWO_SEATS && depth >= 3)?;
         } else {
-            self.generate(ply, player_idx, depth >= 3)?;
+            self.generate(ply, player_idx, TWO_SEATS && depth >= 3)?;
         }
         if self.work_buffer.movegen_cut {
             let work_buffer = &mut self.work_buffer;
@@ -5261,7 +5544,7 @@ impl<
         let table_first =
             table_play < PASS_PLAY && (table_play as usize) < self.work_buffer.orders[ply].len();
         let work_buffer = &mut self.work_buffer;
-        let refuting = if !root && work_buffer.in_bag.is_none() && ply > 0 {
+        let refuting = if TWO_SEATS && !root && work_buffer.in_bag.is_none() && ply > 0 {
             work_buffer
                 .refutations
                 .get(ply)
@@ -5293,11 +5576,11 @@ impl<
             }
         }
         let table_first = prioritized;
-        if depth == 1 && !work_buffer.lists[ply].is_empty() {
+        if TWO_SEATS && depth == 1 && !work_buffer.lists[ply].is_empty() {
             return Ok(Some(self.search_last_ply(node, root, key, table_first)));
         }
         let mut frame = Frame::new(node, root, key, table_first);
-        if self.work_buffer.in_bag.is_none() && self.read_child_values(&mut frame) {
+        if TWO_SEATS && self.work_buffer.in_bag.is_none() && self.read_child_values(&mut frame) {
             self.finish(&frame);
             return Ok(Some(frame.best));
         }
@@ -5408,7 +5691,8 @@ impl<
         if matches!(frame.child, Child::Moves) {
             let (root, table_first, mut next) = (frame.root, frame.table_first, frame.next);
             // use the reply's alternatives when there is only one first play.
-            let split = self.work_buffer.threads > 1
+            let split = TWO_SEATS
+                && self.work_buffer.threads > 1
                 && (root
                     || (ply == 1
                         && self.work_buffer.frames[0].root
@@ -5445,7 +5729,12 @@ impl<
                     work_buffer.frames[t].first_is_best = index == work_buffer.root_best;
                 }
                 if plays_out {
-                    if self.take_value(i, index, score) {
+                    let value = if TWO_SEATS {
+                        score
+                    } else {
+                        self.out_value(player_idx, &self.work_buffer.lists[ply][found])
+                    };
+                    if self.take_value(i, index, value) {
                         break;
                     }
                     continue;
@@ -5464,7 +5753,7 @@ impl<
                 // we set child_alpha = (score - beta)
                 // and child_beta = (score - alpha).
                 let play = &self.work_buffer.lists[ply][found].play;
-                let skip_outs = ply > 0 && depth >= 2;
+                let skip_outs = TWO_SEATS && ply > 0 && depth >= 2;
                 let mut fills = zone::Squares::NONE;
                 // read by the next two plies when they generate
                 if depth >= 2 {
@@ -5477,8 +5766,15 @@ impl<
                         self.work_buffer.zones[ply] = self.zone_lanes(play);
                     }
                     if let movegen::Play::Place { word, .. } = play {
-                        self.work_buffer.spent[ply] =
-                            rack_places(&self.work_buffer.racks[player_idx as usize], word, true);
+                        self.work_buffer.spent[ply] = rack_places(
+                            seat_of::<TWO_SEATS, _>(
+                                &self.work_buffer.racks,
+                                &self.work_buffer.seat_racks,
+                                player_idx,
+                            ),
+                            word,
+                            true,
+                        );
                     }
                 }
                 // for a move that brings its player to a last tile, its score
@@ -5541,11 +5837,15 @@ impl<
                 // at alpha, which only says whether it beats alpha; one that
                 // does without reaching beta is searched again with the whole
                 // window (child_returned)
-                let (child_alpha, child_beta) = (
-                    subtract_window_bound(score, beta),
-                    subtract_window_bound(score, alpha),
-                );
-                let scout = i > 0 && child_alpha < child_beta - LEAST_STEP;
+                let score = Self::credit(score);
+                let (child_alpha, child_beta) = self.reply_window(player_idx, score, alpha, beta);
+                let flips = self.side_changes(player_idx);
+                let scout = i > 0
+                    && if flips {
+                        child_alpha < child_beta - LEAST_STEP
+                    } else {
+                        child_alpha + LEAST_STEP < child_beta
+                    };
                 if skip_outs {
                     self.enter_outs(ply);
                 }
@@ -5559,14 +5859,18 @@ impl<
                 };
                 return Ok(Advance::Enter(Enter {
                     ply: ply + 1,
-                    player_idx: player_idx ^ 1,
+                    player_idx: self.next_seat(player_idx),
                     depth: depth - 1,
-                    alpha: if scout {
+                    alpha: if scout && flips {
                         child_beta - LEAST_STEP
                     } else {
                         child_alpha
                     },
-                    beta: child_beta,
+                    beta: if scout && !flips {
+                        child_alpha + LEAST_STEP
+                    } else {
+                        child_beta
+                    },
                     scoreless: Scoreless::Counted {
                         passes: 0,
                         zeros: 0,
@@ -5593,13 +5897,18 @@ impl<
                     self.work_buffer.spent[ply] = 0;
                     let forced = self.work_buffer.lists[ply].is_empty();
                     self.work_buffer.frames[t].child = Child::Pass;
+                    let (alpha, beta) = if self.side_changes(player_idx) {
+                        (-beta, -alpha)
+                    } else {
+                        (alpha, beta)
+                    };
                     return Ok(Advance::Enter(Enter {
                         ply: ply + 1,
-                        player_idx: player_idx ^ 1,
+                        player_idx: self.next_seat(player_idx),
                         depth: if forced { depth } else { depth - 1 },
-                        alpha: -beta,
-                        beta: -alpha,
-                        scoreless: Scoreless::Answering,
+                        alpha,
+                        beta,
+                        scoreless: self.after_pass(scoreless),
                     }));
                 }
             }
@@ -5832,7 +6141,8 @@ impl<
     fn finish(&mut self, frame: &Frame) {
         if frame.root {
             self.work_buffer.pass_best = frame.best_play;
-        } else if self.work_buffer.in_bag.is_none()
+        } else if TWO_SEATS
+            && self.work_buffer.in_bag.is_none()
             && frame.node.ply > 0
             && frame.best.value >= frame.node.beta
             && frame.best_play < PASS_PLAY
@@ -5880,6 +6190,9 @@ impl<
     // alpha and beta, the move's search again with the whole window, the move
     // left placed
     fn child_returned(&mut self, child: Searched) -> Option<Enter> {
+        if !TWO_SEATS {
+            return self.seats_child_returned(child);
+        }
         let frame = self.work_buffer.frames.last_mut().unwrap();
         if let Child::Move {
             score,
@@ -5927,6 +6240,78 @@ impl<
             Child::Pass => {
                 frame.child = Child::PassDone;
                 self.take_pass_value(-child.value);
+            }
+            Child::Moves | Child::PassDone => unreachable!("a child returned to no search"),
+        }
+        None
+    }
+
+    fn seats_child_returned(&mut self, child: Searched) -> Option<Enter> {
+        let mover = self.work_buffer.frames.last().unwrap().node.player_idx;
+        let (flips, next) = (self.side_changes(mover), self.next_seat(mover));
+        let after_reply = |credit: equity::Equity, reply: equity::Equity| {
+            if flips {
+                credit.finite_sub(reply)
+            } else {
+                reply
+            }
+        };
+        let frame = self.work_buffer.frames.last_mut().unwrap();
+        if let Child::Move {
+            score,
+            scout: scout @ true,
+            ..
+        } = &mut frame.child
+        {
+            let value = after_reply(*score, child.value);
+            if value > frame.node.alpha && value < frame.node.beta {
+                *scout = false;
+                let Enter {
+                    ply,
+                    depth,
+                    alpha,
+                    beta,
+                    ..
+                } = frame.node;
+                let (alpha, beta) = if flips {
+                    (
+                        subtract_window_bound(*score, beta),
+                        subtract_window_bound(*score, alpha),
+                    )
+                } else {
+                    (alpha, beta)
+                };
+                return Some(Enter {
+                    ply: ply + 1,
+                    player_idx: next,
+                    depth: depth - 1,
+                    alpha,
+                    beta,
+                    scoreless: Scoreless::Counted {
+                        passes: 0,
+                        zeros: 0,
+                    },
+                });
+            }
+        }
+        frame.best.complete &= child.complete;
+        match std::mem::replace(&mut frame.child, Child::Moves) {
+            Child::Move {
+                index, score, play, ..
+            } => {
+                let i = frame.next - 1;
+                let (ply, depth) = (frame.node.ply, frame.node.depth);
+                self.unplace(mover, &play);
+                if TWO_SEATS {
+                    self.harvest_outs(ply, depth, &play);
+                }
+                if self.take_value(i, index, after_reply(score, child.value)) {
+                    self.work_buffer.frames.last_mut().unwrap().next = usize::MAX;
+                }
+            }
+            Child::Pass => {
+                frame.child = Child::PassDone;
+                self.take_pass_value(if flips { -child.value } else { child.value });
             }
             Child::Moves | Child::PassDone => unreachable!("a child returned to no search"),
         }
@@ -5998,6 +6383,7 @@ impl<
     // solve, the mover, and the deepest finished pass
     #[inline]
     fn line_of(&mut self, player_idx: u8) -> (u64, u8, i8) {
+        self.work_buffer.root_seat = player_idx;
         self.reset_position();
         let key = self.root_key(player_idx, self.entering());
         (key, player_idx, self.work_buffer.finished)
@@ -6026,6 +6412,7 @@ impl<
     ) -> error::Returns<Option<(u16, equity::Equity)>> {
         out.clear();
         let mut start = None;
+        self.work_buffer.root_seat = player_idx;
         self.reset_position();
         let mut player_idx = player_idx;
         let mut scoreless = self.entering();
@@ -6101,7 +6488,7 @@ impl<
                 if self.work_buffer.lists[0].is_empty() {
                     cost = 0;
                 }
-                scoreless = Scoreless::Answering;
+                scoreless = self.after_pass(scoreless);
             } else {
                 // the move the table keeps, generated again
                 if restricted {
@@ -6135,7 +6522,7 @@ impl<
                 };
             }
             restricted = false;
-            player_idx ^= 1;
+            player_idx = self.next_seat(player_idx);
             depth -= cost;
         }
         Ok(start)
@@ -6147,18 +6534,23 @@ impl<
         self.collect_pv(player_idx, &mut line)?;
         let mut board_tiles = self.board_tiles.clone();
         let mut racks = self.racks.clone();
-        let mut leftovers = [None, None];
+        let mut seat_racks = self.seat_racks.clone();
+        let seats = seats_of::<TWO_SEATS, _>(&racks, &seat_racks).len();
+        let mut leftover_of = None;
         let mut i = 0usize;
         for (equity, play) in &line {
-            let player_turn_idx = (player_idx as usize + i) & 1;
-            let rack = &mut racks[player_turn_idx];
-            leftovers[player_turn_idx ^ 1] = None;
-            leftovers[player_turn_idx] = Some(equity::Equity::new(
-                equity.raw()
-                    - match play {
-                        movegen::Play::Exchange { .. } => 0,
-                        movegen::Play::Place { score, .. } => score.raw(),
-                    },
+            let player_turn_idx = (player_idx as usize + i) % seats;
+            let rack =
+                seat_of_mut::<TWO_SEATS, _>(&mut racks, &mut seat_racks, player_turn_idx as u8);
+            leftover_of = Some((
+                player_turn_idx,
+                equity::Equity::new(
+                    equity.raw()
+                        - match play {
+                            movegen::Play::Exchange { .. } => 0,
+                            movegen::Play::Place { score, .. } => score.raw(),
+                        },
+                ),
             ));
             writeln!(
                 std::io::stdout(),
@@ -6202,10 +6594,12 @@ impl<
             }
             i += 1;
         }
-        for _ in 0..2 {
-            let player_turn_idx = (player_idx as usize + i) & 1;
-            let rack = &racks[player_turn_idx];
-            let leftover = leftovers[player_turn_idx];
+        for _ in 0..seats {
+            let player_turn_idx = (player_idx as usize + i) % seats;
+            let rack = seat_of::<TWO_SEATS, _>(&racks, &seat_racks, player_turn_idx as u8);
+            let leftover = leftover_of
+                .filter(|&(seat, _)| seat == player_turn_idx)
+                .map(|(_, leftover)| leftover);
             write!(
                 std::io::stdout(),
                 " e: p{}: {}",
@@ -6250,6 +6644,108 @@ impl<
         }
     }
 
+    // the game_config, kwg, and arm_tables this solver was made with, by address
+    #[inline(always)]
+    fn made_with(&self) -> [usize; 3] {
+        [
+            std::ptr::from_ref(self.game_config).addr(),
+            std::ptr::from_ref(self.kwg).addr(),
+            std::ptr::from_ref(self.arm_tables).addr(),
+        ]
+    }
+
+    // a taken table given back, to this solver or another of the same
+    // game_config, kwg, and arm_tables; any other is refused the table, which
+    // comes back whole
+    #[inline(always)]
+    pub fn give_table(&mut self, kept: KeptTable) -> Result<(), KeptTable> {
+        if kept.made_with != self.made_with() {
+            return Err(kept);
+        }
+        let mut table = kept.table;
+        std::mem::swap(&mut self.work_buffer.table, &mut *table);
+        self.work_buffer.spare_table = Some(table);
+        self.work_buffer.line = kept.line;
+        self.work_buffer.cadence = kept.cadence;
+        self.restore_paused_depth(kept.stopped);
+        Ok(())
+    }
+
+    // the table taken out, an empty one left in its place, for a caller that
+    // keeps it apart from any solver between solves (a wasm32 page keeps it in
+    // a handle, as it can keep no solver)
+    #[inline(always)]
+    pub fn take_table(&mut self) -> KeptTable {
+        // the box the last table given back came in, holding the table it
+        // displaced, made as new makes one (in place when it can be)
+        let mut table =
+            (self.work_buffer.spare_table.take()).unwrap_or_else(|| Box::new(Table::new()));
+        table.renew();
+        std::mem::swap(&mut self.work_buffer.table, &mut *table);
+        KeptTable {
+            stopped: self.take_paused_depth(),
+            table,
+            made_with: self.made_with(),
+            line: self.work_buffer.line.take(),
+            cadence: self.work_buffer.cadence,
+        }
+    }
+
+    // a stopped pass taken out of the work buffer with the lists its frames
+    // read, for a table taken or a line collected; none without one
+    fn take_paused_depth(&mut self) -> Option<Box<Stopped>> {
+        let work_buffer = &mut self.work_buffer;
+        let pass = work_buffer.stopped.take()?;
+        let pending = work_buffer.pending.take()?;
+        Some(Box::new(Stopped {
+            frames: std::mem::take(&mut work_buffer.frames),
+            pending,
+            pass,
+            proven: work_buffer.proven,
+            lists: std::mem::take(&mut work_buffer.lists),
+            orders: std::mem::take(&mut work_buffer.orders),
+            zones: std::mem::take(&mut work_buffer.zones),
+            spent: std::mem::take(&mut work_buffer.spent),
+            keeps: std::mem::take(&mut work_buffer.keeps),
+            serials: std::mem::take(&mut work_buffer.serials),
+            siblings: std::mem::take(&mut work_buffer.siblings),
+            generated: work_buffer.generated,
+        }))
+    }
+
+    // a stopped pass set aside put back, to be resumed
+    fn restore_paused_depth(&mut self, stopped: Option<Box<Stopped>>) {
+        let Some(stopped) = stopped else {
+            return;
+        };
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.frames = stopped.frames;
+        work_buffer.pending = Some(stopped.pending);
+        work_buffer.stopped = Some(stopped.pass);
+        work_buffer.proven = stopped.proven;
+        work_buffer.lists = stopped.lists;
+        work_buffer.orders = stopped.orders;
+        work_buffer.zones = stopped.zones;
+        work_buffer.spent = stopped.spent;
+        work_buffer.keeps = stopped.keeps;
+        work_buffer.serials = stopped.serials;
+        work_buffer.siblings = stopped.siblings;
+        work_buffer.generated = work_buffer.generated.max(stopped.generated);
+        // its plays out were not set aside, and those held are of other lists
+        work_buffer.outs.clear();
+    }
+}
+
+impl<
+    'a,
+    N: kwg::Node,
+    L: kwg::Node,
+    const LEAN: bool,
+    G: movegen::LaneBits,
+    const JUMPS: bool,
+    const ANY_SIDE: bool,
+> EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>
+{
     #[inline]
     pub fn solve_one_in_bag(
         &mut self,
@@ -6371,97 +6867,6 @@ impl<
         );
     }
 
-    // the table taken out, an empty one left in its place, for a caller that
-    // keeps it apart from any solver between solves (a wasm32 page keeps it in
-    // a handle, as it can keep no solver)
-    #[inline(always)]
-    pub fn take_table(&mut self) -> KeptTable {
-        // the box the last table given back came in, holding the table it
-        // displaced, made as new makes one (in place when it can be)
-        let mut table =
-            (self.work_buffer.spare_table.take()).unwrap_or_else(|| Box::new(Table::new()));
-        table.renew();
-        std::mem::swap(&mut self.work_buffer.table, &mut *table);
-        KeptTable {
-            stopped: self.take_paused_depth(),
-            table,
-            made_with: self.made_with(),
-            line: self.work_buffer.line.take(),
-            cadence: self.work_buffer.cadence,
-        }
-    }
-
-    // a taken table given back, to this solver or another of the same
-    // game_config, kwg, and arm_tables; any other is refused the table, which
-    // comes back whole
-    #[inline(always)]
-    pub fn give_table(&mut self, kept: KeptTable) -> Result<(), KeptTable> {
-        if kept.made_with != self.made_with() {
-            return Err(kept);
-        }
-        let mut table = kept.table;
-        std::mem::swap(&mut self.work_buffer.table, &mut *table);
-        self.work_buffer.spare_table = Some(table);
-        self.work_buffer.line = kept.line;
-        self.work_buffer.cadence = kept.cadence;
-        self.restore_paused_depth(kept.stopped);
-        Ok(())
-    }
-
-    // a stopped pass taken out of the work buffer with the lists its frames
-    // read, for a table taken or a line collected; none without one
-    fn take_paused_depth(&mut self) -> Option<Box<Stopped>> {
-        let work_buffer = &mut self.work_buffer;
-        let pass = work_buffer.stopped.take()?;
-        let pending = work_buffer.pending.take()?;
-        Some(Box::new(Stopped {
-            frames: std::mem::take(&mut work_buffer.frames),
-            pending,
-            pass,
-            proven: work_buffer.proven,
-            lists: std::mem::take(&mut work_buffer.lists),
-            orders: std::mem::take(&mut work_buffer.orders),
-            zones: std::mem::take(&mut work_buffer.zones),
-            spent: std::mem::take(&mut work_buffer.spent),
-            keeps: std::mem::take(&mut work_buffer.keeps),
-            serials: std::mem::take(&mut work_buffer.serials),
-            siblings: std::mem::take(&mut work_buffer.siblings),
-            generated: work_buffer.generated,
-        }))
-    }
-
-    // a stopped pass set aside put back, to be resumed
-    fn restore_paused_depth(&mut self, stopped: Option<Box<Stopped>>) {
-        let Some(stopped) = stopped else {
-            return;
-        };
-        let work_buffer = &mut self.work_buffer;
-        work_buffer.frames = stopped.frames;
-        work_buffer.pending = Some(stopped.pending);
-        work_buffer.stopped = Some(stopped.pass);
-        work_buffer.proven = stopped.proven;
-        work_buffer.lists = stopped.lists;
-        work_buffer.orders = stopped.orders;
-        work_buffer.zones = stopped.zones;
-        work_buffer.spent = stopped.spent;
-        work_buffer.keeps = stopped.keeps;
-        work_buffer.serials = stopped.serials;
-        work_buffer.siblings = stopped.siblings;
-        work_buffer.generated = work_buffer.generated.max(stopped.generated);
-        // its plays out were not set aside, and those held are of other lists
-        work_buffer.outs.clear();
-    }
-
-    // the game_config, kwg, and arm_tables this solver was made with, by address
-    #[inline(always)]
-    fn made_with(&self) -> [usize; 3] {
-        [
-            std::ptr::from_ref(self.game_config).addr(),
-            std::ptr::from_ref(self.kwg).addr(),
-            std::ptr::from_ref(self.arm_tables).addr(),
-        ]
-    }
-
     // the one-in-bag value within the limits, the positions valued kept in memo;
     // an endgame inside it that a limit cut short clears exact
     fn one_in_bag(
@@ -6507,10 +6912,11 @@ impl<
             zeros,
             answering: passes > 0,
         };
+        let racks = &self.racks;
         let value = if one_in_bag_exchange_solvable(gc) {
-            Self::one_in_bag_minimax_ex(&mut search, &self.board_tiles, &self.racks, turn)
+            Self::one_in_bag_minimax_ex(&mut search, &self.board_tiles, racks, turn)
         } else {
-            Self::one_in_bag_minimax(&mut search, &self.board_tiles, &self.racks, turn)
+            Self::one_in_bag_minimax(&mut search, &self.board_tiles, racks, turn)
         };
         *exact &= search.exact;
         self.swap_tables(&mut sub)?;
@@ -17616,6 +18022,187 @@ mod tests {
         assert_eq!(expected, e(0));
 
         assert_eq!(super::peg_aggregate(&[]).unwrap(), (0.0, e(0)));
+    }
+
+    fn seats_reference(
+        fixed: &mut Reference<'_, kwg::Node24, kwg::Node24>,
+        board: &[u8],
+        racks: &[Vec<u8>],
+        gains: &mut [i32],
+        (mover, root): (usize, usize),
+        (passes, zeros): (u8, u8),
+    ) -> i32 {
+        let alphabet = fixed.gc.alphabet();
+        let seats = racks.len();
+        let end = |gains: &[i32], racks: &[Vec<u8>], out: Option<usize>| {
+            let left = (racks.iter())
+                .map(|rack| alphabet.scaled_rack_score(rack).raw())
+                .collect::<Vec<_>>();
+            let all = left.iter().sum::<i32>();
+            let ends = (0..seats)
+                .map(|seat| gains[seat] - left[seat] + if out == Some(seat) { all } else { 0 })
+                .collect::<Vec<_>>();
+            ends[root]
+                - (0..seats)
+                    .filter(|&seat| seat != root)
+                    .map(|seat| ends[seat])
+                    .max()
+                    .unwrap()
+        };
+        let snapshot = movegen::BoardSnapshot {
+            alphagrams: None,
+            board_tiles: board,
+            game_config: fixed.gc,
+            kwg: fixed.kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: fixed.klv,
+        };
+        (fixed.mg)
+            .gen_moves_raw_all_unsorted(
+                &snapshot,
+                &racks[mover],
+                0,
+                movegen::PassPolicy::AsACandidate,
+            )
+            .unwrap();
+        let places = (fixed.mg.plays.iter())
+            .filter(|valued| matches!(valued.play, movegen::Play::Place { .. }))
+            .map(|valued| valued.play.clone())
+            .collect::<Vec<_>>();
+        let next = (mover + 1) % seats;
+        let mut values = Vec::new();
+        for play in &places {
+            let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = play
+            else {
+                continue;
+            };
+            let mut nb = board.to_vec();
+            let mut nr = racks.to_vec();
+            apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+            gains[mover] += score.raw();
+            values.push(if nr[mover].is_empty() {
+                end(gains, &nr, Some(mover))
+            } else {
+                seats_reference(fixed, &nb, &nr, gains, (next, root), (0, 0))
+            });
+            gains[mover] -= score.raw();
+        }
+        let (passes, zeros) = (passes + 1, zeros + 1);
+        values.push(
+            if usize::from(passes) >= seats
+                || super::scoreless_turns_end(fixed.gc, Some(board), passes, zeros)
+            {
+                end(gains, racks, None)
+            } else {
+                seats_reference(fixed, board, racks, gains, (next, root), (passes, zeros))
+            },
+        );
+        if mover == root {
+            values.into_iter().max().unwrap()
+        } else {
+            values.into_iter().min().unwrap()
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn three_and_four_seats_solve_as_a_plain_search_values_them() {
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+        let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]); // AT
+        let cases: [&[&[u8]]; 6] = [
+            &[&[1, 2], &[20, 1], &[8, 1]],
+            &[&[1, 1, 8], &[2, 20], &[1]],
+            &[&[2], &[26], &[1, 20]],
+            &[&[8, 19], &[1, 2, 1], &[20, 8]],
+            &[&[1], &[2], &[20], &[8, 1]],
+            &[&[1, 20], &[2, 1], &[8], &[1, 19]],
+        ];
+        for players in [3, 4] {
+            let gc = game_config::Options {
+                preset: "english",
+                tiles: None,
+                board: None,
+                rack_size: None,
+                jumbled: false,
+                woadwage: false,
+                players: Some(players),
+                bingo_bonus: None,
+                zeros_to_end: None,
+                passes_to_end: None,
+                exchange_limit: None,
+                exchanges: None,
+            }
+            .make_game_config(&|_| Err("no files here".into()))
+            .unwrap();
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+            let mut fixed = Reference {
+                gc: &gc,
+                kwg: &kwg,
+                klv: &klv,
+                mg: &mut mg,
+                memo: Default::default(),
+            };
+            let mut egs =
+                EndgameSolver::<kwg::Node24, kwg::Node24, false, u128, true, true, false>::new(
+                    &gc,
+                    &kwg,
+                    &arm_tables,
+                )
+                .unwrap();
+            for racks in cases
+                .iter()
+                .filter(|racks| racks.len() == usize::from(players))
+            {
+                let owned = racks.iter().map(|rack| rack.to_vec()).collect::<Vec<_>>();
+                for scoreless in [0u8, 1, 2] {
+                    for root in 0..racks.len() {
+                        let what = format!("{racks:?} root {root} after {scoreless} passes");
+                        let mut gains = vec![0; racks.len()];
+                        let expected = seats_reference(
+                            &mut fixed,
+                            &board,
+                            &owned,
+                            &mut gains,
+                            (root, root),
+                            (scoreless, scoreless),
+                        );
+                        egs.init_seats_after_scoreless_turns(
+                            &board,
+                            racks.iter().copied(),
+                            u16::from(scoreless),
+                            u16::from(scoreless),
+                        );
+                        let value = egs.solve(root as u8).unwrap();
+                        assert_eq!(value, equity::Equity::new(expected), "{what}");
+                        let firsts = egs
+                            .value_first_moves(root as u8, &super::Limits::NONE)
+                            .unwrap();
+                        assert!(firsts.iter().all(|first| first.exact), "{what}");
+                        assert_eq!(firsts[0].value, Some(value), "{what}");
+                        let mut line = Vec::new();
+                        egs.collect_pv(root as u8, &mut line).unwrap();
+                        assert_eq!(line.first().map(|(v, _)| *v), Some(value), "{what}");
+                        assert!(
+                            firsts
+                                .iter()
+                                .any(|first| first.value == Some(value) && first.play == line[0].1),
+                            "{what}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
