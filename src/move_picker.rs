@@ -480,6 +480,7 @@ pub struct Simmer<
     R = simmer::DefaultRng,
 > {
     game_config: &'a std::sync::Arc<game_config::GameConfig>,
+    #[cfg(not(target_family = "wasm"))]
     kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
     graphs: movegen::KwgForMovegen<'a, N>,
     arm_tables: &'a std::sync::Arc<anagrams::ArmTables>,
@@ -748,6 +749,7 @@ impl<
         let decision_seed = rng.next_u64();
         Self {
             game_config,
+            #[cfg(not(target_family = "wasm"))]
             kwg,
             graphs: movegen::KwgForMovegen::for_game(game_config, kwg),
             arm_tables,
