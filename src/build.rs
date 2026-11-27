@@ -1575,22 +1575,31 @@ impl Builder {
                     memory,
                 )?,
             game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
-                // lent to the build, then put back for the next
-                let mut alphagrams = std::mem::take(&mut self.alphagrams);
-                let built = fill_packed_alphagrams(machine_words, &mut alphagrams, memory)
-                    .and_then(|()| {
-                        self.do_build::<2, _>(
-                            BuildContent::DawgOnly,
-                            BuildLayout::Wolges,
-                            BuildOrder::Sorted,
-                            &alphagrams,
-                            memory,
-                        )
-                    });
-                self.alphagrams = alphagrams;
-                built?
+                self.build_alphagrams_within(machine_words, memory)?;
             }
         }
+        Ok(&self.out)
+    }
+
+    #[inline]
+    pub(crate) fn build_alphagrams_within(
+        &mut self,
+        machine_words: &[bites::Bites],
+        memory: Option<&endgame::MemoryLimit>,
+    ) -> error::Returns<&[u8]> {
+        // lent to the build, then put back for the next
+        let mut alphagrams = std::mem::take(&mut self.alphagrams);
+        let built = fill_packed_alphagrams(machine_words, &mut alphagrams, memory).and_then(|()| {
+            self.do_build::<2, _>(
+                BuildContent::DawgOnly,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &alphagrams,
+                memory,
+            )
+        });
+        self.alphagrams = alphagrams;
+        built?;
         Ok(&self.out)
     }
 

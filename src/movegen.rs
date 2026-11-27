@@ -1806,7 +1806,7 @@ impl<G: LaneBits, const BAG_TERM: bool, S: BoardStore> WorkingBuffer<G, BAG_TERM
 
 pub struct Vocab<'a, N: kwg::Node> {
     words: &'a std::sync::Arc<kwg::Kwg<N>>,
-    kad: Option<kwg::Kwg<N>>,
+    kad: Option<std::sync::Arc<kwg::Kwg<N>>>,
 }
 
 impl<'a, N: kwg::Node> Vocab<'a, N> {
@@ -1815,7 +1815,7 @@ impl<'a, N: kwg::Node> Vocab<'a, N> {
         words: &'a std::sync::Arc<kwg::Kwg<N>>,
     ) -> error::Returns<Self> {
         let kad = match game_config.game_rules() {
-            game_config::GameRules::Woadwage => Some(kad_of(words)?),
+            game_config::GameRules::Woadwage => Some(std::sync::Arc::new(kad_of(words)?)),
             game_config::GameRules::Classic
             | game_config::GameRules::Jumbled
             | game_config::GameRules::JumbledWoadwage => None,
@@ -1829,7 +1829,27 @@ impl<'a, N: kwg::Node> Vocab<'a, N> {
     }
 
     #[inline(always)]
+    pub(crate) fn with_kad(
+        words: &'a std::sync::Arc<kwg::Kwg<N>>,
+        kad: Option<std::sync::Arc<kwg::Kwg<N>>>,
+    ) -> Self {
+        Self { words, kad }
+    }
+
+    #[inline(always)]
     pub(crate) fn kad(&self) -> Option<&kwg::Kwg<N>> {
+        self.kad.as_deref()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[inline(always)]
+    pub(crate) fn shared_words(&self) -> &'a std::sync::Arc<kwg::Kwg<N>> {
+        self.words
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[inline(always)]
+    pub(crate) fn shared_kad(&self) -> Option<&std::sync::Arc<kwg::Kwg<N>>> {
         self.kad.as_ref()
     }
 
@@ -1852,14 +1872,8 @@ fn kad_of<N: kwg::Node>(kwg: &kwg::Kwg<N>) -> error::Returns<kwg::Kwg<N>> {
         kwg.get_word_by_index(&counts, root, idx, |tile| word.push(tile))?;
         words.push(bites::Bites::from(&word[..]));
     }
-    let alphagrams = build::make_alphagrams(&words)?;
     let mut builder = build::Builder::default();
-    let bytes = builder.build_big(
-        build::BuildContent::DawgOnly,
-        build::BuildLayout::Wolges,
-        build::BuildOrder::Sorted,
-        &alphagrams,
-    )?;
+    let bytes = builder.build_alphagrams_within(&words, None)?;
     kwg::Kwg::from_reader::<kwg::Node24>(bytes.len(), |at, piece| {
         piece.copy_from_slice(&bytes[at..at + piece.len()])
     })
