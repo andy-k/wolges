@@ -6,7 +6,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Mutex;
 use wolges::bites;
 
-static SIZES: Mutex<Option<std::collections::HashMap<usize, (usize, usize)>>> = Mutex::new(None);
+static SIZES: Mutex<Option<wolges::fash::MyHashMap<usize, (usize, usize)>>> = Mutex::new(None);
 static MISMATCHES: Mutex<Vec<(usize, usize, usize, usize)>> = Mutex::new(Vec::new());
 
 struct Checking;
@@ -16,7 +16,7 @@ thread_local! {
 }
 
 fn with_map<R>(
-    f: impl FnOnce(&mut std::collections::HashMap<usize, (usize, usize)>) -> R,
+    f: impl FnOnce(&mut wolges::fash::MyHashMap<usize, (usize, usize)>) -> R,
 ) -> Option<R> {
     if BUSY.with(|b| b.get()) {
         return None;

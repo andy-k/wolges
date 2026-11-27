@@ -3484,7 +3484,7 @@ mod tests {
         let size1 = pool1.iter().map(|&c| c as usize).sum::<usize>();
         let one = |tile| tally_of(num_letters, &[tile]);
         let mut tiny = tiny(&game_config);
-        let mut fourth_gaps = std::collections::HashMap::<Vec<u8>, (Vec<u8>, i32)>::new();
+        let mut fourth_gaps = crate::fash::MyHashMap::<Vec<u8>, (Vec<u8>, i32)>::default();
         let mut posts = [(); 4].map(|_| std::collections::BTreeMap::<Vec<u8>, f64>::new());
         for rack1 in tallies_of(&pool1, 7) {
             if rack1[y as usize] == 0 {

@@ -11648,7 +11648,7 @@ WCMP_P1_SCORE 402.000000
     fn census_sheet_reuse_plan_never_reads_an_uncached_slot() {
         for &(counts, _, want_len) in SHEET_PLANS {
             let (live_after, cache_len) = census_sheet_reuse_plan(counts);
-            let mut cached = std::collections::HashSet::<usize>::new();
+            let mut cached = fash::MyHashSet::<usize>::default();
             let mut prior_max = 0usize;
             let mut high_water = 0usize;
             for (g, &n) in counts.iter().enumerate() {

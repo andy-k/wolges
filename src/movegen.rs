@@ -17468,7 +17468,7 @@ pub(crate) mod tests {
         gc: &game_config::GameConfig,
         board_tiles: &[u8],
         rack: &[u8],
-        words: &std::collections::HashSet<Vec<u8>>,
+        words: &crate::fash::MyHashSet<Vec<u8>>,
     ) -> std::collections::BTreeSet<(Vec<(usize, u8)>, i32)> {
         let alphabet = gc.alphabet();
         let layout = gc.board_layout();
@@ -17477,7 +17477,7 @@ pub(crate) mod tests {
         let prefixes = words
             .iter()
             .flat_map(|word| (1..=word.len()).map(|n| word[..n].to_vec()))
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<crate::fash::MyHashSet<_>>();
         let empty_board = board_tiles.iter().all(|&tile| tile == 0);
         let star = dim.at_row_col(layout.star_row(), layout.star_col());
         let mut held = vec![0u8; alphabet.len() as usize];
@@ -17666,7 +17666,7 @@ pub(crate) mod tests {
         let words = word_list
             .iter()
             .cloned()
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<crate::fash::MyHashSet<_>>();
         let kwg_bytes = build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
@@ -23208,7 +23208,7 @@ pub(crate) mod tests {
                 let mut with = with
                     .into_iter()
                     .map(|(text, equity, num_played)| (text, (equity, num_played)))
-                    .collect::<std::collections::HashMap<_, _>>();
+                    .collect::<crate::fash::MyHashMap<_, _>>();
                 assert_eq!(without.len(), with.len());
                 let mut placements = 0;
                 for (text, equity, num_played) in without {
@@ -23261,7 +23261,7 @@ pub(crate) mod tests {
                     let with_by_text = with
                         .iter()
                         .map(|p| (p.0.clone(), p.1))
-                        .collect::<std::collections::HashMap<_, _>>();
+                        .collect::<crate::fash::MyHashMap<_, _>>();
                     let mut placements = 0;
                     for (text, equity, num_played) in &without {
                         let expected = num_played.map_or(0, |n| term.at(bag - n as i16));
@@ -23371,7 +23371,7 @@ pub(crate) mod tests {
             let without = without
                 .into_iter()
                 .map(|p| (p.0, p.1))
-                .collect::<std::collections::HashMap<_, _>>();
+                .collect::<crate::fash::MyHashMap<_, _>>();
             let lifted = with
                 .iter()
                 .filter(|p| without[&p.0] != p.1)
