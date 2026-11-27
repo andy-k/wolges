@@ -2125,12 +2125,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             wmp,
             overflow: allow_overflow,
         } => {
-            if allow_overflow && matches!(wmp, WmpVersion::Three) {
-                return Err("--overflow is for --wmp 1 and 2".into());
-            }
             let is_v1 = matches!(wmp, WmpVersion::One);
             let is_v2 = matches!(wmp, WmpVersion::Two);
             let is_v3_plus = !is_v1 && !is_v2;
+            let allow_overflow = allow_overflow && !is_v3_plus;
             let never_inline_b2 = allow_overflow;
             let alphabet = make_alphabet()?;
             let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
@@ -3297,7 +3295,7 @@ enum Task {
         wmp: WmpVersion,
         #[arg(
             long,
-            help = "allow overflows (for 1, also disable 2-blank inlining; not for 3)"
+            help = "allow overflows (for 1, also disable 2-blank inlining; nothing for 3)"
         )]
         overflow: bool,
     },
@@ -3408,6 +3406,38 @@ fn main() -> error::Returns<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[inline]
+    fn overflow_changes_nothing_in_a_wmp3() {
+        let dir = format!(
+            "{}/target/make_wmp-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let words = format!("{dir}/words");
+        std::fs::write(&words, "QI\nZA\nQUA\n").unwrap();
+        let made = |overflow, name: &str| {
+            let out = format!("{dir}/{name}");
+            do_task(
+                Task::MakeWmp {
+                    word_list: words.clone(),
+                    out: out.clone(),
+                    wmp: WmpVersion::Three,
+                    overflow,
+                },
+                || Ok(alphabet::make_english_alphabet()),
+            )
+            .unwrap();
+            let bytes = std::fs::read(&out).unwrap();
+            std::fs::remove_file(&out).unwrap();
+            bytes
+        };
+        assert_eq!(made(true, "with"), made(false, "without"));
+        std::fs::remove_file(&words).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
 
     #[test]
     #[inline]
