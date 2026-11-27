@@ -891,9 +891,7 @@ impl RackLengths {
         ledger: &mut Ledger,
     ) -> error::Returns<Option<Self>> {
         match layout_for_config(game_config, ledger) {
-            Some(layout) => {
-                Self::build_within(g, layout, game_config.rack_size() as usize + 1, ledger)
-            }
+            Some(layout) => Self::build_within(g, layout, game_config.rack_size() as usize, ledger),
             None => Ok(None),
         }
     }
