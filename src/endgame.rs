@@ -2497,10 +2497,7 @@ impl Started {
 // a search with a tile in the bag solves many endgames as one solve: its time
 // limit is one deadline for them all, on its clock, and its state limit applies
 // to the table they share (the solver's own, lent with what its earlier solves
-// found); the endgames take turns holding its one listener. Under a time or
-// state limit the search deepens: each pass searches every endgame to the
-// pass's depth, one ply deeper than the pass before, so a stopped search weighs
-// moves whose endgames were searched alike
+// found); the endgames take turns holding its one listener
 struct BagLimits {
     time: Option<std::time::Duration>,
     states: Option<usize>,
@@ -2517,7 +2514,6 @@ struct BagLimits {
     refused: std::cell::Cell<bool>, // the memory limit stopped it, before it grew past it
     memory_stopped: std::cell::Cell<bool>, // the limit that stopped it was the memory's
     estimates: bool,
-    exact_pass: bool,
 }
 
 impl BagLimits {
@@ -2540,16 +2536,12 @@ impl BagLimits {
             refused: std::cell::Cell::new(false),
             memory_stopped: std::cell::Cell::new(false),
             estimates: false,
-            exact_pass: false,
         }
     }
 
-    // whether the search deepens a pass at a time, as under a time or state
-    // limit, or with its passes estimating; else it is one pass, each endgame
-    // searched to its end
     #[inline(always)]
-    fn deepens(&self) -> bool {
-        !self.exact_pass && (self.time.is_some() || self.states.is_some() || self.estimates)
+    fn is_limited(&self) -> bool {
+        self.time.is_some() || self.states.is_some() || self.memory.is_some()
     }
 
     // what another thread of the same search needs to keep to its limits
@@ -2562,7 +2554,6 @@ impl BagLimits {
             t0: self.t0,
             depth: self.depth.get(),
             estimates: self.estimates,
-            exact_pass: self.exact_pass,
         }
     }
 
@@ -2586,7 +2577,6 @@ impl BagLimits {
             refused: std::cell::Cell::new(false),
             memory_stopped: std::cell::Cell::new(false),
             estimates: clock.estimates,
-            exact_pass: clock.exact_pass,
         }
     }
 
@@ -2658,7 +2648,6 @@ struct OnOneClock {
     t0: Started,
     depth: i8,
     estimates: bool,
-    exact_pass: bool,
 }
 
 // an average of values in millipoints, such as the peg's margin, kept in f32,
@@ -6984,7 +6973,6 @@ impl<
         self.work_buffer.clock = limits.clock;
         let mut limits = BagLimits::new(limits, self.progress.take());
         limits.estimates = progress.estimates;
-        limits.exact_pass = progress.exact_pass;
         let (mut sub, mut mg) = match self.take_both(&limits) {
             Ok(both) => both,
             Err(_) if limits.stopped.get() => {
@@ -7167,7 +7155,7 @@ impl<
         let gc = sub.game_config;
         let graphs = sub.graphs;
         let arm_tables = sub.arm_tables;
-        let deepens = limits.deepens();
+        let may_stop = limits.is_limited();
         let PegBagProgress {
             position,
             splits,
@@ -7175,7 +7163,6 @@ impl<
             part: _,
             estimates: _,
             root_moves: selected,
-            exact_pass: _,
             steered,
             cuts,
             state,
@@ -7250,21 +7237,19 @@ impl<
                 Err(e) => return Err(e),
             };
             order.extend(0..moves.len());
-            if deepens || limits.exact_pass {
-                order.sort_unstable_by_key(|&i| {
-                    let score = match &moves[i] {
-                        movegen::Play::Place { score, .. } => *score,
-                        _ => equity::Equity::NEG_INFINITY,
-                    };
-                    (std::cmp::Reverse(score), i)
-                });
-            }
+            order.sort_unstable_by_key(|&i| {
+                let score = match &moves[i] {
+                    movegen::Play::Place { score, .. } => *score,
+                    _ => equity::Equity::NEG_INFINITY,
+                };
+                (std::cmp::Reverse(score), i)
+            });
             valued.resize_with(moves.len(), || None);
             (state.moves, state.order, state.valued) = (moves, order, valued);
             (state.answered, state.reached) = (answered, reached);
             (state.ranked, state.places) = ranks;
             state.pass_exact = true;
-            state.depth = if deepens { 1 } else { COMPLETE };
+            state.depth = if limits.estimates { 1 } else { COMPLETE };
         }
         // what each move took in each split, which orders the threads' tasks:
         // kept only while the search runs on threads (a step may be given more
@@ -7327,7 +7312,7 @@ impl<
                 });
                 while let Some(&i) = state.order.get(state.next) {
                     limits.moves.set(Some((state.next, state.order.len())));
-                    limits.may_stop.set(deepens || limits.exact_pass);
+                    limits.may_stop.set(may_stop);
                     let mut search = BagSearch {
                         gc,
                         graphs,
@@ -7506,7 +7491,7 @@ impl<
         let graphs = sub.graphs;
         let arm_tables = sub.arm_tables;
         let run_letters = &sub.run_letters.clone();
-        let may_stop = limits.deepens() || limits.exact_pass;
+        let may_stop = limits.is_limited();
         let base = state.next;
         let rest = state.order.len() - base;
         let num_splits = splits.len();
@@ -7987,7 +7972,6 @@ pub struct PegBagProgress {
     part: (usize, usize),
     estimates: bool,
     root_moves: Option<RootMoves>,
-    exact_pass: bool,
     steered: Vec<(movegen::Play, u8)>, // those not running
     cuts: Option<bool>,
     state: PegBagState,
@@ -8003,7 +7987,6 @@ impl PegBagProgress {
         if !self.state.order.is_empty() {
             return Err("choose an exact pass before starting the pre-endgame search".into());
         }
-        self.exact_pass = true;
         self.estimates = false;
         Ok(self)
     }
@@ -8107,7 +8090,6 @@ impl PegBagProgress {
             part: choices.part,
             estimates: choices.estimates,
             root_moves: None,
-            exact_pass: false,
             steered: Vec::new(),
             cuts: None,
             state: Default::default(),
@@ -12747,8 +12729,12 @@ mod tests {
         for tile in [1, 2, 8] {
             unseen_tally[tile] += 1;
         }
-        for rack in [[2u8, 2], [1, 1]] {
-            let position = bag_position(&board, &rack, &unseen_tally, 2, equity::Equity::ZERO);
+        for (rack, score_diff) in [
+            ([2u8, 2], equity::Equity::ZERO),
+            ([1, 1], equity::Equity::ZERO),
+            ([1, 1], equity::Equity::new(-16 * equity::SCALE)),
+        ] {
+            let position = bag_position(&board, &rack, &unseen_tally, 2, score_diff);
             let full = egs
                 .solve_peg(position.clone(), &super::Limits::NONE, 1)
                 .unwrap()
@@ -12760,7 +12746,15 @@ mod tests {
             let vocab = crate::movegen::Vocab::lean(&kwg);
             let mut solver =
                 EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
-            let got = solver.solve_peg(position, &limits, 1).unwrap().unwrap();
+            let choices = super::PegBagChoices {
+                part: (0, 1),
+                estimates: true,
+            };
+            let mut progress = super::PegBagProgress::new(position, choices).unwrap();
+            let got = solver
+                .resume_peg(&mut progress, &limits, 1)
+                .unwrap()
+                .unwrap();
             if !got.exact && got.best_move.is_some() {
                 tally(
                     0,
@@ -18090,8 +18084,6 @@ mod tests {
             let mut progress =
                 super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
                     .and_then(super::PegBagProgress::without_cuts)
-                    .unwrap()
-                    .with_exact_pass()
                     .unwrap();
             let stopped = solver
                 .resume_peg(
@@ -19739,8 +19731,7 @@ mod tests {
             unseen_tally[tile as usize] += 1;
         }
         let position = bag_position(&board, &[1, 2], &unseen_tally, 3, equity::Equity::ZERO);
-        // stopped with three moves valued or more, and past the first pass
-        let (mut cut, mut later, mut ranged) = (0, 0, 0);
+        let (mut cut, mut ranged) = (0, 0);
         for states in (1..8000).step_by(61).map(Some).chain([None]) {
             let limits = super::Limits {
                 time: Some(std::time::Duration::from_secs(3600)),
@@ -19769,7 +19760,9 @@ mod tests {
             }));
             assert!(states.is_some() || best.exact);
             cut += usize::from(!best.exact && all.len() > 2);
-            later += usize::from(!best.exact && best.depth > 0);
+            if !best.exact {
+                assert_eq!(best.depth, 0);
+            }
             for from in 0..=all.len() + 1 {
                 for to in from..=all.len() + 1 {
                     let some = progress.answer_moves(from..to);
@@ -19788,7 +19781,7 @@ mod tests {
                 assert_eq!(progress.answer_place(&listed.play), Some(place));
             }
         }
-        assert!(cut > 0 && later > 0 && ranged > 0, "{cut} {later} {ranged}");
+        assert!(cut > 0 && ranged > 0, "{cut} {ranged}");
     }
 
     // whether two answers of a bag search are alike in everything but their
