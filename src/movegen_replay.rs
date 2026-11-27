@@ -49,7 +49,7 @@ struct Position {
     game: u64,
     ply: u32,
     fen: String,
-    racks: [String; 2],
+    racks: Vec<String>,
     turn: u8,
     bag: usize,
     exchanges: i16,
@@ -68,13 +68,6 @@ impl Engine {
     fn load(options: &game_args::GameArgs, kbwg: bool, args: &EngineArgs) -> error::Returns<Self> {
         let game = options.make_game_config()?;
         game.supports(game_config::Op::Generation)?;
-        let dim = game.board_layout().dim();
-        if game.num_players() != 2 || !matches!((dim.rows, dim.cols), (15, 15) | (21, 21)) {
-            return_error!(
-                "the chronological trace uses a standard or super board and two players"
-                    .to_string()
-            );
-        }
         let load = || -> error::Returns<_> {
             let kwg = kwg::kbwg_from_bytes_alloc(run_line::read_input(&args.kwg)?, kbwg)?;
             if !kwg.fits_alphabet(game.alphabet().len()) {
@@ -130,8 +123,10 @@ impl Engine {
     }
 }
 
-fn generate<const N: usize>(
-    generator: &mut movegen::InlineGenerator<N>,
+type Generator<S> = movegen::KurniaMoveGenerator<u128, true, true, false, S>;
+
+fn generate<S: movegen::BoardStore>(
+    generator: &mut Generator<S>,
     snapshot: &movegen::BoardSnapshot<'_, kwg::Node24, kwg::Node24>,
     rack: &[u8],
     exchanges: i16,
@@ -161,13 +156,15 @@ pub(crate) fn replay(
     let started = Instant::now();
     let engine = Engine::load(options, kbwg, &args.engine)?;
     let setup = started.elapsed();
-    match engine.game.board_layout().dim().rows {
-        15 => replay_using::<225>(&engine, args, setup),
-        _ => replay_using::<441>(&engine, args, setup),
+    let dim = engine.game.board_layout().dim();
+    match (dim.rows, dim.cols) {
+        (15, 15) => replay_using::<movegen::InlineStore<225>>(&engine, args, setup),
+        (21, 21) => replay_using::<movegen::InlineStore<441>>(&engine, args, setup),
+        _ => replay_using::<movegen::BoxStore>(&engine, args, setup),
     }
 }
 
-fn replay_using<const N: usize>(
+fn replay_using<S: movegen::BoardStore>(
     engine: &Engine,
     args: &ReplayArgs,
     setup: std::time::Duration,
@@ -188,10 +185,15 @@ fn replay_using<const N: usize>(
     let mut prepared = Vec::with_capacity(positions.len());
     for (position, board) in positions.into_iter().zip(boards.iter()) {
         let mut pool = engine.game.tiles_off_board(board)?;
-        let mut racks = position
-            .racks
-            .each_ref()
-            .map(|rack| parse_rack(alphabet, rack));
+        if position.racks.len() != engine.game.num_players() as usize {
+            return_error!(format!(
+                "rack count differs in game {} ply {}",
+                position.game, position.ply
+            ));
+        }
+        let mut racks = (position.racks.iter())
+            .map(|rack| parse_rack(alphabet, rack))
+            .collect::<Vec<_>>();
         for rack in &racks {
             let Ok(rack) = rack else {
                 return_error!(format!(
@@ -230,7 +232,7 @@ fn replay_using<const N: usize>(
         });
     }
 
-    let mut generator = movegen::InlineGenerator::<N>::try_new(&engine.game)?;
+    let mut generator = Generator::<S>::try_new(&engine.game)?;
     let mut moves = args
         .moves
         .as_ref()
@@ -248,7 +250,7 @@ fn replay_using<const N: usize>(
         let mut search_time = std::time::Duration::ZERO;
         for entry in &prepared {
             if args.cold {
-                generator = movegen::InlineGenerator::try_new(&engine.game)?;
+                generator = Generator::try_new(&engine.game)?;
             }
             let started = Instant::now();
             generate(
@@ -326,9 +328,9 @@ pub(crate) struct CaptureArgs {
     seed: u64,
 }
 
-fn play_game<const N: usize>(
+fn play_game<S: movegen::BoardStore>(
     engine: &Engine,
-    generator: &mut movegen::InlineGenerator<N>,
+    generator: &mut Generator<S>,
     state: &mut game_state::GameState,
     rng: &mut rand_xoshiro::Xoshiro256PlusPlus,
     mut on_turn: impl FnMut(
@@ -340,7 +342,7 @@ fn play_game<const N: usize>(
 ) -> error::Returns<u32> {
     let gc = &engine.game;
     state.reset_and_draw_tiles(gc, rng);
-    let mut scores = [0; 2];
+    let mut scores = vec![0; gc.num_players() as usize];
     for ply in 0.. {
         let mover = state.current_player();
         let snapshot = engine.snapshot(&state.board_tiles);
@@ -369,18 +371,23 @@ pub(crate) fn capture(
     args: &CaptureArgs,
 ) -> error::Returns<()> {
     let engine = Engine::load(options, kbwg, &args.engine)?;
-    match engine.game.board_layout().dim().rows {
-        15 => capture_using::<225>(&engine, args),
-        _ => capture_using::<441>(&engine, args),
+    let dim = engine.game.board_layout().dim();
+    match (dim.rows, dim.cols) {
+        (15, 15) => capture_using::<movegen::InlineStore<225>>(&engine, args),
+        (21, 21) => capture_using::<movegen::InlineStore<441>>(&engine, args),
+        _ => capture_using::<movegen::BoxStore>(&engine, args),
     }
 }
 
-fn capture_using<const N: usize>(engine: &Engine, args: &CaptureArgs) -> error::Returns<()> {
+fn capture_using<S: movegen::BoardStore>(
+    engine: &Engine,
+    args: &CaptureArgs,
+) -> error::Returns<()> {
     let gc = &engine.game;
     check_game_ends(gc)?;
     let alphabet = gc.alphabet();
     let mut state = game_state::GameState::new(gc);
-    let mut generator = movegen::InlineGenerator::<N>::try_new(gc)?;
+    let mut generator = Generator::<S>::try_new(gc)?;
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(args.seed);
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
     for game in 0..args.games.get() {
@@ -401,9 +408,9 @@ fn capture_using<const N: usize>(engine: &Engine, args: &CaptureArgs) -> error::
                             &state.board_tiles,
                         )
                         .to_string(),
-                        racks: std::array::from_fn(|seat| {
-                            alphabet.fmt_rack(&state.players[seat].rack).to_string()
-                        }),
+                        racks: (state.players.iter())
+                            .map(|player| alphabet.fmt_rack(&player.rack).to_string())
+                            .collect(),
                         turn: state.turn,
                         bag: state.bag.len(),
                         exchanges: state.current_player().num_exchanges,
@@ -441,13 +448,15 @@ pub(crate) fn throughput(
     let started = Instant::now();
     let engine = Engine::load(options, kbwg, &args.engine)?;
     let setup = started.elapsed();
-    match engine.game.board_layout().dim().rows {
-        15 => throughput_using::<225>(&engine, args, setup),
-        _ => throughput_using::<441>(&engine, args, setup),
+    let dim = engine.game.board_layout().dim();
+    match (dim.rows, dim.cols) {
+        (15, 15) => throughput_using::<movegen::InlineStore<225>>(&engine, args, setup),
+        (21, 21) => throughput_using::<movegen::InlineStore<441>>(&engine, args, setup),
+        _ => throughput_using::<movegen::BoxStore>(&engine, args, setup),
     }
 }
 
-fn throughput_using<const N: usize>(
+fn throughput_using<S: movegen::BoardStore>(
     engine: &Engine,
     args: &ThroughputArgs,
     setup: std::time::Duration,
@@ -463,7 +472,7 @@ fn throughput_using<const N: usize>(
                 let next_game = &next_game;
                 scope.spawn(move || -> error::Returns<u64> {
                     let mut state = game_state::GameState::new(&engine.game);
-                    let mut generator = movegen::InlineGenerator::<N>::try_new(&engine.game)?;
+                    let mut generator = Generator::<S>::try_new(&engine.game)?;
                     let mut turns = 0;
                     while let Ok(game) =
                         next_game.try_update(Ordering::Relaxed, Ordering::Relaxed, |game| {
@@ -510,12 +519,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_trace_line_holds_each_seats_rack() {
+        let line = r#"{"game":0,"ply":0,"fen":"11/11/11/11/11/11/11/11/11/11/11","racks":["A","B","C"],"turn":2,"bag":0,"exchanges":0,"reference":"pass","equity":0}"#;
+        let position = serde_json::from_str::<Position>(line).unwrap();
+        assert_eq!(position.racks, ["A", "B", "C"]);
+        assert_eq!(serde_json::to_string(&position).unwrap(), line);
+    }
+
+    #[test]
     fn a_trace_line_keeps_its_keys_and_reads_back() {
         let position = Position {
             game: 3,
             ply: 7,
             fen: "15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15".to_string(),
-            racks: ["AEINRST".to_string(), "?".to_string()],
+            racks: vec!["AEINRST".to_string(), "?".to_string()],
             turn: 1,
             bag: 80,
             exchanges: 0,
