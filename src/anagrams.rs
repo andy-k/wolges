@@ -489,6 +489,7 @@ impl Anagrams {
         keyed.reserve_exact(words);
         let mut index = 0u32;
         budget.take(longest as usize)?;
+        word.reserve_exact(longest as usize);
         for_each_word(g, longest as usize, word, &mut |w| {
             if let Some(key) = layout.key_of(w) {
                 keyed.push((w.len() as u8, KeyBytes::of(key), index));
@@ -614,6 +615,7 @@ impl Anagrams {
         arena.resize(letters, alphagram::END);
         let mut index = 0usize;
         budget.take(longest as usize)?;
+        word.reserve_exact(longest as usize);
         for_each_word(g, longest as usize, word, &mut |w| {
             if at[index] != u32::MAX {
                 arena[at[index] as usize..][..w.len()].copy_from_slice(w);
@@ -909,6 +911,7 @@ impl RackLengths {
             std::collections::HashSet::<u128, std::hash::BuildHasherDefault<KeyHasher>>::default();
         let mut room = true;
         let mut word = std::mem::take(&mut ledger.scratch.word);
+        word.reserve_exact(max_tiles);
         for_each_word(g, max_tiles, &mut word, &mut |w| {
             let Some(key) = layout.key_of(w) else {
                 return;
