@@ -1431,6 +1431,11 @@ fn run(
             let kwg = std::sync::Arc::new(read_kwg(&game_config, &a.kwg, kbwg)?);
             let arm_tables =
                 std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, a.lean)?);
+            let vocab = &if a.lean {
+                wolges::movegen::Vocab::lean(&kwg)
+            } else {
+                wolges::movegen::Vocab::new(&game_config, &kwg)?
+            };
             let game_config = std::sync::Arc::new(game_config);
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
@@ -1441,7 +1446,7 @@ fn run(
                 board_snapshot: &movegen::BoardSnapshot {
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
-                    vocab: &wolges::movegen::Vocab::lean(&kwg),
+                    vocab,
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv: &klv,
@@ -1636,6 +1641,11 @@ fn run(
             let kwg = std::sync::Arc::new(read_kwg(&game_config, &a.kwg, kbwg)?);
             let arm_tables =
                 std::sync::Arc::new(anagrams::ArmTables::build(&kwg, &game_config, a.lean)?);
+            let vocab = &if a.lean {
+                wolges::movegen::Vocab::lean(&kwg)
+            } else {
+                wolges::movegen::Vocab::new(&game_config, &kwg)?
+            };
             let game_config = std::sync::Arc::new(game_config);
 
             let (iters, seed) = (a.iters, a.seed);
@@ -1647,7 +1657,7 @@ fn run(
                 board_snapshot: &movegen::BoardSnapshot {
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
-                    vocab: &wolges::movegen::Vocab::lean(&kwg),
+                    vocab,
                     anagrams: arm_tables.anagrams(),
                     rack_lengths: arm_tables.rack_lengths(),
                     klv: &klv,
@@ -2821,6 +2831,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let t0 = std::time::Instant::now();
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -2851,7 +2866,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let mut threads = vec![];
             for _ in 0..num_threads {
                 let game_config = std::sync::Arc::clone(&game_config);
-                let kwg = std::sync::Arc::clone(&kwg);
                 let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
                 let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
                 let num_processed_games = std::sync::Arc::clone(&num_processed_games);
@@ -2861,7 +2875,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
                 let run_identifier = run_identifier.clone();
                 threads.push(s.spawn(move || -> error::Returns<()> {
-                    let graphs = &wolges::movegen::Vocab::lean(&kwg);
+                    let graphs = vocab;
                     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                     let mut game_state = game_state::GameState::new(&game_config);
                     let alphabet = game_config.alphabet();
@@ -4445,7 +4459,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         "census: {num_threads} threads over {board_counts:?} boards/gen"
     )?;
 
-    let graphs = &wolges::movegen::Vocab::lean(&kwg);
+    let graphs = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     std::thread::scope(|s| -> error::Returns<()> {
         let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
@@ -6177,6 +6191,7 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let kwg = std::sync::Arc::new(kwg);
     let klv = std::sync::Arc::new(klv);
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false)?;
+    let vocab = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     let num_tasks = lists.len() as u64 * num_pairs;
     let claimed = std::sync::atomic::AtomicU64::new(0);
     let finished = std::sync::atomic::AtomicU64::new(0);
@@ -6186,8 +6201,7 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let results = std::thread::scope(|s| -> error::Returns<Vec<(u64, u64)>> {
         let mut handles = Vec::new();
         for _ in 0..threads {
-            let (game_config, kwg, klv, lists, arm_tables) =
-                (&game_config, &kwg, &klv, &lists, &arm_tables);
+            let (game_config, klv, lists, arm_tables) = (&game_config, &klv, &lists, &arm_tables);
             let (claimed, finished, reported_secs) = (&claimed, &finished, &reported_secs);
             handles.push(s.spawn(move || -> error::Returns<Vec<(u64, u64)>> {
                     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -6197,7 +6211,7 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     let mut saved = game_state.clone();
                     let mut final_scores = vec![0i32; game_config.num_players() as usize];
                     let mut results = vec![(0u64, 0u64); lists.len()];
-                    let graphs = &wolges::movegen::Vocab::lean(kwg);
+                    let graphs = vocab;
                     loop {
                         let task = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if task >= num_tasks {
@@ -6370,6 +6384,11 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let batch_size = num_threads as u64;
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -6378,7 +6397,6 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         for _thread_id in 0..num_threads {
             let game_config = std::sync::Arc::clone(&game_config);
-            let kwg = std::sync::Arc::clone(&kwg);
             let klv = std::sync::Arc::clone(&klv);
             let num_processed_games = std::sync::Arc::clone(&num_processed_games);
             let run_identifier = std::sync::Arc::clone(&run_identifier);
@@ -6387,7 +6405,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let completed_moves = std::sync::Arc::clone(&completed_moves);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || -> error::Returns<()> {
-                let graphs = &wolges::movegen::Vocab::lean(&kwg);
+                let graphs = vocab;
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_batched_games_here = 0;
@@ -7066,7 +7084,7 @@ impl GamePairStats {
 
 struct WinpctTables<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
-    kwg: &'a std::sync::Arc<kwg::Kwg<N>>,
+    vocab: &'a wolges::movegen::Vocab<'a, N>,
     anagrams: Option<&'a wolges::anagrams::Anagrams>,
     rack_lengths: Option<&'a wolges::anagrams::RackLengths>,
     arc_klv: &'a klv::Klv<L>,
@@ -7083,13 +7101,13 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
 ) -> error::Returns<()> {
     let WinpctTables {
         game_config,
-        kwg,
+        vocab,
         anagrams,
         rack_lengths,
         arc_klv,
     } = tables;
     snapshots.clear();
-    let graphs = &wolges::movegen::Vocab::lean(kwg);
+    let graphs = vocab;
     loop {
         let mover = game_state.turn as usize;
         let other = 1 - mover;
@@ -7159,6 +7177,11 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -7182,7 +7205,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                     winpct_play_game(
                         WinpctTables {
                             game_config: &game_config,
-                            kwg: &kwg,
+                            vocab,
                             anagrams,
                             rack_lengths,
                             arc_klv: &arc_klv,
@@ -7290,6 +7313,11 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let shared = std::sync::Mutex::new(vec![WinpctBand::default(); num_bands]);
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -7312,7 +7340,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     winpct_play_game(
                         WinpctTables {
                             game_config: &game_config,
-                            kwg: &kwg,
+                            vocab,
                             anagrams,
                             rack_lengths,
                             arc_klv: &arc_klv,
@@ -7497,7 +7525,11 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
     lean: bool,
 ) -> error::Returns<()> {
     let kwg = std::sync::Arc::new(kwg);
-    let graphs = &wolges::movegen::Vocab::lean(&kwg);
+    let graphs = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let alphabet = game_config.alphabet();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
@@ -7697,6 +7729,11 @@ fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         std::sync::Arc::new(kwg),
         std::sync::Arc::new(klv),
     );
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -7705,7 +7742,7 @@ fn sim_chunk_check<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + S
         board_snapshot: &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
-            vocab: &wolges::movegen::Vocab::lean(&kwg),
+            vocab,
             anagrams: arm_tables.anagrams(),
             rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,
@@ -7835,6 +7872,11 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
     sim_threads: usize,
 ) -> error::Returns<Vec<RecallOne>> {
     let arm_tables = std::sync::Arc::new(anagrams::ArmTables::build(kwg, game_config, a.lean)?);
+    let vocab = &if a.lean {
+        wolges::movegen::Vocab::lean(kwg)
+    } else {
+        wolges::movegen::Vocab::new(game_config, kwg)?
+    };
     let mut rng = GameRng::seed_from_u64(a.seed);
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     let mut game_state = game_state::GameState::new(game_config);
@@ -7862,7 +7904,7 @@ fn sim_recall<N: kwg::Node + Send + Sync + 'static, L: kwg::Node + Send + Sync +
     let mut chosen_driver = driver(a.iters)?;
     let mut scratch = Vec::new();
     let mut ranked = Vec::new(); // each position's plays, best first
-    let graphs = &wolges::movegen::Vocab::lean(kwg);
+    let graphs = vocab;
     while (tally.len() as u64) < a.positions {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
@@ -8006,7 +8048,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     rack_strs: &[String],
 ) -> error::Returns<()> {
     let kwg = std::sync::Arc::new(kwg);
-    let graphs = &wolges::movegen::Vocab::lean(&kwg);
+    let graphs = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let num_letters = alphabet.len() as usize;
@@ -8394,6 +8436,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     threads: usize,
 ) -> error::Returns<()> {
     let kwg = std::sync::Arc::new(kwg);
+    let vocab = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let num_letters = alphabet.len() as usize;
@@ -8423,7 +8466,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
     let board_snapshot = movegen::BoardSnapshot {
         board_tiles: &board_tiles,
         game_config: &game_config,
-        vocab: &wolges::movegen::Vocab::lean(&kwg),
+        vocab,
         anagrams: None,
         rack_lengths: None,
         klv: &klv,
@@ -8462,7 +8505,7 @@ fn infer_one_move<N: kwg::Node, L: kwg::Node>(
         &board_tiles,
         SpellTables {
             game_config: &game_config,
-            graphs: &wolges::movegen::Vocab::lean(&kwg),
+            graphs: vocab,
             klv: &klv,
             lat: &lat,
         },
@@ -8682,6 +8725,11 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
         std::sync::Arc::new(kwg),
         std::sync::Arc::new(klv),
     );
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
 
     let dyn_ctx = if matches!(mover, SeatPicker::Dynamic | SeatPicker::SimmerDynamicRoot) {
         Some((
@@ -8765,7 +8813,7 @@ fn infer_fit<N: kwg::Node + Sync + Send + 'static, L: kwg::Node + Sync + Send + 
                 let mut weigh = WeighScratch::new();
                 let mut pool = Vec::new();
                 let mut play = None::<movegen::Play>;
-                let graphs = &wolges::movegen::Vocab::lean(kwg);
+                let graphs = vocab;
                 loop {
                     let game_idx = claimed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if game_idx >= num_games {
@@ -9189,6 +9237,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     quiet: bool,
 ) -> error::Returns<()> {
     let kwg = std::sync::Arc::new(kwg);
+    let vocab = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     let alphabet = game_config.alphabet();
     let num_letters = alphabet.len() as usize;
     let rack_size = game_config.rack_size() as usize;
@@ -9215,7 +9264,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         std::thread::scope(|s| -> error::Returns<Vec<(usize, BoardOpenness, Glance)>> {
             let mut thread_handles = Vec::new();
             for _ in 0..threads {
-                let (game_config, kwg, klv) = (&game_config, &kwg, &klv);
+                let (game_config, klv) = (&game_config, &klv);
                 let (lat, leave, no_leave, ln_binom, claimed) =
                     (&lat, &leave, &no_leave, &ln_binom, &claimed);
                 let tick = &tick;
@@ -9225,7 +9274,7 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         let mut scratch = OpennessScratch::default();
                         let mut pool = Vec::new();
                         let mut out = Vec::new();
-                        let graphs = &wolges::movegen::Vocab::lean(kwg);
+                        let graphs = vocab;
                         loop {
                             let i = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if i >= num_boards {
@@ -9437,6 +9486,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     }: OpennessMovesParams,
 ) -> error::Returns<()> {
     let kwg = std::sync::Arc::new(kwg);
+    let vocab = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     let seed = seed_or_random(seed)?;
     writeln!(std::io::stdout(), "seed: {seed}")?;
     let num_letters = game_config.alphabet().len() as usize;
@@ -9459,8 +9509,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         |s| -> error::Returns<(Vec<Position>, Vec<Candidate>)> {
             let mut thread_handles = Vec::new();
             for _ in 0..threads {
-                let (game_config, kwg, klv, claimed_games) =
-                    (&game_config, &kwg, &klv, &claimed_games);
+                let (game_config, klv, claimed_games) = (&game_config, &klv, &claimed_games);
                 let (lat, leave, no_leave, ln_binom) = (&lat, &leave, &no_leave, &ln_binom);
                 let (tick, weighed) = (&tick, &weighed);
                 thread_handles.push(s.spawn(move || -> error::Returns<(Vec<Position>, Vec<Candidate>)> {
@@ -9474,7 +9523,7 @@ fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut play = None::<movegen::Play>;
                 let mut out = Vec::new();
                 let mut cands = Vec::new();
-                let graphs = &wolges::movegen::Vocab::lean(kwg);
+                let graphs = vocab;
                 loop {
                     let game_idx = claimed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if game_idx >= num_games {
@@ -9864,13 +9913,12 @@ fn fit_within(sums: &WithinSums, scale: i64) -> error::Returns<WithinFit> {
 #[inline]
 fn play_out_hasty<N: kwg::Node, L: kwg::Node>(
     generator: &mut CompareMoveGenerator<false>,
-    (game_config, kwg, arm_tables, klv): PositionalTables<'_, N, L>,
+    (game_config, graphs, arm_tables, klv): PositionalTables<'_, N, L>,
     state: &mut game_state::GameState,
     rng: &mut GameRng,
     first: &movegen::Play,
     final_scores: &mut [i32],
 ) -> error::Returns<()> {
-    let graphs = &wolges::movegen::Vocab::lean(kwg);
     state.play(game_config, rng, first)?;
     while matches!(
         state.check_game_ended(game_config, final_scores)?,
@@ -9967,7 +10015,7 @@ struct PositionalWork {
 
 type PositionalTables<'a, N, L> = (
     &'a game_config::GameConfig,
-    &'a std::sync::Arc<kwg::Kwg<N>>,
+    &'a wolges::movegen::Vocab<'a, N>,
     &'a anagrams::ArmTables,
     &'a klv::Klv<L>,
 );
@@ -10085,6 +10133,7 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let num_bands = most_in_bag.div_ceil(rack_size).max(1);
     let scale = every_count_divides(move_picker::DEFT_FIELD);
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false)?;
+    let vocab = &wolges::movegen::Vocab::new(&game_config, &kwg)?;
     let t0 = std::time::Instant::now();
     let total_games = num_seeds * num_games;
     let claimed = std::sync::atomic::AtomicU64::new(0);
@@ -10094,10 +10143,10 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let sums = std::thread::scope(|s| -> error::Returns<Vec<WithinSums>> {
         let mut thread_handles = Vec::new();
         for _ in 0..threads {
-            let tables = (&game_config, &kwg, &arm_tables, &klv);
+            let tables = (&game_config, vocab, &arm_tables, &klv);
             let (claimed, tick, weighed, columns) = (&claimed, &tick, &weighed, &columns);
             thread_handles.push(s.spawn(move || -> error::Returns<Vec<WithinSums>> {
-                let (game_config, kwg, arm_tables, klv) = tables;
+                let (game_config, _, arm_tables, klv) = tables;
                 let mut candidates = movegen::KurniaMoveGenerator::new(game_config);
                 let mut game_state = game_state::GameState::new(game_config);
                 let mut work = PositionalWork {
@@ -10116,7 +10165,7 @@ fn positional_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         };
                 let mut play = None::<movegen::Play>;
                 let mut sums = (0..parts).map(|_| WithinSums::new(columns.count())).collect::<Vec<_>>();
-                let graphs = &wolges::movegen::Vocab::lean(kwg);
+                let graphs = vocab;
                 loop {
                     let job = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if job >= total_games {
@@ -10577,6 +10626,11 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         use_writer(path);
     }
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let vocab = &if lean {
+        wolges::movegen::Vocab::lean(&kwg)
+    } else {
+        wolges::movegen::Vocab::new(&game_config, &kwg)?
+    };
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -10743,7 +10797,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &board_tiles,
             game_config: &game_config,
-            vocab: &wolges::movegen::Vocab::lean(&kwg),
+            vocab,
             anagrams,
             rack_lengths,
             klv: &klv,
