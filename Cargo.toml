@@ -89,6 +89,10 @@ name = "reply-cv"
 path = "src/main_reply_cv.rs"
 
 [[example]]
+name = "aspiration_sweep"
+test = true
+
+[[example]]
 name = "arm_table_bytes"
 crate-type = ["lib"]
 test = true
