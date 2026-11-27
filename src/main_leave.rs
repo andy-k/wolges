@@ -4143,6 +4143,30 @@ impl BoardOrder {
 }
 
 #[inline]
+fn resume_snapshot_leaves<L: kwg::Node>(
+    lat: &census::MultisetLattice,
+    bytes: &[u8],
+    resume_klv: &klv::Klv<L>,
+    rack_size: usize,
+    tally_buf: &mut [u8],
+    (leave_cur, ever): (&mut [i32], &mut [bool]),
+) -> error::Returns<()> {
+    for (leave, _) in klv::read_leaves_alloc::<L>(bytes)? {
+        if leave.len() > rack_size {
+            continue;
+        }
+        tally_buf.fill(0);
+        for &tile in leave.iter() {
+            tally_buf[tile as usize] += 1;
+        }
+        let idx = lat.rank(tally_buf)? as usize;
+        leave_cur[idx] = resume_klv.leave_value_from_tally(tally_buf).raw();
+        ever[idx] = true;
+    }
+    Ok(())
+}
+
+#[inline]
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -4289,20 +4313,14 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         // valued: those take its values and count as valued, and every other
         // multiset keeps leave0's value, all as in one unbroken run
         let mut ever = lat.dense(false)?;
-        for (leave, _) in klv::read_leaves_alloc::<L>(&bytes)? {
-            if leave.len() > rack_size {
-                wolges::return_error!(format!(
-                    "{path} holds a leave of more than {rack_size} tiles"
-                ))
-            }
-            tally_buf.fill(0);
-            for &tile in leave.iter() {
-                tally_buf[tile as usize] += 1;
-            }
-            let idx = lat.rank(&tally_buf)? as usize;
-            leave_cur[idx] = resume_klv.leave_value_from_tally(&tally_buf).raw();
-            ever[idx] = true;
-        }
+        resume_snapshot_leaves(
+            &lat,
+            &bytes,
+            &resume_klv,
+            rack_size,
+            &mut tally_buf,
+            (&mut leave_cur, &mut ever),
+        )?;
         let mut exact = leave_cur.iter().map(|&v| f64::from(v)).collect::<Vec<_>>();
         let means = census_means_path(&path);
         match read_input(&means) {
@@ -12824,6 +12842,42 @@ WCMP_P1_SCORE 402.000000
             known > 100 && unknown > 0,
             "{known} known, {unknown} unknown"
         );
+    }
+
+    #[test]
+    fn a_resumed_census_passes_over_a_leave_longer_than_the_rack() {
+        let leaves: [bites::Bites; 3] = [[1][..].into(), [1, 2][..].into(), [1, 2, 2][..].into()];
+        let leaves_kwg = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &leaves,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+        bytes.extend_from_slice(&leaves_kwg);
+        bytes.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
+        for v in [1.0f32, 2.0, 3.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let resume_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let lat = census::MultisetLattice::new(3, 2).unwrap();
+        let mut leave_cur = lat.dense(0i32).unwrap();
+        let mut ever = lat.dense(false).unwrap();
+        resume_snapshot_leaves(
+            &lat,
+            &bytes,
+            &resume_klv,
+            2,
+            &mut [0u8; 3],
+            (&mut leave_cur, &mut ever),
+        )
+        .unwrap();
+        assert_eq!(ever.iter().filter(|&&e| e).count(), 2);
+        let at = |tally: &[u8]| leave_cur[lat.rank(tally).unwrap() as usize];
+        assert_eq!(at(&[0, 1, 0]), equity::Points::new(1).scaled().raw());
+        assert_eq!(at(&[0, 1, 1]), equity::Points::new(2).scaled().raw());
     }
 
     #[test]
