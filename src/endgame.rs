@@ -776,6 +776,48 @@ struct Candidate {
     placed: u8, // the tiles it places
 }
 
+struct RefutingPlacement {
+    parent: u64,
+    down: bool,
+    lane: i8,
+    idx: i8,
+    word: [u8; i8::MAX as usize],
+    len: usize,
+    score: equity::Equity,
+}
+
+impl RefutingPlacement {
+    fn of(parent: u64, play: &movegen::Play) -> Option<Self> {
+        let movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            score,
+        } = play
+        else {
+            return None;
+        };
+        let mut letters = [0; i8::MAX as usize];
+        letters[..word.len()].copy_from_slice(word);
+        Some(Self {
+            parent,
+            down: *down,
+            lane: *lane,
+            idx: *idx,
+            word: letters,
+            len: word.len(),
+            score: *score,
+        })
+    }
+
+    fn is(&self, play: &movegen::Play) -> bool {
+        matches!(play, movegen::Play::Place { down, lane, idx, word, score }
+            if self.down == *down && self.lane == *lane && self.idx == *idx
+                && self.word[..self.len] == **word && self.score == *score)
+    }
+}
+
 #[inline(always)]
 fn add_placement(
     list: &mut Vec<Candidate>,
@@ -1737,10 +1779,11 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     stopped: Option<(u64, u8, i8, equity::Equity, equity::Equity)>, // which pass the frames are, when one stopped
     resumed: u64,            // the passes this solver went on with from a step before
     line: Option<Box<Line>>, // the line collect_pv read last
-    cadence: u64,            // the nodes between looks at the clock, 1 to LIMIT_CADENCE
-    next_look: u64,          // the nodes this pass searches before the next look
+    refutations: Vec<Option<RefutingPlacement>>,
+    cadence: u64,   // the nodes between looks at the clock, 1 to LIMIT_CADENCE
+    next_look: u64, // the nodes this pass searches before the next look
     last_look: std::time::Duration, // the time at the last look, from the solve's start
-    threads: usize,          // the solve's threads, one lane each (1: the plain search)
+    threads: usize, // the solve's threads, one lane each (1: the plain search)
     verdicts: Vec<Option<(equity::Equity, bool)>>, // by split node's order: a bound on a failing move
     helper_tables: Vec<Option<KeptTable>>,         // each lane's table, kept from pass to pass
 }
@@ -1808,6 +1851,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             stopped: None,
             resumed: 0,
             line: None,
+            refutations: Vec::new(),
             cadence: 1,
             next_look: 1,
             last_look: std::time::Duration::ZERO,
@@ -1875,6 +1919,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             stopped,
             resumed,
             line,
+            refutations,
             cadence,
             next_look,
             last_look,
@@ -1916,6 +1961,7 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         *stopped = None;
         *resumed = 0;
         *line = None;
+        refutations.clear();
         *cadence = 1;
         *next_look = 1;
         *last_look = std::time::Duration::ZERO;
@@ -3116,6 +3162,7 @@ impl<
         self.racks[1].clear();
         self.racks[1].extend_from_slice(racks[1]);
         self.scoreless = scoreless_counts([passes, zeros]);
+        self.work_buffer.refutations.clear();
     }
 
     // select the first plays checked for this empty-bag position
@@ -4981,14 +5028,38 @@ impl<
         let table_first =
             table_play < PASS_PLAY && (table_play as usize) < self.work_buffer.orders[ply].len();
         let work_buffer = &mut self.work_buffer;
+        let refuting = if !root && work_buffer.in_bag.is_none() && ply > 0 {
+            work_buffer
+                .refutations
+                .get(ply)
+                .and_then(Option::as_ref)
+                .filter(|reply| reply.parent == work_buffer.serials[ply - 1])
+        } else {
+            None
+        };
+        let mut prioritized = table_first;
         {
             let (list, ordered) = (&mut work_buffer.lists[ply], &mut work_buffer.orders[ply]);
-            if table_first {
+            if let Some(found) = refuting.and_then(|reply| {
+                list.iter().position(|candidate| {
+                    candidate.plays_out && candidate.valuation >= beta && reply.is(&candidate.play)
+                })
+            }) {
+                order(list, ordered, 0, table_play);
+                if let Some(at) = ordered
+                    .iter()
+                    .position(|&key| ordered_play_index(key) == found)
+                {
+                    ordered[..=at].rotate_right(1);
+                }
+                prioritized = true;
+            } else if table_first {
                 order(list, ordered, 0, table_play);
             } else {
                 order_first(list, ordered);
             }
         }
+        let table_first = prioritized;
         if depth == 1 && !work_buffer.lists[ply].is_empty() {
             return Ok(Some(self.search_last_ply(node, root, key, table_first)));
         }
@@ -5522,6 +5593,12 @@ impl<
     fn finish(&mut self, frame: &Frame) {
         if frame.root {
             self.work_buffer.pass_best = frame.best_play;
+        } else if self.work_buffer.in_bag.is_none()
+            && frame.node.ply > 0
+            && frame.best.value >= frame.node.beta
+            && frame.best_play < PASS_PLAY
+        {
+            self.remember_refutation(frame.node.ply, frame.best_play);
         }
         self.work_buffer.store(
             frame.key,
@@ -5542,6 +5619,21 @@ impl<
                 },
             },
         );
+    }
+
+    fn remember_refutation(&mut self, ply: usize, play: u16) {
+        let work = &mut self.work_buffer;
+        let Some(candidate) = work.lists[ply].iter().find(|c| c.index == play) else {
+            return;
+        };
+        let more = (ply + 1).saturating_sub(work.refutations.len());
+        if more > 0 {
+            if room_in(work.memory_limit.as_ref(), &mut work.refutations, more).is_err() {
+                return;
+            }
+            work.refutations.resize_with(ply + 1, || None);
+        }
+        work.refutations[ply] = RefutingPlacement::of(work.serials[ply - 1], &candidate.play);
     }
 
     // the top frame takes the value its child returned: a move's, unplaced
@@ -13297,6 +13389,64 @@ mod tests {
             }
         }
         assert!(cuts > 0);
+    }
+
+    #[test]
+    fn a_refuting_out_goes_first_against_a_sibling() {
+        use super::{Enter, Frame, NO_PLAY, order};
+
+        let gc = game_config::make_english_game_config();
+        let kwg = kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap();
+        let tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut solver =
+            EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &kwg, &tables).unwrap();
+        let player_idx = 0;
+        let child = 1;
+        for (_, pos) in all_positions() {
+            solver.init(&pos.board, [&pos.racks[0], &pos.racks[1]]);
+            solver.reset_position();
+            solver.generate(0, player_idx ^ 1, false).unwrap();
+            solver.generate(child, player_idx, false).unwrap();
+            let work = &mut solver.work_buffer;
+            order(&mut work.lists[child], &mut work.orders[child], 0, NO_PLAY);
+            let Some(candidate) = work.orders[child][1.min(work.orders[child].len())..]
+                .iter()
+                .map(|&key| &work.lists[child][ordered_play_index(key)])
+                .find(|c| c.plays_out)
+            else {
+                continue;
+            };
+            let (play, index, beta) =
+                (candidate.play.clone(), candidate.index, candidate.valuation);
+            let scoreless = solver.entering();
+            let node = Enter {
+                ply: child,
+                player_idx,
+                depth: 2,
+                alpha: equity::Equity::NEG_INFINITY,
+                beta,
+                scoreless,
+            };
+            let mut frame = Frame::new(node, false, solver.node_key(player_idx, scoreless), true);
+            frame.best.value = beta;
+            frame.best_play = index;
+            solver.finish(&frame);
+            solver.work_buffer.table.renew();
+            assert!(solver.enter_node(node, Some(false)).unwrap().is_none());
+            let work = &solver.work_buffer;
+            let first = &work.lists[child][ordered_play_index(work.orders[child][0])];
+            assert!(first.play == play);
+            assert_eq!(first.index, index);
+
+            solver.work_buffer.frames.clear();
+            solver.generate(0, player_idx ^ 1, false).unwrap();
+            assert!(solver.enter_node(node, Some(false)).unwrap().is_none());
+            let work = &solver.work_buffer;
+            let first = &work.lists[child][ordered_play_index(work.orders[child][0])];
+            assert!(first.play != play);
+            return;
+        }
+        panic!("no sibling has a later play out");
     }
 
     #[test]
