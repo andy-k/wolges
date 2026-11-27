@@ -4380,11 +4380,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     }
 
     if start_gen >= gens {
-        return Err(format!(
-            "census resume: {start_gen} generation(s) already completed but the \
-             spec has only {gens}; extend the board-count spec"
-        )
-        .into());
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "census: {start_gen} of {gens} {} done, none left to run",
+            plural(gens as u64, "generation", "generations"),
+        )?;
+        return Ok(());
     }
 
     // the leaves as the means found them, before the rounding to whole
@@ -12881,6 +12882,71 @@ WCMP_P1_SCORE 402.000000
     }
 
     #[test]
+    fn a_census_resumed_at_its_last_generation_runs_none() {
+        let game_config::GameConfig::Static(english) = game_config::make_english_game_config();
+        let game_config = game_config::GameConfig::Static(game_config::StaticGameConfig {
+            rack_size: 2,
+            ..english
+        });
+        let leaves: [bites::Bites; 1] = [[1][..].into()];
+        let leaves_kwg = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &leaves,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+        bytes.extend_from_slice(&leaves_kwg);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        let dir = format!(
+            "{}/target/census_resume-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let snapshot = format!("{dir}/census-gen-6ae6-01.klv2");
+        std::fs::write(&snapshot, &bytes).unwrap();
+        let mut words = ["AE", "AT", "TA"]
+            .iter()
+            .map(|word| word.bytes().map(|c| c - b'A' + 1).collect::<Vec<u8>>()[..].into())
+            .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let klv = std::sync::Arc::new(klv::Klv::<kwg::Node24>::empty().unwrap());
+        generate_census_leaves(
+            game_config,
+            kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+            klv.clone(),
+            klv,
+            CensusParams {
+                board_counts: vec![1],
+                seed: Some(1),
+                threads: 1,
+                resume: Some(snapshot.clone()),
+                min_boards: 0,
+                keep_state: false,
+                continue_state: None,
+                full: false,
+                completion_weights: false,
+                per_board_centering: false,
+                quiet: true,
+            },
+        )
+        .unwrap();
+        std::fs::remove_file(&snapshot).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
     fn a_continued_census_takes_another_seed() {
         assert_eq!(continued_seed(None, 5), 5);
         assert_eq!(continued_seed(Some(6), 5), 6);
@@ -12940,12 +13006,7 @@ WCMP_P1_SCORE 402.000000
         );
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&dir).unwrap();
-        assert!(
-            !continued
-                .unwrap_err()
-                .to_string()
-                .contains("keeps its seed")
-        );
+        continued.unwrap();
     }
 
     #[test]
