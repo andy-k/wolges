@@ -1864,7 +1864,6 @@ struct WorkBuffer<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
     can_grow: bool, // the memory limit has not yet refused the table more room this solve
     max_depth: i8,  // this pass's depth, for progress
     finished: i8,   // the deepest pass this solve finished, for the principal variation
-    depth_cap: i8,  // how deep it may search: to the end, or a deepening bag search's pass depth
     time_limit: Option<std::time::Duration>,
     state_limit: Option<usize>,
     memory_limit: Option<MemoryLimit>,
@@ -1941,7 +1940,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             can_grow: true,
             max_depth: 0,
             finished: 0,
-            depth_cap: COMPLETE,
             time_limit: None,
             state_limit: None,
             memory_limit: None,
@@ -2011,7 +2009,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
             can_grow,
             max_depth,
             finished,
-            depth_cap,
             time_limit,
             state_limit,
             memory_limit,
@@ -2054,7 +2051,6 @@ impl<G: movegen::LaneBits, const JUMPS: bool, const ANY_SIDE: bool> WorkBuffer<G
         *can_grow = true;
         *max_depth = 0;
         *finished = 0;
-        *depth_cap = COMPLETE;
         *time_limit = None;
         *state_limit = None;
         *memory_limit = None;
@@ -4694,26 +4690,12 @@ impl<
             self.work_buffer.finished = max_depth;
             last_valuation = Some(value);
         }
-        // a deepening search with a tile in the bag asks no deeper than its pass
-        let cap = self.work_buffer.depth_cap;
         while (max_depth as usize) < longest {
-            if max_depth >= cap {
-                // short of the end, the deepest pass asked for answers
-                return Ok(Solved {
-                    value: last_valuation,
-                    depth: max_depth,
-                    exact: false,
-                    partway: None,
-                    out_of_memory: false,
-                    out_of_memory_in_moves: false,
-                });
-            }
             max_depth = if every_depth || max_depth < 2 {
                 max_depth + 1
             } else {
                 (max_depth + 2).min(longest as i8)
-            }
-            .min(cap);
+            };
             self.work_buffer.max_depth = max_depth;
             // the first pass always finishes, so a solve cut short still has a value
             self.work_buffer.check_limits = max_depth > 1 && limited;
@@ -6693,10 +6675,14 @@ impl<
     // a stopped pass taken out of the work buffer with the lists its frames
     // read, for a table taken or a line collected; none without one
     fn take_paused_depth(&mut self) -> Option<Box<Stopped>> {
+        self.take_depth().map(Box::new)
+    }
+
+    fn take_depth(&mut self) -> Option<Stopped> {
         let work_buffer = &mut self.work_buffer;
         let pass = work_buffer.stopped.take()?;
         let pending = work_buffer.pending.take()?;
-        Some(Box::new(Stopped {
+        Some(Stopped {
             frames: std::mem::take(&mut work_buffer.frames),
             pending,
             pass,
@@ -6709,14 +6695,17 @@ impl<
             serials: std::mem::take(&mut work_buffer.serials),
             siblings: std::mem::take(&mut work_buffer.siblings),
             generated: work_buffer.generated,
-        }))
+        })
     }
 
     // a stopped pass set aside put back, to be resumed
     fn restore_paused_depth(&mut self, stopped: Option<Box<Stopped>>) {
-        let Some(stopped) = stopped else {
-            return;
-        };
+        if let Some(stopped) = stopped {
+            self.restore_depth(*stopped);
+        }
+    }
+
+    fn restore_depth(&mut self, stopped: Stopped) {
         let work_buffer = &mut self.work_buffer;
         work_buffer.frames = stopped.frames;
         work_buffer.pending = Some(stopped.pending);
@@ -6745,23 +6734,6 @@ impl<
     const ANY_SIDE: bool,
 > EndgameSolver<'a, N, L, LEAN, G, JUMPS, ANY_SIDE>
 {
-    // an endgame inside a search with a tile in the bag, on that search's clock
-    // and within its limits, to the depth of the search's pass, telling its
-    // listener; one short of its end makes the search's answer inexact. Once
-    // the search may stop, a limit that has passed, or that stops the endgame
-    // short of the pass's depth, stops the search: an error, with stopped set
-    #[inline(always)]
-    fn solve_in_bag(
-        &mut self,
-        player_idx: u8,
-        limits: &BagLimits,
-        exact: &mut bool,
-    ) -> error::Returns<equity::Equity> {
-        self.solve_in_bag_below(player_idx, equity::Equity::INFINITY, limits, exact)
-    }
-
-    // as solve_in_bag, searched below beta alone (run_id_loop_below): a value
-    // not below beta says only that the endgame is worth that much at least
     #[inline(always)]
     fn solve_in_bag_below(
         &mut self,
@@ -6775,26 +6747,27 @@ impl<
             limits.stopped.set(true);
             return Err(Box::new(LimitStopped));
         }
+        let longest = self.longest_line(player_idx) as i8;
+        let depth = longest.min(limits.depth.get());
+        self.begin_search(&Limits {
+            time: limits.time,
+            states: limits.states,
+            memory: limits.memory,
+            clock: None,
+        });
         let work_buffer = &mut self.work_buffer;
         work_buffer.t0 = Some(limits.t0);
         work_buffer.dur_movegen = limits.dur_movegen.get();
         work_buffer.in_bag = Some(limits.endgames.get());
         work_buffer.in_bag_moves = limits.moves.get();
+        work_buffer.resumable = may_stop || work_buffer.stopped.is_some();
+        work_buffer.check_limits = may_stop;
+        work_buffer.max_depth = depth;
+        work_buffer.nodes = 0;
+        work_buffer.next_look = work_buffer.cadence;
+        work_buffer.cut_short = false;
         self.progress = limits.progress.take();
-        work_buffer.depth_cap = limits.depth.get();
-        let solved = self.run_id_loop_below(
-            player_idx,
-            false,
-            &Limits {
-                time: limits.time,
-                states: limits.states,
-                memory: limits.memory,
-                clock: None,
-            },
-            None,
-            beta,
-            DEFAULT_ASPIRATION_WINDOW_POINTS,
-        );
+        let searched = self.root_search(player_idx, depth, equity::Equity::NEG_INFINITY, beta);
         let work_buffer = &mut self.work_buffer;
         limits.dur_movegen.set(work_buffer.dur_movegen);
         limits.endgames.set(limits.endgames.get() + 1);
@@ -6802,24 +6775,18 @@ impl<
         limits.progress.set(self.progress.take());
         work_buffer.in_bag = None;
         work_buffer.in_bag_moves = None;
-        work_buffer.depth_cap = COMPLETE;
-        let solved = solved?;
-        let memory = !solved.exact && solved.out_of_memory;
-        limits
-            .memory_stopped
-            .set(limits.memory_stopped.get() | memory);
-        if may_stop && !solved.exact && solved.depth < limits.depth.get() {
+        work_buffer.resumable = false;
+        if work_buffer.cut_short {
             limits.stopped.set(true);
+            let memory = work_buffer.movegen_cut || work_buffer.memory_cut;
+            limits
+                .memory_stopped
+                .set(limits.memory_stopped.get() || memory);
             return Err(Box::new(LimitStopped));
         }
-        *exact &= solved.exact;
-        match solved.value {
-            Some(value) => Ok(value),
-            None => {
-                limits.stopped.set(true);
-                Err(Box::new(LimitStopped))
-            }
-        }
+        let searched = searched?;
+        *exact &= searched.complete || depth == longest;
+        Ok(searched.value)
     }
 
     // swap tables with sub, to lend or take back; the values are for one
@@ -6969,6 +6936,9 @@ impl<
         }
         if gc.num_passes_to_end() == 0 && gc.num_zeros_to_end() == 0 {
             return Ok(Err(PegUnsupported::PassWithoutForcedEnd));
+        }
+        if progress.state.done {
+            return Ok(Ok(peg_bag_answer(&progress.state, false)));
         }
         self.work_buffer.clock = limits.clock;
         let mut limits = BagLimits::new(limits, self.progress.take());
@@ -7274,6 +7244,15 @@ impl<
         if state.searched.shards.is_empty() {
             state.searched = BagValued::new(threads);
         }
+        if !state.done && (may_stop || threads > 1) && state.kept_splits.is_empty() {
+            if let Err(e) = limits.room(&mut state.kept_splits, state.moves.len()) {
+                if limits.stopped.get() {
+                    return Ok(peg_bag_answer(state, limits.out_of_memory()));
+                }
+                return Err(e);
+            }
+            state.kept_splits.resize_with(state.moves.len(), Vec::new);
+        }
         if !steered.is_empty() && state.standing.len() != state.moves.len() {
             state.stand(steered);
         }
@@ -7346,6 +7325,21 @@ impl<
                             splits: if kept { &state.best_splits[..] } else { &[] },
                         }
                     });
+                    let kept = match state.kept_splits.get_mut(i) {
+                        Some(kept) => {
+                            let missing = splits.len() - kept.len();
+                            if let Err(e) = limits.room(kept, missing) {
+                                if limits.stopped.get() {
+                                    stopped = true;
+                                    break;
+                                }
+                                return Err(e);
+                            }
+                            kept.resize(splits.len(), None);
+                            &mut kept[..]
+                        }
+                        None => &mut [],
+                    };
                     match value_root_move(
                         &mut search,
                         splits,
@@ -7353,9 +7347,12 @@ impl<
                         play,
                         (score_diff, beat, above),
                         order,
-                        found,
+                        (found, kept),
                     ) {
                         Ok(value) => {
+                            if let Some(kept) = state.kept_splits.get_mut(i) {
+                                *kept = Vec::new();
+                            }
                             if *cuts {
                                 let halves = halves_down(value.win, splits);
                                 beat = Some(beat.map_or(halves, |beat| beat.max(halves)));
@@ -7401,6 +7398,10 @@ impl<
                     return Ok(peg_bag_answer(state, limits.out_of_memory()));
                 }
                 break;
+            }
+            state.searched.clear_pauses();
+            for kept in &mut state.kept_splits {
+                *kept = Vec::new();
             }
             let best = peg_bag_best(&state.reached, &state.valued);
             state.answer = Some((best, state.depth));
@@ -7514,15 +7515,20 @@ impl<
         if state.took.len() != state.moves.len() * num_splits {
             return Ok(true); // stopped, nothing valued
         }
-        // the tasks' order, what each found, and their hand-overs; the moves'
-        // splits not yet valued: what each found is kept reserved through the
-        // pass, as it is made after it
-        type Found = Option<(f64, f64, bool)>;
-        let Ok(mut lists) = limits.reserve(
-            tasks
-                * (std::mem::size_of::<usize>()
-                    + std::mem::size_of::<Found>()
-                    + std::mem::size_of::<HandOver>())
+        for &i in &state.order[base..] {
+            let row = &mut state.kept_splits[i];
+            let missing = num_splits - row.len();
+            if let Err(e) = limits.room(row, missing) {
+                if limits.stopped.get() {
+                    return Ok(true);
+                }
+                return Err(e);
+            }
+            row.resize(num_splits, None);
+        }
+        let kept = &state.kept_splits;
+        let Ok(lists) = limits.reserve(
+            tasks * (std::mem::size_of::<usize>() + std::mem::size_of::<HandOver>())
                 + rest
                     * (std::mem::size_of::<AtomicUsize>()
                         + 2 * std::mem::size_of::<AtomicU64>()
@@ -7535,13 +7541,17 @@ impl<
         // the costliest by the pass before first, ties in the order
         let mut taking = cells_of(Some(tasks), 0usize)?;
         (taking.iter_mut().enumerate()).for_each(|(task, at)| *at = task);
+        taking.retain(|&task| {
+            let i = state.order[base + task / num_splits];
+            kept[i][task % num_splits].is_none()
+        });
         taking.sort_by_key(|&task| {
             let i = state.order[base + task / num_splits];
             std::cmp::Reverse(state.took[i * num_splits + task % num_splits])
         });
         // each move's splits not yet valued, and the moves valued in every one
-        let unvalued = (0..rest)
-            .map(|_| AtomicUsize::new(num_splits))
+        let unvalued = (state.order[base..].iter())
+            .map(|&i| AtomicUsize::new(kept[i].iter().filter(|cell| cell.is_none()).count()))
             .collect::<Vec<_>>();
         let moves_valued = AtomicUsize::new(state.reached.len());
         let all = splits.iter().map(|split| split.2).sum::<u64>().max(1);
@@ -7552,6 +7562,15 @@ impl<
         state.cut.clear();
         state.cut.resize_with(rest, || AtomicBool::new(false));
         let (lost, won, cut) = (&state.lost[..], &state.won[..], &state.cut[..]);
+        for (m, &i) in state.order[base..].iter().enumerate() {
+            for (split, saved) in splits.iter().zip(&kept[i]) {
+                if let Some((_, win, _)) = *saved {
+                    let ways = split.2;
+                    lost[m].fetch_add(2 * ways - halves_up(win, ways), Relaxed);
+                    won[m].fetch_add((win * (2 * ways) as f64).floor() as u64, Relaxed);
+                }
+            }
+        }
         let beat = AtomicU64::new(if cuts && !state.reached.is_empty() {
             let best = peg_bag_best(&state.reached, &state.valued);
             halves_down(state.valued[best].as_ref().unwrap().win, splits)
@@ -7566,7 +7585,6 @@ impl<
         // each task's hand-over (HandOver), and how many tasks that hand the
         // turn over are still being valued
         let hand_overs = (0..tasks).map(|_| HandOver::new()).collect::<Vec<_>>();
-        lists.keep(tasks * std::mem::size_of::<Found>());
         let handing = AtomicUsize::new(0);
         // a thread's share: each move and split it valued (by its task, the
         // move's place in the rest of the order times the splits, plus the
@@ -7804,20 +7822,20 @@ impl<
             limits.memory_stopped.set(true);
         }
         let mut stopped = false;
-        let mut found = cells_of(Some(tasks), None)?;
         drop(lists);
         for share in shares {
             let (mine, stopped_here) = share?;
             stopped |= stopped_here;
             for (task, value, win, exact, took) in mine {
-                found[task] = Some((value, win, exact));
                 let i = state.order[base + task / num_splits];
-                state.took[i * num_splits + task % num_splits] = took;
+                let split = task % num_splits;
+                state.kept_splits[i][split] = Some((value, win, exact));
+                state.took[i * num_splits + split] = took;
             }
         }
         let (mut taken, mut left) = (Vec::new(), Vec::new());
-        for (m, per_split) in found.chunks_mut(num_splits.max(1)).enumerate() {
-            let i = state.order[base + m];
+        for (m, &i) in state.order[base..].iter().enumerate() {
+            let per_split = &mut state.kept_splits[i];
             if cut[m].load(Relaxed) && !per_split.iter().all(Option::is_some) {
                 let exact =
                     (per_split.iter()).all(|found| found.as_ref().is_none_or(|found| found.2));
@@ -7839,6 +7857,7 @@ impl<
                 state.pass_exact &= exact;
                 state.reached.push(i);
                 taken.push(i);
+                *per_split = Vec::new();
             } else if per_split.iter().all(Option::is_some) {
                 let exact = (per_split.iter()).all(|found| found.as_ref().unwrap().2);
                 let (mut win, mut marg, mut total) = (0.0, 0.0, 0u64);
@@ -7853,6 +7872,7 @@ impl<
                 state.valued[i] = Some(value);
                 state.reached.push(i);
                 taken.push(i);
+                *per_split = Vec::new();
             } else {
                 left.push(i);
             }
@@ -8261,9 +8281,10 @@ fn value_root_move<
     play: &movegen::Play,
     (score_diff, beat, above): (f64, Option<u64>, Option<AboveBest<'_>>),
     order: &[usize],
-    found: &mut Vec<(f64, f64)>,
+    (found, kept): (&mut Vec<(f64, f64)>, &mut [Option<RootSplitValue>]),
 ) -> error::Returns<PegBagValue> {
     let depth = search.limits.depth.get();
+    let above = above.filter(|_| kept.is_empty());
     if let (Some(above), PegModel::InfoSets, COMPLETE) = (&above, search.model, depth)
         && splits.len() > 1
         && let Some(value) =
@@ -8321,7 +8342,21 @@ fn value_root_move<
                 ..mean
             });
         }
-        let (value, chance) = value_root_split(search, split, at, play, score_diff, None)?;
+        let prior_exact = search.exact;
+        let (value, chance) = match kept.get_mut(s) {
+            Some(Some((value, chance, exact))) => {
+                search.exact &= *exact;
+                (*value, *chance)
+            }
+            Some(saved) => {
+                search.exact = true;
+                let (value, chance) = value_root_split(search, split, at, play, score_diff, None)?;
+                *saved = Some((value, chance, search.exact));
+                search.exact &= prior_exact;
+                (value, chance)
+            }
+            None => value_root_split(search, split, at, play, score_diff, None)?,
+        };
         found[s] = (value, chance);
         let ways = split.2;
         won += halves_up(chance, ways);
@@ -8575,6 +8610,8 @@ struct PegBagRoot<'r, At: Fn(&BagLimits, &[u8], &[u8], &mut InBag) -> error::Ret
 // ended (none where the memory limit refused the room); whether that answer is
 // final; and the answer's valued moves best first, with each move's place
 // among them
+type RootSplitValue = (f64, f64, bool);
+
 #[derive(Default)]
 struct PegBagState {
     moves: Vec<movegen::Play>,
@@ -8598,6 +8635,7 @@ struct PegBagState {
     stale: Vec<bool>,  // each answer value kept from an older pass
     split_order: Vec<usize>,
     split_found: Vec<(f64, f64)>,
+    kept_splits: Vec<Vec<Option<RootSplitValue>>>,
     best_splits: Vec<(f64, f64)>,
     best_splits_of: Option<usize>,
     others: (u64, u64),
@@ -9995,6 +10033,89 @@ impl BagArena {
 struct BagValued {
     shards: Box<[std::sync::Mutex<std::sync::Arc<BagShard>>]>,
     under: Box<[std::sync::Arc<BagShard>]>,
+    pauses: BagWork<BagDepth, Stopped>,
+}
+
+type BagDepth = (u64, i8, equity::Equity);
+
+enum BagWorkSlot<K, T> {
+    Empty,
+    Running,
+    Paused(K, T),
+}
+
+struct BagWork<K, T> {
+    slots: std::sync::Mutex<Vec<BagWorkSlot<K, T>>>,
+    has_pauses: std::sync::atomic::AtomicBool,
+}
+
+impl<K, T> Default for BagWork<K, T> {
+    fn default() -> Self {
+        Self {
+            slots: Default::default(),
+            has_pauses: Default::default(),
+        }
+    }
+}
+
+impl<K: PartialEq, T> BagWork<K, T> {
+    fn start(&self, key: &K, limits: &BagLimits) -> error::Returns<(Option<usize>, Option<T>)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let may_stop = limits.may_stop.get();
+        if !may_stop && !self.has_pauses.load(Relaxed) {
+            return Ok((None, None));
+        }
+        let mut slots = self.slots.lock().unwrap();
+        if let Some(i) = slots
+            .iter()
+            .position(|slot| matches!(slot, BagWorkSlot::Paused(at, _) if at == key))
+        {
+            let BagWorkSlot::Paused(_, work) =
+                std::mem::replace(&mut slots[i], BagWorkSlot::Running)
+            else {
+                unreachable!("paused work");
+            };
+            self.has_pauses.store(
+                slots
+                    .iter()
+                    .any(|slot| matches!(slot, BagWorkSlot::Paused(..))),
+                Relaxed,
+            );
+            return Ok((Some(i), Some(work)));
+        }
+        if !may_stop {
+            return Ok((None, None));
+        }
+        if let Some(i) = slots
+            .iter()
+            .position(|slot| matches!(slot, BagWorkSlot::Empty))
+        {
+            slots[i] = BagWorkSlot::Running;
+            return Ok((Some(i), None));
+        }
+        limits.room(&mut slots, 1)?;
+        let i = slots.len();
+        slots.push(BagWorkSlot::Running);
+        Ok((Some(i), None))
+    }
+
+    fn finish(&self, slot: Option<usize>, key: K, work: Option<T>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(i) = slot {
+            let mut slots = self.slots.lock().unwrap();
+            slots[i] = if let Some(work) = work {
+                self.has_pauses.store(true, Relaxed);
+                BagWorkSlot::Paused(key, work)
+            } else {
+                BagWorkSlot::Empty
+            };
+        }
+    }
+
+    fn clear(&mut self) {
+        self.slots.get_mut().unwrap().clear();
+        *self.has_pauses.get_mut() = false;
+    }
 }
 
 // one shard of what the search has valued, by key, each kind in a table of its
@@ -10206,7 +10327,7 @@ impl BagValued {
         let copies = reserve_in(memory.as_ref(), bytes)?;
         let shared = Self {
             shards: shards.into_iter().map(std::sync::Mutex::new).collect(),
-            under: Default::default(),
+            ..Default::default()
         };
         Some((shared, copies))
     }
@@ -10215,7 +10336,7 @@ impl BagValued {
     fn new(threads: usize) -> Self {
         Self {
             shards: (0..threads.max(1)).map(|_| Default::default()).collect(),
-            under: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -10229,7 +10350,12 @@ impl BagValued {
             under: (under.shards.iter())
                 .map(|shard| shard.lock().unwrap().clone())
                 .collect(),
+            ..Default::default()
         }
+    }
+
+    fn clear_pauses(&mut self) {
+        self.pauses.clear();
     }
 
     // what read finds for key in the shard that holds it, else in the one
@@ -10772,19 +10898,7 @@ impl<
             self.exact &= exact;
             return Ok(value);
         }
-        self.sub.init_after_scoreless_turns(
-            &pos.board,
-            [&pos.racks[0], &pos.racks[1]],
-            u16::from(pos.passes),
-            u16::from(pos.zeros),
-        );
-        let mut exact = true;
-        let value = f64::from(
-            self.sub
-                .solve_in_bag(pos.mover, self.limits, &mut exact)?
-                .raw(),
-        );
-        self.exact &= exact;
+        let (value, exact) = self.search_endgame(pos, key, equity::Equity::INFINITY)?;
         self.keep_endgame(key, value, exact);
         Ok(value)
     }
@@ -10825,25 +10939,39 @@ impl<
             self.exact &= exact;
             return Ok((value < beta).then_some(value));
         }
-        self.sub.init_after_scoreless_turns(
-            &pos.board,
-            [&pos.racks[0], &pos.racks[1]],
-            u16::from(pos.passes),
-            u16::from(pos.zeros),
-        );
-        let mut exact = true;
-        let value = f64::from(
-            (self.sub)
-                .solve_in_bag_below(pos.mover, beta_equity(beta)?, self.limits, &mut exact)?
-                .raw(),
-        );
-        self.exact &= exact;
+        let (value, exact) = self.search_endgame(pos, key, beta_equity(beta)?)?;
         if value < beta {
             self.keep_endgame(key, value, exact);
             Ok(Some(value))
         } else {
             Ok(None)
         }
+    }
+
+    fn search_endgame(
+        &mut self,
+        pos: &InBag,
+        key: u64,
+        beta: equity::Equity,
+    ) -> error::Returns<(f64, bool)> {
+        self.sub.init_after_scoreless_turns(
+            &pos.board,
+            [&pos.racks[0], &pos.racks[1]],
+            u16::from(pos.passes),
+            u16::from(pos.zeros),
+        );
+        let at = (key, self.limits.depth.get(), beta);
+        let (slot, stopped) = self.valued.pauses.start(&at, self.limits)?;
+        if let Some(stopped) = stopped {
+            self.sub.restore_depth(stopped);
+        }
+        let mut exact = true;
+        let value = self
+            .sub
+            .solve_in_bag_below(pos.mover, beta, self.limits, &mut exact);
+        self.valued.pauses.finish(slot, at, self.sub.take_depth());
+        self.exact &= exact;
+        Ok((f64::from(value?.raw()), exact))
     }
 
     // the value to the next mover of the position after this one's turn, the
@@ -12674,10 +12802,14 @@ mod tests {
                 let longest = new().longest_line(mover) as i8;
                 for cap in 1..longest {
                     let mut s = new();
-                    s.work_buffer.depth_cap = cap;
-                    let solved = s.solve_within(mover, &super::Limits::NONE).unwrap();
-                    if !solved.exact {
-                        tally(0, solved.value.unwrap(), want);
+                    let limits = super::BagLimits::new(&super::Limits::NONE, None);
+                    limits.depth.set(cap);
+                    let mut exact = true;
+                    let value = s
+                        .solve_in_bag_below(mover, equity::Equity::INFINITY, &limits, &mut exact)
+                        .unwrap();
+                    if !exact {
+                        tally(0, value, want);
                     }
                 }
                 for states in [1usize, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233] {
@@ -15118,7 +15250,8 @@ mod tests {
         let mut exact = true;
         for (_, pos) in &positions {
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            egs.solve_in_bag(0, &limits, &mut exact).unwrap();
+            egs.solve_in_bag_below(0, equity::Equity::INFINITY, &limits, &mut exact)
+                .unwrap();
         }
         assert!(exact, "a search with no limits is exact");
         assert_eq!(limits.endgames.get(), positions.len() as u64);
@@ -18109,6 +18242,75 @@ mod tests {
                 assert_eq!(a.expected_margin, b.expected_margin);
             }
         }
+    }
+
+    #[test]
+    fn a_bag_search_resumes_the_depth_of_an_interrupted_endgame() {
+        let gc = game_config::make_english_game_config();
+        let kwg = std::sync::Arc::new(
+            kwg::kbwg_from_bytes_alloc(tiny_kwg_bytes().to_vec(), false).unwrap(),
+        );
+        let vocab = movegen::Vocab::lean(&kwg);
+        let arm_tables = anagrams::ArmTables::None;
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut unseen = vec![0; gc.alphabet().len() as usize];
+        for tile in [1, 2, 8] {
+            unseen[tile] += 1;
+        }
+        let position = bag_position(&board, &[1, 2], &unseen, 2, equity::Equity::ZERO);
+        let new =
+            || EndgameSolver::<kwg::Node24, kwg::Node24>::new(&gc, &vocab, &arm_tables).unwrap();
+        let mut full = new();
+        let whole = uncut_peg(&mut full, position.clone()).unwrap().unwrap();
+        for states in 1..full.work_buffer.table.held {
+            let mut solver = new();
+            let mut progress =
+                super::PegBagProgress::new(position.clone(), super::PegBagChoices::WHOLE)
+                    .unwrap()
+                    .without_cuts()
+                    .unwrap();
+            let limits = super::Limits {
+                time: None,
+                states: Some(states),
+                memory: None,
+                clock: None,
+            };
+            let partial = solver
+                .resume_peg(&mut progress, &limits, 1)
+                .unwrap()
+                .unwrap();
+            if !progress
+                .state
+                .searched
+                .pauses
+                .has_pauses
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                continue;
+            }
+            assert!(!partial.exact);
+            let resumed = solver
+                .resume_peg(&mut progress, &super::Limits::NONE, 1)
+                .unwrap()
+                .unwrap();
+            assert!(
+                solver
+                    .kept_sub
+                    .as_ref()
+                    .as_ref()
+                    .unwrap()
+                    .own
+                    .work_buffer
+                    .resumed
+                    > 0
+            );
+            assert!(resumed.exact && resumed.best_move == whole.best_move);
+            assert_eq!(resumed.win_pct, whole.win_pct);
+            assert_eq!(resumed.expected_margin, whole.expected_margin);
+            return;
+        }
+        panic!("no interrupted depth");
     }
 
     // a search with tiles in the bag tells its listener, at every node inside
