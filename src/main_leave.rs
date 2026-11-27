@@ -5901,6 +5901,129 @@ fn words_of_rack<N: kwg::Node>(
     }
 }
 
+#[inline]
+fn study_rack_words<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    rules: &game_config::GameRules,
+    key: &[u8],
+    (tally, spelled): (&mut [u8], &mut Vec<u8>),
+    found: &mut Vec<bites::Bites>,
+) {
+    match rules {
+        game_config::GameRules::Classic => rack_words(kwg, key, tally, found),
+        game_config::GameRules::Woadwage => {
+            found.clear();
+            for &tile in key {
+                tally[tile as usize] += 1;
+            }
+            spelled.clear();
+            let root = kwg.0[0].arc_index();
+            joined_words_of_rack(kwg, (root, true), tally, key.len(), spelled, found);
+            for &tile in key {
+                tally[tile as usize] -= 1;
+            }
+            found.sort_unstable();
+            found.dedup();
+        }
+        game_config::GameRules::Jumbled => {
+            found.clear();
+            spelled.clear();
+            spelled.extend_from_slice(key);
+            if lexicon_holds(kwg, false, spelled) {
+                found.push(key.into());
+            }
+        }
+        game_config::GameRules::JumbledWoadwage => {
+            found.clear();
+            for &tile in key {
+                tally[tile as usize] += 1;
+            }
+            spelled.clear();
+            spelled.extend_from_slice(key);
+            let held = lexicon_holds(kwg, false, spelled)
+                || splits_in_two(kwg, kwg.0[0].arc_index(), tally, key.len(), spelled);
+            for &tile in key {
+                tally[tile as usize] -= 1;
+            }
+            if held {
+                found.push(key.into());
+            }
+        }
+    }
+}
+
+fn joined_words_of_rack<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    (mut p, first): (i32, bool),
+    tally: &mut [u8],
+    left: usize,
+    word: &mut Vec<u8>,
+    found: &mut Vec<bites::Bites>,
+) {
+    if p <= 0 {
+        return;
+    }
+    loop {
+        let node = kwg.0[(p).cast_unsigned() as usize];
+        let tile = node.tile() as usize;
+        if tally.get(tile).is_some_and(|&n| n > 0) {
+            tally[tile] -= 1;
+            word.push(tile as u8);
+            if left == 1 {
+                if node.accepts() {
+                    found.push(word[..].into());
+                }
+            } else {
+                joined_words_of_rack(kwg, (node.arc_index(), first), tally, left - 1, word, found);
+                if first && node.accepts() {
+                    let root = kwg.0[0].arc_index();
+                    joined_words_of_rack(kwg, (root, false), tally, left - 1, word, found);
+                }
+            }
+            word.pop();
+            tally[tile] += 1;
+        }
+        if node.is_end() {
+            return;
+        }
+        p += 1;
+    }
+}
+
+fn splits_in_two<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    mut p: i32,
+    tally: &mut [u8],
+    left: usize,
+    rest: &mut Vec<u8>,
+) -> bool {
+    if p <= 0 || left < 2 {
+        return false;
+    }
+    loop {
+        let node = kwg.0[(p).cast_unsigned() as usize];
+        let tile = node.tile() as usize;
+        if tally.get(tile).is_some_and(|&n| n > 0) {
+            tally[tile] -= 1;
+            let found = node.accepts() && {
+                rest.clear();
+                for (t, &n) in tally.iter().enumerate() {
+                    rest.extend(std::iter::repeat_n(t as u8, n as usize));
+                }
+                lexicon_holds(kwg, false, rest)
+            } || splits_in_two(kwg, node.arc_index(), tally, left - 1, rest);
+            tally[tile] += 1;
+            if found {
+                return true;
+            }
+        }
+        if node.is_end() {
+            return false;
+        }
+        p += 1;
+    }
+}
+
 // make four study lists from a playability run's word file, ranked by count, by
 // word loss, by rack loss, and by move loss (highest first, ties by the word):
 // the rack list adds racks, each with every word of its tiles in the lexicon,
@@ -5954,14 +6077,11 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         quiet,
     }: StudyParams<'_>,
 ) -> error::Returns<(StudyRows, std::time::Instant, u64)> {
-    match game_config.game_rules() {
-        game_config::GameRules::Classic => {}
-        game_config::GameRules::Jumbled
-        | game_config::GameRules::JumbledWoadwage
-        | game_config::GameRules::Woadwage => {
-            return Err("study plays classic games".into());
-        }
-    }
+    let rules = game_config.game_rules().clone();
+    let jumbled = match rules {
+        game_config::GameRules::Classic | game_config::GameRules::Woadwage => false,
+        game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => true,
+    };
     let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let alphabet = game_config.alphabet();
@@ -6020,6 +6140,7 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     racks.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let mut lists = Vec::<(usize, &'static str, fash::MyHashSet<bites::Bites>)>::new();
     let mut tally = vec![0u8; alphabet.len() as usize];
+    let mut spelled = Vec::new();
     for &size in sizes {
         let mut known = fash::MyHashSet::<bites::Bites>::default();
         let mut found = Vec::new();
@@ -6027,7 +6148,7 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             if known.len() >= size {
                 break;
             }
-            rack_words(&kwg, key, &mut tally, &mut found);
+            study_rack_words(&kwg, &rules, key, (&mut tally, &mut spelled), &mut found);
             known.extend(found.drain(..));
         }
         let held = known.len();
@@ -6060,6 +6181,7 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             handles.push(s.spawn(move || -> error::Returns<Vec<(u64, u64)>> {
                     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
                     let mut checker = move_filter::LimitedVocabChecker::new();
+                    let mut sorted = Vec::new();
                     let mut game_state = game_state::GameState::new(game_config);
                     let mut saved = game_state.clone();
                     let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -6111,7 +6233,16 @@ fn study_results<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                                 lane,
                                                 idx,
                                                 word,
-                                                |word: &[u8]| known.contains(word),
+                                                |word: &[u8]| {
+                                                    if jumbled {
+                                                        sorted.clear();
+                                                        sorted.extend_from_slice(word);
+                                                        sorted.sort_unstable();
+                                                        known.contains(&sorted[..])
+                                                    } else {
+                                                        known.contains(word)
+                                                    }
+                                                },
                                             )
                                         },
                                     ),
@@ -12142,6 +12273,167 @@ WCMP_P1_SCORE 402.000000
             String::from_utf8(out).unwrap(),
             ",0.3,3\nAE,0.1,1\nAT,0.2,2\n"
         );
+    }
+
+    #[test]
+    fn study_plays_its_games_under_every_rules() {
+        let mut words = [
+            "AE", "AI", "AN", "AR", "AS", "AT", "EA", "EN", "ER", "ES", "ET", "IN", "IS", "IT",
+            "NA", "NE", "NO", "ON", "OR", "OS", "RE", "SO", "TA", "TE", "TI", "TO", "ANT", "ATE",
+            "EAT", "EON", "ERA", "ETA", "ION", "ITS", "NET", "NIT", "NOR", "NOT", "ONE", "ORE",
+            "RAN", "RAT", "ROE", "SAT", "SEA", "SET", "SIT", "TAN", "TEA", "TEN", "TIE", "TIN",
+            "TOE", "TON", "NOTE", "RAIN", "RATE", "REST", "SEAT", "STAR", "TEAR", "TONE", "STONE",
+            "TEARS",
+        ]
+        .iter()
+        .map(|word| word.bytes().map(|c| c - b'A' + 1).collect::<Vec<u8>>()[..].into())
+        .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let gaddawg = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let alphagrams = build::make_alphagrams(&words).unwrap();
+        let alphadawg = build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &alphagrams,
+        )
+        .unwrap();
+        let dir = format!(
+            "{}/target/study_variants-{}",
+            env!("CARGO_MANIFEST_DIR"),
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = format!("{dir}/playability");
+        let classic = game_config::make_english_game_config();
+        let spelled = |list: &[bites::Bites]| {
+            list.iter()
+                .enumerate()
+                .map(|(i, word)| {
+                    let word = word
+                        .iter()
+                        .map(|&t| (b'A' + t - 1) as char)
+                        .collect::<String>();
+                    format!("{word},0,{},{}.5,{}.25,{}.75\n", i + 1, i % 7, i % 5, i % 3)
+                })
+                .collect::<String>()
+        };
+        let joined = [&[1u8, 20, 1, 20][..], &[20, 15, 1, 20]]
+            .iter()
+            .map(|&word| word.into())
+            .collect::<Vec<bites::Bites>>();
+        let jumbled_joined = build::make_alphagrams(&joined).unwrap();
+        for (rules, game_config, kwg_bytes, file, joins) in [
+            ("classic", classic.clone(), &gaddawg, spelled(&words), None),
+            (
+                "jumbled",
+                classic.jumbled(),
+                &alphadawg,
+                spelled(&alphagrams),
+                None,
+            ),
+            (
+                "woadwage",
+                classic.woadwage(),
+                &gaddawg,
+                spelled(&[&words[..], &joined[..]].concat()),
+                Some(&joined[0]),
+            ),
+            (
+                "jumbled woadwage",
+                classic.jumbled_woadwage(),
+                &alphadawg,
+                spelled(&[&alphagrams[..], &jumbled_joined[..]].concat()),
+                Some(&jumbled_joined[0]),
+            ),
+        ] {
+            std::fs::write(&path, file).unwrap();
+            let kwg = kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap();
+            let mut tally = vec![0u8; game_config.alphabet().len() as usize];
+            let (mut found, mut spelled) = (Vec::new(), Vec::new());
+            let mut key = vec![1u8, 5, 20];
+            study_rack_words(
+                &kwg,
+                game_config.game_rules(),
+                &key,
+                (&mut tally, &mut spelled),
+                &mut found,
+            );
+            found.sort_unstable();
+            let want: Vec<bites::Bites> = match game_config.game_rules() {
+                game_config::GameRules::Classic | game_config::GameRules::Woadwage => {
+                    vec![
+                        [1u8, 20, 5][..].into(),
+                        [5, 1, 20][..].into(),
+                        [5, 20, 1][..].into(),
+                        [20, 5, 1][..].into(),
+                    ]
+                }
+                game_config::GameRules::Jumbled | game_config::GameRules::JumbledWoadwage => {
+                    vec![key[..].into()]
+                }
+            };
+            assert_eq!(found, want, "{rules}");
+            if let Some(joined) = joins {
+                key.clear();
+                key.extend_from_slice(joined);
+                key.sort_unstable();
+                study_rack_words(
+                    &kwg,
+                    game_config.game_rules(),
+                    &key,
+                    (&mut tally, &mut spelled),
+                    &mut found,
+                );
+                assert!(found.contains(joined), "{rules}");
+                study_rack_words(
+                    &kwg,
+                    classic.game_rules(),
+                    &key,
+                    (&mut tally, &mut spelled),
+                    &mut found,
+                );
+                assert!(!found.contains(joined), "{rules}");
+            }
+            assert!(tally.iter().all(|&n| n == 0), "{rules}");
+            let study = |game_config: game_config::GameConfig| {
+                study_results(
+                    game_config,
+                    kwg::kbwg_from_bytes_alloc(kwg_bytes.to_vec(), false).unwrap(),
+                    read_klv(&classic, "-").unwrap(),
+                    StudyParams {
+                        playability: &path,
+                        sizes: &[4],
+                        num_pairs: 1,
+                        seed: Some(1),
+                        threads: 2,
+                        quiet: true,
+                    },
+                )
+                .unwrap()
+            };
+            let (rows, _, num_tasks) = study(game_config);
+            assert_eq!(num_tasks, 4, "{rules}");
+            assert_eq!(rows.len(), 4, "{rules}");
+            for &(size, name, held, halves, games) in &rows {
+                assert_eq!(games, 2, "{rules} {size} {name}");
+                assert!(halves <= 2 * games, "{rules} {size} {name}");
+                assert!(held > 0, "{rules} {size} {name}");
+            }
+            if rules != "classic" {
+                let (classic_rows, _, _) = study(classic.clone());
+                let halves = |rows: &StudyRows| rows.iter().map(|row| row.3).collect::<Vec<_>>();
+                assert_ne!(halves(&rows), halves(&classic_rows), "{rules}");
+            }
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
