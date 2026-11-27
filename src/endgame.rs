@@ -2135,6 +2135,93 @@ fn grow_in<T>(memory: Option<&MemoryLimit>, list: &mut Vec<T>, more: usize) -> R
         .map_err(|_| Refused)
 }
 
+#[derive(Clone, Default)]
+pub struct Room {
+    pub memory: Option<MemoryLimit>, // none: no limit
+    refused: std::cell::Cell<bool>,
+}
+
+impl Room {
+    #[inline(always)]
+    pub fn of(memory: Option<MemoryLimit>) -> Self {
+        Self {
+            memory,
+            refused: std::cell::Cell::new(false),
+        }
+    }
+
+    #[inline(always)]
+    pub fn refused(&self) -> bool {
+        self.refused.get()
+    }
+
+    #[inline(always)]
+    pub fn take(&self, bytes: usize) -> Option<Reserved> {
+        if self.refused.get() {
+            return None;
+        }
+        let Some(memory) = self.memory else {
+            return Some(Reserved::NONE);
+        };
+        let taken = memory.reserve(bytes);
+        self.refused.set(taken.is_none());
+        taken
+    }
+}
+
+pub trait Grow<T> {
+    fn room_for(&mut self, room: &Room, more: usize) -> bool;
+    fn push_in(&mut self, room: &Room, item: T);
+    fn extend_in(&mut self, room: &Room, items: &[T])
+    where
+        T: Clone;
+    fn resize_in(&mut self, room: &Room, len: usize, item: T)
+    where
+        T: Clone;
+}
+
+impl<T> Grow<T> for Vec<T> {
+    #[inline(always)]
+    fn room_for(&mut self, room: &Room, more: usize) -> bool {
+        self.capacity() - self.len() >= more || grow_for(room, self, more)
+    }
+
+    #[inline(always)]
+    fn push_in(&mut self, room: &Room, item: T) {
+        if self.len() < self.capacity() || grow_for(room, self, 1) {
+            self.push(item);
+        }
+    }
+
+    #[inline(always)]
+    fn extend_in(&mut self, room: &Room, items: &[T])
+    where
+        T: Clone,
+    {
+        if self.room_for(room, items.len()) {
+            self.extend_from_slice(items);
+        }
+    }
+
+    #[inline(always)]
+    fn resize_in(&mut self, room: &Room, len: usize, item: T)
+    where
+        T: Clone,
+    {
+        if self.room_for(room, len.saturating_sub(self.len())) {
+            self.resize(len, item);
+        }
+    }
+}
+
+#[cold]
+fn grow_for<T>(room: &Room, list: &mut Vec<T>, more: usize) -> bool {
+    if !room.refused.get() && grow_in(room.memory.as_ref(), list, more).is_err() {
+        room.refused.set(true);
+    }
+    !room.refused.get()
+}
+
 // a clock: the time since any fixed start, never going back. A solve reads
 // std's (Instant) unless its solver is given one, as a wasm32 page must give
 // its own: std's has no clock there and panics when read
