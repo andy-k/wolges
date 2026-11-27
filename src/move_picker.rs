@@ -3,7 +3,7 @@
 use super::zone::{Footprint, SQUARE_WORDS, Squares, footprint_on_board, zone_lanes_on_board};
 use super::{
     anagrams, bites, build, endgame, equity, error, game_config, game_state, glance, infer, klv,
-    kwg, move_filter, movegen, simmer, stats, win_pct,
+    kwg, move_filter, movegen, simmer, stats, text, win_pct,
 };
 use rand::SeedableRng;
 use std::io::Write;
@@ -2039,7 +2039,7 @@ impl PositionalTerm {
     // (blank lines and # comments skipped)
     pub fn parse(text: &str) -> error::Returns<Self> {
         let mut values = Vec::new();
-        for line in text.lines() {
+        for line in text::lines(text) {
             let line = line.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
                 continue;
@@ -5489,6 +5489,12 @@ mod tests {
             PositionalTerm::parse("1 1 1 2\n").unwrap(),
             PositionalTerm::new(Vec::new()).unwrap()
         );
+        for ending in ["\r\n", "\r"] {
+            let read = PositionalTerm::parse(
+                &"3 1 7 -2\n2 1 1 -1.5\n1 2 5 0.0004\n".replace('\n', ending),
+            );
+            assert_eq!(read.unwrap(), term, "{ending:?}");
+        }
         for refused in [
             "3 1 1\n",
             "3 1 1 2 5\n",
