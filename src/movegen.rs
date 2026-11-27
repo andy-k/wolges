@@ -607,7 +607,7 @@ impl BagTerm {
             let b: i16 = b.parse()?;
             let v: f64 = v.parse()?;
             let v = (v * f64::from(equity::SCALE)).round();
-            if !v.is_finite() || v.abs() > f64::from(i32::MAX / 4) {
+            if !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v) {
                 return_error!(format!("the bag term {v} for {b} is out of range"));
             }
             pairs.push((b, v as i32));
@@ -10831,14 +10831,27 @@ impl<G: LaneBits, const JUMPS: bool, const ANY_SIDE: bool>
 
 impl KurniaMoveGenerator {
     #[inline(always)]
-    pub fn with_bag_term(
+    pub fn with_bag_term<L: kwg::Node>(
         game_config: &game_config::GameConfig,
         bag_term: BagTerm,
-    ) -> KurniaMoveGenerator<u128, true, true, true> {
-        KurniaMoveGenerator::<u128, true, true, true>::with_bag_term_in(
-            game_config,
-            bag_term,
-            klv::DENSE_LEAVES_MOST,
+        klv: &klv::Klv<L>,
+    ) -> error::Returns<KurniaMoveGenerator<u128, true, true, true>> {
+        let (lo, hi) = klv.leave_range();
+        let least = bag_term.values.iter().copied().fold(0, i32::min);
+        let most = bag_term.values.iter().copied().fold(0, i32::max);
+        let (Ok(lo), Ok(hi)) = (
+            i32::try_from(i64::from(lo.raw()) + i64::from(least)),
+            i32::try_from(i64::from(hi.raw()) + i64::from(most)),
+        ) else {
+            return_error!("the bag term can take an equity past what it holds".into());
+        };
+        game_config.check_leaves((lo, hi))?;
+        Ok(
+            KurniaMoveGenerator::<u128, true, true, true>::with_bag_term_in(
+                game_config,
+                bag_term,
+                klv::DENSE_LEAVES_MOST,
+            ),
         )
     }
 
@@ -25758,8 +25771,12 @@ pub(crate) mod tests {
             let mut plain = KurniaMoveGenerator::new(&gc);
             plain.gen_moves_unfiltered(&params).unwrap();
             assert!(plain.num_tiles_in_bag() <= 0);
-            let mut with =
-                KurniaMoveGenerator::with_bag_term(&gc, BagTerm::new(-7, vec![1_000_000; 15]));
+            let mut with = KurniaMoveGenerator::with_bag_term(
+                &gc,
+                BagTerm::new(-7, vec![1_000_000; 15]),
+                &klv,
+            )
+            .unwrap();
             with.gen_moves_unfiltered(&params).unwrap();
             assert!(plain.plays.len() > 3);
             assert!(with.plays == plain.plays);
@@ -25788,6 +25805,13 @@ pub(crate) mod tests {
                 let read = BagTerm::parse(&"-2 -1.5\n1 6.04\n".replace('\n', ending));
                 assert_eq!(read.unwrap(), term, "{ending:?}");
             }
+            let gc = game_config::make_english_game_config();
+            let klv = klv::Klv::<kwg::Node24>::empty().unwrap();
+            let wide = BagTerm::parse("1 1e6\n").unwrap();
+            assert_eq!(wide.at(1), 1_000_000_000);
+            assert!(KurniaMoveGenerator::with_bag_term(&gc, wide, &klv).is_ok());
+            let past = BagTerm::parse("1 2147483\n").unwrap();
+            assert!(KurniaMoveGenerator::with_bag_term(&gc, past, &klv).is_err());
         }
     }
 }
